@@ -553,7 +553,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 用例是 authSvc 的窄接口，handler 只见 Reauthenticate。
 		accounts = accounthttp.NewHandler(accountSvc, adminSvc, guard).WithReauth(authSvc)
 		users = userhttp.NewHandler(userSvc, adminSvc).WithReauth(authSvc)
-		signing = signinghttp.NewHandler(accountSvc, adminSvc, provider)
+		// 姓名揭示审计与凭据读取是同一个账号用例实例：揭示行由它追加。
+		signing = signinghttp.NewHandler(accountSvc, adminSvc, provider).WithRevealAudit(accountSvc)
 
 		// 事件总线先于 worker 与计划装配：两者的发布端口引用同一实例。
 		broker := appevents.NewBroker()

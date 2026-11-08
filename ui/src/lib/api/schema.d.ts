@@ -517,7 +517,7 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Update school name, status or time zone.
+         * Update school name, status, time zone or platform binding.
          * @description The school code is immutable in v1.
          */
         patch: operations["SchoolUpdate"];
@@ -959,6 +959,35 @@ export interface paths {
          *     Rate limited per client IP and per account id; a 429 carries Retry-After.
          */
         post: operations["AccountVerify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/person-name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch the platform person name on demand.
+         * @description Lazy, privacy-gated, rate-limited, never persisted. The server runs
+         *     the same platform authentication as the verify endpoint and answers
+         *     with the person name the platform reports; nothing else. The name is
+         *     never stored, never written to logs, and the audit row carries only
+         *     the action and the account id. master and admin look up accounts in
+         *     their scope; a user only their own account, and an out-of-scope
+         *     account answers 404. A platform failure answers 502 with a neutral
+         *     envelope; platform text never reaches the response. The request
+         *     shares the per-account rate-limit bucket with verify and sign; a 429
+         *     carries Retry-After.
+         */
+        post: operations["AccountPersonName"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2423,6 +2452,12 @@ export interface components {
             name: string;
             status: components["schemas"]["SchoolStatus"];
             timezone: string;
+            /**
+             * @description Platform university identifier bound by master for school matching.
+             *     Absent until master sets it; a public school attribute that any
+             *     reader of the school list may see.
+             */
+            platform_university_id?: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -2436,12 +2471,19 @@ export interface components {
              * @enum {string}
              */
             timezone: "Asia/Shanghai";
+            /** @description Optional platform university binding; empty stores none. */
+            platform_university_id?: string;
         };
         SchoolUpdate: {
             name?: string;
             status?: components["schemas"]["SchoolStatus"];
             /** @enum {string} */
             timezone?: "Asia/Shanghai";
+            /**
+             * @description Absent keeps the current binding; an empty string clears it;
+             *     a value sets it.
+             */
+            platform_university_id?: string;
         };
         SchoolPage: {
             items: components["schemas"]["School"][];
@@ -2641,6 +2683,23 @@ export interface components {
             code: string;
             /** @description Masked platform text; absent when empty. */
             message?: string;
+            identity?: components["schemas"]["AccountVerifyIdentity"];
+        };
+        /**
+         * @description The platform identity envelope carried with the issuer receipt on a
+         *     successful verify. Present only when the platform returned both
+         *     university fields; the receipt can exist without identity data and
+         *     then the key is absent. The person name is deliberately not part of
+         *     it: it is personal data and is fetched on demand through
+         *     POST /api/accounts/{id}/person-name.
+         */
+        AccountVerifyIdentity: {
+            university_name: string;
+            university_id: string;
+        };
+        AccountPersonNameResult: {
+            /** @description The name as the platform reports it; empty when none. */
+            person_name: string;
         };
         AccountSignAccepted: {
             task_id: string;
@@ -4930,6 +4989,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AccountVerifyResult"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            502: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountPersonName: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The person name the platform reports. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountPersonNameResult"];
                 };
             };
             401: components["responses"]["UnauthorizedError"];

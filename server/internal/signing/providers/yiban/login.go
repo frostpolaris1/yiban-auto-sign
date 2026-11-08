@@ -210,9 +210,11 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	}
 
 	// 不映射 PersonId：它是平台内部 ID，不是学号；Raw 也不放身份数据。
+	// UniversityId 原样透出：宿主拿它与 schools.platform_university_id 比对。
 	profile := contract.Profile{
-		DisplayName: identity.PersonName,
-		SchoolName:  identity.UniversityName,
+		DisplayName:  identity.PersonName,
+		SchoolName:   identity.UniversityName,
+		UniversityID: identity.UniversityID,
 	}
 	entry.http = client
 	entry.csrf = csrf

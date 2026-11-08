@@ -128,7 +128,9 @@ func TestVerifySuccess(t *testing.T) {
 		SchoolID: "school-1", Phone: "13800000000", Password: "secret",
 		DeviceCode: "device-code", PhoneModel: "Model-X",
 	}}
-	verifier := &fakeVerifier{profile: contract.Profile{DisplayName: "张三", SchoolName: "示例大学"}}
+	verifier := &fakeVerifier{profile: contract.Profile{
+		DisplayName: "张三", SchoolName: "示例大学", UniversityID: "0000000001",
+	}}
 	engine, issued := newTestRouter(t, &fakeAuthorizer{scope: corescope.Master()}, svc, verifier)
 
 	rec := callVerify(t, engine, issued, true)
@@ -139,10 +141,59 @@ func TestVerifySuccess(t *testing.T) {
 	if !result.Ok || result.Code != string(contract.OutcomeSuccess) {
 		t.Fatalf("result = %+v", result)
 	}
+	// 提供方带出的院校两字段必须原样透出：建号定校链路拿它对学校表。
+	if result.Identity == nil {
+		t.Fatalf("identity is missing from a verified result: %+v", result)
+	}
+	if result.Identity.UniversityName != "示例大学" ||
+		result.Identity.UniversityId != "0000000001" {
+		t.Fatalf("identity = %+v", result.Identity)
+	}
+	// 姓名属个人隐私，不在 verify 顺手透出：响应体不得出现 person_name。
+	if strings.Contains(rec.Body.String(), "person_name") {
+		t.Fatalf("verify response leaked person_name: %q", rec.Body.String())
+	}
 	if verifier.last.Credential.Phone != "13800000000" ||
 		verifier.last.Credential.Password != "secret" ||
 		verifier.last.Credential.DeviceCode != "device-code" {
 		t.Fatalf("verifier credential = %+v", verifier.last.Credential)
+	}
+}
+
+// 平台可能只回签发回执不带身份数据（data={}）：identity 必须缺席，
+// 不得回一个空字段的对象假装有数据；只带姓名的回执同样不出院校键。
+func TestVerifyIdentityAbsentWithoutProfileData(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1", Phone: "13800000000"}}
+	for name, profile := range map[string]contract.Profile{
+		"空回执":  {},
+		"只有姓名": {DisplayName: "张三"},
+	} {
+		engine, issued := newTestRouter(t, &fakeAuthorizer{scope: corescope.Master()},
+			svc, &fakeVerifier{profile: profile})
+		result := decodeResult(t, callVerify(t, engine, issued, true))
+		if !result.Ok {
+			t.Fatalf("%s: result = %+v", name, result)
+		}
+		if result.Identity != nil {
+			t.Fatalf("%s: identity = %+v, want absent", name, result.Identity)
+		}
+	}
+}
+
+// 平台结论失败路径不携带身份：identity 只属于成功回执。
+func TestVerifyFailureCarriesNoIdentity(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	verifier := &fakeVerifier{err: &contract.OutcomeError{
+		Outcome: contract.OutcomeCredentialBad, Message: "reject 13800138000",
+	}}
+	engine, issued := newTestRouter(t, &fakeAuthorizer{scope: corescope.Master()}, svc, verifier)
+
+	result := decodeResult(t, callVerify(t, engine, issued, true))
+	if result.Ok || result.Code != "credential_invalid" {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Identity != nil {
+		t.Fatalf("identity = %+v, want absent on a failure conclusion", result.Identity)
 	}
 }
 
@@ -786,5 +837,160 @@ func TestBatchSignLimitKeyNormalized(t *testing.T) {
 	}
 	if strings.Join(manual.calls, ",") != "ACC-A" {
 		t.Fatalf("manual = %v, want ACC-A（原样 id）", manual.calls)
+	}
+}
+
+// --- 平台姓名懒加载 ----------------------------------------------------------
+
+// fakeRevealAuditor 记录揭示审计的调用与入参。
+type fakeRevealAuditor struct {
+	scope    corescope.Scope
+	id       string
+	schoolID string
+	actor    appaudit.Actor
+	calls    int
+	err      error
+}
+
+func (f *fakeRevealAuditor) RecordPersonNameReveal(
+	_ context.Context, scope corescope.Scope, id, schoolID string, actor appaudit.Actor) error {
+	f.calls++
+	f.scope, f.id, f.schoolID, f.actor = scope, id, schoolID, actor
+	return f.err
+}
+
+// newPersonNameRouter 装配带揭示审计接缝的路由；auditor 传 nil 供未接线用例。
+func newPersonNameRouter(t *testing.T, authz *fakeAuthorizer, svc *fakeService,
+	verifier *fakeVerifier, auditor signinghttp.RevealAuditor) (http.Handler, coreauth.Issued) {
+	t.Helper()
+	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
+	issued, err := issuer.Issue(context.Background(), coreauth.User{
+		ID: "u1", Email: "boss@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	handler := signinghttp.NewHandler(svc, authz, verifier).WithRevealAudit(auditor)
+	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler})
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	return engine, issued
+}
+
+func callPersonName(t *testing.T, engine http.Handler, issued coreauth.Issued) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/acc-1/person-name", nil)
+	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+	req.Header.Set("X-CSRF-Token", issued.CSRFToken)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	return rec
+}
+
+// 成功：只回姓名单字段；审计接缝收到作用域、账号与院校。
+func TestPersonNameReturnsNameAndAudits(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1", Phone: "13800000000"}}
+	verifier := &fakeVerifier{profile: contract.Profile{
+		DisplayName: "张三", SchoolName: "示例大学", UniversityID: "0000000001",
+	}}
+	auditor := &fakeRevealAuditor{}
+	engine, issued := newPersonNameRouter(t, &fakeAuthorizer{scope: corescope.Master()}, svc, verifier, auditor)
+
+	rec := callPersonName(t, engine, issued)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var result oapi.AccountPersonNameResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+	if result.PersonName != "张三" {
+		t.Fatalf("person_name = %q", result.PersonName)
+	}
+	// 响应只有 person_name 一个键：院校字段不搭车。
+	if strings.Contains(rec.Body.String(), "university") {
+		t.Fatalf("person-name response carried university fields: %q", rec.Body.String())
+	}
+	if auditor.calls != 1 || auditor.id != "acc-1" || auditor.schoolID != "school-1" {
+		t.Fatalf("auditor = %+v", auditor)
+	}
+}
+
+// user 只能取自己账号：作用域内放行。
+func TestPersonNameUserOwnAllowed(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1", Phone: "13800000000"}}
+	verifier := &fakeVerifier{profile: contract.Profile{DisplayName: "张三"}}
+	auditor := &fakeRevealAuditor{}
+	engine, issued := newPersonNameRouter(t,
+		&fakeAuthorizer{scope: corescope.User("u1")}, svc, verifier, auditor)
+
+	rec := callPersonName(t, engine, issued)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var result oapi.AccountPersonNameResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.PersonName != "张三" || auditor.calls != 1 {
+		t.Fatalf("result = %+v auditor = %+v", result, auditor)
+	}
+}
+
+// user 越权他人账号：作用域读不到行，404 与签到同口径。
+func TestPersonNameUserCrossScopeNotFound(t *testing.T) {
+	svc := &fakeService{err: errs.New(errs.CodeNotFound, "account not found")}
+	engine, issued := newPersonNameRouter(t,
+		&fakeAuthorizer{scope: corescope.User("u1")}, svc, &fakeVerifier{}, &fakeRevealAuditor{})
+
+	rec := callPersonName(t, engine, issued)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// 平台失败统一 502 中性信封：结论文案不出本层，姓名响应没有结论形状。
+func TestPersonNamePlatformFailureIs502(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	for name, err := range map[string]error{
+		"凭据结论": &contract.OutcomeError{Outcome: contract.OutcomeCredentialBad, Message: "reject 13800138000"},
+		"传输失败": &url.Error{Op: "Get", URL: "https://api.uyiban.com", Err: errors.New("timeout")},
+	} {
+		engine, issued := newPersonNameRouter(t, &fakeAuthorizer{scope: corescope.Master()},
+			svc, &fakeVerifier{err: err}, &fakeRevealAuditor{})
+		rec := callPersonName(t, engine, issued)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("%s: status = %d, want 502; body=%s", name, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "reject 138") {
+			t.Fatalf("%s: response leaked platform text: %q", name, rec.Body.String())
+		}
+	}
+}
+
+// 审计接缝未接线＝装配错误：500 响亮失败，揭示不得无痕发生。
+func TestPersonNameUnwiredAuditorFailsLoud(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	engine, issued := newPersonNameRouter(t, &fakeAuthorizer{scope: corescope.Master()},
+		svc, &fakeVerifier{profile: contract.Profile{DisplayName: "张三"}}, nil)
+	rec := callPersonName(t, engine, issued)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 审计写失败：响应 5xx，姓名不得在审计缺失的情况下外泄。
+func TestPersonNameAuditFailureBlocksResponse(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	verifier := &fakeVerifier{profile: contract.Profile{DisplayName: "张三"}}
+	auditor := &fakeRevealAuditor{err: errors.New("audit insert failed")}
+	engine, issued := newPersonNameRouter(t, &fakeAuthorizer{scope: corescope.Master()}, svc, verifier, auditor)
+	rec := callPersonName(t, engine, issued)
+	if rec.Code < 500 {
+		t.Fatalf("status = %d, want 5xx; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "张三") {
+		t.Fatalf("audit failure still leaked the name: %q", rec.Body.String())
 	}
 }

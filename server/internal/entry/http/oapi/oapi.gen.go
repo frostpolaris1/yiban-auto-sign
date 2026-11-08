@@ -1030,6 +1030,12 @@ type AccountPauseRequest struct {
 	Paused bool `json:"paused"`
 }
 
+// AccountPersonNameResult defines model for AccountPersonNameResult.
+type AccountPersonNameResult struct {
+	// PersonName The name as the platform reports it; empty when none.
+	PersonName string `json:"person_name"`
+}
+
 // AccountPurgeRequest defines model for AccountPurgeRequest.
 type AccountPurgeRequest struct {
 	// CurrentPassword The acting user's own login password, used to re-authenticate a
@@ -1138,6 +1144,17 @@ type AccountUpdate struct {
 	SchoolId *string `json:"school_id,omitempty"`
 }
 
+// AccountVerifyIdentity The platform identity envelope carried with the issuer receipt on a
+// successful verify. Present only when the platform returned both
+// university fields; the receipt can exist without identity data and
+// then the key is absent. The person name is deliberately not part of
+// it: it is personal data and is fetched on demand through
+// POST /api/accounts/{id}/person-name.
+type AccountVerifyIdentity struct {
+	UniversityId   string `json:"university_id"`
+	UniversityName string `json:"university_name"`
+}
+
 // AccountVerifyResult defines model for AccountVerifyResult.
 type AccountVerifyResult struct {
 	// Code success, credential_invalid, challenge, blocked, device_unbound,
@@ -1145,6 +1162,14 @@ type AccountVerifyResult struct {
 	// and returns 200. blocked means a WAF interception page: like
 	// challenge it is never retried, but it is reported as a failure.
 	Code string `json:"code"`
+
+	// Identity The platform identity envelope carried with the issuer receipt on a
+	// successful verify. Present only when the platform returned both
+	// university fields; the receipt can exist without identity data and
+	// then the key is absent. The person name is deliberately not part of
+	// it: it is personal data and is fetched on demand through
+	// POST /api/accounts/{id}/person-name.
+	Identity *AccountVerifyIdentity `json:"identity,omitempty"`
 
 	// Message Masked platform text; absent when empty.
 	Message *string `json:"message,omitempty"`
@@ -1762,13 +1787,18 @@ type ScheduleWindowSource string
 
 // School defines model for School.
 type School struct {
-	Code      string       `json:"code"`
-	CreatedAt time.Time    `json:"created_at"`
-	Id        string       `json:"id"`
-	Name      string       `json:"name"`
-	Status    SchoolStatus `json:"status"`
-	Timezone  string       `json:"timezone"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	Code      string    `json:"code"`
+	CreatedAt time.Time `json:"created_at"`
+	Id        string    `json:"id"`
+	Name      string    `json:"name"`
+
+	// PlatformUniversityId Platform university identifier bound by master for school matching.
+	// Absent until master sets it; a public school attribute that any
+	// reader of the school list may see.
+	PlatformUniversityId *string      `json:"platform_university_id,omitempty"`
+	Status               SchoolStatus `json:"status"`
+	Timezone             string       `json:"timezone"`
+	UpdatedAt            time.Time    `json:"updated_at"`
 }
 
 // SchoolAdmin defines model for SchoolAdmin.
@@ -1813,9 +1843,12 @@ type SchoolAdminRemoveRequest struct {
 
 // SchoolCreate defines model for SchoolCreate.
 type SchoolCreate struct {
-	Code     string                `json:"code"`
-	Name     string                `json:"name"`
-	Timezone *SchoolCreateTimezone `json:"timezone,omitempty"`
+	Code string `json:"code"`
+	Name string `json:"name"`
+
+	// PlatformUniversityId Optional platform university binding; empty stores none.
+	PlatformUniversityId *string               `json:"platform_university_id,omitempty"`
+	Timezone             *SchoolCreateTimezone `json:"timezone,omitempty"`
 }
 
 // SchoolCreateTimezone defines model for SchoolCreate.Timezone.
@@ -1850,9 +1883,13 @@ type SchoolStatus string
 
 // SchoolUpdate defines model for SchoolUpdate.
 type SchoolUpdate struct {
-	Name     *string               `json:"name,omitempty"`
-	Status   *SchoolStatus         `json:"status,omitempty"`
-	Timezone *SchoolUpdateTimezone `json:"timezone,omitempty"`
+	Name *string `json:"name,omitempty"`
+
+	// PlatformUniversityId Absent keeps the current binding; an empty string clears it;
+	// a value sets it.
+	PlatformUniversityId *string               `json:"platform_university_id,omitempty"`
+	Status               *SchoolStatus         `json:"status,omitempty"`
+	Timezone             *SchoolUpdateTimezone `json:"timezone,omitempty"`
 }
 
 // SchoolUpdateTimezone defines model for SchoolUpdate.Timezone.
@@ -2488,6 +2525,13 @@ type AccountLocationSetParams struct {
 
 // AccountPauseParams defines parameters for AccountPause.
 type AccountPauseParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// AccountPersonNameParams defines parameters for AccountPersonName.
+type AccountPersonNameParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
 	// state-changing request that carries a session.
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
@@ -3222,6 +3266,9 @@ type ServerInterface interface {
 	// AccountPause Pause or resume an account.
 	// (POST /api/accounts/{id}/pause)
 	AccountPause(c *gin.Context, id AccountID, params AccountPauseParams)
+	// AccountPersonName Fetch the platform person name on demand.
+	// (POST /api/accounts/{id}/person-name)
+	AccountPersonName(c *gin.Context, id AccountID, params AccountPersonNameParams)
 	// AccountPhotoList List the photos of one account's owner.
 	// (GET /api/accounts/{id}/photos)
 	AccountPhotoList(c *gin.Context, id AccountID, params AccountPhotoListParams)
@@ -3384,7 +3431,7 @@ type ServerInterface interface {
 	// SchoolCreate Create a school.
 	// (POST /api/schools)
 	SchoolCreate(c *gin.Context, params SchoolCreateParams)
-	// SchoolUpdate Update school name, status or time zone.
+	// SchoolUpdate Update school name, status, time zone or platform binding.
 	// (PATCH /api/schools/{id})
 	SchoolUpdate(c *gin.Context, id SchoolID, params SchoolUpdateParams)
 	// SchoolAdminList List admins bound to the school.
@@ -4012,6 +4059,58 @@ func (siw *ServerInterfaceWrapper) AccountPause(c *gin.Context) {
 	}
 
 	siw.Handler.AccountPause(c, id, params)
+}
+
+// AccountPersonName operation middleware
+func (siw *ServerInterfaceWrapper) AccountPersonName(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountPersonNameParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountPersonName(c, id, params)
 }
 
 // AccountPhotoList operation middleware
@@ -6827,6 +6926,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/accounts/:id/restore", wrapper.AccountRestore)
 	router.POST(options.BaseURL+"/api/accounts/:id/purge", wrapper.AccountPurge)
 	router.POST(options.BaseURL+"/api/accounts/:id/verify", wrapper.AccountVerify)
+	router.POST(options.BaseURL+"/api/accounts/:id/person-name", wrapper.AccountPersonName)
 	router.POST(options.BaseURL+"/api/accounts/:id/sign", wrapper.AccountSign)
 	router.GET(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationGet)
 	router.PUT(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationSet)

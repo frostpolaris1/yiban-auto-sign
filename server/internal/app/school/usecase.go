@@ -197,6 +197,9 @@ func validateNew(in New) error {
 	if err := validateName(in.Name); err != nil {
 		return err
 	}
+	if err := validatePlatformUniversityID(in.PlatformUniversityID); err != nil {
+		return err
+	}
 	// 时区闭集由 ck_schools_time_zone 兜底，映射为 validation_failed。
 	// 用例层不复制该集合：单一事实源在迁移里。
 	return nil
@@ -226,10 +229,26 @@ func validateUpdate(in Update) (string, error) {
 		changed++
 		field = "timezone"
 	}
+	if in.PlatformUniversityID != nil {
+		if err := validatePlatformUniversityID(*in.PlatformUniversityID); err != nil {
+			return "", err
+		}
+		changed++
+		field = "platform_university_id"
+	}
 	if changed == 0 {
 		return "", errs.New(errs.CodeValidation, "at least one field is required")
 	}
 	return field, nil
+}
+
+// validatePlatformUniversityID 与契约的 maxLength 128 同口径。
+// 空串合法：表示清空或不写绑定。
+func validatePlatformUniversityID(value string) error {
+	if utf8.RuneCountInString(value) > 128 {
+		return errs.New(errs.CodeValidation, "platform_university_id must be at most 128 characters")
+	}
+	return nil
 }
 
 func validateName(name string) error {

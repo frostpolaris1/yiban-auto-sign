@@ -18,9 +18,10 @@ type SchoolRepo struct {
 // NewSchoolRepo 构造院校仓储。
 func NewSchoolRepo(db *DB) *SchoolRepo { return &SchoolRepo{db: db} }
 
-const schoolColumns = `id::text, code, name, status::text, time_zone, created_at, updated_at`
+const schoolColumns = `id::text, code, name, status::text, time_zone,
+	coalesce(platform_university_id, ''), created_at, updated_at`
 
-// Create 插入院校。空时区套用列默认值。
+// Create 插入院校。空时区套用列默认值；空平台绑定落 NULL。
 func (r *SchoolRepo) Create(ctx context.Context, in coreschool.New) (coreschool.Record, error) {
 	if in.Code == "" || in.Name == "" {
 		return coreschool.Record{}, validationError("code and name are required")
@@ -39,12 +40,14 @@ func (r *SchoolRepo) Create(ctx context.Context, in coreschool.New) (coreschool.
 	)
 	if in.TimeZone == "" {
 		row = q.QueryRow(ctx, `
-			INSERT INTO schools (id, code, name) VALUES ($1::uuid, $2, $3)
-			RETURNING `+schoolColumns, id, in.Code, in.Name)
+			INSERT INTO schools (id, code, name, platform_university_id)
+			VALUES ($1::uuid, $2, $3, NULLIF($4, ''))
+			RETURNING `+schoolColumns, id, in.Code, in.Name, in.PlatformUniversityID)
 	} else {
 		row = q.QueryRow(ctx, `
-			INSERT INTO schools (id, code, name, time_zone) VALUES ($1::uuid, $2, $3, $4)
-			RETURNING `+schoolColumns, id, in.Code, in.Name, in.TimeZone)
+			INSERT INTO schools (id, code, name, time_zone, platform_university_id)
+			VALUES ($1::uuid, $2, $3, $4, NULLIF($5, ''))
+			RETURNING `+schoolColumns, id, in.Code, in.Name, in.TimeZone, in.PlatformUniversityID)
 	}
 	return recordOrNotFound(scanSchool(row))
 }
@@ -63,7 +66,8 @@ func (r *SchoolRepo) GetByCode(ctx context.Context, code string) (coreschool.Rec
 	return recordOrNotFound(scanSchool(row))
 }
 
-// Update 修改 in 中出现的字段。nil 字段保持原值。
+// Update 修改 in 中出现的字段。nil 字段保持原值；
+// PlatformUniversityID 指向空串清空绑定（落 NULL），指向值则覆盖。
 func (r *SchoolRepo) Update(ctx context.Context, id string, in coreschool.Update) (coreschool.Record, error) {
 	var status *string
 	if in.Status != nil {
@@ -78,9 +82,12 @@ func (r *SchoolRepo) Update(ctx context.Context, id string, in coreschool.Update
 		   SET name = COALESCE($2, name),
 		       status = COALESCE($3::school_status, status),
 		       time_zone = COALESCE($4, time_zone),
+		       platform_university_id = CASE
+		           WHEN $5::text IS NULL THEN platform_university_id
+		           ELSE NULLIF($5::text, '') END,
 		       updated_at = now()
 		 WHERE id = $1::uuid
-		RETURNING `+schoolColumns, id, in.Name, status, in.TimeZone)
+		RETURNING `+schoolColumns, id, in.Name, status, in.TimeZone, in.PlatformUniversityID)
 	return recordOrNotFound(scanSchool(row))
 }
 
@@ -146,7 +153,7 @@ func scanSchool(row pgx.Row) (coreschool.Record, error) {
 		status string
 	)
 	if err := row.Scan(&record.ID, &record.Code, &record.Name, &status,
-		&record.TimeZone, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		&record.TimeZone, &record.PlatformUniversityID, &record.CreatedAt, &record.UpdatedAt); err != nil {
 		return coreschool.Record{}, err
 	}
 	record.Status = coreschool.Status(status)

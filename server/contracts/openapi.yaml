@@ -819,7 +819,7 @@ paths:
     patch:
       tags: [schools]
       operationId: SchoolUpdate
-      summary: Update school name, status or time zone.
+      summary: Update school name, status, time zone or platform binding.
       description: The school code is immutable in v1.
       x-roles: [master]
       parameters:
@@ -1576,6 +1576,39 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '502': { $ref: '#/components/responses/DefaultError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/{id}/person-name:
+    post:
+      tags: [accounts]
+      operationId: AccountPersonName
+      summary: Fetch the platform person name on demand.
+      description: |
+        Lazy, privacy-gated, rate-limited, never persisted. The server runs
+        the same platform authentication as the verify endpoint and answers
+        with the person name the platform reports; nothing else. The name is
+        never stored, never written to logs, and the audit row carries only
+        the action and the account id. master and admin look up accounts in
+        their scope; a user only their own account, and an out-of-scope
+        account answers 404. A platform failure answers 502 with a neutral
+        envelope; platform text never reaches the response. The request
+        shares the per-account rate-limit bucket with verify and sign; a 429
+        carries Retry-After.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '200':
+          description: The person name the platform reports.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountPersonNameResult'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        '502': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/sign:
     post:
@@ -3732,6 +3765,13 @@ components:
         status:
           $ref: '#/components/schemas/SchoolStatus'
         timezone: { type: string }
+        platform_university_id:
+          type: string
+          maxLength: 128
+          description: |
+            Platform university identifier bound by master for school matching.
+            Absent until master sets it; a public school attribute that any
+            reader of the school list may see.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     SchoolCreate:
@@ -3746,6 +3786,10 @@ components:
           type: string
           enum: [Asia/Shanghai]
           default: Asia/Shanghai
+        platform_university_id:
+          type: string
+          maxLength: 128
+          description: Optional platform university binding; empty stores none.
     SchoolUpdate:
       type: object
       minProperties: 1
@@ -3756,6 +3800,12 @@ components:
         timezone:
           type: string
           enum: [Asia/Shanghai]
+        platform_university_id:
+          type: string
+          maxLength: 128
+          description: |
+            Absent keeps the current binding; an empty string clears it;
+            a value sets it.
     SchoolPage:
       type: object
       required: [items, next_cursor]
@@ -4022,6 +4072,30 @@ components:
         message:
           type: string
           description: Masked platform text; absent when empty.
+        identity:
+          $ref: '#/components/schemas/AccountVerifyIdentity'
+    AccountVerifyIdentity:
+      type: object
+      additionalProperties: false
+      required: [university_name, university_id]
+      description: |
+        The platform identity envelope carried with the issuer receipt on a
+        successful verify. Present only when the platform returned both
+        university fields; the receipt can exist without identity data and
+        then the key is absent. The person name is deliberately not part of
+        it: it is personal data and is fetched on demand through
+        POST /api/accounts/{id}/person-name.
+      properties:
+        university_name: { type: string }
+        university_id: { type: string }
+    AccountPersonNameResult:
+      type: object
+      additionalProperties: false
+      required: [person_name]
+      properties:
+        person_name:
+          type: string
+          description: The name as the platform reports it; empty when none.
     AccountSignAccepted:
       type: object
       additionalProperties: false

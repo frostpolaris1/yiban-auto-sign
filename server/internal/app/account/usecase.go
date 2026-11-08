@@ -767,14 +767,19 @@ func (s *Service) rewriteCredential(ctx context.Context, scope corescope.Scope, 
 	return s.deps.Accounts.ReplaceCredential(ctx, sealed, version)
 }
 
-// requireSchool 确认院校存在且落在作用域内。
-// admin 只允许自己绑定的院校；跨校一律 404。
+// requireSchool 确认院校存在、落在作用域内且处于 active。
+// disabled 学校拒绝建号（409 conflict）：行存在，是状态不允许，不是查无此校，
+// 与 disabled task 先例同语义；跨校一律 404。
 func (s *Service) requireSchool(ctx context.Context, scope corescope.Scope, schoolID string) error {
 	if strings.TrimSpace(schoolID) == "" {
 		return errs.New(errs.CodeValidation, "school_id is required")
 	}
-	if _, err := s.deps.Schools.Get(ctx, schoolID); err != nil {
+	record, err := s.deps.Schools.Get(ctx, schoolID)
+	if err != nil {
 		return err
+	}
+	if record.Status == coreschool.StatusDisabled {
+		return errs.New(errs.CodeConflict, "school is disabled")
 	}
 	if scope.Kind() == corescope.KindAdmin {
 		for _, id := range scope.SchoolIDs() {

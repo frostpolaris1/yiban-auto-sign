@@ -267,6 +267,31 @@ var migrationDownCases = map[int64]migrationDownCase{
 			m.exec(`UPDATE schools SET default_photo_id = (SELECT id FROM photos)`)
 		},
 	},
+	28: {
+		name: "school_platform_university_id",
+		seed: func(m *migrationDownEnv) {
+			// 绑定行与未绑定行并存：Down 不挑行，整列消失。
+			m.exec(`INSERT INTO schools (code, name, platform_university_id)
+		        VALUES ('mig-down-28', 'Migration Down', '0000000028')`)
+			m.exec("INSERT INTO schools (code, name) VALUES ('mig-down-28b', 'Migration Down B')")
+		},
+		wantDown: func(m *migrationDownEnv) {
+			m.wantColumn("schools", "platform_university_id", false)
+			m.wantRelation("uq_schools_platform_university_id", false)
+		},
+		wantUp: func(m *migrationDownEnv) {
+			m.wantColumn("schools", "platform_university_id", true)
+			m.wantRelation("uq_schools_platform_university_id", true)
+			// 重新 Up 后列可再次写入；部分唯一索引照常约束非空值。
+			m.exec(`UPDATE schools SET platform_university_id = '0000000028'
+		        WHERE code = 'mig-down-28'`)
+			// 同值写两行必须被部分唯一索引拒绝。
+			if err := m.tryExec(`UPDATE schools SET platform_university_id = '0000000028'
+		        WHERE code = 'mig-down-28b'`); err == nil {
+				m.t.Fatal("duplicate platform_university_id was accepted after re-Up")
+			}
+		},
+	},
 }
 
 // TestMigrationDownIsExecutable 在真库上执行每个已登记的 Down。
