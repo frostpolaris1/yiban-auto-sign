@@ -53,6 +53,10 @@ func (s *countingAuth) ChangePassword(context.Context, auth.Session, string, str
 	return nil
 }
 
+func (s *countingAuth) DeleteSelf(context.Context, auth.Session, string) error { return nil }
+
+func (s *countingAuth) RestoreSelf(context.Context, string, string) error { return nil }
+
 func (s *countingAuth) Registration(context.Context) (appauth.RegistrationStatus, error) {
 	return appauth.RegistrationStatus{}, nil
 }

@@ -430,6 +430,10 @@ func (stubAuth) ChangePassword(context.Context, auth.Session, string, string, st
 	return nil
 }
 
+func (stubAuth) DeleteSelf(context.Context, auth.Session, string) error { return nil }
+
+func (stubAuth) RestoreSelf(context.Context, string, string) error { return nil }
+
 func (stubAuth) Registration(context.Context) (appauth.RegistrationStatus, error) {
 	return appauth.RegistrationStatus{}, nil
 }

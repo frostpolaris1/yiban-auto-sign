@@ -12,4 +12,11 @@ const (
 	AuditChainLock int64 = 71010002
 	// UserCapacityLock 守卫活跃用户计数。
 	UserCapacityLock int64 = 71010003
+	// UserEmailLock 是邮箱维度的两参数 advisory lock 命名空间。
+	// 第一键固定为本值，第二键是 hashtext(归一邮箱)。它与上面的
+	// int8 锁处于不同命名空间，不会与容量锁互撞；同邮箱的
+	// 自助注销与公开注册共用这把锁，堵住「注销未提交时抢先注册」。
+	// hashtext 的跨版本稳定性不影响正确性：两侧在同一服务端内
+	// 用同一函数计算第二键。
+	UserEmailLock int32 = 71010004
 )

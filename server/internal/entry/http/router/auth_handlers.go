@@ -19,8 +19,11 @@ package router
 import (
 	"context"
 	"encoding/hex"
+	"errors"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -44,6 +47,10 @@ type AuthService interface {
 	ForgotPassword(ctx context.Context, email string) error
 	ResetPassword(ctx context.Context, token, newPassword string) error
 	ChangePassword(ctx context.Context, sess coreauth.Session, keepToken, currentPassword, newPassword string) error
+	// DeleteSelf 注销会话用户自己的登录账号，要求 current_password。
+	DeleteSelf(ctx context.Context, sess coreauth.Session, currentPassword string) error
+	// RestoreSelf 以邮箱＋口令恢复宽限内软删的登录账号；不建立会话。
+	RestoreSelf(ctx context.Context, email, password string) error
 	// Registration 读公开注册状态。
 	Registration(ctx context.Context) (appauth.RegistrationStatus, error)
 	// Register 建普通用户并签发会话。
@@ -216,6 +223,76 @@ func (s *server) AuthChangePassword(c *gin.Context, _ oapi.AuthChangePasswordPar
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// MeDelete 实现 POST /api/me/delete。
+// 目标只来自会话；请求体只承载 current_password。
+// 成功：软删登录账号与名下账号、撤销全部会话，并清掉客户端 cookie。
+func (s *server) MeDelete(c *gin.Context, _ oapi.MeDeleteParams) {
+	if s.auth == nil {
+		notImplemented(c)
+		return
+	}
+	sess, ok := coreauth.FromContext(c.Request.Context())
+	if !ok {
+		// 中间件已拒绝无会话请求；走到这里是接线错误。
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUnauthorized, "authentication required"))
+		return
+	}
+	var req oapi.MeDeleteJSONRequestBody
+	if err := c.ShouldBindJSON(&req); err != nil {
+		bindError(c, err)
+		return
+	}
+	if err := s.auth.DeleteSelf(c.Request.Context(), sess, req.CurrentPassword); err != nil {
+		writeRetryAfter(c, err)
+		respond.Error(c.Writer, c.Request, err)
+		return
+	}
+	s.cookies.clear(c.Writer)
+	c.Status(http.StatusNoContent)
+}
+
+// MeRestore 实现 POST /api/me/restore。
+// 公开端点：恢复不建立会话，成功后调用方用同一口令登录。
+// 浏览器跨站提交按登录同口径拒绝；限流在付 KDF 之前按 IP（中间件）
+// 与归一邮箱（本处理器）各判一次。
+func (s *server) MeRestore(c *gin.Context) {
+	if s.auth == nil {
+		notImplemented(c)
+		return
+	}
+	if !s.loginOriginAllowed(c) {
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeForbidden, "cross-site restore is not allowed"))
+		return
+	}
+	var req oapi.MeRestoreJSONRequestBody
+	if err := c.ShouldBindJSON(&req); err != nil {
+		bindError(c, err)
+		return
+	}
+	if !s.accountLimit(c, coreuser.NormalizeEmail(string(req.Email))) {
+		return
+	}
+	if err := s.auth.RestoreSelf(c.Request.Context(), string(req.Email), req.Password); err != nil {
+		respond.Error(c.Writer, c.Request, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// writeRetryAfter 在二次口令节流错误上写 Retry-After 头（秒，向上取整，至少 1）。
+// 与账号/用户域的危险操作同一口径。
+func writeRetryAfter(c *gin.Context, err error) {
+	var throttled *appauth.ReauthThrottled
+	if !errors.As(err, &throttled) {
+		return
+	}
+	seconds := int(math.Ceil(throttled.RetryAfter.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
 }
 
 // AuthRegistration 返回公开注册状态。

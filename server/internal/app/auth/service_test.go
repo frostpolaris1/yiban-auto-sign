@@ -33,17 +33,27 @@ import (
 var testClock = clock.Fixed{T: time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)}
 
 type fakeUsers struct {
-	byEmail map[string]appuser.Record
-	byID    map[string]appuser.Record
-	updated []string
-	rehash  []string
-	nextID  int
+	byEmail        map[string]appuser.Record
+	byID           map[string]appuser.Record
+	deletedByEmail map[string]appuser.Record
+	deletedByID    map[string]appuser.Record
+	updated        []string
+	rehash         []string
+	selfDeleted    []string
+	restoredUsers  []string
+	restoredAccts  []string
+	nextID         int
 	// createErr 非空时 Create 直接返回它，用来模拟容量或存储故障。
 	createErr error
 }
 
 func newFakeUsers() *fakeUsers {
-	return &fakeUsers{byEmail: map[string]appuser.Record{}, byID: map[string]appuser.Record{}}
+	return &fakeUsers{
+		byEmail:        map[string]appuser.Record{},
+		byID:           map[string]appuser.Record{},
+		deletedByEmail: map[string]appuser.Record{},
+		deletedByID:    map[string]appuser.Record{},
+	}
 }
 
 func (f *fakeUsers) Create(_ context.Context, in appuser.New, _ int) (appuser.Record, error) {
@@ -103,8 +113,79 @@ func (f *fakeUsers) Restore(context.Context, string, int) (appuser.Record, error
 	return appuser.Record{}, errs.ErrNotFound
 }
 
-// GetDeleted 只为满足 appuser.Repo 接口：物理清除流不经过认证替身。
-func (f *fakeUsers) GetDeleted(context.Context, string) (appuser.Record, error) {
+func (f *fakeUsers) FindDeletedByEmail(_ context.Context, email string) (appuser.Record, error) {
+	if rec, ok := f.deletedByEmail[strings.ToLower(email)]; ok {
+		return rec, nil
+	}
+	return appuser.Record{}, errs.ErrNotFound
+}
+
+// LockEmail 只为满足 Repo 接口：进程内替身没有并发事务语义。
+func (f *fakeUsers) LockEmail(context.Context, string) error { return nil }
+
+func (f *fakeUsers) HasSelfDeletedEmailWithin(_ context.Context, email string, notBefore time.Time) (bool, error) {
+	check := func(rec appuser.Record) bool {
+		if rec.Email != strings.ToLower(email) || rec.DeletedAt == nil || rec.DeletedAt.Before(notBefore) {
+			return false
+		}
+		return rec.DeletedBy == rec.ID
+	}
+	for _, rec := range f.deletedByEmail {
+		if check(rec) {
+			return true, nil
+		}
+	}
+	for _, rec := range f.deletedByID {
+		if check(rec) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeUsers) SoftDeleteSelf(_ context.Context, id string, at time.Time) (int, error) {
+	rec, ok := f.byID[id]
+	if !ok || rec.DeletedAt != nil {
+		return 0, errs.ErrNotFound
+	}
+	rec.DeletedAt = &at
+	rec.DeletedBy = id
+	delete(f.byEmail, rec.Email)
+	delete(f.byID, id)
+	f.deletedByEmail[rec.Email] = rec
+	f.deletedByID[id] = rec
+	f.selfDeleted = append(f.selfDeleted, id)
+	return 1, nil
+}
+
+func (f *fakeUsers) RestoreSelfUser(_ context.Context, id string, notBefore time.Time, _ int) (appuser.Record, error) {
+	rec, ok := f.deletedByID[id]
+	if !ok || rec.DeletedAt == nil || rec.DeletedAt.Before(notBefore) {
+		return appuser.Record{}, errs.ErrNotFound
+	}
+	rec.DeletedAt = nil
+	rec.DeletedBy = ""
+	delete(f.deletedByID, id)
+	delete(f.deletedByEmail, rec.Email)
+	f.byEmail[rec.Email] = rec
+	f.byID[id] = rec
+	f.restoredUsers = append(f.restoredUsers, id)
+	return rec, nil
+}
+
+func (f *fakeUsers) RestoreSelfAccount(_ context.Context, ownerID string, _ time.Time, _ int) (bool, error) {
+	f.restoredAccts = append(f.restoredAccts, ownerID)
+	return true, nil
+}
+
+// GetDeleted 返回软删行；活行报 conflict，与 PostgreSQL 适配器同分类。
+func (f *fakeUsers) GetDeleted(_ context.Context, id string) (appuser.Record, error) {
+	if rec, ok := f.deletedByID[id]; ok {
+		return rec, nil
+	}
+	if _, ok := f.byID[id]; ok {
+		return appuser.Record{}, errs.New(errs.CodeConflict, "user is not deleted")
+	}
 	return appuser.Record{}, errs.ErrNotFound
 }
 

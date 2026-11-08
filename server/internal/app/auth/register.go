@@ -145,9 +145,25 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (coreauth.Issu
 		return coreauth.Issued{}, err
 	}
 
-	now := s.clock.Now().UTC()
 	var issued coreauth.Issued
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
+		// 恢复权保护：在**建号同一事务**里、按邮箱取 advisory lock 后
+		// 复核宽限内本人软删行。锁与 SoftDeleteSelf 共用，故注销未提交时
+		// 本事务等锁；提交后 EXISTS 能看到行并回 409。锁在事务结束释放，
+		// 从复核到 INSERT 之间不存在注册抢跑窗口。
+		// 与旧线同口径：只拦公开注册，超窗后邮箱释放；管理员删除的行
+		// 不属于用户反悔范围，不占邮箱。
+		if err := s.users.LockEmail(ctx, email); err != nil {
+			return err
+		}
+		now := s.clock.Now().UTC()
+		blocked, err := s.users.HasSelfDeletedEmailWithin(ctx, email, now.Add(-coreuser.SelfRestoreGrace))
+		if err != nil {
+			return err
+		}
+		if blocked {
+			return errs.New(errs.CodeConflict, "email is already registered")
+		}
 		record, err := s.users.Create(ctx, coreuser.New{
 			Email:        email,
 			PasswordHash: hash,

@@ -13,6 +13,7 @@ package auth_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
@@ -21,6 +22,7 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 var registerActor = appaudit.Actor{
@@ -89,6 +91,44 @@ func TestRegisterCreatesUserAndSession(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("audit actions = %v, want auth.register", h.audits.actions)
+	}
+}
+
+// TestRegisterBlocksEmailInRestoreGrace 钉住恢复权保护：宽限内的软删邮箱
+// 不能重新注册，且拒绝前执行一次等价 KDF（与真实建号同开销）。
+func TestRegisterBlocksEmailInRestoreGrace(t *testing.T) {
+	h := newHarness(t)
+	h.registrations.enabled = true
+	at := testClock.T.Add(-time.Hour)
+	h.users.deletedByEmail["new-user@example.com"] = appuser.Record{
+		ID: "old-user", Email: "new-user@example.com", DeletedAt: &at, DeletedBy: "old-user",
+	}
+
+	if _, err := h.svc.Register(context.Background(), validRegisterInput()); errs.From(err).Code != errs.CodeConflict {
+		t.Fatalf("register within restore grace = %v, want conflict", err)
+	}
+	if len(h.users.byEmail) != 0 {
+		t.Fatalf("registration within restore grace created %d users", len(h.users.byEmail))
+	}
+	if got := h.kdf.hashes.Load(); got != 1 {
+		t.Fatalf("KDF hash calls = %d, want 1 (timing parity)", got)
+	}
+}
+
+// TestRegisterAllowsEmailAfterRestoreGrace 钉住超窗后邮箱释放。
+func TestRegisterAllowsEmailAfterRestoreGrace(t *testing.T) {
+	h := newHarness(t)
+	h.registrations.enabled = true
+	at := testClock.T.Add(-coreuser.SelfRestoreGrace - time.Hour)
+	h.users.deletedByEmail["new-user@example.com"] = appuser.Record{
+		ID: "old-user", Email: "new-user@example.com", DeletedAt: &at, DeletedBy: "old-user",
+	}
+
+	if _, err := h.svc.Register(context.Background(), validRegisterInput()); err != nil {
+		t.Fatalf("register after restore grace: %v", err)
+	}
+	if _, ok := h.users.byEmail["new-user@example.com"]; !ok {
+		t.Fatal("registration after the grace window did not create the user")
 	}
 }
 

@@ -74,9 +74,14 @@ const (
 	// 自助面（5mx）：本人签到失败邮件开关。detail 只记字段与
 	// 目标状态（on/off），**绝无邮箱或口令**。
 	ActionUserMailNotify Action = "user.mail_notify"
-	ActionSchoolCreate   Action = "school.create"
-	ActionSchoolUpdate   Action = "school.update"
-	ActionSchoolDisable  Action = "school.disable"
+	// 自助面（lac2）：本人注销登录账号与宽限期内撤销注销。
+	// detail 只记 deleted_at 字段名，**绝无邮箱或口令**；连带软删的
+	// 签到账号不再逐行写 account.* 审计（与管理员删用户同口径）。
+	ActionUserSelfDelete  Action = "user.self_delete"
+	ActionUserSelfRestore Action = "user.self_restore"
+	ActionSchoolCreate    Action = "school.create"
+	ActionSchoolUpdate    Action = "school.update"
+	ActionSchoolDisable   Action = "school.disable"
 	// 平台大学投影自动建校。detail 只含 university_id（平台院校标识），
 	// 不含平台院校名、编码或任何用户凭据。
 	ActionSchoolAutoCreate Action = "school.auto_create"

@@ -131,6 +131,31 @@ func (f *fakeUserRepo) Restore(context.Context, string, int) (Record, error) {
 	return Record{}, errors.New("not used")
 }
 
+// 自助注销/恢复流不经过 Delete 用例替身；四个方法只为满足 Repo 接口。
+func (f *fakeUserRepo) FindDeletedByEmail(context.Context, string) (Record, error) {
+	return Record{}, errors.New("not used")
+}
+
+func (f *fakeUserRepo) LockEmail(context.Context, string) error {
+	return errors.New("not used")
+}
+
+func (f *fakeUserRepo) HasSelfDeletedEmailWithin(context.Context, string, time.Time) (bool, error) {
+	return false, errors.New("not used")
+}
+
+func (f *fakeUserRepo) SoftDeleteSelf(context.Context, string, time.Time) (int, error) {
+	return 0, errors.New("not used")
+}
+
+func (f *fakeUserRepo) RestoreSelfUser(context.Context, string, time.Time, int) (Record, error) {
+	return Record{}, errors.New("not used")
+}
+
+func (f *fakeUserRepo) RestoreSelfAccount(context.Context, string, time.Time, int) (bool, error) {
+	return false, errors.New("not used")
+}
+
 // GetDeleted 只为满足 Repo 接口：物理清除流不经过本替身。
 func (f *fakeUserRepo) GetDeleted(context.Context, string) (Record, error) {
 	return Record{}, errors.New("not used")

@@ -24,6 +24,12 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 )
 
+// SelfRestoreGrace 是本人撤销注销登录账号的宽限窗口：7 天。
+// 与 core/account.SelfRestoreGrace 同值但语义不同：这里管登录账号，
+// 那里管签到账号；物理清除保留期由 retention 包单独决定（用户 90 天），
+// 故超窗后行仍在库内，但自助恢复入口一律拒绝。
+const SelfRestoreGrace = 7 * 24 * time.Hour
+
 // Record 是一行 users 记录。
 type Record struct {
 	ID                 string
