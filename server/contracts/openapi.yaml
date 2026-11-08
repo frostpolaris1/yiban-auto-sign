@@ -1253,6 +1253,50 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/detect:
+    post:
+      tags: [accounts]
+      operationId: AccountDetect
+      summary: Probe the platform identity and project the college onto a school.
+      description: |
+        Runs one platform authentication with the submitted phone and
+        password and then reads back the device registration registered on
+        the platform. Nothing is persisted: the phone, password and device
+        code never reach storage, logs, audit or the response. The platform
+        university is projected onto the local school: an active school
+        bound to the platform university id is reused; a missing binding
+        creates one school (name from the platform, generated code, status
+        active) and appends a school.auto_create audit row carrying only the
+        platform university id; a disabled school bound to the id is treated
+        as absent, no second school is created and school is null. The
+        response carries the device code only as a presence bit; the code
+        itself never leaves the server. A platform failure answers 502 with
+        a neutral envelope; missing phone or password answers 400. The
+        request is rate limited per client IP and per submitted phone; a
+        429 carries Retry-After.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDetectRequest'
+      responses:
+        '200':
+          description: The platform identity and its school projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDetectResult'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        '502': { $ref: '#/components/responses/DefaultError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
       tags: [accounts]
@@ -2074,6 +2118,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Announcement'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/auto-approve:
+    get:
+      tags: [settings]
+      operationId: AdminAutoApprove
+      summary: Read the global automatic approval switch.
+      description: |
+        Master and admin may read it. The switch is false by default and
+        only controls whether a newly created account may run the single
+        background identity check. A missing row reads false.
+      x-roles: [master, admin]
+      responses:
+        '200':
+          description: Current switch state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoApproveStatus'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    put:
+      tags: [settings]
+      operationId: AdminAutoApproveSet
+      summary: Open or close automatic approval.
+      description: |
+        Master only. Writes one settings.auto_approve audit row whose detail
+        names the field and the target state; the switch value is a lowercase
+        true/false text. Like the public-registration switch, this
+        setting-level action does not require a second password: the
+        registration precedent applies because the write has no credential
+        or destructive effect. The response is the new state.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutoApproveUpdate'
+      responses:
+        '200':
+          description: Switch state after the write.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoApproveStatus'
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
@@ -3546,6 +3642,21 @@ components:
       required: [enabled]
       properties:
         enabled: { type: boolean }
+    AutoApproveStatus:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: |
+            False by default. Only a master may change it. When true, a
+            create carrying confirm_defaults true may run one background
+            identity check and auto-approve on a match.
+    AutoApproveUpdate:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
     RegisterRequest:
       type: object
       required:
@@ -3971,6 +4082,54 @@ components:
             device-refresh: a non-empty value answers 403, an empty string is
             the same as omitting it.
         phone_model: { type: string, maxLength: 64 }
+        confirm_defaults:
+          type: boolean
+          description: |
+            Client declaration that every automatic default returned by
+            POST /api/accounts/detect was kept unchanged. It is a declaration,
+            not an authorization: when the global auto-approve switch is on
+            the server still re-reads the stored credential, logs in again and
+            checks the platform university id against the school binding
+            before moving the account from pending to active. Absent or false
+            means the account stays pending for a manual review. A failed
+            check leaves it pending as well; it is never a silent bypass.
+    AccountDetectRequest:
+      type: object
+      required: [phone, password]
+      properties:
+        phone:
+          type: string
+          pattern: '^1[0-9]{10}$'
+        password:
+          type: string
+          minLength: 1
+          description: |
+            Plain platform password. It is used for one authentication and is
+            never stored, logged or echoed.
+    AccountDetectResult:
+      type: object
+      additionalProperties: false
+      required: [university_name, university_id, school, person_name, device_model, device_code_present]
+      properties:
+        university_name: { type: string }
+        university_id: { type: string }
+        school:
+          type: [object, "null"]
+          required: [id, name]
+          description: |
+            The active school bound to university_id. Null when no school is
+            bound or the bound school is disabled; a disabled binding is
+            treated as absent, so no second school is created.
+          properties:
+            id: { type: string }
+            name: { type: string }
+        person_name: { type: string }
+        device_model: { type: string }
+        device_code_present:
+          type: boolean
+          description: |
+            Presence bit only. The device code value is never returned; use
+            device-refresh on the created account to read it back masked.
     AccountUpdate:
       type: object
       description: |

@@ -71,6 +71,10 @@ func (f *fakeService) DeviceRefresh(context.Context, corescope.Scope, string, ap
 	return appaccount.DeviceRefreshResult{}, nil
 }
 
+func (f *fakeService) Detect(context.Context, corescope.Scope, appaccount.DetectInput) (appaccount.DetectResult, error) {
+	return appaccount.DetectResult{}, nil
+}
+
 func (f *fakeService) Delete(context.Context, corescope.Scope, string, appaudit.Actor) error {
 	return nil
 }

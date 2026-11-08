@@ -168,6 +168,17 @@ func (s *server) AccountCreate(c *gin.Context, params oapi.AccountCreateParams) 
 	s.accounts.Create(c, params)
 }
 
+// AccountDetect 委托平台探测处理器（静态段，紧邻 {id} 路由）。
+// 未装配时仍是 501。IP 面走 rateLimitedPaths 白名单；
+// 手机号摘要桶由账号处理器判定。
+func (s *server) AccountDetect(c *gin.Context, _ oapi.AccountDetectParams) {
+	if s.accounts == nil {
+		notImplemented(c)
+		return
+	}
+	s.accounts.Detect(c)
+}
+
 // AccountGet 委托账号处理器。未装配时仍是 501。
 func (s *server) AccountGet(c *gin.Context, id oapi.AccountID) {
 	if s.accounts == nil {
@@ -664,6 +675,24 @@ func (s *server) AdminSettings(c *gin.Context) {
 		return
 	}
 	s.system.AdminSettings(c)
+}
+
+// AdminAutoApprove 委托自动审批开关读取。未装配时仍是 501。
+func (s *server) AdminAutoApprove(c *gin.Context) {
+	if s.system == nil {
+		notImplemented(c)
+		return
+	}
+	s.system.AdminAutoApprove(c)
+}
+
+// AdminAutoApproveSet 委托自动审批开关写入。未装配时仍是 501。
+func (s *server) AdminAutoApproveSet(c *gin.Context, params oapi.AdminAutoApproveSetParams) {
+	if s.system == nil {
+		notImplemented(c)
+		return
+	}
+	s.system.AdminAutoApproveSet(c, params)
 }
 
 // AdminMailTest 委托测试邮件端点。未装配时仍是 501。

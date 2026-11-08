@@ -50,6 +50,7 @@ import (
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schooladmin"
+	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
@@ -73,6 +74,7 @@ import (
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
+	systemhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/system"
 	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
@@ -110,6 +112,8 @@ type w2cEnv struct {
 	worker    *appworker.Service
 	provider  *e2eProvider
 	broker    *appevents.Broker
+	settings  *pg.SettingsRepo
+	device    *w2cDeviceStub
 	// windows 是窗口发现脚本：任务 ID → 平台窗口。
 	windows map[string]contract.Window
 	// discover 是带计数的窗口发现替身；calls 即平台调用次数。
@@ -179,6 +183,8 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	e.prefs = pg.NewTimePrefRepo(db)
 	e.photos = pg.NewPhotoRepo(db)
 	e.locations = pg.NewLocationRepo(db)
+	e.settings = pg.NewSettingsRepo(db)
+	e.device = &w2cDeviceStub{}
 	e.windows = map[string]contract.Window{}
 	e.audits, err = pg.NewAuditRepo(db, []byte("w2c-audit-key-0123456789abcdef00"))
 	if err != nil {
@@ -212,16 +218,35 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	if err != nil {
 		t.Fatalf("new admin service: %v", err)
 	}
-	accountSvc, err := appaccount.NewService(appaccount.Deps{
-		Accounts: e.accounts,
-		Schools:  e.schools,
-		Audit:    e.audits,
-		Tx:       db,
+	// provider 先于账号服务构造：detect 与自动核验都引用同一个实例。
+	e.provider = &e2eProvider{windows: e.windows, targets: map[string][]contract.Target{}}
+	// 通知投递与生产装配同形：SMTP 未配置（Mail 为 nil）时账本行落
+	// skipped(smtp_not_configured)，站内信行照常落库——待审核与自动通过
+	// 事件的可观察面就是 notifications 表。
+	capacityAlerts, err := appnotify.NewDispatcher(appnotify.DispatcherDeps{
+		Notes:    pg.NewNotificationRepo(db),
+		Ledger:   pg.NewNotificationDeliveryRepo(db),
+		Audience: pg.NewNotificationAudienceRepo(db),
 		Clock:    clk,
-		Cipher:   cipher,
-		Owner:    e.users,
-		Device:   w2cDeviceStub{},
-		Limit:    10000,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("new notification dispatcher: %v", err)
+	}
+	accountSvc, err := appaccount.NewService(appaccount.Deps{
+		Accounts:         e.accounts,
+		Schools:          e.schools,
+		Audit:            e.audits,
+		Tx:               db,
+		Clock:            clk,
+		Cipher:           cipher,
+		Owner:            e.users,
+		Device:           e.device,
+		Settings:         e.settings,
+		Identity:         e.provider,
+		SchoolProjection: schoolSvc,
+		ReviewAlerts:     capacityAlerts,
+		Limit:            10000,
 	})
 	if err != nil {
 		t.Fatalf("new account service: %v", err)
@@ -229,7 +254,6 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 
 	e.sessions = session.NewMemoryWithTTL(clk, 30*time.Minute, 12*time.Hour, []byte("w2c-session-secret-0123456789abc"))
 	loc := time.FixedZone("CST", 8*3600)
-	e.provider = &e2eProvider{windows: e.windows, targets: map[string][]contract.Target{}}
 	e.discover = &e2eDiscoverer{windows: e.windows}
 	egressSvc, err := appegress.NewService(appegress.Deps{
 		Store: pg.NewEgressRepo(db), Clock: clk,
@@ -277,19 +301,6 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	})
 	if err != nil {
 		t.Fatalf("new worker service: %v", err)
-	}
-	// 通知投递与生产装配同形：SMTP 未配置（Mail 为 nil）时账本行落
-	// skipped(smtp_not_configured)，站内信行照常落库——容量缺口事件
-	// 的可观察面就是 notifications 表。
-	capacityAlerts, err := appnotify.NewDispatcher(appnotify.DispatcherDeps{
-		Notes:    pg.NewNotificationRepo(db),
-		Ledger:   pg.NewNotificationDeliveryRepo(db),
-		Audience: pg.NewNotificationAudienceRepo(db),
-		Clock:    clk,
-		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
-	if err != nil {
-		t.Fatalf("new notification dispatcher: %v", err)
 	}
 	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
@@ -355,6 +366,18 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	if err != nil {
 		t.Fatalf("new user service: %v", err)
 	}
+	// 自动审批开关与公告同属 settings 用例；系统处理器只取自动审批面。
+	settingsSvc, err := appsettings.NewService(appsettings.Deps{
+		Store:       pg.NewAnnouncementRepo(db),
+		Audit:       e.audits,
+		Tx:          db,
+		Clock:       clk,
+		AutoApprove: e.settings,
+	})
+	if err != nil {
+		t.Fatalf("new settings service: %v", err)
+	}
+	systemHandler := systemhttp.NewHandler(nil, settingsSvc, nil).WithAutoApprove(settingsSvc)
 
 	e.engine, err = router.New(router.Options{
 		Sessions:        e.sessions,
@@ -364,7 +387,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		RateLimit:       guard,
 		Schools:         schoolhttp.NewHandler(schoolSvc, adminSvc),
 		Admins:          adminhttp.NewHandler(adminSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
-		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
+		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc, guard).WithReauth(e2eAcceptReauth{}),
 		Users:           userhttp.NewHandler(userSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
 		Signing:         signingHandler,
 		Schedule:        scheduleHandler,
@@ -373,12 +396,16 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Events: eventshttp.NewHandler(e.broker, diagSvc, adminSvc, clk, nil).
 			WithSessionResolver(e.sessions, coreauth.InsecureCookieName),
 		Calendar: calendarhttp.NewHandler(calendarSvc, adminSvc),
+		System:   systemHandler,
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
 	}
 
 	t.Cleanup(func() {
+		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		accountSvc.Shutdown(stop)
+		cancel()
 		db.Close()
 		w2cDropSchema(adminDB, schema)
 		adminDB.Close()
@@ -411,11 +438,26 @@ func (e2eCreds) Credential(context.Context, string) (contract.Credential, error)
 // KID 空串：本文件不判密钥指纹字段。
 func (e2eCreds) KID() string { return "" }
 
-// w2cDeviceStub 满足账号用例的设备端口：本文件的用例不调设备刷新。
-type w2cDeviceStub struct{}
+// w2cDeviceStub 满足账号用例的设备端口。
+// ykxf 的 detect 用例给它装平台读回状态；其余用例保持 upstream 失败。
+type w2cDeviceStub struct {
+	mu    sync.Mutex
+	state appaccount.DeviceState
+	err   error
+	calls int
+}
 
-func (w2cDeviceStub) DeviceState(context.Context, string, appaccount.SigningCredential) (appaccount.DeviceState, error) {
-	return appaccount.DeviceState{}, errs.New(errs.CodeUpstream, "not used in w2c e2e")
+func (d *w2cDeviceStub) DeviceState(context.Context, string, appaccount.SigningCredential) (appaccount.DeviceState, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls++
+	return d.state, d.err
+}
+
+func (d *w2cDeviceStub) set(state appaccount.DeviceState, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.state, d.err = state, err
 }
 
 // e2eProvider 是本地假提供方：只为满足校验与执行接缝。

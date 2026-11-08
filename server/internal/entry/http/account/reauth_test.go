@@ -61,6 +61,10 @@ func (f *deleteFake) DeviceRefresh(context.Context, corescope.Scope, string, app
 	return appaccount.DeviceRefreshResult{DeviceCode: "dev-1234"}, nil
 }
 
+func (f *deleteFake) Detect(context.Context, corescope.Scope, appaccount.DetectInput) (appaccount.DetectResult, error) {
+	return appaccount.DetectResult{}, nil
+}
+
 // callHandler 在测试上下文里调 handler 并返回状态码。
 // gin 的包装 writer 才知道真实状态码（recorder 默认 200）。
 func callHandler(t *testing.T, h *accounthttp.Handler, method, path, body string,

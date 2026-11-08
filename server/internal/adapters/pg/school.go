@@ -66,6 +66,14 @@ func (r *SchoolRepo) GetByCode(ctx context.Context, code string) (coreschool.Rec
 	return recordOrNotFound(scanSchool(row))
 }
 
+// GetByPlatformUniversityID 按平台院校标识返回绑定校。
+// 部分唯一索引保证至多一行；未绑定报 not_found。
+func (r *SchoolRepo) GetByPlatformUniversityID(ctx context.Context, universityID string) (coreschool.Record, error) {
+	row := r.db.q(ctx).QueryRow(ctx,
+		`SELECT `+schoolColumns+` FROM schools WHERE platform_university_id = $1`, universityID)
+	return recordOrNotFound(scanSchool(row))
+}
+
 // Update 修改 in 中出现的字段。nil 字段保持原值；
 // PlatformUniversityID 指向空串清空绑定（落 NULL），指向值则覆盖。
 func (r *SchoolRepo) Update(ctx context.Context, id string, in coreschool.Update) (coreschool.Record, error) {

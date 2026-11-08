@@ -23,11 +23,14 @@ package account
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -65,6 +68,8 @@ type Service interface {
 	SelfDelete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
 	SelfRestore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appaccount.Record, error)
 	DeviceRefresh(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appaccount.DeviceRefreshResult, error)
+	// Detect 用提交的手机号与口令做一次平台探测；凭据不落库。
+	Detect(ctx context.Context, scope corescope.Scope, in appaccount.DetectInput) (appaccount.DetectResult, error)
 }
 
 // Authorizer 把会话主体解析成作用域与审计主体。
@@ -172,6 +177,9 @@ func (h *Handler) Create(c *gin.Context, _ oapi.AccountCreateParams) {
 		DeviceCode: stringOf(body.DeviceCode),
 		PhoneModel: stringOf(body.PhoneModel),
 	}
+	if body.ConfirmDefaults != nil {
+		in.ConfirmDefaults = *body.ConfirmDefaults
+	}
 	if body.OwnerUserId != nil {
 		in.OwnerUserID = *body.OwnerUserId
 	}
@@ -181,6 +189,69 @@ func (h *Handler) Create(c *gin.Context, _ oapi.AccountCreateParams) {
 		return
 	}
 	respond.JSON(c.Writer, http.StatusCreated, accountResponse(record))
+}
+
+// Detect 实现 POST /api/accounts/detect。
+// 凭据只进用例；本层不记录、不回显。限流键用手机号摘要：
+// 桶里不出现明文号码，同一号码的变体仍落同一键。
+func (h *Handler) Detect(c *gin.Context) {
+	scope, _, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	var body oapi.AccountDetectRequest
+	if !decode(c, &body) {
+		return
+	}
+	if h.detectRateLimited(c, body.Phone) {
+		return
+	}
+	result, err := h.svc.Detect(c.Request.Context(), scope, appaccount.DetectInput{
+		Phone: body.Phone, Password: body.Password,
+	})
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	out := oapi.AccountDetectResult{
+		UniversityName:    result.UniversityName,
+		UniversityId:      result.UniversityID,
+		PersonName:        result.PersonName,
+		DeviceModel:       result.DeviceModel,
+		DeviceCodePresent: result.DeviceCodePresent,
+	}
+	if result.School != nil {
+		out.School = &struct {
+			Id   string `json:"id"`
+			Name string `json:"name"`
+		}{Id: result.School.ID, Name: result.School.Name}
+	}
+	respond.JSON(c.Writer, http.StatusOK, out)
+}
+
+// detectRateLimited 按提交手机号的摘要限制探测频率。
+// 与账号/签到桶分开：detect 发生在账号存在之前，键面是平台手机号。
+func (h *Handler) detectRateLimited(c *gin.Context, phone string) bool {
+	if h.limiter == nil {
+		return false
+	}
+	ok, wait := h.limiter.AllowAccount(detectRateKey(phone))
+	if ok {
+		return false
+	}
+	seconds := int(math.Ceil(wait.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
+	fail(c, errs.New(errs.CodeRateLimited, "too many platform detection requests"))
+	return true
+}
+
+// detectRateKey 返回不含明文手机号的限流键。
+func detectRateKey(phone string) string {
+	sum := sha256.Sum256([]byte("detect:" + strings.TrimSpace(phone)))
+	return "detect:" + hex.EncodeToString(sum[:16])
 }
 
 // Get 实现 GET /api/accounts/{id}。

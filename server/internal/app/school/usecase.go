@@ -19,6 +19,8 @@ package school
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"regexp"
 	"strings"
@@ -35,6 +37,10 @@ import (
 // codePattern 与数据库 ck_schools_code_shape 同形。
 // 应用层先拒，错误码是 validation_failed 而不是约束名。
 var codePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,31}$`)
+
+// maxNameChars 与 ck_schools_name_len 及契约的 maxLength: 128 同值。
+// 自动建校的平台名可能超限：截到该上限，不把平台异常变成整次探测失败。
+const maxNameChars = 128
 
 // Deps 是院校用例的依赖。
 type Deps struct {
@@ -129,6 +135,82 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in New, act
 		return Record{}, err
 	}
 	return record, nil
+}
+
+// EnsurePlatformSchool 把平台院校标识投影到本地学校（ykxf）。
+//
+// 活跃绑定命中直接复用；disabled 绑定视同未命中并原样返回 disabled 行，
+// 调用方据此不再建校；未命中则按平台院校名自动建校：
+// 编码由 university_id 哈希生成，status 固定 active，
+// school.auto_create 审计与建校同事务，detail 只含 university_id。
+// 并发建校由部分唯一索引拦下（409），随后按 university_id 重读并复用赢家。
+// 本方法不接受作用域：它只服务平台投影，调用方必须是已完成鉴权的用例。
+func (s *Service) EnsurePlatformSchool(ctx context.Context, universityID, name string) (Record, error) {
+	universityID = strings.TrimSpace(universityID)
+	if universityID == "" || utf8.RuneCountInString(universityID) > 128 {
+		return Record{}, errs.New(errs.CodeValidation,
+			"university_id is required and must be at most 128 characters")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Record{}, errs.New(errs.CodeValidation, "university name is required")
+	}
+	if utf8.RuneCountInString(name) > maxNameChars {
+		name = string([]rune(name)[:maxNameChars])
+	}
+
+	record, err := s.deps.Schools.GetByPlatformUniversityID(ctx, universityID)
+	if err == nil {
+		return record, nil
+	}
+	if errs.From(err).Code != errs.CodeNotFound {
+		return Record{}, err
+	}
+
+	newSchool := New{
+		Code:                 autoSchoolCode(universityID),
+		Name:                 name,
+		PlatformUniversityID: universityID,
+	}
+	var created Record
+	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		created, err = s.deps.Schools.Create(ctx, newSchool)
+		if err != nil {
+			return err
+		}
+		_, err = s.deps.Audit.Append(ctx, coreaudit.Entry{
+			TS:          s.deps.Clock.Now().UTC(),
+			SchoolID:    created.ID,
+			ActorUserID: "",
+			ActorRole:   "",
+			ActorLabel:  "auto-detect",
+			Action:      coreaudit.ActionSchoolAutoCreate,
+			TargetType:  "school",
+			TargetID:    created.ID,
+			Detail:      map[string]any{"university_id": universityID},
+		})
+		return err
+	})
+	if err == nil {
+		return created, nil
+	}
+	// 并发建校：另一个请求先提交同一 platform_university_id。
+	// 回落重读并按活跃/停用语义返回；重读失败时保留原冲突错误。
+	if errs.From(err).Code == errs.CodeConflict {
+		if existing, lookupErr := s.deps.Schools.GetByPlatformUniversityID(ctx, universityID); lookupErr == nil {
+			return existing, nil
+		}
+	}
+	return Record{}, err
+}
+
+// autoSchoolCode 由平台院校标识生成稳定编码。
+// 形状满足 ck_schools_code_shape（auto- + 12 位小写十六进制）。
+// 同一 university_id 得到同一编码，并发插入因此撞上同一个唯一键。
+func autoSchoolCode(universityID string) string {
+	sum := sha256.Sum256([]byte(universityID))
+	return "auto-" + hex.EncodeToString(sum[:6])
 }
 
 // Update 改校。**只有 master 可以改校**；院校编码不可改。
@@ -253,7 +335,7 @@ func validatePlatformUniversityID(value string) error {
 
 func validateName(name string) error {
 	name = strings.TrimSpace(name)
-	if utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 128 {
+	if utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > maxNameChars {
 		return errs.New(errs.CodeValidation, "name must be 1 to 128 characters")
 	}
 	return nil

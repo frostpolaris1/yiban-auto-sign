@@ -185,6 +185,7 @@ var rateLimitedPaths = map[string]struct{}{
 	"/api/auth/forgot-password":     {},
 	"/api/auth/reset-password":      {},
 	"/api/auth/change-password":     {},
+	"/api/accounts/detect":          {},
 	"/api/accounts/:id/verify":      {},
 	"/api/accounts/:id/person-name": {},
 	"/api/accounts/:id/sign":        {},

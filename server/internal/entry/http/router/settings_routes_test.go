@@ -20,6 +20,7 @@ import (
 	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	audithttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/audit"
 	notifyhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/notify"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
@@ -82,11 +83,24 @@ type stubMailTest struct{}
 
 func (stubMailTest) SendTestMail(context.Context, auth.User) error { return nil }
 
+// stubAutoApprove 是自动审批开关的内存替身。
+type stubAutoApprove struct{ enabled bool }
+
+func (s *stubAutoApprove) AutoApprove(context.Context, corescope.Scope) (bool, error) {
+	return s.enabled, nil
+}
+
+func (s *stubAutoApprove) SetAutoApprove(_ context.Context, _ corescope.Scope, _ appaudit.Actor, enabled bool) (bool, error) {
+	s.enabled = enabled
+	return enabled, nil
+}
+
 func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 	t.Helper()
 	return newSettingsEngineWith(t,
 		notifyhttp.NewHandler(stubNotify{}).WithInbox(stubInbox{}),
-		systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}))
+		systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}).
+			WithAutoApprove(&stubAutoApprove{}))
 }
 
 func newSettingsEngineWith(t *testing.T, notify *notifyhttp.Handler, system *systemhttp.Handler) (*gin.Engine, *stubIssuer) {
@@ -185,6 +199,12 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 		{"notifications read-all master", http.MethodPost, "/api/me/notifications/read-all", "", master, true, http.StatusNoContent},
 		{"settings user", http.MethodGet, "/api/admin/settings", "", user, false, http.StatusForbidden},
 		{"settings admin", http.MethodGet, "/api/admin/settings", "", admin, false, http.StatusOK},
+		{"auto approve user", http.MethodGet, "/api/admin/auto-approve", "", user, false, http.StatusForbidden},
+		{"auto approve admin", http.MethodGet, "/api/admin/auto-approve", "", admin, false, http.StatusOK},
+		{"auto approve master", http.MethodGet, "/api/admin/auto-approve", "", master, false, http.StatusOK},
+		{"auto approve write admin", http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, admin, true, http.StatusForbidden},
+		{"auto approve write without csrf", http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, master, false, http.StatusForbidden},
+		{"auto approve write master", http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, master, true, http.StatusOK},
 		{"mail test user", http.MethodPost, "/api/admin/mail/test", "", user, true, http.StatusForbidden},
 		{"mail test admin", http.MethodPost, "/api/admin/mail/test", "", admin, true, http.StatusForbidden},
 		{"mail test master without csrf", http.MethodPost, "/api/admin/mail/test", "", master, false, http.StatusForbidden},
@@ -235,6 +255,8 @@ func TestSettingsRoutesNilHandlersReturn501(t *testing.T) {
 		{http.MethodPost, "/api/me/notifications/read", `{"ids":["018f4a4e-0000-7000-8000-000000000001"]}`, true},
 		{http.MethodPost, "/api/me/notifications/read-all", "", true},
 		{http.MethodGet, "/api/admin/settings", "", false},
+		{http.MethodGet, "/api/admin/auto-approve", "", false},
+		{http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, true},
 		{http.MethodPost, "/api/admin/mail/test", "", true},
 		{http.MethodGet, "/api/announcement", "", false},
 		{http.MethodPut, "/api/admin/announcement", `{"text":"x"}`, true},

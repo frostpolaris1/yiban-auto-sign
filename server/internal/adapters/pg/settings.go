@@ -24,6 +24,9 @@ import (
 // settingsRegistrationKey 是公开注册开关的键。
 const settingsRegistrationKey = "registration.enabled"
 
+// settingsAutoApproveKey 是全局自动审批开关的键。
+const settingsAutoApproveKey = "auto_approve"
+
 // SettingsRepo 读写 settings 表。
 type SettingsRepo struct {
 	db *DB
@@ -37,9 +40,32 @@ func NewSettingsRepo(db *DB) *SettingsRepo {
 // RegistrationEnabled 报告公开注册是否开放。
 // 行缺失、空值与非 true 值一律为 false，不返回 not_found。
 func (r *SettingsRepo) RegistrationEnabled(ctx context.Context) (bool, error) {
+	return r.booleanSetting(ctx, settingsRegistrationKey)
+}
+
+// SetRegistrationEnabled 写入开关并记录操作者。
+// 调用方必须在事务内调用，使本次写入与审计同存亡。
+func (r *SettingsRepo) SetRegistrationEnabled(ctx context.Context, enabled bool, by string) error {
+	return r.setBooleanSetting(ctx, settingsRegistrationKey, enabled, by)
+}
+
+// AutoApproveEnabled 报告自动审批是否开放。
+// 行缺失、空值与非 true 值一律为 false，不返回 not_found。
+func (r *SettingsRepo) AutoApproveEnabled(ctx context.Context) (bool, error) {
+	return r.booleanSetting(ctx, settingsAutoApproveKey)
+}
+
+// SetAutoApproveEnabled 写入自动审批开关并记录操作者。
+func (r *SettingsRepo) SetAutoApproveEnabled(ctx context.Context, enabled bool, by string) error {
+	return r.setBooleanSetting(ctx, settingsAutoApproveKey, enabled, by)
+}
+
+// booleanSetting 是布尔开关的唯一读取口径：
+// 行缺失、空值与非 true 值一律为 false。
+func (r *SettingsRepo) booleanSetting(ctx context.Context, key string) (bool, error) {
 	var value string
 	err := r.db.q(ctx).QueryRow(ctx,
-		"SELECT value FROM settings WHERE key = $1", settingsRegistrationKey).Scan(&value)
+		"SELECT value FROM settings WHERE key = $1", key).Scan(&value)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -49,9 +75,9 @@ func (r *SettingsRepo) RegistrationEnabled(ctx context.Context) (bool, error) {
 	return strings.TrimSpace(value) == "true", nil
 }
 
-// SetRegistrationEnabled 写入开关并记录操作者。
+// setBooleanSetting 是布尔开关的唯一写入口径。
 // 调用方必须在事务内调用，使本次写入与审计同存亡。
-func (r *SettingsRepo) SetRegistrationEnabled(ctx context.Context, enabled bool, by string) error {
+func (r *SettingsRepo) setBooleanSetting(ctx context.Context, key string, enabled bool, by string) error {
 	if strings.TrimSpace(by) == "" {
 		return validationError("actor user id is required")
 	}
@@ -61,6 +87,6 @@ func (r *SettingsRepo) SetRegistrationEnabled(ctx context.Context, enabled bool,
 		ON CONFLICT (key) DO UPDATE
 		   SET value = EXCLUDED.value,
 		       updated_by = EXCLUDED.updated_by`,
-		settingsRegistrationKey, strconv.FormatBool(enabled), by)
+		key, strconv.FormatBool(enabled), by)
 	return mapError(err)
 }

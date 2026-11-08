@@ -26,6 +26,7 @@ import (
 	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 )
@@ -46,16 +47,30 @@ type MailTest interface {
 	SendTestMail(ctx context.Context, user coreauth.User) error
 }
 
-// Handler 处理设置名册、公告与测试邮件端点。
+// AutoApprove 是全局自动审批开关端口。
+type AutoApprove interface {
+	AutoApprove(ctx context.Context, scope corescope.Scope) (bool, error)
+	SetAutoApprove(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, enabled bool) (bool, error)
+}
+
+// Handler 处理设置名册、公告、测试邮件与自动审批开关端点。
 type Handler struct {
 	roster       Roster
 	announcement Announcement
 	mailTest     MailTest
+	autoApprove  AutoApprove
 }
 
 // NewHandler 构造系统设置处理器。
 func NewHandler(roster Roster, announcement Announcement, mailTest MailTest) *Handler {
 	return &Handler{roster: roster, announcement: announcement, mailTest: mailTest}
+}
+
+// WithAutoApprove 注入自动审批开关用例。
+// 未注入时两个端点回 501：开关面缺失必须显性，不得读成关闭。
+func (h *Handler) WithAutoApprove(auto AutoApprove) *Handler {
+	h.autoApprove = auto
+	return h
 }
 
 // AdminSettings 实现 GET /api/admin/settings。
@@ -123,6 +138,76 @@ func retryAfter(c *gin.Context, err error) {
 		seconds = 1
 	}
 	c.Header("Retry-After", strconv.Itoa(seconds))
+}
+
+// AdminAutoApprove 实现 GET /api/admin/auto-approve。
+// master 与 admin 可读；开关值来自 settings 表，缺行按关闭。
+func (h *Handler) AdminAutoApprove(c *gin.Context) {
+	session, ok := requester(c)
+	if !ok {
+		return
+	}
+	if !h.allowAdmin(c, session) {
+		return
+	}
+	if h.autoApprove == nil {
+		respond.NotImplemented(c.Writer, c.Request)
+		return
+	}
+	enabled, err := h.autoApprove.AutoApprove(c.Request.Context(), scopeOf(session.User))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.AutoApproveStatus{Enabled: enabled})
+}
+
+// AdminAutoApproveSet 实现 PUT /api/admin/auto-approve。仅 master。
+// enabled 是必填布尔：缺字段与 null 都回 400，不能被零值读成「关闭」。
+func (h *Handler) AdminAutoApproveSet(c *gin.Context, _ oapi.AdminAutoApproveSetParams) {
+	session, ok := requester(c)
+	if !ok {
+		return
+	}
+	if session.User.Role != coreauth.RoleMaster {
+		fail(c, errs.New(errs.CodeForbidden, "master role is required"))
+		return
+	}
+	if h.autoApprove == nil {
+		respond.NotImplemented(c.Writer, c.Request)
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		respond.BindError(c.Writer, c.Request, err)
+		return
+	}
+	if body.Enabled == nil {
+		fail(c, errs.New(errs.CodeValidation, "enabled is required"))
+		return
+	}
+	enabled, err := h.autoApprove.SetAutoApprove(c.Request.Context(), scopeOf(session.User),
+		appaudit.NewActor(session.User), *body.Enabled)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.AutoApproveStatus{Enabled: enabled})
+}
+
+// scopeOf 由会话角色构造设置读写所需的窄作用域。
+// 自动审批开关不按院校分片；admin 用空绑定集，数据面不会泄漏任何学校。
+func scopeOf(user coreauth.User) corescope.Scope {
+	switch user.Role {
+	case coreauth.RoleMaster:
+		return corescope.Master()
+	case coreauth.RoleAdmin:
+		return corescope.Admin(nil)
+	default:
+		return corescope.User(user.ID)
+	}
 }
 
 // AnnouncementGet 实现 GET /api/announcement。所有已登录角色可读。
