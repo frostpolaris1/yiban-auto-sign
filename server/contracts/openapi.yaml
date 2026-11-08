@@ -1474,8 +1474,10 @@ paths:
       description: |
         Only master and admin may restore. The account keeps its pre-delete
         status. A missing or out-of-scope account answers 404; a live (not
-        deleted) account answers 409 conflict; the global or the per-owner
-        active-account quota answers 429 capacity_exceeded.
+        deleted) account answers 409 conflict. One account per owner: an
+        owner that already holds a live account is refused, and the existing
+        zero-row classification reports it as 429 capacity_exceeded; the
+        global active-account limit answers 429 capacity_exceeded as well.
         Every request must carry current_password, the acting user's own
         login password: a missing value answers 400, a wrong value 403,
         and repeated failures answer 429. A rejected reauthentication
