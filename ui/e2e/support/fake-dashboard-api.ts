@@ -1,5 +1,6 @@
 import type { Page, Route } from '@playwright/test'
 import type { AccountSummary } from '../../src/lib/api/account'
+import type { AuditStatusReport } from '../../src/lib/api/audit'
 import type { DiagnosticsItem, SignStatusItem } from '../../src/lib/api/me'
 import type {
   CapacityReport,
@@ -7,17 +8,18 @@ import type {
   TimePref,
 } from '../../src/lib/api/schedule'
 import type { PrefStatsReport, SignStatsReport } from '../../src/lib/api/stats'
-import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { SESSION_CSRF, SESSION_EMAIL, DEFAULT_AUDIT_STATUS, type Role } from './fake-accounts-api'
 
 /**
  * 看板的假 API。
  *
  * 一份路由处理 `/api/auth/me`、`/api/me/sign-status`、`/api/me/diagnostics`、
  * `/api/me/time-pref`、`/api/schedule/windows`、`/api/capacity`、
- * `/api/sign-stats`、`/api/time-prefs/stats` 与 `/api/accounts/summary`。
+ * `/api/sign-stats`、`/api/time-prefs/stats`、`/api/accounts/summary`
+ * 与 `/api/admin/audit-status`。
  * 响应体只用登记过的合成值：学校与任务带「合成」前缀，账号是 `acc-000N`。
- * 角色按契约 `x-roles` 判：sign-status 仅 user；windows、capacity 与
- * summary 仅 master/admin。
+ * 角色按契约 `x-roles` 判：sign-status 仅 user；windows、capacity、summary
+ * 与 audit-status 仅 master/admin。
  * 调用记录供断言「零请求」「参数正确」与「轮询次数」。
  * 错误注入默认每次都失败；`once: true` 时只有第一次失败，用来验「重试」。
  */
@@ -63,9 +65,15 @@ export type MockDashboardOptions = {
   timePref?: TimePref
   /** 整份容量报告覆盖：用来给单个用例换瓶颈归属，缺省按选中的窗口生成。 */
   capacity?: CapacityReport
+  /** 审计链巡检结论。缺省完好 128 行；断链用例覆盖 ok/empty/broken_at。 */
+  auditStatus?: AuditStatusReport
+  auditStatusError?: Failure
 }
 
 const SIGN_STATUS_RUN_AT = '2026-10-28T06:41:00+08:00'
+
+/** 巡检夹具与其它页面共用同一份，断链用例以展开覆盖单字段。 */
+export { DEFAULT_AUDIT_STATUS }
 
 /** 契约枚举的运行时副本，用来收窄窗口行上的 `string | null`。 */
 const CAPACITY_SOURCES: readonly CapacityReport['source'][] = [
@@ -329,6 +337,7 @@ export async function mockDashboardApi(
     ...item,
   }))
   const timePref: TimePref = { ...(options.timePref ?? DEFAULT_TIME_PREF) }
+  const auditStatus: AuditStatusReport = { ...(options.auditStatus ?? DEFAULT_AUDIT_STATUS) }
   const failures: Record<
     | 'signStatus'
     | 'diagnostics'
@@ -336,7 +345,8 @@ export async function mockDashboardApi(
     | 'capacity'
     | 'signStats'
     | 'prefStats'
-    | 'accountSummary',
+    | 'accountSummary'
+    | 'auditStatus',
     FailureEntry
   > = {
     signStatus: { spec: options.signStatusError, hits: 0 },
@@ -346,6 +356,7 @@ export async function mockDashboardApi(
     signStats: { spec: options.signStatsError, hits: 0 },
     prefStats: { spec: options.prefStatsError, hits: 0 },
     accountSummary: { spec: options.accountSummaryError, hits: 0 },
+    auditStatus: { spec: options.auditStatusError, hits: 0 },
   }
 
   const json = (route: Route, body: unknown, status = 200) =>
@@ -469,6 +480,13 @@ export async function mockDashboardApi(
       return json(route, options.accountSummary ?? DEFAULT_ACCOUNT_SUMMARY)
     }
 
+    if (url.pathname === '/api/admin/audit-status' && request.method() === 'GET') {
+      if (!(await deny(route, ['master', 'admin']))) return
+      const failure = takeFailure('auditStatus')
+      if (failure) return fail(route, failure.status, failure.code, failure.message)
+      return json(route, auditStatus)
+    }
+
     return fail(route, 404, 'not_found', '未找到资源')
   })
 
@@ -489,6 +507,12 @@ export function windowsCalls(api: FakeDashboardApi): DashboardApiCall[] {
 
 export function capacityCalls(api: FakeDashboardApi): DashboardApiCall[] {
   return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/capacity')
+}
+
+export function auditStatusCalls(api: FakeDashboardApi): DashboardApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'GET' && call.path === '/api/admin/audit-status',
+  )
 }
 
 export function signStatsCalls(api: FakeDashboardApi): DashboardApiCall[] {

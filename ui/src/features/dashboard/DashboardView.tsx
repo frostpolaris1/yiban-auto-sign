@@ -8,9 +8,10 @@
  * **口径**
  * 角色取数隔离是本容器的第一不变式：
  * user 只读 sign-status 与 diagnostics；master/admin 只读 windows、capacity、
- * sign-stats 与 account summary。
+ * audit-status、sign-stats 与 account summary。
  * 未命中的查询一律 `enabled: false`，挂载即零请求。
  * sign-status 每 30 秒轮询；页面隐藏时不轮询（`refetchIntervalInBackground: false`）。
+ * audit-status 按需复算全链，不轮询；缓存 60 秒，失败只挂该卡。
  * windows 与时间片页共用缓存键 `['schedule-windows', day]`。
  * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与图表共用一次读取；
  * 缓存键带上海业务日，每 60 秒复核、跨日才重取。
@@ -25,6 +26,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { describeApiError } from '@/lib/api/client'
 import { getAccountSummary } from '@/lib/api/account'
+import { getAuditStatus } from '@/lib/api/audit'
 import { getDiagnostics, getSignStatus } from '@/lib/api/me'
 import type { Role } from '@/lib/api/auth'
 import { getCapacity, listScheduleWindows } from '@/lib/api/schedule'
@@ -33,11 +35,13 @@ import { dayOf } from '@/lib/format'
 import { SHOWCASE } from '@/lib/session'
 import {
   showcaseAccountSummary,
+  showcaseAuditStatus,
   showcaseCapacity,
   showcasePrefStats,
   showcaseSignStats,
   showcaseWindows,
 } from '@/lib/showcase'
+import { AuditStatusCard } from './AuditStatusCard'
 import { CapacityCard } from './CapacityCard'
 import { PrefCrowdingCard, SignDistributionCard, SignTrendCard } from './ChartCards'
 import { DiagnosticsCard } from './DiagnosticsCard'
@@ -149,6 +153,17 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     retry: false,
   })
 
+  // 审计链巡检：按需复算全链，耗时随行数线性增长，故不轮询；
+  // 只在挂载、重试或缓存过期后取一次。展示构建读合成结论，零请求。
+  const auditStatusQuery = useQuery({
+    queryKey: ['audit-status'],
+    queryFn: () =>
+      SHOWCASE ? Promise.resolve(showcaseAuditStatus()) : getAuditStatus(),
+    enabled: !isUser,
+    staleTime: 60_000,
+    retry: false,
+  })
+
   const prefStatsQuery = useQuery({
     queryKey: ['pref-stats', selected?.schoolId ?? '', selected?.taskId ?? '', day],
     queryFn: () =>
@@ -232,6 +247,16 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
           }}
           onRetryCapacity={() => {
             void capacityQuery.refetch()
+          }}
+        />
+        <AuditStatusCard
+          report={auditStatusQuery.data}
+          loading={auditStatusQuery.isPending}
+          error={
+            auditStatusQuery.isError ? describeApiError(auditStatusQuery.error) : null
+          }
+          onRetry={() => {
+            void auditStatusQuery.refetch()
           }}
         />
       </div>

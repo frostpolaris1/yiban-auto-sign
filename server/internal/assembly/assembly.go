@@ -898,6 +898,11 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("assembly: audit reader: %w", err)
 	}
+	// 巡检复用同一个 AuditRepo：适配器持有 HMAC 密钥，用例只拿结论。
+	inspector, err := appaudit.NewInspector(audits, clk)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("assembly: audit inspector: %w", err)
+	}
 
 	entries, err := config.Registry()
 	if err != nil {
@@ -910,7 +915,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	notifyHandler := notifyhttp.NewHandler(notifySvc).WithInbox(inboxSvc)
 	systemHandler := systemhttp.NewHandler(roster, announcementSvc, announcementSvc).
 		WithAutoApprove(announcementSvc)
-	return notifyHandler, systemHandler, audithttp.NewHandler(reader), nil
+	return notifyHandler, systemHandler, audithttp.NewHandler(reader).WithStatus(inspector), nil
 }
 
 // rosterEntries 把适配器的名册条目转成用例视图。

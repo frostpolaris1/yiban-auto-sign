@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Page, Request, Route } from '@playwright/test'
 import type { Account, AccountSummary, AccountVerifyResult } from '../../src/lib/api/account'
+import type { AuditStatusReport } from '../../src/lib/api/audit'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
 
 /**
@@ -133,6 +134,20 @@ export const DELETED_ACCOUNTS: Account[] = [
  * 不关心计数的页面统一回零，徽标就不渲染。
  */
 export const EMPTY_ACCOUNT_SUMMARY: AccountSummary = { pending: 0, rejected: 0 }
+
+/**
+ * 其它页面的审计链巡检缺省结论：完好态。
+ * 只有看板会请求它；此处的路由防其它用例落到 404，
+ * 断链/空链分支由 `fake-dashboard-api` 覆盖。
+ */
+export const DEFAULT_AUDIT_STATUS: AuditStatusReport = {
+  ok: true,
+  empty: false,
+  checked_rows: 128,
+  last_hash: 'ab'.repeat(32),
+  broken_at: null,
+  checked_at: '2026-10-28T09:00:00+08:00',
+}
 
 /** 归属选择器的合成用户。邮箱是保留域 example.com。 */
 export const LOOKUP_USERS = [
@@ -550,6 +565,14 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         pending: live.filter((item) => item.status === 'pending').length,
         rejected: live.filter((item) => item.status === 'rejected').length,
       })
+    }
+
+    // 审计链巡检：壳只对 master/admin 请求；其余角色与契约一致 403。
+    if (url.pathname === '/api/admin/audit-status' && request.method() === 'GET') {
+      if (sessionRole !== 'master' && sessionRole !== 'admin') {
+        return fail(route, 403, 'forbidden', '仅 master/admin 可巡检审计链')
+      }
+      return json(route, request, DEFAULT_AUDIT_STATUS)
     }
 
     const match = url.pathname.match(

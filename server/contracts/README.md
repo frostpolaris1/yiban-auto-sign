@@ -202,6 +202,8 @@ either side drifts.
 |  |  |  | 所有已登录角色读同一正文；未设置或已清空回空文本与 null 时间。 |
 | GET | `/api/audit-logs` | master/admin | 2ws A |
 |  |  |  | 只读审计行：游标分页＋action/actor/from/to 筛选；actor 过滤值按写入同口径掩码；detail 出口过掩码口径；不校验链、不导出。 |
+| GET | `/api/admin/audit-status` | master/admin | 2cu |
+|  |  |  | 按需巡检审计链：按 id 升序分窗读行（每窗 2000 行，内存 O(窗)），逐行复算 HMAC 并校验 prev_hash，跨窗用上一窗末行哈希作锚点；完好 200 `ok=true`＋链头哈希；断链 200 `ok=false`＋`broken_at`（首个不符行 id）；空链 200 `ok=false,empty=true`（零行没有证明任何事，不是通过）。只回结论、行数与时刻，不回审计正文/actor/detail。 |
 | GET | `/api/me/diagnostics` | master/admin/user | P6 |
 | GET | `/api/accounts/:id/diagnostics` | user/admin/master | UX-3 (was user/admin) |
 | GET | `/api/me/sign-status` | master/admin/user | P6 |

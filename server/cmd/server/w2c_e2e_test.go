@@ -40,6 +40,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appcalendar "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/calendar"
 	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
@@ -64,6 +65,7 @@ import (
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	audithttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/audit"
 	calendarhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/calendar"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
@@ -378,6 +380,16 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		t.Fatalf("new settings service: %v", err)
 	}
 	systemHandler := systemhttp.NewHandler(nil, settingsSvc, nil).WithAutoApprove(settingsSvc)
+	// 审计列表与链巡检：与生产装配同形（同一 AuditRepo 提供行与密钥）。
+	auditReader, err := appaudit.NewReader(e.audits)
+	if err != nil {
+		t.Fatalf("new audit reader: %v", err)
+	}
+	auditInspector, err := appaudit.NewInspector(e.audits, clk)
+	if err != nil {
+		t.Fatalf("new audit inspector: %v", err)
+	}
+	auditHandler := audithttp.NewHandler(auditReader).WithStatus(auditInspector)
 
 	e.engine, err = router.New(router.Options{
 		Sessions:        e.sessions,
@@ -397,6 +409,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 			WithSessionResolver(e.sessions, coreauth.InsecureCookieName),
 		Calendar: calendarhttp.NewHandler(calendarSvc, adminSvc),
 		System:   systemHandler,
+		Audit:    auditHandler,
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
