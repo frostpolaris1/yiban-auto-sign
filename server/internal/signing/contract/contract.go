@@ -143,8 +143,11 @@ type VerifyRequest struct {
 type Profile struct {
 	DisplayName string
 	SchoolName  string
-	StudentID   string
-	Raw         map[string]any
+	// UniversityID 是平台侧院校标识（base/c/auth/yiban 的 UniversityId）。
+	// 宿主不解释它的取值，只原样透出给建号定校链路比对。
+	UniversityID string
+	StudentID    string
+	Raw          map[string]any
 }
 
 // SignRequest 是一次签到尝试。

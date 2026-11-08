@@ -533,6 +533,9 @@ var additionalPropertiesExemptions = map[string][]string{
 	// UX-1：PATCH /api/users/{id} 请求体。未知键被解码器忽略；
 	// 空 minProperties 体已由用例层回 400，误键不会静默成 no-op。
 	"UserUpdate": {"请求对象；解码器忽略未知字段"},
+	// 姓名懒加载与 verify 身份：都是响应对象；未知字段被编码器忽略。
+	"AccountPersonNameResult": {"响应对象；未知字段被编码器忽略"},
+	"AccountVerifyIdentity":   {"响应对象；未知字段被编码器忽略"},
 }
 
 // contractNoAdditionalProperties 匹配 YAML 映射里的一项 additionalProperties: false。

@@ -36,30 +36,36 @@ const (
 func (s Status) Valid() bool { return s == StatusActive || s == StatusDisabled }
 
 // Record 是一行 schools 记录。
+// PlatformUniversityID 是平台侧院校标识，空串表示未绑定。
 type Record struct {
-	ID        string
-	Code      string
-	Name      string
-	Status    Status
-	TimeZone  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                   string
+	Code                 string
+	Name                 string
+	Status               Status
+	TimeZone             string
+	PlatformUniversityID string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 // New 是创建院校的输入。
-// TimeZone 可为空，此时套用列默认值。
+// TimeZone 可为空，此时套用列默认值；
+// PlatformUniversityID 可为空，此时不写绑定。
 type New struct {
-	ID       string
-	Code     string
-	Name     string
-	TimeZone string
+	ID                   string
+	Code                 string
+	Name                 string
+	TimeZone             string
+	PlatformUniversityID string
 }
 
-// Update 携带可选的列变更。**nil 字段表示不改**。
+// Update 携带可选的列变更。**nil 字段表示不改**；
+// PlatformUniversityID 指向空串表示清空绑定。
 type Update struct {
-	Name     *string
-	Status   *Status
-	TimeZone *string
+	Name                 *string
+	Status               *Status
+	TimeZone             *string
+	PlatformUniversityID *string
 }
 
 // AdminBinding 把一个用户绑定为一个院校的管理员。

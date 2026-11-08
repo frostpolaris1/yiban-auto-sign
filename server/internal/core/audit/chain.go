@@ -108,8 +108,11 @@ const (
 	// UX-2 设备刷新：只在平台读回成功且本事务提交时出现。
 	// detail 只记 field=device_code，**绝无设备码全文或机型明文**。
 	ActionAccountDeviceRefresh Action = "account.device_refresh"
-	ActionCredentialUpdate     Action = "credential.update"
-	ActionCredentialRekey      Action = "credential.rekey"
+	// 平台姓名懒加载揭示：只在平台认证成功且审计追加成功后响应姓名。
+	// detail 只记 field=person_name，**绝无姓名本体**；揭示本身零业务写库。
+	ActionAccountPersonNameReveal Action = "account.person_name_reveal"
+	ActionCredentialUpdate        Action = "credential.update"
+	ActionCredentialRekey         Action = "credential.rekey"
 	// P4 引擎：明确登录失败把账号移出排期（active → credential_error）。
 	ActionAccountCredentialError Action = "account.credential_error"
 	// 口令或设备更新把 credential_error 账号放回排期（credential_error → active）。

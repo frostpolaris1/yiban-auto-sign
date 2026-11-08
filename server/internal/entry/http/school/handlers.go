@@ -93,10 +93,15 @@ func (h *Handler) Create(c *gin.Context, _ oapi.SchoolCreateParams) {
 	if body.Timezone != nil {
 		timeZone = string(*body.Timezone)
 	}
+	platformID := ""
+	if body.PlatformUniversityId != nil {
+		platformID = *body.PlatformUniversityId
+	}
 	record, err := h.svc.Create(c.Request.Context(), scope, appschool.New{
-		Code:     body.Code,
-		Name:     body.Name,
-		TimeZone: timeZone,
+		Code:                 body.Code,
+		Name:                 body.Name,
+		TimeZone:             timeZone,
+		PlatformUniversityID: platformID,
 	}, actor)
 	if err != nil {
 		fail(c, err)
@@ -115,7 +120,7 @@ func (h *Handler) Update(c *gin.Context, id oapi.SchoolID, _ oapi.SchoolUpdatePa
 	if !decode(c, &body) {
 		return
 	}
-	in := appschool.Update{Name: body.Name}
+	in := appschool.Update{Name: body.Name, PlatformUniversityID: body.PlatformUniversityId}
 	if body.Status != nil {
 		status := appschool.Status(*body.Status)
 		in.Status = &status
@@ -148,7 +153,7 @@ func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bo
 }
 
 func schoolResponse(record appschool.Record) oapi.School {
-	return oapi.School{
+	school := oapi.School{
 		Id:        record.ID,
 		Code:      record.Code,
 		Name:      record.Name,
@@ -157,6 +162,11 @@ func schoolResponse(record appschool.Record) oapi.School {
 		CreatedAt: record.CreatedAt,
 		UpdatedAt: record.UpdatedAt,
 	}
+	// 未绑定时整键缺席：契约口径是「absent until master sets it」。
+	if record.PlatformUniversityID != "" {
+		school.PlatformUniversityId = &record.PlatformUniversityID
+	}
+	return school
 }
 
 func cursorOf(cursor *string) string {

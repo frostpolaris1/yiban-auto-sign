@@ -326,6 +326,8 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	}
 	// 批量签到的账号键限流：与装配同形用真 Guard，账号桶取默认档
 	// （10/min、burst 5），IP 桶给高额不咬——IP 面由中间件门单独钉。
+	// 同一 Guard 实例也接进路由 Options：生产装配就是一份限流面
+	// 同时服务入站账号键与批量逐项，测试环境保持同形。
 	accountThrottle, err := ratelimit.NewThrottle(ratelimit.Quota{PerMinute: 10, Burst: 5})
 	if err != nil {
 		t.Fatalf("new account throttle: %v", err)
@@ -334,9 +336,11 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	if err != nil {
 		t.Fatalf("new ip throttle: %v", err)
 	}
+	guard := &ratelimit.Guard{IP: ipThrottle, Account: accountThrottle}
 	signingHandler := signinghttp.NewHandler(accountSvc, adminSvc, e.provider).
 		WithManual(e.worker).WithAccess(accountSvc).
-		WithAccountLimiter(&ratelimit.Guard{IP: ipThrottle, Account: accountThrottle})
+		WithRevealAudit(accountSvc).
+		WithAccountLimiter(guard)
 	statsSvc, err := appstats.NewService(pg.NewStatsRepo(e.db))
 	if err != nil {
 		t.Fatalf("new stats service: %v", err)
@@ -358,6 +362,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Clock:           clk,
 		Logger:          logger,
 		InsecureCookies: true,
+		RateLimit:       guard,
 		Schools:         schoolhttp.NewHandler(schoolSvc, adminSvc),
 		Admins:          adminhttp.NewHandler(adminSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
 		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
@@ -416,11 +421,15 @@ func (w2cDeviceStub) DeviceState(context.Context, string, appaccount.SigningCred
 
 // e2eProvider 是本地假提供方：只为满足校验与执行接缝。
 // 窗口发现由 e2eDiscoverer 直接提供；targets 按账号返回点位，
-// signs 记录收到的签到请求供图片注入用例断言。
+// signs 记录收到的签到请求供图片注入用例断言；
+// profile 是校验回执的预设身份，profileErr 是预设失败，
+// 供 verify 透传与 person-name 懒加载用例断言。
 type e2eProvider struct {
-	windows map[string]contract.Window
-	targets map[string][]contract.Target
-	signs   []contract.SignRequest
+	windows    map[string]contract.Window
+	targets    map[string][]contract.Target
+	signs      []contract.SignRequest
+	profile    contract.Profile
+	profileErr error
 }
 
 func (p *e2eProvider) DiscoverWindow(context.Context, contract.DiscoverRequest) (contract.Window, error) {
@@ -440,7 +449,7 @@ func (p *e2eProvider) Sign(_ context.Context, req contract.SignRequest) (contrac
 }
 
 func (p *e2eProvider) Verify(context.Context, contract.VerifyRequest) (contract.Profile, error) {
-	return contract.Profile{}, nil
+	return p.profile, p.profileErr
 }
 
 // e2eDiscoverer 按任务 ID 返回测试预置的平台窗口。
@@ -624,13 +633,14 @@ func (e *w2cEnv) decode(rec *httptest.ResponseRecorder, target any) {
 }
 
 type w2cSchool struct {
-	ID       string    `json:"id"`
-	Code     string    `json:"code"`
-	Name     string    `json:"name"`
-	Status   string    `json:"status"`
-	Timezone string    `json:"timezone"`
-	Created  time.Time `json:"created_at"`
-	Updated  time.Time `json:"updated_at"`
+	ID                   string    `json:"id"`
+	Code                 string    `json:"code"`
+	Name                 string    `json:"name"`
+	Status               string    `json:"status"`
+	Timezone             string    `json:"timezone"`
+	PlatformUniversityID *string   `json:"platform_university_id"`
+	Created              time.Time `json:"created_at"`
+	Updated              time.Time `json:"updated_at"`
 }
 
 type w2cSchoolPage struct {
@@ -1561,5 +1571,331 @@ func TestW2CRealStackCredentialRoundTrip(t *testing.T) {
 	}
 	if plain.Password != password {
 		t.Fatal("decrypted credential does not carry the submitted password")
+	}
+}
+
+// --- 平台身份透出与学校平台绑定 --------------------------------------------
+
+// w2cVerifyResult 是 verify 响应的可解码形状。
+type w2cVerifyResult struct {
+	Ok       bool   `json:"ok"`
+	Code     string `json:"code"`
+	Identity *struct {
+		UniversityName string `json:"university_name"`
+		UniversityID   string `json:"university_id"`
+	} `json:"identity"`
+}
+
+// 校验成功响应携带平台院校两字段：建号定校链路的数据基础。
+// 姓名属个人隐私，不在 verify 顺手透出。身份值与 fake.ValidProfile 同形。
+func TestW2CVerifyCarriesIdentity(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	school := e.school("ru28")
+	e.provider.profile = contract.Profile{
+		DisplayName: "测*生", SchoolName: "示例大学", UniversityID: "0000000028",
+	}
+	masterSess := e.login(master)
+
+	rec := e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13800138000",
+		"password":  "secret",
+	}, masterSess)
+	w2cWantStatus(t, rec, http.StatusCreated)
+	var created w2cAccount
+	e.decode(rec, &created)
+
+	rec = e.do(http.MethodPost, "/api/accounts/"+created.ID+"/verify", nil, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	var result w2cVerifyResult
+	e.decode(rec, &result)
+	if !result.Ok || result.Code != "success" {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.Identity == nil {
+		t.Fatalf("identity missing from body: %q", rec.Body.String())
+	}
+	if result.Identity.UniversityName != "示例大学" ||
+		result.Identity.UniversityID != "0000000028" {
+		t.Fatalf("identity = %#v", result.Identity)
+	}
+	if strings.Contains(rec.Body.String(), "person_name") {
+		t.Fatalf("verify response leaked person_name: %q", rec.Body.String())
+	}
+}
+
+// 提供方只回签发回执不带身份数据时，identity 键缺席。
+func TestW2CVerifyWithoutProfileDataOmitsIdentity(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	school := e.school("ru28b")
+	e.provider.profile = contract.Profile{}
+	masterSess := e.login(master)
+
+	rec := e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13800138001",
+		"password":  "secret",
+	}, masterSess)
+	w2cWantStatus(t, rec, http.StatusCreated)
+	var created w2cAccount
+	e.decode(rec, &created)
+
+	rec = e.do(http.MethodPost, "/api/accounts/"+created.ID+"/verify", nil, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	var result w2cVerifyResult
+	e.decode(rec, &result)
+	if !result.Ok {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.Identity != nil {
+		t.Fatalf("identity = %#v, want absent", result.Identity)
+	}
+}
+
+// schools 的 platform_university_id 全链路：建校写入、PATCH 改值与清空、
+// 列表回读；同值绑两校被部分唯一索引拒绝（409）。
+func TestW2CSchoolPlatformUniversityIDRoundTrip(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	masterSess := e.login(master)
+
+	rec := e.do(http.MethodPost, "/api/schools", map[string]any{
+		"code": "ru28-sa", "name": "RU28 A", "platform_university_id": "0000000028",
+	}, masterSess)
+	w2cWantStatus(t, rec, http.StatusCreated)
+	var created w2cSchool
+	e.decode(rec, &created)
+	if created.PlatformUniversityID == nil || *created.PlatformUniversityID != "0000000028" {
+		t.Fatalf("created school = %#v", created)
+	}
+
+	// 列表回读：master 全量可见该公开标识。
+	rec = e.do(http.MethodGet, "/api/schools", nil, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	var page w2cSchoolPage
+	e.decode(rec, &page)
+	var listed *w2cSchool
+	for i := range page.Items {
+		if page.Items[i].ID == created.ID {
+			listed = &page.Items[i]
+		}
+	}
+	if listed == nil || listed.PlatformUniversityID == nil || *listed.PlatformUniversityID != "0000000028" {
+		t.Fatalf("school list lost the binding: %#v", page.Items)
+	}
+
+	// PATCH 改值。
+	rec = e.do(http.MethodPatch, "/api/schools/"+created.ID,
+		map[string]any{"platform_university_id": "0000000029"}, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	var revalued w2cSchool
+	e.decode(rec, &revalued)
+	if revalued.PlatformUniversityID == nil || *revalued.PlatformUniversityID != "0000000029" {
+		t.Fatalf("patched school = %#v", revalued)
+	}
+
+	// PATCH 空串清空：键回读为缺席，库里落 NULL。
+	rec = e.do(http.MethodPatch, "/api/schools/"+created.ID,
+		map[string]any{"platform_university_id": ""}, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	var cleared w2cSchool
+	e.decode(rec, &cleared)
+	if cleared.PlatformUniversityID != nil {
+		t.Fatalf("cleared school = %#v, want the key absent", cleared)
+	}
+	if got := e.scalarString(
+		"SELECT coalesce(platform_university_id, '') FROM schools WHERE id = $1::uuid", created.ID); got != "" {
+		t.Fatalf("database binding = %q, want NULL after clearing", got)
+	}
+
+	// 重新绑定后同值写两校：部分唯一索引拒绝。
+	rec = e.do(http.MethodPatch, "/api/schools/"+created.ID,
+		map[string]any{"platform_university_id": "0000000028"}, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	rec = e.do(http.MethodPost, "/api/schools", map[string]any{
+		"code": "ru28-sb", "name": "RU28 B", "platform_university_id": "0000000028",
+	}, masterSess)
+	w2cWantStatus(t, rec, http.StatusConflict)
+}
+
+// disabled 学校拒绝建号：409 conflict（行存在、状态不允许，与查无此校的
+// 404 可分辨，与 disabled task 的 409 先例同语义）。收紧对三种角色一致。
+func TestW2CDisabledSchoolBlocksAccountCreate(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	school := e.school("ru28-c")
+	masterSess := e.login(master)
+	w2cWantStatus(t, e.do(http.MethodPatch, "/api/schools/"+school.ID,
+		map[string]any{"status": "disabled"}, masterSess), http.StatusOK)
+
+	for name, sess := range map[string]*coreauth.Issued{
+		"master": masterSess,
+	} {
+		rec := e.do(http.MethodPost, "/api/accounts", map[string]any{
+			"school_id": school.ID,
+			"phone":     "13800138002",
+			"password":  "secret",
+		}, sess)
+		w2cWantStatus(t, rec, http.StatusConflict)
+		if code := e.errorCode(rec); code != "conflict" {
+			t.Fatalf("%s: code = %q, want conflict", name, code)
+		}
+		if got := e.scalarInt("SELECT count(*) FROM accounts WHERE school_id = $1::uuid", school.ID); got != 0 {
+			t.Fatalf("%s: disabled school took %d account rows", name, got)
+		}
+	}
+
+	// user 侧同收紧：建号是同一用例入口。
+	owner := e.user("owner@example.com", coreauth.RoleUser)
+	rec := e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13800138003",
+		"password":  "secret",
+	}, e.login(owner))
+	w2cWantStatus(t, rec, http.StatusConflict)
+	if code := e.errorCode(rec); code != "conflict" {
+		t.Fatalf("user: code = %q, want conflict", code)
+	}
+}
+
+// --- 平台姓名懒加载 ----------------------------------------------------------
+
+// w2cPersonName 是 person-name 响应的可解码形状。
+type w2cPersonName struct {
+	PersonName string `json:"person_name"`
+}
+
+// 懒加载主路径：master 取账号姓名，只回单字段；
+// 审计行只记动作与账号，detail 不含姓名本体。
+func TestW2CPersonNameRevealsAndAudits(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	school := e.school("ru28-n")
+	e.provider.profile = contract.Profile{
+		DisplayName: "测*生", SchoolName: "示例大学", UniversityID: "0000000028",
+	}
+	masterSess := e.login(master)
+
+	rec := e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13800138004",
+		"password":  "secret",
+	}, masterSess)
+	w2cWantStatus(t, rec, http.StatusCreated)
+	var created w2cAccount
+	e.decode(rec, &created)
+
+	rec = e.do(http.MethodPost, "/api/accounts/"+created.ID+"/person-name", nil, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	var result w2cPersonName
+	e.decode(rec, &result)
+	if result.PersonName != "测*生" {
+		t.Fatalf("person_name = %q; body=%q", result.PersonName, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "university") {
+		t.Fatalf("person-name response carried university fields: %q", rec.Body.String())
+	}
+
+	// 审计行存在且 detail 只有字段名。
+	if got := e.scalarInt(
+		"SELECT count(*) FROM audit_logs WHERE action = 'account.person_name_reveal' AND target_id = $1",
+		created.ID); got != 1 {
+		t.Fatalf("reveal audit rows = %d, want 1", got)
+	}
+	detail := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'account.person_name_reveal' AND target_id = $1",
+		created.ID)
+	if detail != `{"field":"person_name"}` {
+		t.Fatalf("audit detail = %s, want the bare field word", detail)
+	}
+	if strings.Contains(detail, "测*生") {
+		t.Fatalf("audit detail leaked the name: %s", detail)
+	}
+
+}
+
+// user 取自己账号的姓名：放行；取他人账号：404（与签到同口径）。
+// 账号走 HTTP 建：懒加载要读使用中凭据，直插行没有凭据行会 404。
+func TestW2CPersonNameUserOwnAndCrossScope(t *testing.T) {
+	e := w2cNewEnv(t)
+	owner := e.user("owner@example.com", coreauth.RoleUser)
+	stranger := e.user("stranger@example.com", coreauth.RoleUser)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	school := e.school("ru28-p")
+	e.provider.profile = contract.Profile{DisplayName: "测*生"}
+
+	ownerSess := e.login(owner)
+	rec := e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13800138005",
+		"password":  "secret",
+	}, ownerSess)
+	w2cWantStatus(t, rec, http.StatusCreated)
+	var account w2cAccount
+	e.decode(rec, &account)
+
+	strangerSess := e.login(stranger)
+	rec = e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13800138006",
+		"password":  "secret",
+	}, strangerSess)
+	w2cWantStatus(t, rec, http.StatusCreated)
+	var other w2cAccount
+	e.decode(rec, &other)
+
+	ownRec := e.do(http.MethodPost, "/api/accounts/"+account.ID+"/person-name", nil, ownerSess)
+	w2cWantStatus(t, ownRec, http.StatusOK)
+	var result w2cPersonName
+	e.decode(ownRec, &result)
+	if result.PersonName != "测*生" {
+		t.Fatalf("person_name = %q", result.PersonName)
+	}
+
+	crossRec := e.do(http.MethodPost, "/api/accounts/"+account.ID+"/person-name", nil, strangerSess)
+	w2cWantStatus(t, crossRec, http.StatusNotFound)
+	if code := e.errorCode(crossRec); code != "not_found" {
+		t.Fatalf("code = %q, want not_found", code)
+	}
+
+	// master 全量可见；平台失败时统一 502 中性信封。
+	e.provider.profileErr = errs.New(errs.CodeUpstream, "connection reset")
+	failRec := e.do(http.MethodPost, "/api/accounts/"+other.ID+"/person-name", nil, e.login(master))
+	w2cWantStatus(t, failRec, http.StatusBadGateway)
+	if strings.Contains(failRec.Body.String(), "connection reset") {
+		t.Fatalf("response leaked platform text: %q", failRec.Body.String())
+	}
+}
+
+// 限流：与 verify/sign 共用账号键桶（10/min、burst 5），第 6 次 429 且带 Retry-After。
+func TestW2CPersonNameRateLimited(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	school := e.school("ru28-q")
+	e.provider.profile = contract.Profile{DisplayName: "测*生"}
+	masterSess := e.login(master)
+
+	rec := e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13800138007",
+		"password":  "secret",
+	}, masterSess)
+	w2cWantStatus(t, rec, http.StatusCreated)
+	var created w2cAccount
+	e.decode(rec, &created)
+
+	for i := 0; i < 5; i++ {
+		rec = e.do(http.MethodPost, "/api/accounts/"+created.ID+"/person-name", nil, masterSess)
+		w2cWantStatus(t, rec, http.StatusOK)
+	}
+	rec = e.do(http.MethodPost, "/api/accounts/"+created.ID+"/person-name", nil, masterSess)
+	w2cWantStatus(t, rec, http.StatusTooManyRequests)
+	if code := e.errorCode(rec); code != "rate_limited" {
+		t.Fatalf("code = %q, want rate_limited", code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("429 response is missing Retry-After")
 	}
 }

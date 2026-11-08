@@ -16,6 +16,9 @@
 // 手动签到允许三种角色，但账号必须在其可见面内，否则 404；
 // 批量签到只允许 master 与 admin，user 整批 403。
 // 平台结论回 200 {ok:false, code, message}；传输失败回 502。
+// 成功回执可选携带平台院校两字段（院校名/院校 ID）：只在提供方
+// 真的带出数据时出现。姓名属个人隐私，走 POST /api/accounts/:id/person-name
+// 懒加载：成功回单字段，不落库、不进日志，审计只记动作与账号。
 // 响应与消息不含手机号、口令、设备码。
 package signing
 
@@ -76,6 +79,11 @@ type AccountLimiter interface {
 	AllowAccount(id string) (ok bool, wait time.Duration)
 }
 
+// RevealAuditor 记录一次平台姓名揭示的审计接缝（实现为 app/account.Service）。
+type RevealAuditor interface {
+	RecordPersonNameReveal(ctx context.Context, scope corescope.Scope, id, schoolID string, actor appaudit.Actor) error
+}
+
 // Handler 处理账号凭据校验与手动签到。
 type Handler struct {
 	svc      Service
@@ -84,6 +92,7 @@ type Handler struct {
 	manual   ManualSigner
 	access   AccountAccess
 	limiter  AccountLimiter
+	reveals  RevealAuditor
 }
 
 // NewHandler 构造处理器。
@@ -102,6 +111,14 @@ func (h *Handler) WithManual(m ManualSigner) *Handler {
 // 不是「user 一律拒绝」——后者会掩盖漏接线。
 func (h *Handler) WithAccess(a AccountAccess) *Handler {
 	h.access = a
+	return h
+}
+
+// WithRevealAudit 注入姓名揭示的审计接缝。
+// **不注入属装配错误**：姓名揭示必须留痕，缺口时 PersonName 端点
+// 回 500 响亮失败（fail-closed），不是「静默不给姓名」。
+func (h *Handler) WithRevealAudit(a RevealAuditor) *Handler {
+	h.reveals = a
 	return h
 }
 
@@ -296,7 +313,7 @@ func (h *Handler) Verify(c *gin.Context, id oapi.AccountID, _ oapi.AccountVerify
 		fail(c, err)
 		return
 	}
-	_, err = h.verifier.Verify(c.Request.Context(), contract.VerifyRequest{
+	profile, err := h.verifier.Verify(c.Request.Context(), contract.VerifyRequest{
 		Account: contract.AccountRef{
 			ID:       string(id),
 			SchoolID: credential.SchoolID,
@@ -317,9 +334,67 @@ func (h *Handler) Verify(c *gin.Context, id oapi.AccountID, _ oapi.AccountVerify
 		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUpstream, "upstream unavailable"))
 		return
 	}
-	respond.JSON(c.Writer, http.StatusOK, oapi.AccountVerifyResult{
-		Ok: true, Code: string(contract.OutcomeSuccess),
+	respond.JSON(c.Writer, http.StatusOK, verifyResultFromProfile(profile))
+}
+
+// verifyResultFromProfile 把成功校验的回执映射成响应。
+// 平台可能只回签发回执不带身份数据（data={}）：identity 院校两字段
+// 不全时整键缺席，不回一个空对象假装有数据。
+// 姓名属个人隐私，不在此处透出：走 POST /api/accounts/{id}/person-name 懒加载。
+func verifyResultFromProfile(profile contract.Profile) oapi.AccountVerifyResult {
+	result := oapi.AccountVerifyResult{Ok: true, Code: string(contract.OutcomeSuccess)}
+	if profile.SchoolName != "" && profile.UniversityID != "" {
+		result.Identity = &oapi.AccountVerifyIdentity{
+			UniversityName: profile.SchoolName,
+			UniversityId:   profile.UniversityID,
+		}
+	}
+	return result
+}
+
+// PersonName 实现 POST /api/accounts/:id/person-name。
+// 懒加载与隐私门：与 verify 同型的平台认证，成功只回姓名单字段。
+// 姓名不落库、不进日志正文；审计行只记动作与账号（detail 是字段名非值）。
+// 作用域判定在 SigningCredential：user 越权他人与跨校一样 404。
+// 平台结论与传输失败统一 502 中性信封（device-refresh 先例）：
+// 姓名响应是单字段，没有结论形状可回。
+func (h *Handler) PersonName(c *gin.Context, id oapi.AccountID, _ oapi.AccountPersonNameParams) {
+	scope, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	if h.reveals == nil {
+		fail(c, errs.New(errs.CodeInternal, "reveal auditor is not wired"))
+		return
+	}
+	credential, err := h.svc.SigningCredential(c.Request.Context(), scope, string(id))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	profile, err := h.verifier.Verify(c.Request.Context(), contract.VerifyRequest{
+		Account: contract.AccountRef{
+			ID:       string(id),
+			SchoolID: credential.SchoolID,
+			Platform: "yiban",
+		},
+		Credential: contract.Credential{
+			Phone:      credential.Phone,
+			Password:   credential.Password,
+			DeviceCode: credential.DeviceCode,
+			PhoneModel: credential.PhoneModel,
+		},
 	})
+	if err != nil {
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUpstream, "person name lookup failed"))
+		return
+	}
+	// 审计先于响应：追加失败就 5xx，姓名不出本函数。
+	if err := h.reveals.RecordPersonNameReveal(c.Request.Context(), scope, string(id), credential.SchoolID, actor); err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.AccountPersonNameResult{PersonName: profile.DisplayName})
 }
 
 // verifyConclusion 把 provider 错误映射成中性结论。

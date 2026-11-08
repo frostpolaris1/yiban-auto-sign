@@ -132,6 +132,8 @@ either side drifts.
 | POST | `/api/accounts/:id/purge` | master/admin | qru |
 |  |  |  | 物理删除已软删账号：凭据、出口、定位与任务行一并清空；审计 `account.purge` 且审计行保留；活账号 409。 |
 | POST | `/api/accounts/:id/verify` | master/admin | P3 |
+| POST | `/api/accounts/:id/person-name` | master/admin/user | rufc |
+|  |  |  | 懒加载揭示平台姓名：与 verify 同型的平台认证，成功只回 `{person_name}` 单字段；姓名不落库、不进日志正文，审计 `account.person_name_reveal` 的 detail 只有字段名；user 只能取自己账号（越权 404）；平台失败统一 502 中性信封；限流与 verify/sign 同账号键桶，429 带 `Retry-After`。 |
 | GET | `/api/schedule/windows` | master/admin | P4 |
 | GET | `/api/schedule/preview` | master/admin | P4 |
 | POST | `/api/schedule/plan` | master/admin | P4 |

@@ -180,14 +180,15 @@ func securityHeaders() gin.HandlerFunc {
 // rateLimitedPaths 是按客户端 IP 限流的端点。
 // 模式取 Gin 注册形状（:id），不是契约的 {id}。
 var rateLimitedPaths = map[string]struct{}{
-	"/api/auth/login":           {},
-	"/api/auth/register":        {},
-	"/api/auth/forgot-password": {},
-	"/api/auth/reset-password":  {},
-	"/api/auth/change-password": {},
-	"/api/accounts/:id/verify":  {},
-	"/api/accounts/:id/sign":    {},
-	"/api/accounts/batch/sign":  {},
+	"/api/auth/login":               {},
+	"/api/auth/register":            {},
+	"/api/auth/forgot-password":     {},
+	"/api/auth/reset-password":      {},
+	"/api/auth/change-password":     {},
+	"/api/accounts/:id/verify":      {},
+	"/api/accounts/:id/person-name": {},
+	"/api/accounts/:id/sign":        {},
+	"/api/accounts/batch/sign":      {},
 }
 
 // rateLimitInbound 在解析会话之前按客户端 IP 限流。
