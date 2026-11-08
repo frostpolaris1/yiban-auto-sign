@@ -255,6 +255,57 @@ func (s *Service) Task(ctx context.Context, scope corescope.Scope, taskID string
 	return task, nil
 }
 
+// CachedWindow 返回某任务某业务日的有效窗口，只读缓存与人工覆盖。
+//
+// 口径：覆盖 > 当日缓存 > 标准窗口回退；三者都按 EdgeFront/EdgeBack 裁剪。
+// 本方法**不**发现平台窗口、**不**读账号、**不**构建计划行：
+// 用户读面不得因任意注册用户请求触发平台登录（P1）。
+// 无缓存或无覆盖时直接回退标准窗口；窗口不可用时返回校验错误。
+func (s *Service) CachedWindow(ctx context.Context, in Input) (coreschedule.WindowRecord, error) {
+	if err := validateInput(in); err != nil {
+		return coreschedule.WindowRecord{}, err
+	}
+	loc := in.Location
+	dayDate, err := time.ParseInLocation("2006-01-02", in.Day, loc)
+	if err != nil {
+		return coreschedule.WindowRecord{}, validation("day must be YYYY-MM-DD")
+	}
+	raw := coreschedule.WindowRecord{
+		SchoolTaskID: in.SchoolTaskID,
+		Day:          in.Day,
+		Start:        fallbackAt(dayDate, loc, coreschedule.DefaultSignWindowStartMinute),
+		End:          fallbackAt(dayDate, loc, coreschedule.DefaultSignWindowEndMinute),
+		Source:       string(contract.WindowFallback),
+	}
+	cached, cacheErr := s.deps.Windows.GetWindow(ctx, in.SchoolTaskID, in.Day)
+	if cacheErr != nil && !isNotFound(cacheErr) {
+		return coreschedule.WindowRecord{}, cacheErr
+	}
+	if cacheErr == nil && corewindow.Validate(corewindow.Window{Start: cached.Start, End: cached.End}) == nil {
+		raw = cached
+	}
+	override, ovErr := s.deps.Windows.GetOverride(ctx, in.SchoolTaskID, in.Day)
+	if ovErr != nil && !isNotFound(ovErr) {
+		return coreschedule.WindowRecord{}, ovErr
+	}
+	if ovErr == nil && corewindow.Validate(corewindow.Window{Start: override.Start, End: override.End}) == nil {
+		raw = coreschedule.WindowRecord{
+			SchoolTaskID: in.SchoolTaskID,
+			Day:          in.Day,
+			Start:        override.Start,
+			End:          override.End,
+			Source:       string(contract.WindowOverride),
+		}
+	}
+	eff, _ := corewindow.Window{Start: raw.Start, End: raw.End}.
+		Effective(in.EdgeFront, in.EdgeBack)
+	if err := corewindow.Validate(eff); err != nil {
+		return coreschedule.WindowRecord{}, validation("window has no positive span: " + err.Error())
+	}
+	raw.Start, raw.End = eff.Start, eff.End
+	return raw, nil
+}
+
 // SelfContext 解析用户自选读面的当日账号与任务上下文。
 //
 // 取法（读面必须稳定：同一用户同一业务日多次读取得到同一任务）：

@@ -25,7 +25,6 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // userReadLoc 是 w2cEnv 装配时使用的业务时区。
@@ -380,6 +379,20 @@ func (e *w2cEnv) seedTimePref(userID string, offset int) {
 	}
 }
 
+// seedWindow 直接落当日窗口缓存：用户读面是缓存只读，必须由缓存提供窗口。
+func (e *w2cEnv) seedWindow(taskID, day string, start, end time.Time) {
+	e.t.Helper()
+	if _, err := e.db.Exec(e.ctx, `
+		INSERT INTO window_cache (school_task_id, day, start_at, end_at, source, version)
+		VALUES ($1::uuid, $2::date, $3, $4, 'platform', 1)
+		ON CONFLICT (school_task_id, day) DO UPDATE
+		SET start_at = EXCLUDED.start_at, end_at = EXCLUDED.end_at,
+		    source = EXCLUDED.source, version = window_cache.version + 1`,
+		taskID, day, start, end); err != nil {
+		e.t.Fatalf("seed window: %v", err)
+	}
+}
+
 // 用户自选读面带出任务窗口、与 admin stats 同源的拥挤度、台账预计时段；
 // 用户仍不能调用 admin stats；task_id 不下发。
 func TestTimePrefCrowdingAndEstimate(t *testing.T) {
@@ -396,7 +409,7 @@ func TestTimePrefCrowdingAndEstimate(t *testing.T) {
 	e.activateAccount(acctUser)
 	e.activateAccount(acctPeer)
 	start, end := windowAt(today, loc, [2]int{6, 30}, [2]int{7, 50})
-	e.windows[task] = contract.Window{Start: start, End: end, Source: contract.WindowPlatform}
+	e.seedWindow(task, today, start, end)
 	e.seedTimePref(user.ID, 0)
 	e.seedTimePref(peer.ID, 0)
 	runAt := userReadAt(t, today, 6, 42, 0)
@@ -404,6 +417,9 @@ func TestTimePrefCrowdingAndEstimate(t *testing.T) {
 
 	rec := e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(user))
 	w2cWantStatus(t, rec, http.StatusOK)
+	if e.discover.count() != 0 {
+		t.Fatalf("用户 GET 不得触发平台发现：calls = %d", e.discover.count())
+	}
 	var view oapi.TimePref
 	e.decode(rec, &view)
 	if view.Window.Start != "06:30" || view.Window.End != "07:50" {
@@ -438,10 +454,27 @@ func TestTimePrefCrowdingAndEstimate(t *testing.T) {
 	if want := expectedCrowdPct(stats.Slots[0].Count, stats.Slots[0].Cap); userSlot.Pct != want {
 		t.Fatalf("用户 pct = %d, stats count/cap 推导 = %d", userSlot.Pct, want)
 	}
+	if e.discover.count() != 0 {
+		t.Fatalf("缓存命中时 admin stats 也不得发现：calls = %d", e.discover.count())
+	}
 	// 用户无权调用 admin stats。
 	userStats := e.do(http.MethodGet,
 		"/api/time-prefs/stats?school_id="+school.ID+"&task_id="+task, nil, e.login(user))
 	w2cWantStatus(t, userStats, http.StatusForbidden)
+
+	// PUT 写后回显同样只读缓存：不得因任意注册用户请求触发平台登录。
+	putUser := e.user("timepref-crowd-put@example.com", coreauth.RoleUser)
+	e.activateAccount(e.account(school.ID, putUser.ID, "13800000031"))
+	putRec := e.do(http.MethodPut, "/api/me/time-pref", map[string]any{"offset_min": 10}, e.login(putUser))
+	w2cWantStatus(t, putRec, http.StatusOK)
+	var putView oapi.TimePref
+	e.decode(putRec, &putView)
+	if putView.Window.Start != "06:30" || putView.Window.End != "07:50" {
+		t.Fatalf("PUT 回显 window = %+v, want 06:30~07:50", putView.Window)
+	}
+	if e.discover.count() != 0 {
+		t.Fatalf("用户 PUT 不得触发平台发现：calls = %d", e.discover.count())
+	}
 }
 
 // 多任务时取当日最先未了结的一行：窗口与 estimated 都跟这一行，
@@ -458,8 +491,8 @@ func TestTimePrefPicksNextUnfinishedTask(t *testing.T) {
 	e.activateAccount(acct)
 	morningStart, morningEnd := windowAt(today, loc, [2]int{6, 30}, [2]int{7, 50})
 	eveningStart, eveningEnd := windowAt(today, loc, [2]int{7, 0}, [2]int{8, 20})
-	e.windows[morning] = contract.Window{Start: morningStart, End: morningEnd, Source: contract.WindowPlatform}
-	e.windows[evening] = contract.Window{Start: eveningStart, End: eveningEnd, Source: contract.WindowPlatform}
+	e.seedWindow(morning, today, morningStart, morningEnd)
+	e.seedWindow(evening, today, eveningStart, eveningEnd)
 	// 晨签已了结，晚签待执行：读面必须选晚签。
 	finished := userReadAt(t, today, 6, 35, 0)
 	e.seedTask(acct, morning, today, corestatus.TaskSuccess, 1, finished, finished)
@@ -468,6 +501,9 @@ func TestTimePrefPicksNextUnfinishedTask(t *testing.T) {
 
 	rec := e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(user))
 	w2cWantStatus(t, rec, http.StatusOK)
+	if e.discover.count() != 0 {
+		t.Fatalf("多任务读面不得触发平台发现：calls = %d", e.discover.count())
+	}
 	var view oapi.TimePref
 	e.decode(rec, &view)
 	if view.Window.Start != "07:00" || view.Window.End != "08:20" {
@@ -490,9 +526,12 @@ func TestTimePrefFallbackWindowWithoutPlan(t *testing.T) {
 	e.schoolTask(school.ID, "晨签")
 	acct := e.account(school.ID, user.ID, "13800000073")
 	e.activateAccount(acct)
-	// 不登记 e.windows：发现返回 not_found，Report 走回退窗口。
+	// 不登记缓存与 e.windows：用户读面直接回退标准窗口，且零平台发现。
 	rec := e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(user))
 	w2cWantStatus(t, rec, http.StatusOK)
+	if e.discover.count() != 0 {
+		t.Fatalf("无缓存用户读面不得触发平台发现：calls = %d", e.discover.count())
+	}
 	var view oapi.TimePref
 	e.decode(rec, &view)
 	if view.Window.Start != "06:30" || view.Window.End != "07:50" {
@@ -516,7 +555,7 @@ func TestTimePrefFallbackWindowWithoutPlan(t *testing.T) {
 	firstTask := e.schoolTask(schoolTwo.ID, "a-morning")
 	e.schoolTask(schoolTwo.ID, "b-evening")
 	firstStart, firstEnd := windowAt(today, loc, [2]int{6, 40}, [2]int{7, 40})
-	e.windows[firstTask] = contract.Window{Start: firstStart, End: firstEnd, Source: contract.WindowPlatform}
+	e.seedWindow(firstTask, today, firstStart, firstEnd)
 	acctTwo := e.account(schoolTwo.ID, userTwo.ID, "13800000209")
 	e.activateAccount(acctTwo)
 	rec = e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(userTwo))

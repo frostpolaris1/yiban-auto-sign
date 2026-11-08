@@ -1120,3 +1120,84 @@ func TestSelfContextWithoutReader(t *testing.T) {
 		t.Fatalf("got %+v, want zero", got)
 	}
 }
+
+// SelfContext 早退：空用户与非法业务日都在读仓储前拒绝。
+func TestSelfContextRejectsBadInput(t *testing.T) {
+	for _, tc := range []struct {
+		name, userID, day string
+	}{
+		{"空用户", "", "2026-10-29"},
+		{"非法日", "u1", "2026/10/29"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			self := &fakeSelfReader{}
+			svc := newSelfService(t, self)
+			if _, err := svc.SelfContext(context.Background(), tc.userID, tc.day); err == nil {
+				t.Fatal("非法输入必须报错")
+			}
+		})
+	}
+}
+
+// CachedWindow 只读缓存/覆盖/回退：任何分支都不发现平台、不写计划行。
+func TestCachedWindowCacheOnly(t *testing.T) {
+	start := time.Date(2026, 10, 29, 7, 0, 0, 0, shanghai)
+	overrideStart := time.Date(2026, 10, 29, 9, 0, 0, 0, shanghai)
+	in := baseInput()
+	in.EdgeFront, in.EdgeBack = time.Minute, time.Minute
+	for _, tc := range []struct {
+		name       string
+		store      *fakeWindowStore
+		wantStart  time.Time
+		wantEnd    time.Time
+		wantSource string
+	}{
+		{
+			name: "缓存优先",
+			store: &fakeWindowStore{ok: true, record: coreschedule.WindowRecord{
+				Start: start, End: start.Add(80 * time.Minute), Source: "platform",
+			}},
+			wantStart: start.Add(time.Minute), wantEnd: start.Add(79 * time.Minute), wantSource: "platform",
+		},
+		{
+			name: "覆盖压过缓存",
+			store: &fakeWindowStore{
+				ok: true,
+				record: coreschedule.WindowRecord{
+					Start: start, End: start.Add(80 * time.Minute), Source: "platform",
+				},
+				overrideOK: true,
+				override: coreschedule.WindowOverride{
+					Start: overrideStart, End: overrideStart.Add(30 * time.Minute),
+				},
+			},
+			wantStart: overrideStart.Add(time.Minute), wantEnd: overrideStart.Add(29 * time.Minute), wantSource: "override",
+		},
+		{
+			name:       "无缓存回退标准窗",
+			store:      &fakeWindowStore{},
+			wantStart:  time.Date(2026, 10, 29, 6, 31, 0, 0, shanghai),
+			wantEnd:    time.Date(2026, 10, 29, 7, 49, 0, 0, shanghai),
+			wantSource: "fallback",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &fakePlanStore{}
+			d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
+			svc := newService(t, tc.store, p, fakeAccounts{ids: []string{"a1"}}, d)
+			got, err := svc.CachedWindow(context.Background(), in)
+			if err != nil {
+				t.Fatalf("CachedWindow: %v", err)
+			}
+			if !got.Start.Equal(tc.wantStart) || !got.End.Equal(tc.wantEnd) || got.Source != tc.wantSource {
+				t.Fatalf("got %+v, want %v~%v source %s", got, tc.wantStart, tc.wantEnd, tc.wantSource)
+			}
+			if d.calls != 0 {
+				t.Fatalf("CachedWindow 不得发现平台：calls = %d", d.calls)
+			}
+			if len(p.inserted) != 0 {
+				t.Fatalf("CachedWindow 不得写计划行：%v", p.inserted)
+			}
+		})
+	}
+}

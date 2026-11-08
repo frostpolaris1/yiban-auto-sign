@@ -149,7 +149,7 @@ either side drifts.
 | POST | `/api/schedule/override` | master/admin | P4 |
 | GET | `/api/me/time-pref` | master/admin/user | P4 |
 | PUT | `/api/me/time-pref` | master/admin/user | P4 |
-|  |  |  | GET 返回本人生效账号当日任务的有效窗口与 5 分钟槽位；`pct` 是 10% 档拥挤度，与 `/api/time-prefs/stats` 的 count/cap 同源；`estimated` 读当日台账 `run_at`，无任务行时为 null 且 `estimate_note=待生成`，均非执行承诺。无生效账号/启用任务/窗口时 `window` 回退服务端标准窗口（计划回退同常量）；用户不传也不回 `task_id`。 |
+|  |  |  | GET 返回本人生效账号当日任务的有效窗口与 5 分钟槽位；只读窗口缓存/覆盖/标准回退，零平台发现、不建全量计划。`pct` 是 10% 档拥挤度，与 `/api/time-prefs/stats` 的 count/cap 同源；槽数按计划实际片数（无 admin 的两小时上限）。`estimated` 读当日台账 `run_at`，无任务行时为 null 且 `estimate_note=待生成`，均非执行承诺。有任务但无缓存/覆盖窗口时 `window` 回退标准窗口并按计划同口径裁剪边距；无生效账号或无启用任务时无计划行，`window` 为标准窗口不裁剪。多任务取最早未了结，全部终态取最早；用户不传也不回 `task_id`。 |
 | GET | `/api/me/sign-calendar` | user | pm7 |
 |  |  |  | 本人账号的逐日签到计数；按账号当日最近一行去重，软删账号排除；`from`/`to` 必填且含首尾至多 31 天。 |
 | GET | `/api/me/sign-calendar/:day` | user | pm7 |

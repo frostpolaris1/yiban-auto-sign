@@ -154,6 +154,8 @@ export const DEFAULT_TIME_PREF: TimePref = {
   offset_min: 15,
   allowed: true,
   window: { start: '06:00', end: '06:30' },
+  estimated: '06:15',
+  estimate_note: '（今日计划，非承诺）',
 }
 
 /** 待处理账号计数的缺省夹具：与容量/统计缺省同套合成口径。 */

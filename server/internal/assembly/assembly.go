@@ -749,6 +749,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Rate: cfg.EgressRate, Util: corecapacity.UtilDefault,
 			SlotsPerSlice: slots, Front: true, UsePrefs: cfg.AllowTimePref,
 			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
+			Logger: logger,
 		}).WithStats(statsSvc)
 		// 运行页任务检索：只读，与计划用例共用排期仓储。
 		taskLib = schedulehttp.NewTasksHandler(

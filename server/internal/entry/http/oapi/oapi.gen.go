@@ -2218,7 +2218,10 @@ type TimePref struct {
 
 	// Slots Five-minute anchors relative to window.start, the effective
 	// window of the caller's own account task for the current business
-	// day. Each label is a clock time inside that window. The window
+	// day. The slot count follows the plan's slice count: floor of the
+	// window span in five-minute slices, at least one. Unlike the
+	// administrator stats endpoint, this user read has no two-hour cap.
+	// Each label is a clock time inside that window. The window
 	// actually executed for a task may be shifted by the platform
 	// window or a per-task override, so a label is a preference time,
 	// not the promised execution time. pct is the crowding band from
@@ -2263,15 +2266,19 @@ type TimePrefUpdate struct {
 // TimePrefWindow defines model for TimePrefWindow.
 type TimePrefWindow struct {
 	// End Effective signing window end of the caller's own account task,
-	// HH:MM, after edge trimming. Same source as the plan. When no
-	// active account, no enabled task or no window is available this
-	// is the server standard window used by the plan fallback.
+	// HH:MM, after edge trimming. Same source as the plan. When the
+	// account has a task but no cached or override window is available
+	// this is the standard window with the plan's edge trimming. When
+	// there is no active account or no enabled task there is no plan
+	// row, so this is the standard window without edge trimming.
 	End string `json:"end"`
 
 	// Start Effective signing window start of the caller's own account task,
-	// HH:MM, after edge trimming. Same source as the plan. When no
-	// active account, no enabled task or no window is available this
-	// is the server standard window used by the plan fallback.
+	// HH:MM, after edge trimming. Same source as the plan. When the
+	// account has a task but no cached or override window is available
+	// this is the standard window with the plan's edge trimming. When
+	// there is no active account or no enabled task there is no plan
+	// row, so this is the standard window without edge trimming.
 	Start string `json:"start"`
 }
 

@@ -2665,17 +2665,21 @@ paths:
         selected task. The caller never passes a task id and the response
         never carries a task, school or account id. When the account has
         several task rows today, the read selects the earliest unfinished
-        one; with no row it selects the school's first enabled task by name.
-        The choice is deterministic so repeated reads do not flicker.
+        one; if all rows are terminal it selects the earliest row; with no
+        row it selects the school's first enabled task by name. The choice
+        is deterministic so repeated reads do not flicker.
 
-        window is never null. When the caller has no active account, the
-        school has no enabled task, or no window is discoverable, window is
-        the server standard window (the start/end constants the plan uses as
-        its fallback; it is not edge-trimmed because there is no task
-        window), and slots follow that window with pct 0. estimated is null
-        when today's ledger has no task row; estimate_note then says 待生成.
-        estimated is an estimate, not a promise: retries, platform windows
-        and overrides can move the actual attempt.
+        The read is cache-only: it never discovers a platform window and
+        never builds the full plan. window is never null. When the account
+        has a task but no cached or override window is discoverable, window
+        is the server standard window with the same edge trimming the plan
+        applies. When the caller has no active account or the school has no
+        enabled task, there is no plan row, so window is the server standard
+        window without edge trimming. slots follow that window with pct 0
+        in both cases. estimated is null when today's ledger has no task
+        row; estimate_note then says 待生成. estimated is an estimate, not
+        a promise: retries, platform windows and overrides can move the
+        actual attempt.
       x-roles: [master, admin, user]
       responses:
         '200':
@@ -4719,7 +4723,10 @@ components:
           description: |
             Five-minute anchors relative to window.start, the effective
             window of the caller's own account task for the current business
-            day. Each label is a clock time inside that window. The window
+            day. The slot count follows the plan's slice count: floor of the
+            window span in five-minute slices, at least one. Unlike the
+            administrator stats endpoint, this user read has no two-hour cap.
+            Each label is a clock time inside that window. The window
             actually executed for a task may be shifted by the platform
             window or a per-task override, so a label is a preference time,
             not the promised execution time. pct is the crowding band from
@@ -4751,17 +4758,21 @@ components:
           pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
           description: |
             Effective signing window start of the caller's own account task,
-            HH:MM, after edge trimming. Same source as the plan. When no
-            active account, no enabled task or no window is available this
-            is the server standard window used by the plan fallback.
+            HH:MM, after edge trimming. Same source as the plan. When the
+            account has a task but no cached or override window is available
+            this is the standard window with the plan's edge trimming. When
+            there is no active account or no enabled task there is no plan
+            row, so this is the standard window without edge trimming.
         end:
           type: string
           pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
           description: |
             Effective signing window end of the caller's own account task,
-            HH:MM, after edge trimming. Same source as the plan. When no
-            active account, no enabled task or no window is available this
-            is the server standard window used by the plan fallback.
+            HH:MM, after edge trimming. Same source as the plan. When the
+            account has a task but no cached or override window is available
+            this is the standard window with the plan's edge trimming. When
+            there is no active account or no enabled task there is no plan
+            row, so this is the standard window without edge trimming.
     TimePrefSlot:
       type: object
       additionalProperties: false
