@@ -12,7 +12,7 @@
 // Handler、NewHandler；Service、Authorizer、Verifier 是装配接缝。
 //
 // # 口径
-// 校验端点只允许 master 与 admin；user 一律 403。
+// 校验端点三种角色均可；账号必须在作用域内，越权与跨校同为 404。
 // 手动签到允许三种角色，但账号必须在其可见面内，否则 404；
 // 批量签到只允许 master 与 admin，user 整批 403。
 // 平台结论回 200 {ok:false, code, message}；传输失败回 502。
@@ -299,13 +299,11 @@ func decode(c *gin.Context, target any) bool {
 }
 
 // Verify 实现 POST /api/accounts/:id/verify。
+// 三种角色都可校验；作用域由 SigningCredential 判定，
+// user 只能读自己的账号，越权与跨校一样 404（person-name 同口径）。
 func (h *Handler) Verify(c *gin.Context, id oapi.AccountID, _ oapi.AccountVerifyParams) {
 	scope, _, ok := h.principal(c)
 	if !ok {
-		return
-	}
-	if kind := scope.Kind(); kind != corescope.KindMaster && kind != corescope.KindAdmin {
-		fail(c, errs.New(errs.CodeForbidden, "only master or admin may verify credentials"))
 		return
 	}
 	credential, err := h.svc.SigningCredential(c.Request.Context(), scope, string(id))

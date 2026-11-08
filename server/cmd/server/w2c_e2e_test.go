@@ -1650,6 +1650,73 @@ func TestW2CVerifyWithoutProfileDataOmitsIdentity(t *testing.T) {
 	}
 }
 
+// user 校验自己的账号：放行，结果结构与 master/admin 同形；
+// 他人账号 404（作用域在凭据读取，不泄露存在性）；master/admin 不变。
+func TestW2CVerifyUserOwnAndCrossScope(t *testing.T) {
+	e := w2cNewEnv(t)
+	owner := e.user("verify-owner@example.com", coreauth.RoleUser)
+	stranger := e.user("verify-stranger@example.com", coreauth.RoleUser)
+	admin := e.user("verify-admin@example.com", coreauth.RoleAdmin)
+	master := e.user("verify-master@example.com", coreauth.RoleMaster)
+	school := e.school("ru28-v")
+	e.bind(admin.ID, school.ID)
+	e.provider.profile = contract.Profile{
+		DisplayName: "测*生", SchoolName: "示例大学", UniversityID: "0000000028",
+	}
+
+	ownerSess := e.login(owner)
+	rec := e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13800138008",
+		"password":  "secret",
+	}, ownerSess)
+	w2cWantStatus(t, rec, http.StatusCreated)
+	var account w2cAccount
+	e.decode(rec, &account)
+
+	strangerSess := e.login(stranger)
+	rec = e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13800138009",
+		"password":  "secret",
+	}, strangerSess)
+	w2cWantStatus(t, rec, http.StatusCreated)
+	var other w2cAccount
+	e.decode(rec, &other)
+
+	ownRec := e.do(http.MethodPost, "/api/accounts/"+account.ID+"/verify", nil, ownerSess)
+	w2cWantStatus(t, ownRec, http.StatusOK)
+	var own w2cVerifyResult
+	e.decode(ownRec, &own)
+	if !own.Ok || own.Code != string(contract.OutcomeSuccess) {
+		t.Fatalf("user own verify = %#v", own)
+	}
+	if own.Identity == nil || own.Identity.UniversityName != "示例大学" ||
+		own.Identity.UniversityID != "0000000028" {
+		t.Fatalf("identity = %#v", own.Identity)
+	}
+
+	crossRec := e.do(http.MethodPost, "/api/accounts/"+other.ID+"/verify", nil, ownerSess)
+	w2cWantStatus(t, crossRec, http.StatusNotFound)
+	if code := e.errorCode(crossRec); code != "not_found" {
+		t.Fatalf("user cross verify code = %q, want not_found", code)
+	}
+
+	for name, sess := range map[string]*coreauth.Issued{
+		"admin":  e.login(admin),
+		"master": e.login(master),
+	} {
+		rec = e.do(http.MethodPost, "/api/accounts/"+account.ID+"/verify", nil, sess)
+		w2cWantStatus(t, rec, http.StatusOK)
+		var got w2cVerifyResult
+		e.decode(rec, &got)
+		if !got.Ok || got.Code != own.Code || got.Identity == nil ||
+			got.Identity.UniversityID != own.Identity.UniversityID {
+			t.Fatalf("%s verify = %#v", name, got)
+		}
+	}
+}
+
 // schools 的 platform_university_id 全链路：建校写入、PATCH 改值与清空、
 // 列表回读；同值绑两校被部分唯一索引拒绝（409）。
 func TestW2CSchoolPlatformUniversityIDRoundTrip(t *testing.T) {
