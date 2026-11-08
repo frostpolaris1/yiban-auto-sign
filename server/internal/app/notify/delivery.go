@@ -392,6 +392,9 @@ func (d *Dispatcher) adminCopy(ctx context.Context, event corenotify.Event) (str
 		if err != nil {
 			return "", "", err
 		}
+		if event.AutoApproved {
+			return "账号已自动通过审核", fmt.Sprintf("账号 %s 已自动通过审核。", masked), nil
+		}
 		return "账号待审核", fmt.Sprintf("账号 %s 已提交审核，请及时处理。", masked), nil
 	case corenotify.CategoryCapacityRejected:
 		body := fmt.Sprintf("%s 的计划需求 %d、容量 %d，缺口 %d。",

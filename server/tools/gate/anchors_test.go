@@ -147,7 +147,12 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// （重置令牌播种沿用 auth_e2e_test.go 的真实墙钟口径）。
 	// p12：env.get allow 增列 cmd/server/p12_wait_target_e2e_test.go
 	// （等待型重扫真库 e2e 沿用 loop_e2e_test.go 的 os.Getenv 读测试 DSN 口径）。
-	const want = "2d1f968ceb76d00c9b68b8158bb6409695dcc2f44ea6a8dbfc0a7a9efc10ca63"
+	// ykxf：clock.now allow 增列 cmd/server/ykxf_e2e_test.go
+	// （探测/自动核验 e2e 用真实墙钟做有界轮询）；
+	// status.literal allow 增列 cmd/server/ykxf_e2e_test.go 与
+	// internal/app/account/auto_approve_test.go（账号状态词 pending/active
+	// 来自 core/account，测试断言按该词表书写）。
+	const want = "c684bca884306e4701bf9d2526fd26ab8713a9fb5ea67cc9f6ecb8b8adde0436"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

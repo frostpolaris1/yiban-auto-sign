@@ -114,6 +114,9 @@ type Event struct {
 	DedupeKey string
 	Day       string
 	Capacity  CapacityFigures
+	// AutoApproved 把 review_pending 事件标成自动核验通过。
+	// 类别词表保持不变，只有文案与去重键由投递用例区分；零值表示人工待审。
+	AutoApproved bool
 }
 
 // CapacityFigures 是容量缺口事件的数字面，与计划的 Preview 同源。

@@ -760,6 +760,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/detect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Probe the platform identity and project the college onto a school.
+         * @description Runs one platform authentication with the submitted phone and
+         *     password and then reads back the device registration registered on
+         *     the platform. Nothing is persisted: the phone, password and device
+         *     code never reach storage, logs, audit or the response. The platform
+         *     university is projected onto the local school: an active school
+         *     bound to the platform university id is reused; a missing binding
+         *     creates one school (name from the platform, generated code, status
+         *     active) and appends a school.auto_create audit row carrying only the
+         *     platform university id; a disabled school bound to the id is treated
+         *     as absent, no second school is created and school is null. The
+         *     response carries the device code only as a presence bit; the code
+         *     itself never leaves the server. A platform failure answers 502 with
+         *     a neutral envelope; missing phone or password answers 400. The
+         *     request is rate limited per client IP and per submitted phone; a
+         *     429 carries Retry-After.
+         */
+        post: operations["AccountDetect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}": {
         parameters: {
             query?: never;
@@ -1339,6 +1373,37 @@ export interface paths {
          *     never the text.
          */
         put: operations["AnnouncementSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/auto-approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the global automatic approval switch.
+         * @description Master and admin may read it. The switch is false by default and
+         *     only controls whether a newly created account may run the single
+         *     background identity check. A missing row reads false.
+         */
+        get: operations["AdminAutoApprove"];
+        /**
+         * Open or close automatic approval.
+         * @description Master only. Writes one settings.auto_approve audit row whose detail
+         *     names the field and the target state; the switch value is a lowercase
+         *     true/false text. Like the public-registration switch, this
+         *     setting-level action does not require a second password: the
+         *     registration precedent applies because the write has no credential
+         *     or destructive effect. The response is the new state.
+         */
+        put: operations["AdminAutoApproveSet"];
         post?: never;
         delete?: never;
         options?: never;
@@ -2317,6 +2382,17 @@ export interface components {
         RegistrationSetRequest: {
             enabled: boolean;
         };
+        AutoApproveStatus: {
+            /**
+             * @description False by default. Only a master may change it. When true, a
+             *     create carrying confirm_defaults true may run one background
+             *     identity check and auto-approve on a match.
+             */
+            enabled: boolean;
+        };
+        AutoApproveUpdate: {
+            enabled: boolean;
+        };
         RegisterRequest: {
             /** Format: email */
             email: string;
@@ -2603,6 +2679,45 @@ export interface components {
              */
             device_code?: string;
             phone_model?: string;
+            /**
+             * @description Client declaration that every automatic default returned by
+             *     POST /api/accounts/detect was kept unchanged. It is a declaration,
+             *     not an authorization: when the global auto-approve switch is on
+             *     the server still re-reads the stored credential, logs in again and
+             *     checks the platform university id against the school binding
+             *     before moving the account from pending to active. Absent or false
+             *     means the account stays pending for a manual review. A failed
+             *     check leaves it pending as well; it is never a silent bypass.
+             */
+            confirm_defaults?: boolean;
+        };
+        AccountDetectRequest: {
+            phone: string;
+            /**
+             * @description Plain platform password. It is used for one authentication and is
+             *     never stored, logged or echoed.
+             */
+            password: string;
+        };
+        AccountDetectResult: {
+            university_name: string;
+            university_id: string;
+            /**
+             * @description The active school bound to university_id. Null when no school is
+             *     bound or the bound school is disabled; a disabled binding is
+             *     treated as absent, so no second school is created.
+             */
+            school: {
+                id: string;
+                name: string;
+            } | null;
+            person_name: string;
+            device_model: string;
+            /**
+             * @description Presence bit only. The device code value is never returned; use
+             *     device-refresh on the created account to read it back masked.
+             */
+            device_code_present: boolean;
         };
         /**
          * @description A user may not set or change device_code: the device code is the
@@ -4652,6 +4767,43 @@ export interface operations {
             default: components["responses"]["DefaultError"];
         };
     };
+    AccountDetect: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountDetectRequest"];
+            };
+        };
+        responses: {
+            /** @description The platform identity and its school projection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDetectResult"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
+            502: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
     AccountGet: {
         parameters: {
             query?: never;
@@ -5439,6 +5591,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Announcement"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminAutoApprove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current switch state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoApproveStatus"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminAutoApproveSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutoApproveUpdate"];
+            };
+        };
+        responses: {
+            /** @description Switch state after the write. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoApproveStatus"];
                 };
             };
             400: components["responses"]["ValidationError"];

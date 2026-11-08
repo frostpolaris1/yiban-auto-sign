@@ -77,18 +77,28 @@ const (
 	ActionSchoolCreate   Action = "school.create"
 	ActionSchoolUpdate   Action = "school.update"
 	ActionSchoolDisable  Action = "school.disable"
-	ActionAdminGrant     Action = "admin.grant"
-	ActionAdminRevoke    Action = "admin.revoke"
+	// 平台大学投影自动建校。detail 只含 university_id（平台院校标识），
+	// 不含平台院校名、编码或任何用户凭据。
+	ActionSchoolAutoCreate Action = "school.auto_create"
+	ActionAdminGrant       Action = "admin.grant"
+	ActionAdminRevoke      Action = "admin.revoke"
 	// 全局设置写入：目前只有公开注册开关。
 	// detail 只记字段与目标状态（enabled/disabled）。
 	ActionSettingsRegistration Action = "settings.registration"
 	// 全站公告写入或清空。detail 只记字段名，**绝无公告正文**。
 	ActionSettingsAnnouncement Action = "settings.announcement"
+	// 全局自动审批开关。detail 只记字段与目标状态（enabled/disabled）。
+	ActionSettingsAutoApprove Action = "settings.auto_approve"
 	// 设置页测试邮件。每次外呼都记，成功与失败同动作；
 	// detail 只记结果与投递粗分类，**绝无** SMTP 应答、邮箱原文或口令。
 	ActionSettingsMailTest Action = "settings.mail_test"
 	ActionAccountCreate    Action = "account.create"
 	ActionAccountUpdate    Action = "account.update"
+	// 自动核验通过：pending→active，无人工审核者。detail 只记状态迁移。
+	ActionAccountAutoApprove Action = "account.auto_approve"
+	// 自动核验失败：账号留 pending。detail 只记结果词（如
+	// identity_mismatch / platform_error），绝不记平台值或凭据。
+	ActionAccountAutoCheckFailed Action = "account.auto_check_failed"
 	// 被拒账号编辑或改绑手机号把账号送回 pending：重提进待审队列。
 	// detail 只记状态迁移，不含手机号。
 	ActionAccountResubmit     Action = "account.resubmit"
@@ -259,6 +269,9 @@ var (
 	fieldShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	// wordShape 是状态或原因码。
 	wordShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	// universityIDShape 是平台院校标识：UUID 形状或纯数字/字母 ID，
+	// 1..128 字符，无空格与自由文本标点。它是公开院校标识，不是 PII。
+	universityIDShape = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$`)
 	// uuidShape 匹配小写 UUID。学校默认图只记照片 id。
 	uuidShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
@@ -293,6 +306,8 @@ var detailKeys = map[string]bool{
 	"result":    true,
 	"kind":      true,
 	"retryable": true,
+	// 平台大学投影自动建校：值来自平台身份信封，是公开院校标识而非个人数据。
+	"university_id": true,
 }
 
 // cropPercentKeys 是裁切比例 detail 键集。取值限 0..10 闭区间。
@@ -437,6 +452,11 @@ func validateDetailString(key, text string) error {
 	case "photo_id", "previous_photo_id":
 		if !uuidShape.MatchString(text) {
 			return fmt.Errorf("%w: %q has the wrong uuid shape", ErrDetailShape, key)
+		}
+		return nil
+	case "university_id":
+		if !universityIDShape.MatchString(text) {
+			return fmt.Errorf("%w: %q has the wrong university id shape", ErrDetailShape, key)
 		}
 		return nil
 	case "reason":

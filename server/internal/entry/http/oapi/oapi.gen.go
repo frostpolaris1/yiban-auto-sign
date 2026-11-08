@@ -885,6 +885,16 @@ type AccountBatchSignResult struct {
 // a credential edit (a rejected account resubmits and a
 // credential_error account recovers), and every role may write it.
 type AccountCreate struct {
+	// ConfirmDefaults Client declaration that every automatic default returned by
+	// POST /api/accounts/detect was kept unchanged. It is a declaration,
+	// not an authorization: when the global auto-approve switch is on
+	// the server still re-reads the stored credential, logs in again and
+	// checks the platform university id against the school binding
+	// before moving the account from pending to active. Absent or false
+	// means the account stays pending for a manual review. A failed
+	// check leaves it pending as well; it is never a silent bypass.
+	ConfirmDefaults *bool `json:"confirm_defaults,omitempty"`
+
 	// DeviceCode master and admin may set it. A user can only obtain it through
 	// device-refresh: a non-empty value answers 403, an empty string is
 	// the same as omitting it.
@@ -912,6 +922,33 @@ type AccountDeleteRequest struct {
 	// answers 400 when it is missing, 403 when it is wrong and 429 after
 	// repeated failures.
 	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
+}
+
+// AccountDetectRequest defines model for AccountDetectRequest.
+type AccountDetectRequest struct {
+	// Password Plain platform password. It is used for one authentication and is
+	// never stored, logged or echoed.
+	Password string `json:"password"`
+	Phone    string `json:"phone"`
+}
+
+// AccountDetectResult defines model for AccountDetectResult.
+type AccountDetectResult struct {
+	// DeviceCodePresent Presence bit only. The device code value is never returned; use
+	// device-refresh on the created account to read it back masked.
+	DeviceCodePresent bool   `json:"device_code_present"`
+	DeviceModel       string `json:"device_model"`
+	PersonName        string `json:"person_name"`
+
+	// School The active school bound to university_id. Null when no school is
+	// bound or the bound school is disabled; a disabled binding is
+	// treated as absent, so no second school is created.
+	School *struct {
+		Id   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"school"`
+	UniversityId   string `json:"university_id"`
+	UniversityName string `json:"university_name"`
 }
 
 // AccountDevice The device view after a platform re-read. device_code_masked keeps
@@ -1236,6 +1273,19 @@ type AuditLogPage struct {
 
 	// NextCursor Cursor for the next page; empty on the last page.
 	NextCursor string `json:"next_cursor"`
+}
+
+// AutoApproveStatus defines model for AutoApproveStatus.
+type AutoApproveStatus struct {
+	// Enabled False by default. Only a master may change it. When true, a
+	// create carrying confirm_defaults true may run one background
+	// identity check and auto-approve on a match.
+	Enabled bool `json:"enabled"`
+}
+
+// AutoApproveUpdate defines model for AutoApproveUpdate.
+type AutoApproveUpdate struct {
+	Enabled bool `json:"enabled"`
 }
 
 // CapacityReport defines model for CapacityReport.
@@ -2495,6 +2545,13 @@ type AccountBatchSignParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AccountDetectParams defines parameters for AccountDetect.
+type AccountDetectParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AccountDeleteParams defines parameters for AccountDelete.
 type AccountDeleteParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -2583,6 +2640,13 @@ type AccountVerifyParams struct {
 
 // AnnouncementSetParams defines parameters for AnnouncementSet.
 type AnnouncementSetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// AdminAutoApproveSetParams defines parameters for AdminAutoApproveSet.
+type AdminAutoApproveSetParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
 	// state-changing request that carries a session.
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
@@ -3026,6 +3090,9 @@ type AccountBatchJSONRequestBody = AccountBatchRequest
 // AccountBatchSignJSONRequestBody defines body for AccountBatchSign for application/json ContentType.
 type AccountBatchSignJSONRequestBody = AccountBatchSignRequest
 
+// AccountDetectJSONRequestBody defines body for AccountDetect for application/json ContentType.
+type AccountDetectJSONRequestBody = AccountDetectRequest
+
 // AccountDeleteJSONRequestBody defines body for AccountDelete for application/json ContentType.
 type AccountDeleteJSONRequestBody = AccountDeleteRequest
 
@@ -3052,6 +3119,9 @@ type AccountReviewJSONRequestBody = AccountReviewRequest
 
 // AnnouncementSetJSONRequestBody defines body for AnnouncementSet for application/json ContentType.
 type AnnouncementSetJSONRequestBody = AnnouncementUpdate
+
+// AdminAutoApproveSetJSONRequestBody defines body for AdminAutoApproveSet for application/json ContentType.
+type AdminAutoApproveSetJSONRequestBody = AutoApproveUpdate
 
 // AdminNotifySetJSONRequestBody defines body for AdminNotifySet for application/json ContentType.
 type AdminNotifySetJSONRequestBody = NotifyPrefsUpdate
@@ -3239,6 +3309,9 @@ type ServerInterface interface {
 	// AccountBatchSign Queue manual signs for up to ten accounts.
 	// (POST /api/accounts/batch/sign)
 	AccountBatchSign(c *gin.Context, params AccountBatchSignParams)
+	// AccountDetect Probe the platform identity and project the college onto a school.
+	// (POST /api/accounts/detect)
+	AccountDetect(c *gin.Context, params AccountDetectParams)
 	// AccountSummary Count the live accounts awaiting a review decision.
 	// (GET /api/accounts/summary)
 	AccountSummary(c *gin.Context)
@@ -3290,6 +3363,12 @@ type ServerInterface interface {
 	// AnnouncementSet Publish or clear the site announcement.
 	// (PUT /api/admin/announcement)
 	AnnouncementSet(c *gin.Context, params AnnouncementSetParams)
+	// AdminAutoApprove Read the global automatic approval switch.
+	// (GET /api/admin/auto-approve)
+	AdminAutoApprove(c *gin.Context)
+	// AdminAutoApproveSet Open or close automatic approval.
+	// (PUT /api/admin/auto-approve)
+	AdminAutoApproveSet(c *gin.Context, params AdminAutoApproveSetParams)
 	// AdminEngine One-process execution monitor snapshot.
 	// (GET /api/admin/engine)
 	AdminEngine(c *gin.Context)
@@ -3711,6 +3790,49 @@ func (siw *ServerInterfaceWrapper) AccountBatchSign(c *gin.Context) {
 	}
 
 	siw.Handler.AccountBatchSign(c, params)
+}
+
+// AccountDetect operation middleware
+func (siw *ServerInterfaceWrapper) AccountDetect(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountDetectParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountDetect(c, params)
 }
 
 // AccountSummary operation middleware
@@ -4458,6 +4580,62 @@ func (siw *ServerInterfaceWrapper) AnnouncementSet(c *gin.Context) {
 	}
 
 	siw.Handler.AnnouncementSet(c, params)
+}
+
+// AdminAutoApprove operation middleware
+func (siw *ServerInterfaceWrapper) AdminAutoApprove(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminAutoApprove(c)
+}
+
+// AdminAutoApproveSet operation middleware
+func (siw *ServerInterfaceWrapper) AdminAutoApproveSet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminAutoApproveSetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminAutoApproveSet(c, params)
 }
 
 // AdminEngine operation middleware
@@ -6917,6 +7095,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/accounts/summary", wrapper.AccountSummary)
 	router.POST(options.BaseURL+"/api/accounts/batch", wrapper.AccountBatch)
 	router.POST(options.BaseURL+"/api/accounts/batch/sign", wrapper.AccountBatchSign)
+	router.POST(options.BaseURL+"/api/accounts/detect", wrapper.AccountDetect)
 	router.DELETE(options.BaseURL+"/api/accounts/:id", wrapper.AccountDelete)
 	router.GET(options.BaseURL+"/api/accounts/:id", wrapper.AccountGet)
 	router.PATCH(options.BaseURL+"/api/accounts/:id", wrapper.AccountUpdate)
@@ -6940,6 +7119,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/admin/settings", wrapper.AdminSettings)
 	router.POST(options.BaseURL+"/api/admin/mail/test", wrapper.AdminMailTest)
 	router.PUT(options.BaseURL+"/api/admin/announcement", wrapper.AnnouncementSet)
+	router.GET(options.BaseURL+"/api/admin/auto-approve", wrapper.AdminAutoApprove)
+	router.PUT(options.BaseURL+"/api/admin/auto-approve", wrapper.AdminAutoApproveSet)
 	router.GET(options.BaseURL+"/api/announcement", wrapper.AnnouncementGet)
 	router.GET(options.BaseURL+"/api/audit-logs", wrapper.AuditLogList)
 	router.GET(options.BaseURL+"/api/me/diagnostics", wrapper.MeDiagnostics)

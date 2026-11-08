@@ -116,6 +116,9 @@ either side drifts.
 | DELETE | `/api/schools/:id/admins/:uid` | master | P1 |
 | GET | `/api/accounts` | master/admin/user | P1 |
 | POST | `/api/accounts` | master/admin/user | P1 |
+|  |  |  | 可选 `confirm_defaults`：客户端声明建号全部沿用 detect 返回的默认值。它是声明而非授权——开关开时服务端仍用存储凭据重登平台并复核 `UniversityId` 与学校绑定；未带、false、开关关或复核失败都留在 pending 走人工；复核通过写 `account.auto_approve` 审计并通知管理员，失败写 `account.auto_check_failed`（detail 只含结果词）。 |
+| POST | `/api/accounts/detect` | master/admin/user | ykxf |
+|  |  |  | 用提交的手机号与口令做一次平台认证并读回设备登记：凭据零落库、零日志、零审计值；平台院校按 `schools.platform_university_id` 投影到本地学校——活跃校复用，未绑定则自动建校（名称取平台、编码自动生成、status active）并写 `school.auto_create` 审计（detail 只含 `university_id`），disabled 校视同未命中（不重复建校，`school` 回 null）；响应只回设备码状态位 `device_code_present`，不回设备码本体；平台失败统一 502 中性信封；按客户端 IP 与提交手机号限流，429 带 `Retry-After`。 |
 | GET | `/api/accounts/summary` | master/admin | N190 |
 |  |  |  | 只数未软删账号：`pending` 与 `rejected` 两计数，供看板待处理 KPI 与账号页提示条。 |
 | POST | `/api/accounts/batch` | master/admin | 870 |
@@ -185,6 +188,10 @@ either side drifts.
 |  |  |  | 各自管理自己的订阅：返回全部类别×渠道的有效状态；缺行按默认（review=in_app+email；credential_invalid=in_app；sign_failed_daily=email；capacity_rejected=in_app）。本阶段只存取，不投递。 |
 | PUT | `/api/admin/notify` | master/admin | 2ws A |
 |  |  |  | 幂等替换本人的覆盖集；未知类别/渠道或重复对 400；未列出的对回默认。 |
+| GET | `/api/admin/auto-approve` | master/admin | ykxf |
+|  |  |  | 全局自动审批开关；默认 false；行缺失也读 false。 |
+| PUT | `/api/admin/auto-approve` | master | ykxf |
+|  |  |  | 开/关自动审批；写 `settings.auto_approve` 审计（detail 只含字段与目标状态）。按 registration 先例，设置级写入不要求二次口令：不触碰凭据、不可逆性为零。 |
 | GET | `/api/admin/settings` | master/admin | 2ws A |
 |  |  |  | 只读配置名册，按组返回；敏感键只给 `{set, masked, source}`，永不回显原文；source=env/default/unknown（file 保留，本服务不产出）。键全集来自编译期嵌入的 `internal/configdata/registry.json`。 |
 | POST | `/api/admin/mail/test` | master | c3e |

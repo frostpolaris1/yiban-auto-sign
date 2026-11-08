@@ -25,6 +25,12 @@ const (
 	maxBodyBytes      = 1 << 20
 	maxMessageRunes   = 200
 	maxAuthRedirects  = 5
+	// maxSessions 是进程内会话槽上限。键来自账号 ID 或 detect 的
+	// 手机号摘要；无上限时任何登录用户都能靠新键堆内存。
+	maxSessions = 1024
+	// sessionSweepInterval 限制全表清理频率：每次取槽只做容量判定，
+	// 过期/空闲清理至多每分钟一次。
+	sessionSweepInterval = time.Minute
 )
 
 // Config 是客户端的运行参数。
@@ -48,8 +54,9 @@ type Client struct {
 	transport http.RoundTripper
 	random    io.Reader
 
-	mu       sync.Mutex
-	sessions map[string]*sessionEntry
+	mu        sync.Mutex
+	sessions  map[string]*sessionEntry
+	lastSweep time.Time
 
 	posMu     sync.Mutex
 	positions map[string]positionEntry
@@ -61,10 +68,11 @@ type positionEntry struct {
 }
 
 type sessionEntry struct {
-	mu      sync.Mutex
-	http    *http.Client
-	csrf    string
-	expires time.Time
+	mu       sync.Mutex
+	http     *http.Client
+	csrf     string
+	expires  time.Time
+	lastSeen time.Time
 }
 
 // New 构造客户端。零值配置取默认值。
@@ -97,14 +105,67 @@ func New(cfg Config) *Client {
 }
 
 func (c *Client) entry(accountID string) *sessionEntry {
+	now := c.clock.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.sweepLocked(now)
 	entry := c.sessions[accountID]
 	if entry == nil {
+		c.evictLocked()
 		entry = &sessionEntry{}
 		c.sessions[accountID] = entry
 	}
+	entry.lastSeen = now
 	return entry
+}
+
+// lookupEntry 只读槽位，不创建。clearSession 用它避免为已淘汰的账号
+// 重新建一个空槽（那会把清理掉的键又写回来）。
+func (c *Client) lookupEntry(accountID string) *sessionEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sessions[accountID]
+}
+
+// sweepLocked 清理过期或空闲超过会话 TTL 的槽位。
+// 调用方持 c.mu。TryLock 失败说明该槽正被使用，跳过本轮。
+// 空闲阈值取会话 TTL：小于它会把仍可复用（滑动续期）的会话提前淘汰。
+func (c *Client) sweepLocked(now time.Time) {
+	if !c.lastSweep.IsZero() && now.Sub(c.lastSweep) < sessionSweepInterval {
+		return
+	}
+	c.lastSweep = now
+	for id, entry := range c.sessions {
+		if !entry.mu.TryLock() {
+			continue
+		}
+		expired := entry.http != nil && !now.Before(entry.expires)
+		idle := entry.lastSeen.Add(c.ttl).Before(now)
+		entry.mu.Unlock()
+		if expired || idle {
+			delete(c.sessions, id)
+		}
+	}
+}
+
+// evictLocked 在插入新槽前按最久未见淘汰，保证 map 大小有界。
+// 被淘汰的槽即使正被读取也安全：持有点继续用旧指针，只是不再命中缓存。
+func (c *Client) evictLocked() {
+	for len(c.sessions) >= maxSessions {
+		var (
+			oldestID string
+			oldest   time.Time
+		)
+		for id, entry := range c.sessions {
+			if oldestID == "" || entry.lastSeen.Before(oldest) {
+				oldestID, oldest = id, entry.lastSeen
+			}
+		}
+		if oldestID == "" {
+			return
+		}
+		delete(c.sessions, oldestID)
+	}
 }
 
 func (e *sessionEntry) valid(now time.Time) bool {
@@ -171,10 +232,11 @@ func (c *Client) withSessionNoRetry(ctx context.Context, accountID string, cred 
 }
 
 func (c *Client) clearSession(accountID string) {
-	entry := c.entry(accountID)
-	entry.mu.Lock()
-	entry.http = nil
-	entry.mu.Unlock()
+	if entry := c.lookupEntry(accountID); entry != nil {
+		entry.mu.Lock()
+		entry.http = nil
+		entry.mu.Unlock()
+	}
 	c.clearPositions(accountID)
 }
 

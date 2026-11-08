@@ -45,6 +45,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // Source 是配置值的来源分类。
@@ -209,12 +210,22 @@ type Store interface {
 	SetAnnouncement(ctx context.Context, text, updatedBy string) (updatedAt *time.Time, err error)
 }
 
+// AutoApproveStore 读写全局自动审批开关。
+// 读：行缺失或值不是 true 都按关闭；写：单语句 upsert，调用方包事务。
+type AutoApproveStore interface {
+	AutoApproveEnabled(ctx context.Context) (bool, error)
+	SetAutoApproveEnabled(ctx context.Context, enabled bool, by string) error
+}
+
 // Deps 是公告与测试邮件用例的依赖。
 type Deps struct {
 	Store Store
 	Audit appaudit.Repo
 	Tx    app.TxManager
 	Clock coreclock.Clock
+	// AutoApprove 是全局自动审批开关。为 nil 时读写都失败关闭：
+	// 装配必须显式决定，缺失不得读成「关闭」。
+	AutoApprove AutoApproveStore
 	// Mail 投递测试邮件。为 nil 表示 SMTP 关闭：
 	// 测试邮件端点回 409，**不**静默成功。
 	Mail coremail.Sender
@@ -302,6 +313,60 @@ func (s *Service) Set(ctx context.Context, raw string, actor appaudit.Actor) (An
 		return Announcement{}, err
 	}
 	return announcement, nil
+}
+
+// AutoApprove 读全局自动审批开关。master 与 admin 可读。
+// 存储故障原样上抛，**不**当作关闭：关闭是业务状态，故障是故障。
+func (s *Service) AutoApprove(ctx context.Context, scope corescope.Scope) (bool, error) {
+	if err := app.RequireScope(scope); err != nil {
+		return false, err
+	}
+	if kind := scope.Kind(); kind != corescope.KindMaster && kind != corescope.KindAdmin {
+		return false, coreerrs.New(coreerrs.CodeForbidden, "master or admin role is required")
+	}
+	if s.deps.AutoApprove == nil {
+		return false, coreerrs.New(coreerrs.CodeInternal, "auto-approve store is not configured")
+	}
+	return s.deps.AutoApprove.AutoApproveEnabled(ctx)
+}
+
+// SetAutoApprove 打开或关闭自动审批。**只有 master 可以调用**。
+// 开关写入与 settings.auto_approve 审计同事务；detail 只含字段与目标状态。
+// 按 registration 先例，设置级写入不要求二次口令。
+func (s *Service) SetAutoApprove(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, enabled bool) (bool, error) {
+	if err := app.RequireScope(scope); err != nil {
+		return false, err
+	}
+	if scope.Kind() != corescope.KindMaster {
+		return false, coreerrs.New(coreerrs.CodeForbidden, "master role is required")
+	}
+	if s.deps.AutoApprove == nil {
+		return false, coreerrs.New(coreerrs.CodeInternal, "auto-approve store is not configured")
+	}
+	target := "disabled"
+	if enabled {
+		target = "enabled"
+	}
+	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		if err := s.deps.AutoApprove.SetAutoApproveEnabled(ctx, enabled, actor.UserID); err != nil {
+			return err
+		}
+		_, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
+			TS:          s.deps.Clock.Now().UTC(),
+			ActorUserID: actor.UserID,
+			ActorRole:   actor.Role,
+			ActorLabel:  actor.Label,
+			Action:      coreaudit.ActionSettingsAutoApprove,
+			TargetType:  "settings",
+			TargetID:    "auto_approve",
+			Detail:      map[string]any{"field": "auto_approve", "to": target},
+		})
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return enabled, nil
 }
 
 // TestMailCooldown 是同一管理员两次测试邮件之间的最小间隔。

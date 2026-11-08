@@ -292,6 +292,19 @@ var migrationDownCases = map[int64]migrationDownCase{
 			}
 		},
 	},
+	29: {
+		name: "auto_approve_setting",
+		wantDown: func(m *migrationDownEnv) {
+			if got := m.scalarInt("SELECT count(*) FROM settings WHERE key = 'auto_approve'"); got != 0 {
+				m.t.Fatalf("settings rows after Down = %d, want 0", got)
+			}
+		},
+		wantUp: func(m *migrationDownEnv) {
+			if got := m.scalarString("SELECT value FROM settings WHERE key = 'auto_approve'"); got != "false" {
+				m.t.Fatalf("auto_approve value = %q, want false", got)
+			}
+		},
+	},
 }
 
 // TestMigrationDownIsExecutable 在真库上执行每个已登记的 Down。

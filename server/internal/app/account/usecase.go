@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -97,13 +98,23 @@ type Deps struct {
 	Limit int
 	// ReviewAlerts 是待审核通知端口。
 	ReviewAlerts ReviewAlerts
-	Logger       *slog.Logger
+	// Settings 读全局自动审批开关；nil 表示不自动核验。
+	Settings AutoApproveSettings
+	// Identity 做 detect 与自动核验的平台认证；nil 时 detect 失败关闭。
+	Identity IdentityVerifier
+	// SchoolProjection 把平台院校投影到本地学校；nil 时 detect 失败关闭。
+	SchoolProjection PlatformSchoolProjector
+	Logger           *slog.Logger
 }
 
 // Service 是账号用例服务。
 type Service struct {
 	deps Deps
 	log  *slog.Logger
+	// baseCtx 管辖有界后台核验：Shutdown 取消它并等待在飞任务。
+	baseCtx context.Context
+	cancel  context.CancelFunc
+	bg      sync.WaitGroup
 }
 
 // Page 是一页账号。
@@ -123,14 +134,18 @@ type ListFilter struct {
 }
 
 // CreateInput 是建账号的输入。口令必填，备注名可选。
+// ConfirmDefaults 是客户端声明「detect 返回的默认值全部未改」；
+// 它不授权任何动作：开关开且声明为真时，服务端仍用存储凭据重登平台
+// 复核院校绑定，复核失败留在 pending。
 type CreateInput struct {
-	SchoolID    string
-	OwnerUserID string
-	Phone       string
-	Name        string
-	Password    string
-	DeviceCode  string
-	PhoneModel  string
+	SchoolID        string
+	OwnerUserID     string
+	Phone           string
+	Name            string
+	Password        string
+	DeviceCode      string
+	PhoneModel      string
+	ConfirmDefaults bool
 }
 
 // UpdateInput 携带可选的列变更。nil 字段不改。
@@ -186,7 +201,8 @@ func NewService(deps Deps) (*Service, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{deps: deps, log: log}, nil
+	baseCtx, cancel := context.WithCancel(context.Background())
+	return &Service{deps: deps, log: log, baseCtx: baseCtx, cancel: cancel}, nil
 }
 
 // List 按作用域列账号。
@@ -404,6 +420,11 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	}
 	// 事务已提交：待审核通知是补充事实，失败不影响建号结果。
 	s.alertReviewPending(ctx, record)
+	// 只在客户端声明全部默认值且开关开时起一次有界后台核验；
+	// 声明不是授权：核验仍用存储凭据重登平台并复核院校绑定。
+	if in.ConfirmDefaults {
+		s.startAutoApprove(record)
+	}
 	// 新行的凭据刚写入；响应直接回入参，不必再解密一次。
 	record.PhoneModel = in.PhoneModel
 	return record, nil

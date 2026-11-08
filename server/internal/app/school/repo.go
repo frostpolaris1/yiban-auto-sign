@@ -52,6 +52,9 @@ type Repo interface {
 	Create(ctx context.Context, in New) (Record, error)
 	Get(ctx context.Context, id string) (Record, error)
 	GetByCode(ctx context.Context, code string) (Record, error)
+	// GetByPlatformUniversityID 按平台院校标识查绑定校；未绑定报 not_found。
+	// detect 的学校投影与并发建校回落都依赖它。
+	GetByPlatformUniversityID(ctx context.Context, universityID string) (Record, error)
 	Update(ctx context.Context, id string, in Update) (Record, error)
 	List(ctx context.Context, scope corescope.Scope, cursor string, limit int) ([]Record, string, error)
 }

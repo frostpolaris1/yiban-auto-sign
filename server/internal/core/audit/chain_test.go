@@ -278,6 +278,25 @@ func TestEncodeDetailAcceptsMailTestKeys(t *testing.T) {
 	}
 }
 
+// 平台大学投影自动建校：university_id 只接受 1..128 位的字母数字/下划线/连字符。
+// 平台 ID 是公开院校标识；形状规则挡住把它当自由文本塞入审计的写法。
+func TestEncodeDetailAcceptsUniversityID(t *testing.T) {
+	for _, id := range []string{
+		"0000000028",
+		"00000000000000000000000000000001",
+		"Yiban-University_01",
+	} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{"university_id": id}); err != nil {
+			t.Fatalf("university_id %q 被拒绝: %v", id, err)
+		}
+	}
+	for _, bad := range []string{"", " has space", "a/b", strings.Repeat("a", 129)} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{"university_id": bad}); err == nil {
+			t.Fatalf("university_id %q 未被拒绝", bad)
+		}
+	}
+}
+
 // P5 图片入库审计的键：crop_* 只接受 0..10 整数，
 // sha256 只接受 64 位小写十六进制（输出摘要，无 PII 容量）。
 func TestEncodeDetailAcceptsPhotoUploadKeys(t *testing.T) {

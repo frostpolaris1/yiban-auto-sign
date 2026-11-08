@@ -536,6 +536,8 @@ var additionalPropertiesExemptions = map[string][]string{
 	// 姓名懒加载与 verify 身份：都是响应对象；未知字段被编码器忽略。
 	"AccountPersonNameResult": {"响应对象；未知字段被编码器忽略"},
 	"AccountVerifyIdentity":   {"响应对象；未知字段被编码器忽略"},
+	// ykxf 平台探测：响应对象；未知字段被编码器忽略。
+	"AccountDetectResult": {"响应对象；未知字段被编码器忽略"},
 }
 
 // contractNoAdditionalProperties 匹配 YAML 映射里的一项 additionalProperties: false。

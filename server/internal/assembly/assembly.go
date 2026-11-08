@@ -379,6 +379,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: audit repo: %w", err)
 		}
+		// settings 行同时服务注册开关、自动审批开关与设置页写入。
+		settingsRepo := pg.NewSettingsRepo(db)
 		// 设置面：订阅、公告、名册、测试邮件与审计列表。
 		// 名册缺失只让 GET /api/admin/settings 回 501：其余端点不依赖它。
 		// 邮件端口先于设置面构造：测试邮件与忘记口令共用同一实现。
@@ -410,7 +412,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			logger.Warn("mail: SMTP delivery is disabled; password reset links, test mail and notification mail are not delivered",
 				logfield.KeyReason, "YIBAN_RESET_MAIL_ENABLE is false")
 		}
-		notifyLib, systemLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle)
+		notifyLib, systemLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle, settingsRepo)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -428,7 +430,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Sessions:      issuer,
 			OtherSessions: sessionRepo,
 			Resets:        pg.NewPasswordResetRepo(db),
-			Registrations: pg.NewSettingsRepo(db),
+			Registrations: settingsRepo,
 			Audits:        audits,
 			Tx:            db,
 			Clock:         clk,
@@ -515,21 +517,32 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 三者必须走同一六请求链实现，避免校验用一套、签到用另一套的漂移。
 		provider := yiban.NewProvider(yiban.New(yiban.Config{Clock: clk}))
 		accountSvc, err := appaccount.NewService(appaccount.Deps{
-			Accounts:     pg.NewAccountRepo(db),
-			Schools:      schoolRepo,
-			Audit:        audits,
-			Tx:           db,
-			Clock:        clk,
-			Cipher:       cipher,
-			Owner:        userRepo,
-			Device:       accountDeviceReader{provider: provider},
-			Limit:        accountCapacityLimit,
-			ReviewAlerts: notificationDispatcher,
-			Logger:       logger,
+			Accounts:         pg.NewAccountRepo(db),
+			Schools:          schoolRepo,
+			Audit:            audits,
+			Tx:               db,
+			Clock:            clk,
+			Cipher:           cipher,
+			Owner:            userRepo,
+			Device:           accountDeviceReader{provider: provider},
+			Settings:         settingsRepo,
+			Identity:         provider,
+			SchoolProjection: schoolSvc,
+			Limit:            accountCapacityLimit,
+			ReviewAlerts:     notificationDispatcher,
+			Logger:           logger,
 		})
 		if err != nil {
 			closeFn()
 			return nil, fmt.Errorf("assembly: account service: %w", err)
+		}
+		// 关闭顺序：先取消并等待在飞自动核验，再关池。
+		closeAccount := closeFn
+		closeFn = func() {
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownBudget)
+			accountSvc.Shutdown(ctx)
+			cancel()
+			closeAccount()
 		}
 		userSvc, err := appuser.NewService(appuser.Deps{
 			Users:         userRepo,
@@ -855,7 +868,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 // 嵌入名册损坏是构建缺陷，一律失败关闭。带病的名册会把错误的信息
 // 展示成配置事实。
 func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
-	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, error) {
+	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown,
+	autoApprove appsettings.AutoApproveStore) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
@@ -868,13 +882,14 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		return nil, nil, nil, fmt.Errorf("assembly: notification inbox: %w", err)
 	}
 	announcementSvc, err := appsettings.NewService(appsettings.Deps{
-		Store:    pg.NewAnnouncementRepo(db),
-		Audit:    audits,
-		Tx:       db,
-		Clock:    clk,
-		Mail:     mailer,
-		Cooldown: cooldown,
-		Logger:   logger,
+		Store:       pg.NewAnnouncementRepo(db),
+		Audit:       audits,
+		Tx:          db,
+		Clock:       clk,
+		Mail:        mailer,
+		Cooldown:    cooldown,
+		AutoApprove: autoApprove,
+		Logger:      logger,
 	})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("assembly: announcement service: %w", err)
@@ -893,7 +908,8 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		return nil, nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
 	}
 	notifyHandler := notifyhttp.NewHandler(notifySvc).WithInbox(inboxSvc)
-	systemHandler := systemhttp.NewHandler(roster, announcementSvc, announcementSvc)
+	systemHandler := systemhttp.NewHandler(roster, announcementSvc, announcementSvc).
+		WithAutoApprove(announcementSvc)
 	return notifyHandler, systemHandler, audithttp.NewHandler(reader), nil
 }
 
