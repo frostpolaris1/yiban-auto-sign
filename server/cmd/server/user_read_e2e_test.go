@@ -15,7 +15,9 @@ package main
 // 业务日取服务端业务时区；测试不假设运行机器的本地时区。
 
 import (
+	"math"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +25,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // userReadLoc 是 w2cEnv 装配时使用的业务时区。
@@ -364,4 +367,201 @@ func TestPhotoRetentionGet(t *testing.T) {
 	if got := e.do(http.MethodGet, "/api/me/photo-retention", nil, nil).Code; got != http.StatusUnauthorized {
 		t.Errorf("匿名 status = %d, want 401", got)
 	}
+}
+
+// seedTimePref 直接写一行自选；用户读面与 admin stats 必须读到同一份。
+func (e *w2cEnv) seedTimePref(userID string, offset int) {
+	e.t.Helper()
+	if _, err := e.db.Exec(e.ctx, `
+		INSERT INTO time_prefs (user_id, offset_min) VALUES ($1::uuid, $2)
+		ON CONFLICT (user_id) DO UPDATE SET offset_min = EXCLUDED.offset_min`,
+		userID, offset); err != nil {
+		e.t.Fatalf("seed time pref: %v", err)
+	}
+}
+
+// 用户自选读面带出任务窗口、与 admin stats 同源的拥挤度、台账预计时段；
+// 用户仍不能调用 admin stats；task_id 不下发。
+func TestTimePrefCrowdingAndEstimate(t *testing.T) {
+	e := w2cNewEnv(t)
+	loc := userReadLoc()
+	today := clock.BusinessDay(clock.System{}.Now(), loc)
+	master := e.user("timepref-crowd-master@example.com", coreauth.RoleMaster)
+	user := e.user("timepref-crowd-user@example.com", coreauth.RoleUser)
+	peer := e.user("timepref-crowd-peer@example.com", coreauth.RoleUser)
+	school := e.school("timepref-crowd")
+	task := e.schoolTask(school.ID, "晨签")
+	acctUser := e.account(school.ID, user.ID, "13800000070")
+	acctPeer := e.account(school.ID, peer.ID, "13800000071")
+	e.activateAccount(acctUser)
+	e.activateAccount(acctPeer)
+	start, end := windowAt(today, loc, [2]int{6, 30}, [2]int{7, 50})
+	e.windows[task] = contract.Window{Start: start, End: end, Source: contract.WindowPlatform}
+	e.seedTimePref(user.ID, 0)
+	e.seedTimePref(peer.ID, 0)
+	runAt := userReadAt(t, today, 6, 42, 0)
+	e.seedTask(acctUser, task, today, corestatus.TaskPending, 0, runAt, runAt)
+
+	rec := e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(user))
+	w2cWantStatus(t, rec, http.StatusOK)
+	var view oapi.TimePref
+	e.decode(rec, &view)
+	if view.Window.Start != "06:30" || view.Window.End != "07:50" {
+		t.Fatalf("window = %+v, want task window 06:30~07:50", view.Window)
+	}
+	if view.Slots == nil || len(*view.Slots) != 16 {
+		t.Fatalf("slots = %v, want 16", view.Slots)
+	}
+	userSlot := (*view.Slots)[0]
+	if userSlot.OffsetMin != 0 || userSlot.Label != "06:30" {
+		t.Fatalf("首槽 = %+v, want 06:30", userSlot)
+	}
+	if view.Estimated == nil || *view.Estimated != "06:42" {
+		t.Fatalf("estimated = %v, want 06:42", view.Estimated)
+	}
+	if !strings.Contains(view.EstimateNote, "非承诺") {
+		t.Fatalf("estimate_note = %q, 必须写明非承诺", view.EstimateNote)
+	}
+	if strings.Contains(rec.Body.String(), task) {
+		t.Fatalf("用户响应泄露 task_id: %s", rec.Body.String())
+	}
+
+	// 同一任务的 admin 统计：人数/容量就是用户 pct 的输入。
+	statsRec := e.do(http.MethodGet,
+		"/api/time-prefs/stats?school_id="+school.ID+"&task_id="+task, nil, e.login(master))
+	w2cWantStatus(t, statsRec, http.StatusOK)
+	var stats m8cPrefStats
+	e.decode(statsRec, &stats)
+	if len(stats.Slots) != 16 || stats.Slots[0].Count != 2 || stats.Slots[0].Cap != 5 {
+		t.Fatalf("stats 首槽 = %+v, want count 2 cap 5", stats.Slots)
+	}
+	if want := expectedCrowdPct(stats.Slots[0].Count, stats.Slots[0].Cap); userSlot.Pct != want {
+		t.Fatalf("用户 pct = %d, stats count/cap 推导 = %d", userSlot.Pct, want)
+	}
+	// 用户无权调用 admin stats。
+	userStats := e.do(http.MethodGet,
+		"/api/time-prefs/stats?school_id="+school.ID+"&task_id="+task, nil, e.login(user))
+	w2cWantStatus(t, userStats, http.StatusForbidden)
+}
+
+// 多任务时取当日最先未了结的一行：窗口与 estimated 都跟这一行，
+// 不随机、不向用户暴露 task_id。
+func TestTimePrefPicksNextUnfinishedTask(t *testing.T) {
+	e := w2cNewEnv(t)
+	loc := userReadLoc()
+	today := clock.BusinessDay(clock.System{}.Now(), loc)
+	user := e.user("timepref-multi@example.com", coreauth.RoleUser)
+	school := e.school("timepref-multi")
+	morning := e.schoolTask(school.ID, "晨签")
+	evening := e.schoolTask(school.ID, "晚签")
+	acct := e.account(school.ID, user.ID, "13800000072")
+	e.activateAccount(acct)
+	morningStart, morningEnd := windowAt(today, loc, [2]int{6, 30}, [2]int{7, 50})
+	eveningStart, eveningEnd := windowAt(today, loc, [2]int{7, 0}, [2]int{8, 20})
+	e.windows[morning] = contract.Window{Start: morningStart, End: morningEnd, Source: contract.WindowPlatform}
+	e.windows[evening] = contract.Window{Start: eveningStart, End: eveningEnd, Source: contract.WindowPlatform}
+	// 晨签已了结，晚签待执行：读面必须选晚签。
+	finished := userReadAt(t, today, 6, 35, 0)
+	e.seedTask(acct, morning, today, corestatus.TaskSuccess, 1, finished, finished)
+	nextAt := userReadAt(t, today, 7, 10, 0)
+	e.seedTask(acct, evening, today, corestatus.TaskPending, 0, nextAt, nextAt)
+
+	rec := e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(user))
+	w2cWantStatus(t, rec, http.StatusOK)
+	var view oapi.TimePref
+	e.decode(rec, &view)
+	if view.Window.Start != "07:00" || view.Window.End != "08:20" {
+		t.Fatalf("window = %+v, want 晚签 07:00~08:20", view.Window)
+	}
+	if view.Estimated == nil || *view.Estimated != "07:10" {
+		t.Fatalf("estimated = %v, want 07:10", view.Estimated)
+	}
+	if strings.Contains(rec.Body.String(), morning) || strings.Contains(rec.Body.String(), evening) {
+		t.Fatalf("用户响应泄露 task_id: %s", rec.Body.String())
+	}
+}
+
+// 无当日任务行且窗口不可发现：window 回退服务端标准窗口，estimated=null，
+// estimate_note=待生成；不向平台之外的读面编造钟点。
+func TestTimePrefFallbackWindowWithoutPlan(t *testing.T) {
+	e := w2cNewEnv(t)
+	user := e.user("timepref-fallback@example.com", coreauth.RoleUser)
+	school := e.school("timepref-fallback")
+	e.schoolTask(school.ID, "晨签")
+	acct := e.account(school.ID, user.ID, "13800000073")
+	e.activateAccount(acct)
+	// 不登记 e.windows：发现返回 not_found，Report 走回退窗口。
+	rec := e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(user))
+	w2cWantStatus(t, rec, http.StatusOK)
+	var view oapi.TimePref
+	e.decode(rec, &view)
+	if view.Window.Start != "06:30" || view.Window.End != "07:50" {
+		t.Fatalf("window = %+v, want fallback 06:30~07:50", view.Window)
+	}
+	if view.Estimated != nil {
+		t.Fatalf("estimated = %v, want null", *view.Estimated)
+	}
+	if view.EstimateNote != "待生成" {
+		t.Fatalf("estimate_note = %q, want 待生成", view.EstimateNote)
+	}
+	if view.Slots == nil || len(*view.Slots) != 16 || (*view.Slots)[0].Pct != 0 {
+		t.Fatalf("slots = %v, want 16 slots with pct 0", view.Slots)
+	}
+
+	// 无当日任务行时取学校启用任务（名称序第一条），窗口跟该任务。
+	loc := userReadLoc()
+	today := clock.BusinessDay(clock.System{}.Now(), loc)
+	userTwo := e.user("timepref-fallback-two@example.com", coreauth.RoleUser)
+	schoolTwo := e.school("timepref-fallback-two")
+	firstTask := e.schoolTask(schoolTwo.ID, "a-morning")
+	e.schoolTask(schoolTwo.ID, "b-evening")
+	firstStart, firstEnd := windowAt(today, loc, [2]int{6, 40}, [2]int{7, 40})
+	e.windows[firstTask] = contract.Window{Start: firstStart, End: firstEnd, Source: contract.WindowPlatform}
+	acctTwo := e.account(schoolTwo.ID, userTwo.ID, "13800000209")
+	e.activateAccount(acctTwo)
+	rec = e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(userTwo))
+	w2cWantStatus(t, rec, http.StatusOK)
+	var second oapi.TimePref
+	e.decode(rec, &second)
+	if second.Window.Start != "06:40" || second.Window.End != "07:40" {
+		t.Fatalf("无任务行 window = %+v, want 首个启用任务 06:40~07:40", second.Window)
+	}
+	if second.Estimated != nil || second.EstimateNote != "待生成" {
+		t.Fatalf("无任务行 estimated = %v note = %q", second.Estimated, second.EstimateNote)
+	}
+
+	// 待审账号不算生效账号：读面不得借它解析学校/任务。
+	pendingUser := e.user("timepref-fallback-pending@example.com", coreauth.RoleUser)
+	e.account(schoolTwo.ID, pendingUser.ID, "13800000031")
+	pendingRec := e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(pendingUser))
+	w2cWantStatus(t, pendingRec, http.StatusOK)
+	var pendingView oapi.TimePref
+	e.decode(pendingRec, &pendingView)
+	if pendingView.Window.Start != "06:30" || pendingView.Window.End != "07:50" {
+		t.Fatalf("待审账号 window = %+v, want 标准窗口", pendingView.Window)
+	}
+	if pendingView.Estimated != nil {
+		t.Fatalf("待审账号 estimated = %v, want null", *pendingView.Estimated)
+	}
+}
+
+// expectedCrowdPct 是旧线 pct 口径的测试副本：10% 一档，满员 100，未满封顶 90。
+func expectedCrowdPct(count, capacity int) int {
+	if capacity < 1 {
+		capacity = 1
+	}
+	if count >= capacity {
+		return 100
+	}
+	if count <= 0 {
+		return 0
+	}
+	pct := int(math.RoundToEven(float64(count*10)/float64(capacity))) * 10
+	if pct < 10 {
+		return 10
+	}
+	if pct > 90 {
+		return 90
+	}
+	return pct
 }

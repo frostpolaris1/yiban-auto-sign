@@ -306,7 +306,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	}
 	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
-		Discover: e.discover, Prefs: e.prefs, Tx: db,
+		Discover: e.discover, Prefs: e.prefs, Self: e.sched, Tx: db,
 		Notifier:       assembly.ScheduleNotifier{Broker: e.broker, Clock: clk},
 		CapacityAlerts: capacityAlerts,
 	})

@@ -1817,6 +1817,26 @@ export interface paths {
          *     It must be a multiple of five. allowed reports whether the deployment
          *     enables user time preferences; a stored value stays readable when the
          *     feature is disabled.
+         *
+         *     The response also describes the caller's own account context. window
+         *     is the effective window of that account's task for the current
+         *     business day, from the same window source the plan uses. slots carry
+         *     the crowding band from the same count and cap as
+         *     GET /api/time-prefs/stats. estimated is the ledger run_at of the
+         *     selected task. The caller never passes a task id and the response
+         *     never carries a task, school or account id. When the account has
+         *     several task rows today, the read selects the earliest unfinished
+         *     one; with no row it selects the school's first enabled task by name.
+         *     The choice is deterministic so repeated reads do not flicker.
+         *
+         *     window is never null. When the caller has no active account, the
+         *     school has no enabled task, or no window is discoverable, window is
+         *     the server standard window (the start/end constants the plan uses as
+         *     its fallback; it is not edge-trimmed because there is no task
+         *     window), and slots follow that window with pct 0. estimated is null
+         *     when today's ledger has no task row; estimate_note then says 待生成.
+         *     estimated is an estimate, not a promise: retries, platform windows
+         *     and overrides can move the actual attempt.
          */
         get: operations["TimePrefGet"];
         /**
@@ -3170,24 +3190,44 @@ export interface components {
             allowed: boolean;
             window: components["schemas"]["TimePrefWindow"];
             /**
-             * @description Five-minute anchors relative to the server standard signing
-             *     window. Each label is a clock time inside that window. The window
+             * @description Five-minute anchors relative to window.start, the effective
+             *     window of the caller's own account task for the current business
+             *     day. Each label is a clock time inside that window. The window
              *     actually executed for a task may be shifted by the platform
              *     window or a per-task override, so a label is a preference time,
-             *     not the promised execution time. disabled follows the deployment
-             *     gate and the window.
+             *     not the promised execution time. pct is the crowding band from
+             *     the same count and cap as GET /api/time-prefs/stats. disabled
+             *     follows the deployment gate. edge_note marks the first or last
+             *     band when the deployment reserves an edge buffer.
              */
             slots?: components["schemas"]["TimePrefSlot"][];
+            /**
+             * @description Ledger run_at of the selected task on the current business day,
+             *     HH:MM. Null when today's ledger has no task row. It is an
+             *     estimate, not a promise: retries, platform windows and overrides
+             *     can move the actual attempt.
+             */
+            estimated: string | null;
+            /**
+             * @description Human-readable note. 待生成 when estimated is null; otherwise
+             *     states that the value comes from today's plan and is not a
+             *     promise.
+             */
+            estimate_note: string;
         };
         TimePrefWindow: {
             /**
-             * @description Server standard signing window start, HH:MM. Actual execution may
-             *     be shifted by the platform window or a per-task override.
+             * @description Effective signing window start of the caller's own account task,
+             *     HH:MM, after edge trimming. Same source as the plan. When no
+             *     active account, no enabled task or no window is available this
+             *     is the server standard window used by the plan fallback.
              */
             start: string;
             /**
-             * @description Server standard signing window end, HH:MM. Actual execution may
-             *     be shifted by the platform window or a per-task override.
+             * @description Effective signing window end of the caller's own account task,
+             *     HH:MM, after edge trimming. Same source as the plan. When no
+             *     active account, no enabled task or no window is available this
+             *     is the server standard window used by the plan fallback.
              */
             end: string;
         };
@@ -3200,6 +3240,18 @@ export interface components {
             disabled: boolean;
             /** @description Human-readable reason when disabled is true. */
             reason?: string;
+            /**
+             * @description Crowding band, a multiple of ten. Derived from the same count and
+             *     cap as GET /api/time-prefs/stats: 100 only when count reaches the
+             *     cap, otherwise at most 90. 0 when there is no crowding data.
+             */
+            pct: number;
+            /**
+             * @description Empty unless this is the first (front buffer) or last (back
+             *     buffer) band and the deployment trims that edge; then it states
+             *     how many minutes are reserved.
+             */
+            edge_note: string;
         };
         TimePrefUpdate: {
             /** @description Null clears the preference. */

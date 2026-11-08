@@ -7,11 +7,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
+	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
@@ -43,6 +45,17 @@ type fakePlanner struct {
 	lastReason  string
 	overrideErr error
 	lastRefresh bool
+
+	self       coreschedule.SelfContext
+	selfErr    error
+	selfUserID string
+	selfDay    string
+}
+
+// SelfContext 记录用户读面的解析输入；未设置时返回零值（无账号）。
+func (f *fakePlanner) SelfContext(_ context.Context, userID, day string) (coreschedule.SelfContext, error) {
+	f.selfUserID, f.selfDay = userID, day
+	return f.self, f.selfErr
 }
 
 func (f *fakePlanner) Preview(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
@@ -100,6 +113,20 @@ func (f *fakeTimePrefs) Set(_ context.Context, userID string, offset *int) (appt
 	return f.view, f.err
 }
 
+// fakeStats 只供自选读面的拥挤度：SignStats 不在本文件断言面。
+type fakeStats struct {
+	counts map[int]int
+	err    error
+}
+
+func (f *fakeStats) SignStats(context.Context, corescope.Scope, string, string) (appstats.Report, error) {
+	return appstats.Report{}, nil
+}
+
+func (f *fakeStats) OffsetCounts(context.Context, string) (map[int]int, error) {
+	return f.counts, f.err
+}
+
 type fakeAuthorizer struct {
 	scope corescope.Scope
 	err   error
@@ -148,6 +175,12 @@ func samplePreview() appschedule.Preview {
 
 func newRouter(t *testing.T, scope corescope.Scope, planner schedulehttp.Planner, prefs schedulehttp.TimePrefs) (http.Handler, coreauth.Issued) {
 	t.Helper()
+	return newRouterWithStats(t, scope, planner, prefs, nil)
+}
+
+func newRouterWithStats(t *testing.T, scope corescope.Scope, planner schedulehttp.Planner,
+	prefs schedulehttp.TimePrefs, stats schedulehttp.Stats) (http.Handler, coreauth.Issued) {
+	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
 	issued, err := issuer.Issue(context.Background(), coreauth.User{
 		ID: "u1", Email: "boss@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
@@ -160,6 +193,9 @@ func newRouter(t *testing.T, scope corescope.Scope, planner schedulehttp.Planner
 		SlotsPerSlice: 10, Front: true, UsePrefs: true,
 		EdgeFront: 30 * time.Second, EdgeBack: 30 * time.Second,
 	})
+	if stats != nil {
+		handler = handler.WithStats(stats)
+	}
 	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true, Schedule: handler})
 	if err != nil {
 		t.Fatalf("router: %v", err)
@@ -514,6 +550,104 @@ func TestTimePrefRoutes(t *testing.T) {
 	}
 	if prefs.lastGetUser != "u1" || prefs.lastSetUser != "u1" {
 		t.Fatalf("master 偏好归属 = get:%q set:%q, want u1", prefs.lastGetUser, prefs.lastSetUser)
+	}
+}
+
+// 自选读面：有账号任务时带出任务窗口、拥挤度与台账预计时段；
+// 无任务时保留标准窗口，estimated=null 且 note=待生成；task_id 不下发。
+func TestTimePrefGetEnrichesCrowdingAndEstimate(t *testing.T) {
+	runAt := time.Date(2026, 10, 29, 6, 42, 0, 0, shanghai)
+	planner := &fakePlanner{
+		preview: samplePreview(),
+		self: coreschedule.SelfContext{
+			HasAccount: true, AccountID: "acct-1", SchoolID: "s1",
+			HasTask: true, TaskID: "task-secret", RunAt: &runAt,
+		},
+	}
+	prefs := &fakeTimePrefs{view: apptimepref.View{
+		OffsetMin: intPtr(30), Allowed: true,
+		Window: apptimepref.Window{Start: "06:30", End: "07:50"},
+	}}
+	stats := &fakeStats{counts: map[int]int{0: 3, 5: 10}}
+	engine, issued := newRouterWithStats(t, corescope.User("u1"), planner, prefs, stats)
+
+	rec := do(t, engine, issued, http.MethodGet, "/api/me/time-pref", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got oapi.TimePref
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Window.Start != "06:30" || got.Window.End != "07:50" {
+		t.Fatalf("window = %+v, want task window 06:30~07:50", got.Window)
+	}
+	if got.Slots == nil || len(*got.Slots) != 16 {
+		t.Fatalf("slots = %v, want 16", got.Slots)
+	}
+	slots := *got.Slots
+	if slots[0].OffsetMin != 0 || slots[0].Label != "06:30" || slots[0].Pct != 30 {
+		t.Fatalf("首槽 = %+v, want 06:30 30%% (3/10)", slots[0])
+	}
+	if slots[1].Pct != 100 {
+		t.Fatalf("满员槽 pct = %d, want 100 (10/10)", slots[1].Pct)
+	}
+	if slots[0].EdgeNote != "开头 0.5 分钟保留" {
+		t.Fatalf("首槽 edge_note = %q", slots[0].EdgeNote)
+	}
+	if slots[len(slots)-1].EdgeNote != "结尾 0.5 分钟保留" {
+		t.Fatalf("末槽 edge_note = %q", slots[len(slots)-1].EdgeNote)
+	}
+	if got.Estimated == nil || *got.Estimated != "06:42" {
+		t.Fatalf("estimated = %v, want 06:42", got.Estimated)
+	}
+	if !strings.Contains(got.EstimateNote, "非承诺") {
+		t.Fatalf("estimate_note = %q, 必须写明非承诺", got.EstimateNote)
+	}
+	// 内部任务 ID 与学校 ID 都不得出现在用户响应里。
+	if strings.Contains(rec.Body.String(), "task-secret") || strings.Contains(rec.Body.String(), `"s1"`) {
+		t.Fatalf("响应泄露内部 ID: %s", rec.Body.String())
+	}
+	if planner.reportCalls != 1 || planner.lastInput.SchoolID != "s1" ||
+		planner.lastInput.SchoolTaskID != "task-secret" {
+		t.Fatalf("report 输入 = %+v calls=%d", planner.lastInput, planner.reportCalls)
+	}
+	if planner.selfUserID != "u1" || planner.selfDay != "2026-10-29" {
+		t.Fatalf("self 输入 = %q %q", planner.selfUserID, planner.selfDay)
+	}
+}
+
+// 无任务上下文时不得调用 Report/stats：window 走标准窗口，estimated=null。
+func TestTimePrefGetWithoutTaskKeepsStandardWindow(t *testing.T) {
+	planner := &fakePlanner{self: coreschedule.SelfContext{HasAccount: true, AccountID: "acct-1", SchoolID: "s1"}}
+	prefs := &fakeTimePrefs{view: apptimepref.View{
+		Allowed: true,
+		Window:  apptimepref.Window{Start: "06:30", End: "07:50"},
+		Slots:   []apptimepref.Slot{{OffsetMin: 0, Label: "06:30"}},
+	}}
+	engine, issued := newRouterWithStats(t, corescope.User("u1"), planner, prefs, &fakeStats{})
+	rec := do(t, engine, issued, http.MethodGet, "/api/me/time-pref", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got oapi.TimePref
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Window.Start != "06:30" || got.Window.End != "07:50" {
+		t.Fatalf("window = %+v, want standard window", got.Window)
+	}
+	if got.Estimated != nil {
+		t.Fatalf("estimated = %v, want null", *got.Estimated)
+	}
+	if got.EstimateNote != "待生成" {
+		t.Fatalf("estimate_note = %q, want 待生成", got.EstimateNote)
+	}
+	if got.Slots == nil || len(*got.Slots) != 1 || (*got.Slots)[0].Pct != 0 {
+		t.Fatalf("slots = %v, want one slot with pct 0", got.Slots)
+	}
+	if planner.reportCalls != 0 {
+		t.Fatalf("无任务不得调用 Report：calls = %d", planner.reportCalls)
 	}
 }
 

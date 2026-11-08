@@ -74,6 +74,33 @@ type TaskInfo struct {
 	Enabled  bool
 }
 
+// SelfAccount 是"当前用户的生效账号"这一读面的最小形状。
+// 它只服务用户自选读面；AccountID 不得下发到客户端。
+type SelfAccount struct {
+	ID       string
+	SchoolID string
+}
+
+// SelfTask 是账号当日的一行任务：任务与台账计划时刻。
+// State 不进形状：排序（未了结优先）由仓储按库内状态完成。
+type SelfTask struct {
+	SchoolTaskID string
+	RunAt        time.Time
+}
+
+// SelfContext 是用户自选读面的当日上下文。
+// HasAccount 为假时其余字段无意义；HasTask 为假时 TaskID 与 RunAt 无意义。
+// TaskID 只允许在服务端组装窗口与拥挤度，**不得**出现在任何用户响应里：
+// 用户不传 task_id，也不能从响应反推内部任务标识。
+type SelfContext struct {
+	HasAccount bool
+	AccountID  string
+	SchoolID   string
+	HasTask    bool
+	TaskID     string
+	RunAt      *time.Time
+}
+
 // AccountRef 是铺点所需的账号最小形状：ID 加其所有者。
 // 所有者用于把用户自选偏移落到账号上。
 type AccountRef struct {

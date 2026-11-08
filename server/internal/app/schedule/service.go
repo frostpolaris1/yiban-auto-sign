@@ -255,6 +255,62 @@ func (s *Service) Task(ctx context.Context, scope corescope.Scope, taskID string
 	return task, nil
 }
 
+// SelfContext 解析用户自选读面的当日账号与任务上下文。
+//
+// 取法（读面必须稳定：同一用户同一业务日多次读取得到同一任务）：
+//  1. 用户名下生效账号（一人一号；没有则 HasAccount=false）；
+//  2. 该账号当日任务行按"未了结优先、run_at、任务名、任务 ID"排序，
+//     取第一行——即最早要执行的那一个；多任务时不让窗口与拥挤度随机跳变；
+//  3. 当日没有任务行（通常业务日 00:10 建计划之前）时，取学校启用任务按
+//     任务名、任务 ID 排序的第一条；没有启用任务则 HasTask=false。
+//
+// TaskID 只在本层与入口层组装窗口/拥挤度时使用，任何用户响应都不得带出。
+// Self 未装配时返回零值：调用方保持既有标准窗口行为。
+func (s *Service) SelfContext(ctx context.Context, userID, day string) (coreschedule.SelfContext, error) {
+	if userID == "" {
+		return coreschedule.SelfContext{}, coreerrs.New(coreerrs.CodeInternal,
+			"self context requires a user")
+	}
+	if !validDay(day) {
+		return coreschedule.SelfContext{}, validation("day must be YYYY-MM-DD")
+	}
+	if s.deps.Self == nil {
+		return coreschedule.SelfContext{}, nil
+	}
+	account, err := s.deps.Self.ActiveAccountByOwner(ctx, userID)
+	if err != nil {
+		if isNotFound(err) {
+			return coreschedule.SelfContext{}, nil
+		}
+		return coreschedule.SelfContext{}, err
+	}
+	out := coreschedule.SelfContext{
+		HasAccount: true,
+		AccountID:  account.ID,
+		SchoolID:   account.SchoolID,
+	}
+	rows, err := s.deps.Self.DayTaskRows(ctx, account.ID, day)
+	if err != nil {
+		return coreschedule.SelfContext{}, err
+	}
+	if len(rows) > 0 {
+		runAt := rows[0].RunAt
+		out.HasTask = true
+		out.TaskID = rows[0].SchoolTaskID
+		out.RunAt = &runAt
+		return out, nil
+	}
+	tasks, err := s.deps.Self.AccountEnabledTasks(ctx, account.ID)
+	if err != nil {
+		return coreschedule.SelfContext{}, err
+	}
+	if len(tasks) > 0 {
+		out.HasTask = true
+		out.TaskID = tasks[0]
+	}
+	return out, nil
+}
+
 // ListWindows 返回作用域内各任务当日的窗口。
 // 没有缓存的任务也返回一行（Cached=false）：管理面要看到"未发现"。
 // 默认只读缓存（k0y-4）：有缓存的任务零平台调用。
