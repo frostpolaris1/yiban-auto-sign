@@ -17,6 +17,7 @@ func TestRetryBudgetCoversContractOutcomes(t *testing.T) {
 		contract.OutcomeAlreadyDone,
 		contract.OutcomePendingUpstream,
 		contract.OutcomeNoTarget,
+		contract.OutcomeNoPosition,
 		contract.OutcomeInvalidTarget,
 		contract.OutcomeCredentialBad,
 		contract.OutcomeDeviceUnbound,
@@ -40,9 +41,11 @@ func TestRetryBudgetCoversContractOutcomes(t *testing.T) {
 			}
 		}
 		// 已了结类必须零预算：绝不为完成态排重试。
+		// no_position 是等待型重扫词：不进业务预算（worker 用独立等待曲线），
+		// 漏出结算分支时零预算保证它不会被业务退避放大。
 		switch o {
 		case contract.OutcomeSuccess, contract.OutcomeAlreadyDone,
-			contract.OutcomeNoTarget, contract.OutcomePhotoMissing:
+			contract.OutcomeNoTarget, contract.OutcomeNoPosition, contract.OutcomePhotoMissing:
 			if p.MaxAttempts != 0 {
 				t.Fatalf("Outcome %q 应零预算, got %+v", o, p)
 			}

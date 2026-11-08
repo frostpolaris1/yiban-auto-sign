@@ -18,7 +18,7 @@ import (
 //
 // Warn：transient、unknown、challenge、blocked、rejected、device_unbound、
 // credential_invalid、photo_rejected——这些需要人看或告警。
-// Info：success、already_done、no_target、invalid_target、
+// Info：success、already_done、no_target、no_position、invalid_target、
 // photo_missing、pending_upstream——正常结论。
 func OutcomeLogLevel(outcome contract.Outcome) slog.Level {
 	switch outcome {

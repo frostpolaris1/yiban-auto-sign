@@ -288,7 +288,7 @@ func (p *Provider) SignCalls() int {
 	return p.signHit
 }
 
-// AllOutcomes 按契约顺序列出全部 14 项中性结果。
+// AllOutcomes 按契约顺序列出全部 15 项中性结果。
 // **契约 v1 冻结**；新增结果时必须同步本清单。
 func AllOutcomes() []contract.Outcome {
 	return []contract.Outcome{
@@ -296,6 +296,7 @@ func AllOutcomes() []contract.Outcome {
 		contract.OutcomeAlreadyDone,
 		contract.OutcomePendingUpstream,
 		contract.OutcomeNoTarget,
+		contract.OutcomeNoPosition,
 		contract.OutcomeInvalidTarget,
 		contract.OutcomeCredentialBad,
 		contract.OutcomeDeviceUnbound,

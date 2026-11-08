@@ -412,6 +412,8 @@ func TestProviderDiscoverWindowStateTwo(t *testing.T) {
 	}
 }
 
+// 点位为空是「平台没放数据」：返回 no_position（等待型重扫词），
+// 与 State=2 的明确结论 no_target 区分。
 func TestProviderSignNoTarget(t *testing.T) {
 	p, up := newTestProvider(t)
 	up.emptySignPosition(t)
@@ -420,8 +422,8 @@ func TestProviderSignNoTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	if result.Outcome != contract.OutcomeNoTarget {
-		t.Fatalf("outcome = %q", result.Outcome)
+	if result.Outcome != contract.OutcomeNoPosition {
+		t.Fatalf("outcome = %q, want no_position", result.Outcome)
 	}
 	if got := up.count("/nightAttendance/student/index/signIn"); got != 0 {
 		t.Fatalf("signIn calls = %d, want 0", got)

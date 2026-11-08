@@ -67,7 +67,8 @@ type Store interface {
 	RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error
 	// RequeueRetry 是业务失败后的退避：计一次尝试数。
 	RequeueRetry(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error
-	// Rearm 把当日 failed 或 skipped 行放回队列（手动签到的重试入口）。
+	// Rearm 把当日 failed、skipped 或等待型重扫行放回队列（手动签到的重试入口）。
+	// 等待行重开即清退避：落点取调用方时刻，重扫计数随 result 清空。
 	// 同一事务里写 task.rearm 审计；actor 是发起手动签到的会话主体。
 	Rearm(ctx context.Context, taskID string, runAt time.Time, actor appaudit.Actor) error
 	// ResetRunning 回收无租约或租约已过期的 running 行（启动时调用）。

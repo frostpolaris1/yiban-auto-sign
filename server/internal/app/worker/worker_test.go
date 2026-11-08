@@ -123,6 +123,7 @@ func (f *fakeStore) Finish(ctx context.Context, accountID, schoolTaskID, day str
 				return coreerrs.ErrNotFound
 			}
 			t.State = string(state)
+			t.Result = result
 			t.Attempts++
 			f.finished[t.ID] = state
 			f.results[t.ID] = result
@@ -150,6 +151,7 @@ func (f *fakeStore) FinishCredentialInvalid(ctx context.Context, _ /*schoolID*/,
 				return coreerrs.ErrNotFound
 			}
 			t.State = string(corestatus.TaskFailed)
+			t.Result = "credential_invalid"
 			t.Attempts++
 			f.finished[t.ID] = corestatus.TaskFailed
 			f.results[t.ID] = "credential_invalid"
@@ -171,6 +173,7 @@ func (f *fakeStore) requeue(ctx context.Context, taskID string, runAt time.Time,
 		if t.ID == taskID && t.State == string(corestatus.TaskRunning) && t.ClaimSeq == claimSeq {
 			t.State = string(corestatus.TaskPending)
 			t.RunAt = runAt
+			t.Result = result // 行上的等待词是下一次认领的重扫计数来源
 			if bumpAttempts {
 				t.Attempts++
 			}
@@ -190,7 +193,8 @@ func (f *fakeStore) RequeueRetry(ctx context.Context, taskID string, runAt time.
 	return f.requeue(ctx, taskID, runAt, result, true, claimSeq)
 }
 
-// Rearm 按库语义：failed 与 skipped 都可重开，尝试数**保留**（重开不退预算）。
+// Rearm 按库语义：failed 与 skipped 都可重开，尝试数**保留**（重开不退预算）；
+// 等待型重扫行（result=wait_target:N）同样可重开，重开即清退避计数。
 // 状态不符时回 conflict（库层是 CAS 未命中）。
 func (f *fakeStore) Rearm(_ context.Context, taskID string, runAt time.Time, actor appaudit.Actor) error {
 	for i := range f.tasks {
@@ -199,13 +203,15 @@ func (f *fakeStore) Rearm(_ context.Context, taskID string, runAt time.Time, act
 			continue
 		}
 		state := corestatus.TaskState(t.State)
-		if state != corestatus.TaskFailed && state != corestatus.TaskSkipped {
+		waiting := state == corestatus.TaskPending && strings.HasPrefix(t.Result, "wait_target:")
+		if state != corestatus.TaskFailed && state != corestatus.TaskSkipped && !waiting {
 			break
 		}
 		f.rearmed[taskID] = t.State
 		f.rearmActor[taskID] = actor
 		t.State = string(corestatus.TaskPending)
 		t.RunAt = runAt
+		t.Result = ""
 		return nil
 	}
 	return coreerrs.New(coreerrs.CodeConflict, "sign task already moved")
@@ -765,7 +771,8 @@ func TestTransientBounded(t *testing.T) {
 	}
 }
 
-// 无点位（发现返回空列表）：skipped(no_target)。
+// 无点位（发现返回空列表）：不再当日终态，改走等待型重扫。
+// 推进、耗尽与窗口尾判据见 worker_waittarget_test.go。
 func TestNoTargetSkipped(t *testing.T) {
 	st := newStore(baseTask())
 	st.windows["st-1|2026-10-29"] = openWindow()
@@ -775,8 +782,11 @@ func TestNoTargetSkipped(t *testing.T) {
 	if _, err := svc.Step(context.Background(), 10); err != nil {
 		t.Fatalf("Step: %v", err)
 	}
-	if st.finished["t1"] != corestatus.TaskSkipped || st.results["t1"] != string(contract.OutcomeNoTarget) {
-		t.Fatalf("终态 = %v/%q", st.finished["t1"], st.results["t1"])
+	if st.finished["t1"] != "" {
+		t.Fatalf("Position 空不落终态, got %v", st.finished["t1"])
+	}
+	if st.tasks[0].State != string(corestatus.TaskPending) || st.results["t1"] != "wait_target:1" {
+		t.Fatalf("状态/结果 = %s/%q, want pending/wait_target:1", st.tasks[0].State, st.results["t1"])
 	}
 }
 

@@ -232,6 +232,7 @@ func TestOutcomeLogLevelByClass(t *testing.T) {
 		{contract.OutcomeSuccess, "INFO"},
 		{contract.OutcomeAlreadyDone, "INFO"},
 		{contract.OutcomeNoTarget, "INFO"},
+		{contract.OutcomeNoPosition, "INFO"},
 		{contract.OutcomePendingUpstream, "INFO"},
 		{contract.OutcomeTransient, "WARN"},
 		{contract.OutcomeUnknown, "WARN"},

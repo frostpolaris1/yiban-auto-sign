@@ -453,7 +453,8 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 		 RETURNING t.id::text, t.account_id::text, t.school_task_id::text,
 		           (SELECT st.school_id::text FROM school_tasks st WHERE st.id = t.school_task_id),
 		           t.day::text, t.run_at, t.state::text, t.attempts, t.claim_seq,
-		           (SELECT a.owner_user_id::text FROM accounts a WHERE a.id = t.account_id)`,
+		           (SELECT a.owner_user_id::text FROM accounts a WHERE a.id = t.account_id),
+		           t.result`,
 		now, limit, r.lease.Seconds())
 	if err != nil {
 		return nil, mapError(err)
@@ -462,7 +463,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 	var out []coreschedule.TaskRow
 	for rows.Next() {
 		var t coreschedule.TaskRow
-		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.ClaimSeq, &t.OwnerUserID); err != nil {
+		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.ClaimSeq, &t.OwnerUserID, &t.Result); err != nil {
 			return nil, mapError(err)
 		}
 		out = append(out, t)
@@ -509,11 +510,14 @@ func (r *ScheduleRepo) RequeueRetry(ctx context.Context, taskID string, runAt ti
 	return nil
 }
 
-// Rearm 把当日 failed 或 skipped 行重新放回队列（手动签到的重试入口）。
+// Rearm 把当日 failed、skipped 或等待型重扫（result=wait_target:*）行
+// 重新放回队列（手动签到的重试入口）。
 //
 // 为什么单独一条而不是复用 Requeue*：Requeue* 只接受 running 行，
-// 而手动签到遇到的是当日已落终态的行。重排不覆盖 result 之外的历史，
-// attempts 保留（预算仍是当日的真实消耗，重开不退预算）。
+// 而手动签到遇到的是当日已落终态或等待中的行。重排不覆盖 result 之外的历史，
+// attempts 保留（预算仍是当日的真实消耗，重开不退预算）；
+// 等待行的 result 清空即清掉重扫计数——手动重开是一轮新的等待周期，
+// 落点取调用方给的 now，退避随之清零、立即重扫。
 // 状态谓词是 CAS：读到的状态到写入之间若被别人改走，回 conflict。
 // 重开与 task.rearm 审计同事务；没有审计仓储即回滚——重开是受审计的动作。
 func (r *ScheduleRepo) Rearm(ctx context.Context, taskID string, runAt time.Time, actor coreaudit.Actor) error {
@@ -530,7 +534,9 @@ func (r *ScheduleRepo) Rearm(ctx context.Context, taskID string, runAt time.Time
 			   SET state = 'pending', run_at = $2, claimed_at = NULL,
 			       lease_expires_at = NULL, result = ''
 			  FROM prev
-			 WHERE s.id = prev.id AND s.state IN ('failed', 'skipped')
+			 WHERE s.id = prev.id
+			   AND (s.state IN ('failed', 'skipped')
+			        OR (s.state = 'pending' AND s.result LIKE 'wait\_target:%' ESCAPE '\'))
 			RETURNING prev.school_id, prev.state`, taskID, runAt).Scan(&schoolID, &fromState)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -697,9 +703,9 @@ func (r *ScheduleRepo) EnsureTask(ctx context.Context, accountID, schoolTaskID, 
 		           (SELECT st.school_id::text FROM school_tasks st WHERE st.id = sign_tasks.school_task_id),
 		           day::text, run_at, state::text, attempts,
 		           (SELECT a.owner_user_id::text FROM accounts a WHERE a.id = sign_tasks.account_id),
-		           (xmax = 0) AS created`,
+		           result, (xmax = 0) AS created`,
 		accountID, schoolTaskID, day, runAt).
-		Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.OwnerUserID, &created)
+		Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.OwnerUserID, &t.Result, &created)
 	if err != nil {
 		return coreschedule.TaskRow{}, false, mapInsertForeignKey(err)
 	}
