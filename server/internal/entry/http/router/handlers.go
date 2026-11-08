@@ -730,3 +730,12 @@ func (s *server) AuditLogList(c *gin.Context, params oapi.AuditLogListParams) {
 	}
 	s.audit.AuditLogList(c, params)
 }
+
+// AuditStatus 委托审计链巡检。未装配时仍是 501。
+func (s *server) AuditStatus(c *gin.Context) {
+	if s.audit == nil {
+		notImplemented(c)
+		return
+	}
+	s.audit.AuditStatus(c)
+}

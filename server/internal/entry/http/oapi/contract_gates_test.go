@@ -538,6 +538,8 @@ var additionalPropertiesExemptions = map[string][]string{
 	"AccountVerifyIdentity":   {"响应对象；未知字段被编码器忽略"},
 	// ykxf 平台探测：响应对象；未知字段被编码器忽略。
 	"AccountDetectResult": {"响应对象；未知字段被编码器忽略"},
+	// 2cu 审计链巡检：响应对象；未知字段被编码器忽略。
+	"AuditStatusReport": {"响应对象；未知字段被编码器忽略"},
 }
 
 // contractNoAdditionalProperties 匹配 YAML 映射里的一项 additionalProperties: false。

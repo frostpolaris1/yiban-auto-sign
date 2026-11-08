@@ -10,8 +10,8 @@
 // 追加顺序与锁由适配器保证（见 internal/app/audit）。
 //
 // # 复用
-// Action 及全部动作常量；Entry、Row、Report；
-// EncodeDetail、Payload、Hash、Verify、ZeroHash；
+// Action 及全部动作常量；Entry、Row、Report、Status、RowSource；
+// EncodeDetail、Payload、Hash、Verify、VerifyStream、ZeroHash；
 // 错误值 ErrEmptyChain、ErrBrokenChain、ErrDetail*；
 // 上限常量 MaxDetailBytes、MaxReasonChars、Domain。
 //
@@ -548,6 +548,111 @@ func Verify(key []byte, rows []Row) (Report, error) {
 		prev = row.Hash
 	}
 	return Report{FirstID: rows[0].ID, LastID: rows[len(rows)-1].ID, Count: int64(len(rows))}, nil
+}
+
+// Status 汇总一次分窗链校验的结论。
+//
+// Empty 为 true 表示链内零行：没有证明任何事，**不是通过**。
+// BrokenAt 非零表示第一个不符行的行 id；CheckedRows 数到该行（含）。
+// 其余情况是完整通过：CheckedRows 是总行数，LastHash 是最后一行存储哈希的副本。
+type Status struct {
+	CheckedRows int64
+	LastHash    []byte
+	BrokenAt    int64
+	Empty       bool
+}
+
+// RowSource 按 id 升序返回 afterID 之后的一批行，至多 limit 行。
+// 返回零行表示链已读完。游标必须严格前进。
+type RowSource func(afterID int64, limit int) ([]Row, error)
+
+// VerifyStream 分窗校验整条链。
+//
+// 每窗至多 batchSize 行，故内存占用是 O(batchSize)，不随链长增长。
+// 窗与窗之间用上一窗末行的存储哈希作锚点：下一窗首行的 prev_hash
+// 必须等于它。Verify 的单窗口径不变：窗首行的 prev_hash 只作窗内锚点。
+//
+// 空链返回 Status{Empty: true} 且 **err == nil**：空扫描不是通过，
+// 但也不是断链。断链返回 Status{BrokenAt, CheckedRows} 且 err == nil：
+// 巡检结论不是调用错误。只有数据源错误才上抛。
+//
+// 数据源必须让游标前进（后一窗首行 id 严格大于 afterID）且窗内 id 升序；
+// 违反者是接线缺陷，返回错误而不是死循环。
+// 扫描在读到不足一窗时结束：其后追加的行不在本次结论内，
+// LastHash 是本次扫描到的链头，可作外部锚点。
+func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
+	if batchSize < 1 {
+		return Status{}, fmt.Errorf("audit: batch size must be positive, got %d", batchSize)
+	}
+	if next == nil {
+		return Status{}, errors.New("audit: nil row source")
+	}
+	var status Status
+	var afterID int64
+	var anchor []byte
+	for {
+		rows, err := next(afterID, batchSize)
+		if err != nil {
+			return Status{}, err
+		}
+		if len(rows) == 0 {
+			status.Empty = status.CheckedRows == 0
+			return status, nil
+		}
+		if len(rows) > batchSize {
+			return Status{}, fmt.Errorf("audit: row source returned %d rows, want at most %d", len(rows), batchSize)
+		}
+		for i := 1; i < len(rows); i++ {
+			if rows[i].ID <= rows[i-1].ID {
+				return Status{}, fmt.Errorf("audit: row source returned ids out of order at %d", rows[i].ID)
+			}
+		}
+		if rows[0].ID <= afterID {
+			return Status{}, fmt.Errorf("audit: row source did not advance past %d", afterID)
+		}
+		if anchor != nil && !hmac.Equal(anchor, rows[0].PrevHash) {
+			status.CheckedRows++
+			status.BrokenAt = rows[0].ID
+			return status, nil
+		}
+		if _, err := Verify(key, rows); err != nil {
+			if errors.Is(err, ErrBrokenChain) {
+				index := firstBrokenIndex(key, rows)
+				// 断点之前同窗的行已通过复算：链头锚点取最后一行的哈希。
+				if index > 0 {
+					status.LastHash = append([]byte(nil), rows[index-1].Hash...)
+				}
+				status.CheckedRows += int64(index + 1)
+				status.BrokenAt = rows[index].ID
+				return status, nil
+			}
+			return Status{}, err
+		}
+		status.CheckedRows += int64(len(rows))
+		last := append([]byte(nil), rows[len(rows)-1].Hash...)
+		status.LastHash = last
+		anchor = last
+		afterID = rows[len(rows)-1].ID
+		if len(rows) < batchSize {
+			return status, nil
+		}
+	}
+}
+
+// firstBrokenIndex 返回窗前若干行里第一个不符行的下标。
+// 调用方已确认整窗不是自洽的，故必然命中。
+// 相邻两行组成一窗交给 Verify：首行的 prev_hash 是已验证过的窗内锚点，
+// 复算仍会检查每一行的哈希与窗内链接，校验规则不另写一份。
+func firstBrokenIndex(key []byte, rows []Row) int {
+	if _, err := Verify(key, rows[:1]); err != nil {
+		return 0
+	}
+	for i := 1; i < len(rows); i++ {
+		if _, err := Verify(key, rows[i-1:i+1]); err != nil {
+			return i
+		}
+	}
+	return len(rows) - 1
 }
 
 func appendField(dst, value []byte) []byte {

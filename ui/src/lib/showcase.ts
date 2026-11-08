@@ -15,6 +15,7 @@
  */
 
 import type { Account, AccountPage, AccountStatus, AccountSummary } from './api/account'
+import type { AuditStatusReport } from './api/audit'
 import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
 import type { EngineSnapshot } from './api/engine'
@@ -407,6 +408,21 @@ export function showcasePrefStats(query: {
     window_start: row.start,
     window_end: row.end,
     slots,
+  }
+}
+
+/**
+ * 看板审计链巡检的合成结论：完好态。
+ * 链头是小写十六进制的重复串，明示合成；时刻固定，展示机不随日历漂移。
+ */
+export function showcaseAuditStatus(): AuditStatusReport {
+  return {
+    ok: true,
+    empty: false,
+    checked_rows: 128,
+    last_hash: 'ab'.repeat(32),
+    broken_at: null,
+    checked_at: '2026-10-31T09:00:00+08:00',
   }
 }
 

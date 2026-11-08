@@ -113,20 +113,61 @@ func (r *AuditRepo) Verify(ctx context.Context, from, to int64) (coreaudit.Repor
 	}
 	defer rows.Close()
 
-	var entries []coreaudit.Row
+	entries, err := scanChainRows(rows)
+	if err != nil {
+		return coreaudit.Report{}, err
+	}
+	return coreaudit.Verify(r.key, entries)
+}
+
+// auditStatusBatchRows 是巡检每窗的行数上限。
+//
+// 内存上限：单窗最坏约为 2000 × (detail ≤ 4 KiB + 两条 32 字节哈希 + 字段)，
+// 即个位数 MiB；链再长也按窗流式处理，内存不随链长增长。
+// 代价是巡检耗时随行数线性增长；端点只对 master/admin 开放。
+const auditStatusBatchRows = 2000
+
+// VerifyStatus 分窗校验整条链，供巡检端点使用。
+//
+// 键集分页：每窗读 id 大于上一窗末行的一批行。窗内用 core 的 Verify
+// 复算；窗与窗之间由 core 的 VerifyStream 比较首行 prev_hash 与上一窗
+// 末行哈希。空链、断链都作为结论返回（err == nil），只有读库错误上抛。
+// 读到不足一窗即结束：其后追加的行不在本次结论内。
+func (r *AuditRepo) VerifyStatus(ctx context.Context) (coreaudit.Status, error) {
+	return coreaudit.VerifyStream(r.key, auditStatusBatchRows,
+		func(afterID int64, limit int) ([]coreaudit.Row, error) {
+			rows, err := r.db.q(ctx).Query(ctx, `
+				SELECT id, ts, coalesce(school_id::text, ''), coalesce(actor_user_id::text, ''),
+				       coalesce(actor_role::text, ''), actor_label, action, target_type,
+				       target_id, detail, prev_hash, hash
+				  FROM audit_logs
+				 WHERE id > $1
+				 ORDER BY id
+				 LIMIT $2`, afterID, limit)
+			if err != nil {
+				return nil, mapError(err)
+			}
+			defer rows.Close()
+			return scanChainRows(rows)
+		})
+}
+
+// scanChainRows 把链行查询结果扫成 core 的 Row 切片。
+func scanChainRows(rows pgx.Rows) ([]coreaudit.Row, error) {
+	entries := make([]coreaudit.Row, 0, 64)
 	for rows.Next() {
 		var entry coreaudit.Row
 		if err := rows.Scan(&entry.ID, &entry.TS, &entry.SchoolID, &entry.ActorUserID,
 			&entry.ActorRole, &entry.ActorLabel, &entry.Action, &entry.TargetType,
 			&entry.TargetID, &entry.Detail, &entry.PrevHash, &entry.Hash); err != nil {
-			return coreaudit.Report{}, mapError(err)
+			return nil, mapError(err)
 		}
 		entries = append(entries, entry)
 	}
 	if err := rows.Err(); err != nil {
-		return coreaudit.Report{}, mapError(err)
+		return nil, mapError(err)
 	}
-	return coreaudit.Verify(r.key, entries)
+	return entries, nil
 }
 
 // ListLogs 读取审计只读列表，按 (ts DESC, id DESC) 键集分页。

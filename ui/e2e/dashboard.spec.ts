@@ -4,11 +4,13 @@ import type { CapacityReport } from '../src/lib/api/schedule'
 import type { SignStatsDay } from '../src/lib/api/stats'
 import {
   DASHBOARD_DAY,
+  DEFAULT_AUDIT_STATUS,
   DEFAULT_PREF_STATS,
   DEFAULT_SIGN_STATS,
   type DashboardApiCall,
   accountIdentity,
   accountSummaryCalls,
+  auditStatusCalls,
   capacityCalls,
   diagnosticsCalls,
   lastCapacityCall,
@@ -20,9 +22,9 @@ import {
 } from './support/fake-dashboard-api'
 
 /**
- * 看板的九条不变式。
+ * 看板的十条不变式。
  *
- * 1. 角色取数隔离：user 零窗口与容量请求；master/admin 零签到状态与诊断请求。
+ * 1. 角色取数隔离：user 零窗口、容量与审计巡检请求；master/admin 零签到状态与诊断请求。
  * 2. KPI 由条目派生，四项计数与列表行数一致；空账号全零。
  * 3. 轮询：30 秒后自动再取一次；页面隐藏时不轮询。
  * 4. 过期标记：stale=true 的行带「数据已过期」，全 false 时一处也没有。
@@ -38,6 +40,8 @@ import {
  *    跳过不计入；分母 0 显「—」；环比 pill 分「有对比/无对比」两态；
  *    KPI 与图表共用同一次 sign-stats 读取，不新增请求；
  *    业务日跨日换键恰好重取一次，同一业务日内不轮询。
+ * 10. 审计链巡检：master/admin 读一次 audit-status 并显示三态、行数与时刻；
+ *    断链给定位行且不弹窗；空链说「暂无审计行」，不算通过。
  *
  * 断言用户可见结果与请求参数，不钉组件内部结构。
  */
@@ -57,6 +61,10 @@ function diagnosticsTable(page: Page) {
 
 function capacityCard(page: Page) {
   return page.locator('.card').filter({ hasText: '容量体检' })
+}
+
+function auditCard(page: Page) {
+  return page.locator('.card').filter({ hasText: '审计链巡检' })
 }
 
 async function openDashboard(page: Page) {
@@ -105,7 +113,9 @@ test('invariant 1: the user dashboard sends no window or capacity request', asyn
 
   expect(windowsCalls(api), 'a user never reads the window list').toHaveLength(0)
   expect(capacityCalls(api), 'a user never reads capacity').toHaveLength(0)
+  expect(auditStatusCalls(api), 'a user never inspects the audit chain').toHaveLength(0)
   await expect(page.getByText('容量体检')).toHaveCount(0)
+  await expect(page.getByText('审计链巡检')).toHaveCount(0)
 })
 
 test('invariant 1: a manager sends no sign-status or diagnostics request', async ({ page }) => {
@@ -117,6 +127,59 @@ test('invariant 1: a manager sends no sign-status or diagnostics request', async
   expect(diagnosticsCalls(api), 'a manager never reads diagnostics').toHaveLength(0)
   await expect(signTable(page)).toHaveCount(0)
   await expect(diagnosticsTable(page)).toHaveCount(0)
+})
+
+test('invariant 10: the audit card shows the verdict, rows and inspection time', async ({
+  page,
+}) => {
+  const api = await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+
+  const card = auditCard(page)
+  await expect(card).toContainText('链完好')
+  await expect(card).toContainText('巡检 128 行')
+  await expect(card).toContainText('2026/10/28')
+  // 按需巡检一次；链校验开销随行数增长，不进轮询。
+  expect(auditStatusCalls(api), 'one inspection when the card mounts').toHaveLength(1)
+})
+
+test('invariant 10: a broken chain names the row without a popup', async ({ page }) => {
+  await mockDashboardApi(page, {
+    role: 'admin',
+    auditStatus: {
+      ...DEFAULT_AUDIT_STATUS,
+      ok: false,
+      checked_rows: 42,
+      last_hash: '',
+      broken_at: 42,
+    },
+  })
+  await openDashboard(page)
+
+  const card = auditCard(page)
+  await expect(card).toContainText('链异常')
+  await expect(card).toContainText('第 42 行')
+  await expect(card).toContainText('本页不展示审计正文')
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+})
+
+test('invariant 10: an empty chain is neutral, not an alarm', async ({ page }) => {
+  await mockDashboardApi(page, {
+    role: 'admin',
+    auditStatus: {
+      ...DEFAULT_AUDIT_STATUS,
+      ok: false,
+      empty: true,
+      checked_rows: 0,
+      last_hash: '',
+    },
+  })
+  await openDashboard(page)
+
+  const card = auditCard(page)
+  await expect(card).toContainText('暂无审计行')
+  await expect(card).toContainText('空链不算通过')
+  await expect(card.getByText('链异常')).toHaveCount(0)
 })
 
 test('invariant 2: the four KPI counts match the rows', async ({ page }) => {

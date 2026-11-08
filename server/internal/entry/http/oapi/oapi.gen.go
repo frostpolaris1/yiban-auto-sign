@@ -1275,6 +1275,28 @@ type AuditLogPage struct {
 	NextCursor string `json:"next_cursor"`
 }
 
+// AuditStatusReport defines model for AuditStatusReport.
+type AuditStatusReport struct {
+	// BrokenAt Row id of the first mismatch; null when intact or empty.
+	BrokenAt *int64 `json:"broken_at"`
+
+	// CheckedAt Server time this scan finished.
+	CheckedAt time.Time `json:"checked_at"`
+
+	// CheckedRows Rows examined; on a break, through the first mismatch.
+	CheckedRows int64 `json:"checked_rows"`
+
+	// Empty True when the chain holds zero rows; nothing was proven.
+	Empty bool `json:"empty"`
+
+	// LastHash Lowercase hex hash of the last verified row; empty when no row
+	// passed the recomputation.
+	LastHash string `json:"last_hash"`
+
+	// Ok True only when a non-empty chain verified end to end.
+	Ok bool `json:"ok"`
+}
+
 // AutoApproveStatus defines model for AutoApproveStatus.
 type AutoApproveStatus struct {
 	// Enabled False by default. Only a master may change it. When true, a
@@ -3363,6 +3385,9 @@ type ServerInterface interface {
 	// AnnouncementSet Publish or clear the site announcement.
 	// (PUT /api/admin/announcement)
 	AnnouncementSet(c *gin.Context, params AnnouncementSetParams)
+	// AuditStatus Verify the audit chain end to end.
+	// (GET /api/admin/audit-status)
+	AuditStatus(c *gin.Context)
 	// AdminAutoApprove Read the global automatic approval switch.
 	// (GET /api/admin/auto-approve)
 	AdminAutoApprove(c *gin.Context)
@@ -4580,6 +4605,19 @@ func (siw *ServerInterfaceWrapper) AnnouncementSet(c *gin.Context) {
 	}
 
 	siw.Handler.AnnouncementSet(c, params)
+}
+
+// AuditStatus operation middleware
+func (siw *ServerInterfaceWrapper) AuditStatus(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AuditStatus(c)
 }
 
 // AdminAutoApprove operation middleware
@@ -7123,6 +7161,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PUT(options.BaseURL+"/api/admin/auto-approve", wrapper.AdminAutoApproveSet)
 	router.GET(options.BaseURL+"/api/announcement", wrapper.AnnouncementGet)
 	router.GET(options.BaseURL+"/api/audit-logs", wrapper.AuditLogList)
+	router.GET(options.BaseURL+"/api/admin/audit-status", wrapper.AuditStatus)
 	router.GET(options.BaseURL+"/api/me/diagnostics", wrapper.MeDiagnostics)
 	router.GET(options.BaseURL+"/api/accounts/:id/diagnostics", wrapper.AccountDiagnostics)
 	router.GET(options.BaseURL+"/api/me/sign-status", wrapper.MeSignStatus)

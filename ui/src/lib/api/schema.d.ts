@@ -1464,6 +1464,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/audit-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Verify the audit chain end to end.
+         * @description Master and admin only. Reads every audit row in id order in bounded
+         *     batches and recomputes each row's HMAC and prev_hash link, including
+         *     the link across batch boundaries. Memory is bounded by the batch size;
+         *     the scan time grows linearly with the chain length.
+         *     An intact non-empty chain answers ok=true with the head hash.
+         *     A broken chain answers 200 with ok=false and broken_at set to the row
+         *     id of the first mismatch: the inspection result is not an HTTP error.
+         *     An empty chain answers 200 with ok=false and empty=true: no row was
+         *     proven, so it is not a pass, but it is not a break either.
+         *     checked_rows counts the rows examined through the first mismatch (or
+         *     the whole chain when intact). last_hash is the lowercase hex hash of
+         *     the last verified row and is empty when no row passed. checked_at is
+         *     the server time this scan finished. No audit detail, actor, target or
+         *     personal value is returned.
+         *     Legacy parity: the previous console's audit-status endpoint read a
+         *     cached daily snapshot; this endpoint recomputes the chain on demand.
+         */
+        get: operations["AuditStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/diagnostics": {
         parameters: {
             query?: never;
@@ -2276,6 +2311,32 @@ export interface components {
             items: components["schemas"]["AuditLogItem"][];
             /** @description Cursor for the next page; empty on the last page. */
             next_cursor: string;
+        };
+        AuditStatusReport: {
+            /** @description True only when a non-empty chain verified end to end. */
+            ok: boolean;
+            /** @description True when the chain holds zero rows; nothing was proven. */
+            empty: boolean;
+            /**
+             * Format: int64
+             * @description Rows examined; on a break, through the first mismatch.
+             */
+            checked_rows: number;
+            /**
+             * @description Lowercase hex hash of the last verified row; empty when no row
+             *     passed the recomputation.
+             */
+            last_hash: string;
+            /**
+             * Format: int64
+             * @description Row id of the first mismatch; null when intact or empty.
+             */
+            broken_at: number | null;
+            /**
+             * Format: date-time
+             * @description Server time this scan finished.
+             */
+            checked_at: string;
         };
         Error: {
             error: components["schemas"]["ErrorBody"];
@@ -5715,6 +5776,32 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AuditStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description Chain inspection result. Broken and empty chains are conclusions,
+             *     not errors.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditStatusReport"];
+                };
+            };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
