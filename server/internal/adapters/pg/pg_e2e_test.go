@@ -69,6 +69,10 @@ func TestMigrationUpIsIdempotent(t *testing.T) {
 func TestCapacityAdmitsExactlyOneWinner(t *testing.T) {
 	e := newEnv(t)
 	owner := e.createUser("capacity@example.com")
+	// 两个竞速建号各用独立属主：落败方按全局容量分类报 capacity_exceeded，
+	// 不会因同一属主刚赢出一行而误报一人一号冲突。
+	racerA := e.createUser("capacity-racer-a@example.com")
+	racerB := e.createUser("capacity-racer-b@example.com")
 	school := e.createSchool("capacity-school")
 
 	// 一条语句填到 9 999 个活跃账号。
@@ -99,21 +103,22 @@ func TestCapacityAdmitsExactlyOneWinner(t *testing.T) {
 		db    *pg.DB
 		repo  *pg.AccountRepo
 		phone string
+		owner string
 	}{
-		{dbA, repoA, "19999999991"},
-		{dbB, repoB, "19999999992"},
+		{dbA, repoA, "19999999991", racerA.ID},
+		{dbB, repoB, "19999999992", racerB.ID},
 	} {
-		go func(db *pg.DB, repo *pg.AccountRepo, phone string) {
+		go func(db *pg.DB, repo *pg.AccountRepo, phone, ownerID string) {
 			<-start
 			results <- db.InTx(e.ctx, func(ctx context.Context) error {
 				_, err := repo.Create(ctx, coreaccount.New{
 					SchoolID:    school.ID,
-					OwnerUserID: owner.ID,
+					OwnerUserID: ownerID,
 					Phone:       phone,
-				}, 10000, 10000)
+				}, 10000)
 				return err
 			})
-		}(pair.db, pair.repo, pair.phone)
+		}(pair.db, pair.repo, pair.phone, pair.owner)
 	}
 	close(start)
 
@@ -180,7 +185,7 @@ func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
 			SchoolID:    missingID,
 			OwnerUserID: owner.ID,
 			Phone:       "13400134000",
-		}, 10000, 10000)
+		}, 10000)
 		return err
 	})
 	if got := codeOf(t, err); got != errs.CodeNotFound {
@@ -568,36 +573,39 @@ func TestPasswordResetTokenIsSingleUse(t *testing.T) {
 
 func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 	e := newEnv(t)
-	owner := e.createUser("restore@example.com")
+	ownerA := e.createUser("restore-a@example.com")
+	ownerB := e.createUser("restore-b@example.com")
+	ownerC := e.createUser("restore-c@example.com")
 	school := e.createSchool("restore-school")
 
-	create := func(phone string, limit int) (coreaccount.Record, error) {
+	// 全局上限按不同属主各建一行：一人一号下同一属主只能有一行 live。
+	create := func(ownerID, phone string, limit int) (coreaccount.Record, error) {
 		var rec coreaccount.Record
 		err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 			var err error
 			rec, err = e.accts.Create(ctx, coreaccount.New{
 				SchoolID:    school.ID,
-				OwnerUserID: owner.ID,
+				OwnerUserID: ownerID,
 				Phone:       phone,
-			}, limit, 10000)
+			}, limit)
 			return err
 		})
 		return rec, err
 	}
 
-	first, err := create("13800138001", 2)
+	first, err := create(ownerA.ID, "13800138001", 2)
 	mustNotError(t, err, "create first account")
-	second, err := create("13800138002", 2)
+	second, err := create(ownerB.ID, "13800138002", 2)
 	mustNotError(t, err, "create second account")
-	if _, err := create("13800138003", 2); codeOf(t, err) != errs.CodeCapacity {
+	if _, err := create(ownerC.ID, "13800138003", 2); codeOf(t, err) != errs.CodeCapacity {
 		t.Fatalf("third account at the cap: want capacity_exceeded, got %v", err)
 	}
 
 	// 软删行同时退出容量计数与手机号唯一索引。
 	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
-		return e.accts.SoftDelete(ctx, corescope.Master(), first.ID, owner.ID, time.Now().UTC())
+		return e.accts.SoftDelete(ctx, corescope.Master(), first.ID, ownerA.ID, time.Now().UTC())
 	}), "soft delete first account")
-	reused, err := create("13800138001", 2)
+	reused, err := create(ownerC.ID, "13800138001", 2)
 	mustNotError(t, err, "reuse a soft-deleted phone number")
 
 	// 恢复该行会突破上限，**必须失败**。
@@ -605,7 +613,7 @@ func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 		var rec coreaccount.Record
 		err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 			var err error
-			rec, err = e.accts.Restore(ctx, corescope.Master(), id, 2, 10000)
+			rec, err = e.accts.Restore(ctx, corescope.Master(), id, 2)
 			return err
 		})
 		return rec, err
@@ -616,7 +624,7 @@ func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 
 	// 腾出一个名额，恢复才会成功。
 	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
-		return e.accts.SoftDelete(ctx, corescope.Master(), reused.ID, owner.ID, time.Now().UTC())
+		return e.accts.SoftDelete(ctx, corescope.Master(), reused.ID, ownerC.ID, time.Now().UTC())
 	}), "soft delete reused account")
 	restored, err := restore(first.ID)
 	mustNotError(t, err, "restore after freeing a slot")

@@ -193,13 +193,17 @@ func TestN190DeviceRoleGate(t *testing.T) {
 		t.Fatalf("device code after master patch = %q, want master-patch-device", got.DeviceCode)
 	}
 
-	// master 先给 user 的账号种设备码，再让 user 用空串 PATCH：
+	// master 先给第二位成员的账号种设备码，再让她用空串 PATCH：
 	// 空串同样是 device_code 写入，必须 403；被拒后种子值原样保留。
+	// 一人一号：member 名下已有 live 的 own 行，本行配独立属主。
+	member2 := u2SeedUser(t, e, "n190-device-member-2@example.com", "member-2-pass", coreauth.RoleUser)
+	member2Client := u2FreshClient(t)
+	member2Session := u2LoginOn(e, member2Client, "n190-device-member-2@example.com", "member-2-pass")
 	resp, payload = u2Do(e, e.client, http.MethodPost, "/api/accounts", n190DeviceCreateBody{
 		SchoolID:    schoolID,
 		Phone:       n190DevicePhoneEmptyPatch,
 		Password:    "member-pass-2",
-		OwnerUserID: member.ID,
+		OwnerUserID: member2.ID,
 		DeviceCode:  "seeded-device",
 	}, masterSession.CSRFToken)
 	if resp.StatusCode != http.StatusCreated {
@@ -210,8 +214,8 @@ func TestN190DeviceRoleGate(t *testing.T) {
 		t.Fatalf("seeded device code = %q, want seeded-device", got.DeviceCode)
 	}
 
-	patchResp, patchPayload = n190PatchAccount(e, memberClient, memberSession.CSRFToken, seeded.ID,
-		map[string]string{"device_code": ""}, "member-pass")
+	patchResp, patchPayload = n190PatchAccount(e, member2Client, member2Session.CSRFToken, seeded.ID,
+		map[string]string{"device_code": ""}, "member-2-pass")
 	if patchResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("user patch empty device_code = %d, want 403; body=%q", patchResp.StatusCode, patchPayload)
 	}

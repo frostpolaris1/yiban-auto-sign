@@ -1,90 +1,112 @@
 package pg_test
 
-// 每属主账号配额的 e2e：全局上限之外的第二道门。
+// 一人一号结构不变量的 e2e：每个属主名下最多一个 live 账号，
+// 对全部建号路径生效；宽限期内的软删行不计 live。
 // 依赖真实 PostgreSQL；计数、插入与 advisory lock 同事务。
 
 import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
-func TestOwnerAccountQuota(t *testing.T) {
+func TestOwnerSingleAccountInvariant(t *testing.T) {
 	e := newEnv(t)
-	school := e.createSchool("quota")
-	owner := e.createUser("quota-owner@example.com").ID
-	other := e.createUser("quota-other@example.com").ID
+	school := e.createSchool("oneacct")
+	owner := e.createUser("oneacct-owner@example.com")
+	other := e.createUser("oneacct-other@example.com")
 
-	create := func(ownerID, phone string, ownerLimit int) error {
+	create := func(ownerID, phone string) error {
 		return e.db.InTx(context.Background(), func(ctx context.Context) error {
 			_, err := e.accts.Create(ctx, coreaccount.New{
 				SchoolID: school.ID, OwnerUserID: ownerID, Phone: phone,
-			}, 100, ownerLimit)
+			}, 100)
 			return err
 		})
 	}
 
-	if err := create(owner, "13800000020", 2); err != nil {
+	// live == 0 → 建号成功。
+	if err := create(owner.ID, "13800000040"); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if err := create(owner, "13800000021", 2); err != nil {
-		t.Fatalf("second: %v", err)
-	}
-	err := create(owner, "13800000022", 2)
+	// live == 1 → 第二次建号 409 conflict。
+	err := create(owner.ID, "13800000041")
 	if err == nil {
-		t.Fatal("third create succeeded; want capacity_exceeded")
+		t.Fatal("second create succeeded; want conflict")
 	}
-	if code := coreerrs.From(err).Code; code != coreerrs.CodeCapacity {
-		t.Fatalf("third code = %q, want capacity_exceeded", code)
+	if code := coreerrs.From(err).Code; code != coreerrs.CodeConflict {
+		t.Fatalf("second code = %q, want conflict", code)
 	}
-	if err == nil || !strings.Contains(err.Error(), "owner") {
-		t.Fatalf("third error = %v, want owner quota message", err)
+	if !strings.Contains(err.Error(), "live account") {
+		t.Fatalf("second error = %v, want owner live-account wording", err)
 	}
-
-	// 另一个属主的配额独立。
-	if err := create(other, "13800000023", 2); err != nil {
+	// 另一个属主不受影响。
+	if err := create(other.ID, "13800000050"); err != nil {
 		t.Fatalf("other owner: %v", err)
 	}
 
-	// 软删释放名额。
+	// 宽限期内的软删行不计 live：唯一账号软删后可再建。
 	if _, err := e.db.Exec(e.ctx,
-		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800000020'`); err != nil {
+		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800000040'`); err != nil {
 		t.Fatalf("soft delete: %v", err)
 	}
-	if err := create(owner, "13800000030", 2); err != nil {
-		t.Fatalf("after soft delete: %v", err)
+	if err := create(owner.ID, "13800000060"); err != nil {
+		t.Fatalf("after grace soft delete: %v", err)
 	}
 
-	// 恢复同样受每属主配额约束：先软删一行，再把名额占满，恢复必须被拒。
-	if _, err := e.db.Exec(e.ctx,
-		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800000030'`); err != nil {
-		t.Fatalf("soft delete 2: %v", err)
-	}
-	restoreID := e.scalarString(
-		"SELECT id::text FROM accounts WHERE phone = '13800000030'")
-	restore := func(ownerLimit int) error {
+	// 管理员恢复受同一不变量约束：名下有 live 行时零行命中，
+	// 按既有零行分类报 capacity_exceeded；live 行软删后恢复成功。
+	restoredID := e.scalarString(
+		"SELECT id::text FROM accounts WHERE phone = '13800000040'")
+	restore := func() error {
 		return e.db.InTx(context.Background(), func(ctx context.Context) error {
-			_, err := e.accts.Restore(ctx, corescope.Master(), restoreID, 100, ownerLimit)
+			_, err := e.accts.Restore(ctx, corescope.Master(), restoredID, 100)
 			return err
 		})
 	}
-	// 当前活跃：13800000021 与 13800000030（刚软删）；先补满两条。
-	if err := create(owner, "13800000031", 2); err != nil {
-		t.Fatalf("refill: %v", err)
+	if err := restore(); err == nil {
+		t.Fatal("restore while another live account exists succeeded")
+	} else if code := coreerrs.From(err).Code; code != coreerrs.CodeCapacity {
+		t.Fatalf("blocked restore code = %q, want capacity_exceeded", code)
 	}
-	if err := restore(2); err == nil {
-		t.Fatal("restore over the owner quota succeeded")
-	}
-	// 释放一行后恢复成功。
 	if _, err := e.db.Exec(e.ctx,
-		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800000031'`); err != nil {
-		t.Fatalf("free a slot: %v", err)
+		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800000060'`); err != nil {
+		t.Fatalf("soft delete second: %v", err)
 	}
-	if err := restore(2); err != nil {
-		t.Fatalf("restore after freeing a slot: %v", err)
+	if err := restore(); err != nil {
+		t.Fatalf("restore after owner is empty: %v", err)
+	}
+
+	// 自助恢复保持既有语义：名下有 live 行 → 400 validation。
+	selfOwner := e.createUser("oneacct-self@example.com")
+	if err := create(selfOwner.ID, "13800000070"); err != nil {
+		t.Fatalf("self owner first: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE accounts SET deleted_at = now(), deleted_by = $1::uuid WHERE phone = '13800000070'`,
+		selfOwner.ID); err != nil {
+		t.Fatalf("self soft delete: %v", err)
+	}
+	if err := create(selfOwner.ID, "13800000071"); err != nil {
+		t.Fatalf("self owner second: %v", err)
+	}
+	selfDeleted := e.scalarString(
+		"SELECT id::text FROM accounts WHERE phone = '13800000070'")
+	err = e.db.InTx(context.Background(), func(ctx context.Context) error {
+		_, err := e.accts.RestoreSelf(ctx, corescope.User(selfOwner.ID), selfDeleted,
+			selfOwner.ID, coreclock.System{}.Now().UTC().Add(-time.Minute), 100)
+		return err
+	})
+	if err == nil {
+		t.Fatal("self restore while another live account exists succeeded")
+	}
+	if code := coreerrs.From(err).Code; code != coreerrs.CodeValidation {
+		t.Fatalf("self restore code = %q, want validation", code)
 	}
 }

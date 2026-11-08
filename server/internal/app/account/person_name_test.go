@@ -44,15 +44,14 @@ func (revealTxManager) InTx(ctx context.Context, fn func(context.Context) error)
 func newRevealService(t *testing.T, audit appaudit.Repo) *Service {
 	t.Helper()
 	svc, err := NewService(Deps{
-		Accounts:   &fakeListRepo{},
-		Schools:    fakeSchoolReader{},
-		Audit:      audit,
-		Tx:         revealTxManager{},
-		Clock:      clock.Fixed{T: time.Date(2026, 11, 8, 7, 0, 0, 0, time.UTC)},
-		Owner:      fakeOwnerReader{},
-		Device:     &fakeDeviceReader{},
-		Limit:      10,
-		OwnerLimit: 10,
+		Accounts: &fakeListRepo{},
+		Schools:  fakeSchoolReader{},
+		Audit:    audit,
+		Tx:       revealTxManager{},
+		Clock:    clock.Fixed{T: time.Date(2026, 11, 8, 7, 0, 0, 0, time.UTC)},
+		Owner:    fakeOwnerReader{},
+		Device:   &fakeDeviceReader{},
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

@@ -51,9 +51,12 @@ type StatusCounts = coreaccount.StatusCounts
 
 // Repo 是账号仓储端口。
 //
-// Create 与 Restore 执行全局与每属主活跃账号上限。两者**必须在事务内运行**：
+// Create 执行全局活跃账号上限与一人一号结构不变量
+// （属主名下没有 live 账号才可建）。Restore 与 Create 同判据，
+// 但属主已有 live 行的恢复按既有零行分类报 capacity_exceeded。
+// 两者**必须在事务内运行**：
 // 在同一事务里先取账号容量 advisory lock，再统计活跃行。
-// 条件语句命中零行时报 capacity_exceeded（errs.CodeCapacity）。
+// 条件语句命中零行时报 capacity_exceeded 或 conflict（errs.Code）。
 //
 // SetStatus 是比较并交换：仅当当前状态等于 from 才改。
 // 零行报 conflict（errs.CodeConflict）。**状态迁移规则归用例层，不归本端口**。
@@ -94,8 +97,9 @@ type StatusCounts = coreaccount.StatusCounts
 // Purge 物理删除一个账号及其从属行，**必须在事务内运行**；
 // 调用方先用 GetDeleted 锁行并校验软删状态。
 type Repo interface {
-	// Create 建号；limit 是全局活跃账号上限，ownerLimit 是每属主活跃账号上限。
-	Create(ctx context.Context, in New, limit, ownerLimit int) (Record, error)
+	// Create 建号；limit 是全局活跃账号上限。一人一号（属主名下无 live 行）
+	// 是结构不变量，违反报 conflict。
+	Create(ctx context.Context, in New, limit int) (Record, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetIncludingDeleted(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetDeleted(ctx context.Context, scope corescope.Scope, id string) (Record, error)
@@ -108,11 +112,11 @@ type Repo interface {
 	SetStatus(ctx context.Context, scope corescope.Scope, id string, from, to Status, at time.Time, reason string) (Record, error)
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason, by string, at time.Time) (Record, error)
 	SoftDelete(ctx context.Context, scope corescope.Scope, id, by string, at time.Time) error
-	Restore(ctx context.Context, scope corescope.Scope, id string, limit, ownerLimit int) (Record, error)
+	Restore(ctx context.Context, scope corescope.Scope, id string, limit int) (Record, error)
 	// Purge 物理删除账号行与从属行（任务行先分块删，其余级联）。
 	// 只处理已软删且已锁定的行；审计行不动。
 	Purge(ctx context.Context, id string) error
-	RestoreSelf(ctx context.Context, scope corescope.Scope, id, by string, notBefore time.Time, limit, ownerLimit int) (Record, error)
+	RestoreSelf(ctx context.Context, scope corescope.Scope, id, by string, notBefore time.Time, limit int) (Record, error)
 	Credential(ctx context.Context, scope corescope.Scope, accountID string) (Credential, error)
 	// Credentials 批量读多个账号的凭据，按账号 ID 建索引。
 	// 空 ids 回空 map；软删行与作用域外的行不出现在结果里。

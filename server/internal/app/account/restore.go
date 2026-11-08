@@ -10,7 +10,7 @@
 // # 口径
 // 只允许 master 与 admin：管理员恢复不受 7 天窗口与 deleted_by 限制。
 // 自助恢复（deleted_by=本人、7 天内、名下无其他生效账号）在 self.go。
-// 容量在适配器的 advisory 锁下重数：全局与每属主上限同建号判据。
+// 容量在适配器的 advisory 锁下重数：全局上限与一人一号同建号判据。
 // 已删行恢复 status 保持删除前原值；审计与恢复同事务。
 package account
 
@@ -26,7 +26,8 @@ import (
 
 // Restore 恢复一个软删账号。
 // 作用域外与不存在的账号 404；未删行 409（适配器口径）；
-// 全局或每属主容量满 429。status 保持删除前原值。
+// 全局容量满或属主名下已有 live 账号 429（既有零行分类）。
+// status 保持删除前原值。
 func (s *Service) Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (Record, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return Record{}, err
@@ -37,7 +38,7 @@ func (s *Service) Restore(ctx context.Context, scope corescope.Scope, id string,
 	var record Record
 	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		var err error
-		record, err = s.deps.Accounts.Restore(ctx, scope, id, s.deps.Limit, s.deps.OwnerLimit)
+		record, err = s.deps.Accounts.Restore(ctx, scope, id, s.deps.Limit)
 		if err != nil {
 			return err
 		}

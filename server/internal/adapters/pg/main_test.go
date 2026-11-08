@@ -175,20 +175,21 @@ func (e *testEnv) createSchool(code string) coreschool.Record {
 	return rec
 }
 
+// createAccount 直接写一行账号（种子缺省 pending），不经建号用例：
+// 多个 fixtures 需要同一属主名下多行 live 状态，而建号用例现在
+// 强制一人一号。建号行为本身由 quota e2e 与入口 e2e 覆盖。
 func (e *testEnv) createAccount(schoolID, ownerID, phone string) coreaccount.Record {
 	e.t.Helper()
-	var rec coreaccount.Record
-	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
-		var err error
-		rec, err = e.accts.Create(ctx, coreaccount.New{
-			SchoolID:    schoolID,
-			OwnerUserID: ownerID,
-			Phone:       phone,
-		}, 10000, 10000)
-		return err
-	})
+	id, err := e.db.QueryString(e.ctx, `
+		INSERT INTO accounts (school_id, owner_user_id, phone)
+		VALUES ($1::uuid, $2::uuid, $3) RETURNING id::text`,
+		schoolID, ownerID, phone)
 	if err != nil {
 		e.t.Fatalf("create account %s: %v", phone, err)
+	}
+	rec, err := e.accts.Get(e.ctx, corescope.Master(), id)
+	if err != nil {
+		e.t.Fatalf("read back account %s: %v", phone, err)
 	}
 	return rec
 }

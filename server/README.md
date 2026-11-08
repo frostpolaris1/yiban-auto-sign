@@ -210,7 +210,6 @@ Canonical runtime files:
 | `YIBAN_TRUSTED_PROXIES` | no | empty | comma-separated CIDRs of reverse proxies allowed to set `X-Forwarded-For` and `X-Forwarded-Proto`. The proto decides the login origin scheme when TLS terminates outside the app. Empty trusts no header; a bare IP is a single-host prefix. An invalid value stops startup. |
 | `YIBAN_KDF_CONCURRENCY` | no | `4` | process-wide cap on concurrent Argon2id hashes (1..64). Each hash costs about 19 MiB, so the cap bounds memory. |
 | `YIBAN_TASK_LEASE_SEC` | no | `120` | lease in seconds for a claimed signing task (30..3600). A running row past its lease is returned to pending by the reclaim pass. |
-| `YIBAN_MAX_ACCOUNTS_PER_OWNER` | no | `20` | live accounts per owner (1..1000). A second quota beyond the global account limit; soft-deleted accounts free a slot. |
 | `YIBAN_WORKERS` | no | `1` | execution concurrency (1..64). The same number is the claim batch size, the capacity channel count and the in-batch parallelism. |
 | `YIBAN_AVG_ATTEMPT_SEC` | no | `3` | average duration of one account attempt in seconds (1..300); a capacity input. |
 | `YIBAN_EGRESS_RATE` | no | `1.0` | target attempts per second per egress (0.2..4.0). It caps the capacity formula and sets the execution rate gate: both read this one field. |

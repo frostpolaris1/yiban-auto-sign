@@ -54,7 +54,7 @@ func (f *selfRepo) SoftDelete(_ context.Context, _ corescope.Scope, _ string, by
 	return f.softDeleteErr
 }
 
-func (f *selfRepo) RestoreSelf(_ context.Context, _ corescope.Scope, _ string, by string, notBefore time.Time, _, _ int) (Record, error) {
+func (f *selfRepo) RestoreSelf(_ context.Context, _ corescope.Scope, _ string, by string, notBefore time.Time, _ int) (Record, error) {
 	f.restores++
 	f.restoreBy = by
 	f.notBefore = notBefore
@@ -83,16 +83,15 @@ var selfClock = clock.Fixed{T: time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC)}
 func newSelfService(t *testing.T, repo *selfRepo, audits *selfAudit) *Service {
 	t.Helper()
 	svc, err := NewService(Deps{
-		Accounts:   repo,
-		Schools:    fakeSchoolReader{},
-		Audit:      audits,
-		Tx:         selfTx{},
-		Clock:      selfClock,
-		Cipher:     nil,
-		Owner:      fakeOwnerReader{},
-		Device:     &fakeDeviceReader{},
-		Limit:      10,
-		OwnerLimit: 10,
+		Accounts: repo,
+		Schools:  fakeSchoolReader{},
+		Audit:    audits,
+		Tx:       selfTx{},
+		Clock:    selfClock,
+		Cipher:   nil,
+		Owner:    fakeOwnerReader{},
+		Device:   &fakeDeviceReader{},
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

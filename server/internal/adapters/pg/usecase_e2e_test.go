@@ -62,7 +62,7 @@ func newUsecaseEnv(t *testing.T) *usecaseEnv {
 		Accounts: e.accts, Schools: e.schools, Audit: e.audits,
 		Tx: e.db, Clock: clk, Cipher: cipher,
 		Owner: e.users, Device: stubDeviceReader{},
-		Limit: 10000, OwnerLimit: 10000,
+		Limit: 10000,
 	})
 	if err != nil {
 		t.Fatalf("account service: %v", err)

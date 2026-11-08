@@ -38,7 +38,7 @@ type reviewFakeRepo struct {
 	setStatus int
 }
 
-func (f *reviewFakeRepo) Create(_ context.Context, in New, _, _ int) (Record, error) {
+func (f *reviewFakeRepo) Create(_ context.Context, in New, _ int) (Record, error) {
 	f.created++
 	f.current = Record{
 		ID:          fmt.Sprintf("acct-%d", f.created),
@@ -158,7 +158,6 @@ func newReviewAlertServiceWith(t *testing.T, repo Repo, alerts ReviewAlerts,
 		Owner:        reviewFakeOwners{},
 		Device:       &fakeDeviceReader{},
 		Limit:        10,
-		OwnerLimit:   10,
 		ReviewAlerts: alerts,
 		Logger:       logger,
 	})

@@ -524,7 +524,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Owner:        userRepo,
 			Device:       accountDeviceReader{provider: provider},
 			Limit:        accountCapacityLimit,
-			OwnerLimit:   cfg.MaxAccountsPerOwner,
 			ReviewAlerts: notificationDispatcher,
 			Logger:       logger,
 		})

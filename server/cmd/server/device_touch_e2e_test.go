@@ -332,16 +332,15 @@ func TestUX2G13DeviceRefreshLockOrderNoDeadlock(t *testing.T) {
 		touchCalled:  make(chan struct{}),
 	}
 	svc, err := appaccount.NewService(appaccount.Deps{
-		Accounts:   barrier,
-		Schools:    e.schools,
-		Audit:      audits,
-		Tx:         e.db,
-		Clock:      clock.System{},
-		Cipher:     e.cipher,
-		Owner:      e.users,
-		Device:     e.reader,
-		Limit:      10000,
-		OwnerLimit: 10000,
+		Accounts: barrier,
+		Schools:  e.schools,
+		Audit:    audits,
+		Tx:       e.db,
+		Clock:    clock.System{},
+		Cipher:   e.cipher,
+		Owner:    e.users,
+		Device:   e.reader,
+		Limit:    10000,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

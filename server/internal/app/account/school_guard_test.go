@@ -28,16 +28,15 @@ func (f statusSchoolReader) Get(context.Context, string) (coreschool.Record, err
 func newSchoolGuardService(t *testing.T, reader SchoolReader) *Service {
 	t.Helper()
 	svc, err := NewService(Deps{
-		Accounts:   &fakeListRepo{},
-		Schools:    reader,
-		Audit:      fakeAuditRepo{},
-		Tx:         fakeTxManager{},
-		Clock:      clock.Fixed{T: time.Date(2026, 11, 8, 6, 0, 0, 0, time.UTC)},
-		Cipher:     nil,
-		Owner:      fakeOwnerReader{},
-		Device:     &fakeDeviceReader{},
-		Limit:      10,
-		OwnerLimit: 10,
+		Accounts: &fakeListRepo{},
+		Schools:  reader,
+		Audit:    fakeAuditRepo{},
+		Tx:       fakeTxManager{},
+		Clock:    clock.Fixed{T: time.Date(2026, 11, 8, 6, 0, 0, 0, time.UTC)},
+		Cipher:   nil,
+		Owner:    fakeOwnerReader{},
+		Device:   &fakeDeviceReader{},
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

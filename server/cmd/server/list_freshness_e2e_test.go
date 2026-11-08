@@ -21,7 +21,6 @@ package main
 // 邮箱一律用保留域 example.com，口令明示不是真口令。
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -31,7 +30,6 @@ import (
 	"testing"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
-	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 )
@@ -54,23 +52,15 @@ type lfUserPage struct {
 	NextCursor string `json:"next_cursor"`
 }
 
-// lfSeedAccount 直接写一行账号。手机号必须是登记过的合成值。
+// lfSeedAccount 直接写一行账号，不经建号用例：本文件的 fixtures
+// 需要同一属主名下多行 live 状态（列表/清除面不测建号门）。
+// 手机号必须是登记过的合成值。
 func lfSeedAccount(t *testing.T, e *authEnv, schoolID, ownerID, phone string) string {
 	t.Helper()
-	accounts := pg.NewAccountRepo(e.db)
-	var id string
-	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
-		rec, err := accounts.Create(ctx, appaccount.New{
-			SchoolID:    schoolID,
-			OwnerUserID: ownerID,
-			Phone:       phone,
-		}, 10000, 10000)
-		if err != nil {
-			return err
-		}
-		id = rec.ID
-		return nil
-	})
+	id, err := e.db.QueryString(e.ctx, `
+		INSERT INTO accounts (school_id, owner_user_id, phone)
+		VALUES ($1::uuid, $2::uuid, $3) RETURNING id::text`,
+		schoolID, ownerID, phone)
 	if err != nil {
 		t.Fatalf("seed account %s: %v", phone, err)
 	}
@@ -243,6 +233,13 @@ func TestListFreshnessAccountsETag(t *testing.T) {
 	}
 
 	// 写操作改表示：旧 ETag 必须回 200 新体，而不是 304。
+	// 一人一号：属主已有两行 live 种子，先软删再以同一属主身份建新行，
+	// 写操作仍然改变该属主作用域的可见面。
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE accounts SET deleted_at = now() WHERE id = ANY($1::text[]::uuid[])",
+		[]string{a1, a2}); err != nil {
+		t.Fatalf("hide seeded accounts: %v", err)
+	}
 	created, createdBody := e.do(http.MethodPost, "/api/accounts", map[string]any{
 		"school_id": schoolID,
 		"phone":     "13800138123",

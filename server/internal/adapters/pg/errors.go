@@ -88,8 +88,3 @@ func conflictError(message string) error {
 func capacityError() error {
 	return errs.New(errs.CodeCapacity, "capacity exceeded")
 }
-
-// ownerCapacityError 是每属主配额命中：与全局容量同一错误码，文案可区分。
-func ownerCapacityError() error {
-	return errs.New(errs.CodeCapacity, "owner account quota reached")
-}

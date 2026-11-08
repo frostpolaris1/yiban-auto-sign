@@ -262,11 +262,14 @@ func TestAccountPhoneModelResponses(t *testing.T) {
 	}
 
 	// 另一条活行用来证明留空是逐行判定，不是整页清空。
+	// 一人一号：该行配独立属主，member 名下保持只有 own 一行，
+	// 后面 member 自删 own 后 master 才能恢复它。
+	liveOwner := u2SeedUser(t, e, "model-live-owner@example.com", "live-owner-pass", coreauth.RoleUser)
 	live := accountModelCreate(t, e, e.client, masterSession.CSRFToken, n190DeviceCreateBody{
 		SchoolID:    schoolA,
 		Phone:       "13800000032",
 		Password:    "member-pass-3",
-		OwnerUserID: member.ID,
+		OwnerUserID: liveOwner.ID,
 		PhoneModel:  "Pixel 7",
 	})
 
@@ -350,7 +353,8 @@ func TestAccountPhoneModelResponses(t *testing.T) {
 	if row, ok := accountModelRow(t, corruptPage, own.ID); !ok || accountModelText(row.PhoneModel) != "Pixel 8" {
 		t.Fatalf("a peer row lost its model after a corrupt credential: %s", accountModelText(row.PhoneModel))
 	}
-	corruptResp, corruptPayload := u2Do(e, memberClient, http.MethodGet, "/api/accounts/"+live.ID, nil, "")
+	// live 属独立属主：这一步用 master 会话读，断言只关于坏凭据的留空行为。
+	corruptResp, corruptPayload := u2Do(e, e.client, http.MethodGet, "/api/accounts/"+live.ID, nil, masterSession.CSRFToken)
 	if corruptResp.StatusCode != http.StatusOK {
 		t.Fatalf("corrupt-credential detail = %d, want 200; body=%q", corruptResp.StatusCode, corruptPayload)
 	}

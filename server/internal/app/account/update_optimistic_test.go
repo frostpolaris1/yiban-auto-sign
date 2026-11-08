@@ -30,16 +30,15 @@ func newOptimisticService(t *testing.T, repo Repo) (*Service, *reviewFakeAudit) 
 	t.Helper()
 	audit := &reviewFakeAudit{}
 	svc, err := NewService(Deps{
-		Accounts:   repo,
-		Schools:    reviewFakeSchools{},
-		Audit:      audit,
-		Tx:         reviewFakeTx{},
-		Clock:      clock.Fixed{T: time.Date(2026, 11, 6, 12, 1, 0, 0, time.UTC)},
-		Cipher:     mustCipher(t),
-		Owner:      reviewFakeOwners{},
-		Device:     &fakeDeviceReader{},
-		Limit:      10,
-		OwnerLimit: 10,
+		Accounts: repo,
+		Schools:  reviewFakeSchools{},
+		Audit:    audit,
+		Tx:       reviewFakeTx{},
+		Clock:    clock.Fixed{T: time.Date(2026, 11, 6, 12, 1, 0, 0, time.UTC)},
+		Cipher:   mustCipher(t),
+		Owner:    reviewFakeOwners{},
+		Device:   &fakeDeviceReader{},
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

@@ -638,10 +638,11 @@ export interface paths {
          *     to another user, and the referenced user must exist and not be
          *     soft-deleted: an unknown or deleted owner answers 404. The account
          *     starts in status pending. The optional name is a remark label; it is
-         *     trimmed and limited to 50 characters. The global active-account limit
-         *     and the per-owner quota both answer 429 capacity_exceeded; the limiter
-         *     429 carries Retry-After and the quota 429 does not. Changes are rate
-         *     limited per caller.
+         *     trimmed and limited to 50 characters. One account per owner: an owner
+         *     that already holds a live account answers 409 conflict; soft-deleted
+         *     accounts within the self-restore grace period do not count as live.
+         *     The global active-account limit answers 429 capacity_exceeded and the
+         *     limiter 429 carries Retry-After. Changes are rate limited per caller.
          */
         post: operations["AccountCreate"];
         delete?: never;
@@ -897,8 +898,10 @@ export interface paths {
          * Restore a soft-deleted account.
          * @description Only master and admin may restore. The account keeps its pre-delete
          *     status. A missing or out-of-scope account answers 404; a live (not
-         *     deleted) account answers 409 conflict; the global or the per-owner
-         *     active-account quota answers 429 capacity_exceeded.
+         *     deleted) account answers 409 conflict. One account per owner: an
+         *     owner that already holds a live account is refused, and the existing
+         *     zero-row classification reports it as 429 capacity_exceeded; the
+         *     global active-account limit answers 429 capacity_exceeded as well.
          *     Every request must carry current_password, the acting user's own
          *     login password: a missing value answers 400, a wrong value 403,
          *     and repeated failures answer 429. A rejected reauthentication

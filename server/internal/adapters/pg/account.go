@@ -44,20 +44,20 @@ const credentialColumns = `c.account_id::text, c.school_id::text, c.alg, c.kid,
 	c.aad_version, c.nonce, c.ciphertext, c.version, c.created_at, c.updated_at,
 	c.rekeyed_at, c.last_verified_at`
 
-// Create 在活跃账号数低于 limit 时插入账号。
+// Create 在活跃账号数低于 limit 且属主名下没有 live 账号时插入账号。
+//
+// 一人一号是结构不变量：属主名下已有一个 live 行（含并发刚提交的）
+// 即拒绝，报 conflict；全局容量满仍报 capacity_exceeded。
+// 宽限期内的软删行不计入两个口径。
 //
 // **必须在事务内运行**：advisory lock、条件插入与凭据/审计行
-// 同属一个工作单元。达到上限时条件 INSERT 返回零行，
-// 映射为 capacity_exceeded。
-func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit, ownerLimit int) (coreaccount.Record, error) {
+// 同属一个工作单元。条件 INSERT 返回零行时按原因分类。
+func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit int) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
 	}
 	if limit <= 0 {
 		return coreaccount.Record{}, validationError("limit must be positive")
-	}
-	if ownerLimit <= 0 {
-		return coreaccount.Record{}, validationError("owner limit must be positive")
 	}
 	if strings.TrimSpace(in.SchoolID) == "" || strings.TrimSpace(in.OwnerUserID) == "" || strings.TrimSpace(in.Phone) == "" {
 		return coreaccount.Record{}, validationError("school, owner and phone are required")
@@ -82,18 +82,18 @@ func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit, own
 		INSERT INTO accounts (id, school_id, owner_user_id, phone, name)
 		SELECT $1::uuid, $2::uuid, $3::uuid, $4, $5
 		  FROM live, mine
-		 WHERE live.n < $6 AND mine.n < $7
+		 WHERE live.n < $6 AND mine.n = 0
 		RETURNING `+accountColumns,
-		id, in.SchoolID, in.OwnerUserID, in.Phone, in.Name, limit, ownerLimit)
+		id, in.SchoolID, in.OwnerUserID, in.Phone, in.Name, limit)
 	record, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// 两个上限共用 capacity_exceeded；文案区分全局与每属主。
+		// 属主已有一个 live 行是结构冲突（409）；只剩全局容量满才报 429。
 		var mine, total int
 		if qerr := q.QueryRow(ctx,
 			`SELECT count(*) FILTER (WHERE owner_user_id = $1::uuid), count(*)
 			   FROM accounts WHERE deleted_at IS NULL`, in.OwnerUserID).Scan(&mine, &total); qerr == nil {
-			if mine >= ownerLimit {
-				return coreaccount.Record{}, ownerCapacityError()
+			if mine >= 1 {
+				return coreaccount.Record{}, conflictError("owner already has a live account")
 			}
 		}
 		return coreaccount.Record{}, capacityError()
@@ -453,38 +453,35 @@ func (r *AccountRepo) Purge(ctx context.Context, id string) error {
 	return nil
 }
 
-// Restore 在有空余容量时清除软删标记。
+// Restore 在有空余容量且属主名下没有其他 live 账号时清除软删标记。
 //
 // **必须在事务内运行**。软删行不计入上限，
 // 故恢复必须在锁下重新计数；
 // 提前计数会让两个并发恢复把总数推过上限。
-func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string, limit, ownerLimit int) (coreaccount.Record, error) {
+func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string, limit int) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
 	}
 	if limit <= 0 {
 		return coreaccount.Record{}, validationError("limit must be positive")
 	}
-	if ownerLimit <= 0 {
-		return coreaccount.Record{}, validationError("owner limit must be positive")
-	}
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
 		return coreaccount.Record{}, mapError(err)
 	}
-	scopeSQL, scopeArgs, err := scopePredicate(s, 4, "")
+	scopeSQL, scopeArgs, err := scopePredicate(s, 3, "")
 	if err != nil {
 		return coreaccount.Record{}, err
 	}
-	args := append([]any{id, limit, ownerLimit}, scopeArgs...)
+	args := append([]any{id, limit}, scopeArgs...)
 	row := r.db.q(ctx).QueryRow(ctx, `
 		UPDATE accounts
 		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
 		 WHERE id = $1::uuid
 		   AND deleted_at IS NOT NULL
 		   AND (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2
-		   AND (SELECT count(*) FROM accounts
-		         WHERE deleted_at IS NULL
-		           AND owner_user_id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)) < $3`+scopeSQL+`
+		   AND NOT EXISTS (SELECT 1 FROM accounts live
+		                    WHERE live.owner_user_id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)
+		                      AND live.deleted_at IS NULL)`+scopeSQL+`
 		RETURNING `+accountColumns, args...)
 	record, err := scanAccount(row)
 	if err == nil {
@@ -500,13 +497,13 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 //
 // **必须在事务内运行**。条件 UPDATE 一次判完全部自助判据：
 // 只恢复 deleted_by=by 的行、deleted_at 不早于 notBefore（宽限窗口）、
-// 且该属主名下没有其他未软删账号；容量与管理员恢复同口径，
+// 且该属主名下没有其他未软删账号；全局容量同口径，
 // 在同一个容量 advisory lock 下重数。
 //
 // 零行分类：不可见或不存在 → not_found；未删 → conflict；
 // 删除者不是本人 → forbidden；超窗 → conflict；名下已有生效账号 →
 // validation；其余按容量不足报 capacity_exceeded。
-func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by string, notBefore time.Time, limit, ownerLimit int) (coreaccount.Record, error) {
+func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by string, notBefore time.Time, limit int) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
 	}
@@ -516,31 +513,28 @@ func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by
 	if notBefore.IsZero() {
 		return coreaccount.Record{}, validationError("grace cutoff is required")
 	}
-	if limit <= 0 || ownerLimit <= 0 {
+	if limit <= 0 {
 		return coreaccount.Record{}, validationError("limit must be positive")
 	}
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
 		return coreaccount.Record{}, mapError(err)
 	}
-	scopeSQL, scopeArgs, err := scopePredicate(s, 6, "")
+	scopeSQL, scopeArgs, err := scopePredicate(s, 5, "")
 	if err != nil {
 		return coreaccount.Record{}, err
 	}
-	args := append([]any{id, limit, ownerLimit, notBefore, by}, scopeArgs...)
+	args := append([]any{id, limit, notBefore, by}, scopeArgs...)
 	row := r.db.q(ctx).QueryRow(ctx, `
 		UPDATE accounts
 		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
 		 WHERE id = $1::uuid
 		   AND deleted_at IS NOT NULL
-		   AND deleted_at >= $4
-		   AND deleted_by = $5::uuid
+		   AND deleted_at >= $3
+		   AND deleted_by = $4::uuid
 		   AND NOT EXISTS (SELECT 1 FROM accounts live
 		                    WHERE live.owner_user_id = accounts.owner_user_id
 		                      AND live.deleted_at IS NULL)
-		   AND (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2
-		   AND (SELECT count(*) FROM accounts
-		         WHERE deleted_at IS NULL
-		           AND owner_user_id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)) < $3`+scopeSQL+`
+		   AND (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2`+scopeSQL+`
 		RETURNING `+accountColumns, args...)
 	record, err := scanAccount(row)
 	if err == nil {

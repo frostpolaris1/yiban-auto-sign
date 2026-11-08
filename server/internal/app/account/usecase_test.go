@@ -46,16 +46,15 @@ func (f *fakeListRepo) Credentials(_ context.Context, _ corescope.Scope, ids []s
 func newListService(t *testing.T, repo Repo, cipher *Cipher) *Service {
 	t.Helper()
 	svc, err := NewService(Deps{
-		Accounts:   repo,
-		Schools:    fakeSchoolReader{},
-		Audit:      fakeAuditRepo{},
-		Tx:         fakeTxManager{},
-		Clock:      clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
-		Cipher:     cipher,
-		Owner:      fakeOwnerReader{},
-		Device:     &fakeDeviceReader{},
-		Limit:      10,
-		OwnerLimit: 10,
+		Accounts: repo,
+		Schools:  fakeSchoolReader{},
+		Audit:    fakeAuditRepo{},
+		Tx:       fakeTxManager{},
+		Clock:    clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
+		Cipher:   cipher,
+		Owner:    fakeOwnerReader{},
+		Device:   &fakeDeviceReader{},
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -75,15 +74,14 @@ func (failingOwnerReader) GetByID(context.Context, string) (coreuser.Record, err
 func TestCreateOwnerReaderFailurePassesThrough(t *testing.T) {
 	repo := &fakeListRepo{items: []Record{{ID: "acc-1"}}}
 	svc, err := NewService(Deps{
-		Accounts:   repo,
-		Schools:    fakeSchoolReader{},
-		Audit:      fakeAuditRepo{},
-		Tx:         fakeTxManager{},
-		Clock:      clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
-		Owner:      failingOwnerReader{},
-		Device:     &fakeDeviceReader{},
-		Limit:      10,
-		OwnerLimit: 10,
+		Accounts: repo,
+		Schools:  fakeSchoolReader{},
+		Audit:    fakeAuditRepo{},
+		Tx:       fakeTxManager{},
+		Clock:    clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
+		Owner:    failingOwnerReader{},
+		Device:   &fakeDeviceReader{},
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -111,15 +109,14 @@ func TestCreateOwnerReaderFailurePassesThrough(t *testing.T) {
 func TestListRejectsZeroValueScope(t *testing.T) {
 	repo := &fakeListRepo{items: []Record{{ID: "acc-1"}}}
 	svc, err := NewService(Deps{
-		Accounts:   repo,
-		Schools:    fakeSchoolReader{},
-		Audit:      fakeAuditRepo{},
-		Tx:         fakeTxManager{},
-		Clock:      clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
-		Owner:      fakeOwnerReader{},
-		Device:     &fakeDeviceReader{},
-		Limit:      10,
-		OwnerLimit: 10,
+		Accounts: repo,
+		Schools:  fakeSchoolReader{},
+		Audit:    fakeAuditRepo{},
+		Tx:       fakeTxManager{},
+		Clock:    clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
+		Owner:    fakeOwnerReader{},
+		Device:   &fakeDeviceReader{},
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
