@@ -125,6 +125,8 @@ export const DEFAULT_TIME_PREF: TimePref = {
   offset_min: 15,
   allowed: true,
   window: { start: '06:00', end: '06:30' },
+  estimated: '06:15',
+  estimate_note: '（今日计划，非承诺）',
 }
 
 export type ScheduleApiCall = {

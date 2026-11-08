@@ -69,6 +69,17 @@ type Discoverer interface {
 	DiscoverWindow(ctx context.Context, schoolTaskID string) (contract.Window, error)
 }
 
+// SelfReader 读用户自选读面所需的账号与任务上下文（实现为 pg.ScheduleRepo）。
+// ActiveAccountByOwner 在用户没有生效账号时返回 errs.ErrNotFound。
+// DayTaskRows 只返回启用任务的行，按"未了结优先、run_at、任务名、任务 ID"排序：
+// 第一行就是该账号当日最先要执行的任务。
+// AccountEnabledTasks 只返回启用任务，按任务名、任务 ID 排序。
+type SelfReader interface {
+	ActiveAccountByOwner(ctx context.Context, userID string) (coreschedule.SelfAccount, error)
+	DayTaskRows(ctx context.Context, accountID, day string) ([]coreschedule.SelfTask, error)
+	AccountEnabledTasks(ctx context.Context, accountID string) ([]string, error)
+}
+
 // CapacityAlerts 是容量缺口通知的投递端口（实现为 app/notify.Dispatcher）。
 // 为 nil 时不投递，现行为不变；失败或 panic 只记日志，不改业务返回。
 // 事件类型来自 core/notify：适配器因此无须导入 app 层。
@@ -80,12 +91,14 @@ type CapacityAlerts interface {
 // Tx 让"写窗口＋重排＋补插"三步同事务：任一步失败整体回滚，
 // 不留下"版本已推进但计划未重排"的半成品。
 // Prefs 可为 nil：未装配时计划忽略用户自选，行为等于纯自动铺点。
+// Self 可为 nil：未装配时 SelfContext 返回零值，用户自选读面保持标准窗口。
 type Deps struct {
 	Windows  WindowStore
 	Plans    PlanStore
 	Accounts Accounts
 	Discover Discoverer
 	Prefs    TimePrefs
+	Self     SelfReader
 	Tx       appcore.TxManager
 	// Notifier 可为 nil：缺端口就不发事件。
 	Notifier Notifier

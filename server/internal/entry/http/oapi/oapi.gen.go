@@ -2202,15 +2202,32 @@ type TimePref struct {
 	// Allowed False when the deployment disables user time preferences.
 	Allowed bool `json:"allowed"`
 
+	// EstimateNote Human-readable note. 待生成 when estimated is null; otherwise
+	// states that the value comes from today's plan and is not a
+	// promise.
+	EstimateNote string `json:"estimate_note"`
+
+	// Estimated Ledger run_at of the selected task on the current business day,
+	// HH:MM. Null when today's ledger has no task row. It is an
+	// estimate, not a promise: retries, platform windows and overrides
+	// can move the actual attempt.
+	Estimated *string `json:"estimated"`
+
 	// OffsetMin Relative minute from the effective window start; multiple of five.
 	OffsetMin *int `json:"offset_min"`
 
-	// Slots Five-minute anchors relative to the server standard signing
-	// window. Each label is a clock time inside that window. The window
+	// Slots Five-minute anchors relative to window.start, the effective
+	// window of the caller's own account task for the current business
+	// day. The slot count follows the plan's slice count: floor of the
+	// window span in five-minute slices, at least one. Unlike the
+	// administrator stats endpoint, this user read has no two-hour cap.
+	// Each label is a clock time inside that window. The window
 	// actually executed for a task may be shifted by the platform
 	// window or a per-task override, so a label is a preference time,
-	// not the promised execution time. disabled follows the deployment
-	// gate and the window.
+	// not the promised execution time. pct is the crowding band from
+	// the same count and cap as GET /api/time-prefs/stats. disabled
+	// follows the deployment gate. edge_note marks the first or last
+	// band when the deployment reserves an edge buffer.
 	Slots  *[]TimePrefSlot `json:"slots,omitempty"`
 	Window TimePrefWindow  `json:"window"`
 }
@@ -2220,11 +2237,21 @@ type TimePrefSlot struct {
 	// Disabled True when the deployment gate or the window forbids the slot.
 	Disabled bool `json:"disabled"`
 
+	// EdgeNote Empty unless this is the first (front buffer) or last (back
+	// buffer) band and the deployment trims that edge; then it states
+	// how many minutes are reserved.
+	EdgeNote string `json:"edge_note"`
+
 	// Label Absolute clock time of the slot.
 	Label string `json:"label"`
 
 	// OffsetMin Minute offset from the window start, a multiple of five.
 	OffsetMin int `json:"offset_min"`
+
+	// Pct Crowding band, a multiple of ten. Derived from the same count and
+	// cap as GET /api/time-prefs/stats: 100 only when count reaches the
+	// cap, otherwise at most 90. 0 when there is no crowding data.
+	Pct int `json:"pct"`
 
 	// Reason Human-readable reason when disabled is true.
 	Reason *string `json:"reason,omitempty"`
@@ -2238,12 +2265,20 @@ type TimePrefUpdate struct {
 
 // TimePrefWindow defines model for TimePrefWindow.
 type TimePrefWindow struct {
-	// End Server standard signing window end, HH:MM. Actual execution may
-	// be shifted by the platform window or a per-task override.
+	// End Effective signing window end of the caller's own account task,
+	// HH:MM, after edge trimming. Same source as the plan. When the
+	// account has a task but no cached or override window is available
+	// this is the standard window with the plan's edge trimming. When
+	// there is no active account or no enabled task there is no plan
+	// row, so this is the standard window without edge trimming.
 	End string `json:"end"`
 
-	// Start Server standard signing window start, HH:MM. Actual execution may
-	// be shifted by the platform window or a per-task override.
+	// Start Effective signing window start of the caller's own account task,
+	// HH:MM, after edge trimming. Same source as the plan. When the
+	// account has a task but no cached or override window is available
+	// this is the standard window with the plan's edge trimming. When
+	// there is no active account or no enabled task there is no plan
+	// row, so this is the standard window without edge trimming.
 	Start string `json:"start"`
 }
 

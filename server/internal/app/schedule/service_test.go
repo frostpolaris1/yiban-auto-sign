@@ -1012,3 +1012,192 @@ func TestReportRefreshKeepsOverrideCache(t *testing.T) {
 		t.Fatalf("报告 = source %s start %v, want override %v", prev.Source, prev.WindowStart, ovStart)
 	}
 }
+
+// fakeSelfReader 固定用户读面的账号/任务解析结果。
+type fakeSelfReader struct {
+	account    coreschedule.SelfAccount
+	accountErr error
+	rows       []coreschedule.SelfTask
+	rowsErr    error
+	tasks      []string
+	tasksErr   error
+}
+
+func (f *fakeSelfReader) ActiveAccountByOwner(context.Context, string) (coreschedule.SelfAccount, error) {
+	return f.account, f.accountErr
+}
+
+func (f *fakeSelfReader) DayTaskRows(context.Context, string, string) ([]coreschedule.SelfTask, error) {
+	return f.rows, f.rowsErr
+}
+
+func (f *fakeSelfReader) AccountEnabledTasks(context.Context, string) ([]string, error) {
+	return f.tasks, f.tasksErr
+}
+
+func newSelfService(t *testing.T, self appschedule.SelfReader) *appschedule.Service {
+	t.Helper()
+	svc, err := appschedule.NewService(appschedule.Deps{
+		Windows: &fakeWindowStore{}, Plans: &fakePlanStore{}, Accounts: fakeAccounts{},
+		Discover: &fakeDiscover{}, Self: self, Tx: &fakeTx{},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+// 自选读面取法：无账号零值；有当日行取第一行（未了结优先由仓储排序）；
+// 无当日行取学校启用任务第一条；两者都无 HasTask=false。
+func TestSelfContextSelection(t *testing.T) {
+	runAt := time.Date(2026, 10, 29, 6, 42, 0, 0, shanghai)
+	for _, tc := range []struct {
+		name string
+		self *fakeSelfReader
+		want coreschedule.SelfContext
+	}{
+		{
+			name: "没有生效账号",
+			self: &fakeSelfReader{accountErr: coreerrs.ErrNotFound},
+			want: coreschedule.SelfContext{},
+		},
+		{
+			name: "当日任务行优先",
+			self: &fakeSelfReader{
+				account: coreschedule.SelfAccount{ID: "acct-1", SchoolID: "school-1"},
+				rows: []coreschedule.SelfTask{
+					{SchoolTaskID: "task-next", RunAt: runAt},
+					{SchoolTaskID: "task-later", RunAt: runAt.Add(10 * time.Minute)},
+				},
+			},
+			want: coreschedule.SelfContext{
+				HasAccount: true, AccountID: "acct-1", SchoolID: "school-1",
+				HasTask: true, TaskID: "task-next", RunAt: &runAt,
+			},
+		},
+		{
+			name: "无当日行取启用任务",
+			self: &fakeSelfReader{
+				account: coreschedule.SelfAccount{ID: "acct-1", SchoolID: "school-1"},
+				tasks:   []string{"task-first", "task-second"},
+			},
+			want: coreschedule.SelfContext{
+				HasAccount: true, AccountID: "acct-1", SchoolID: "school-1",
+				HasTask: true, TaskID: "task-first",
+			},
+		},
+		{
+			name: "无启用任务",
+			self: &fakeSelfReader{
+				account: coreschedule.SelfAccount{ID: "acct-1", SchoolID: "school-1"},
+			},
+			want: coreschedule.SelfContext{
+				HasAccount: true, AccountID: "acct-1", SchoolID: "school-1",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newSelfService(t, tc.self)
+			got, err := svc.SelfContext(context.Background(), "u1", "2026-10-29")
+			if err != nil {
+				t.Fatalf("SelfContext: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Self 未装配时读面保持零值，调用方不会拿到半套账号上下文。
+func TestSelfContextWithoutReader(t *testing.T) {
+	svc := newSelfService(t, nil)
+	got, err := svc.SelfContext(context.Background(), "u1", "2026-10-29")
+	if err != nil {
+		t.Fatalf("SelfContext: %v", err)
+	}
+	if got != (coreschedule.SelfContext{}) {
+		t.Fatalf("got %+v, want zero", got)
+	}
+}
+
+// SelfContext 早退：空用户与非法业务日都在读仓储前拒绝。
+func TestSelfContextRejectsBadInput(t *testing.T) {
+	for _, tc := range []struct {
+		name, userID, day string
+	}{
+		{"空用户", "", "2026-10-29"},
+		{"非法日", "u1", "2026/10/29"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			self := &fakeSelfReader{}
+			svc := newSelfService(t, self)
+			if _, err := svc.SelfContext(context.Background(), tc.userID, tc.day); err == nil {
+				t.Fatal("非法输入必须报错")
+			}
+		})
+	}
+}
+
+// CachedWindow 只读缓存/覆盖/回退：任何分支都不发现平台、不写计划行。
+func TestCachedWindowCacheOnly(t *testing.T) {
+	start := time.Date(2026, 10, 29, 7, 0, 0, 0, shanghai)
+	overrideStart := time.Date(2026, 10, 29, 9, 0, 0, 0, shanghai)
+	in := baseInput()
+	in.EdgeFront, in.EdgeBack = time.Minute, time.Minute
+	for _, tc := range []struct {
+		name       string
+		store      *fakeWindowStore
+		wantStart  time.Time
+		wantEnd    time.Time
+		wantSource string
+	}{
+		{
+			name: "缓存优先",
+			store: &fakeWindowStore{ok: true, record: coreschedule.WindowRecord{
+				Start: start, End: start.Add(80 * time.Minute), Source: "platform",
+			}},
+			wantStart: start.Add(time.Minute), wantEnd: start.Add(79 * time.Minute), wantSource: "platform",
+		},
+		{
+			name: "覆盖压过缓存",
+			store: &fakeWindowStore{
+				ok: true,
+				record: coreschedule.WindowRecord{
+					Start: start, End: start.Add(80 * time.Minute), Source: "platform",
+				},
+				overrideOK: true,
+				override: coreschedule.WindowOverride{
+					Start: overrideStart, End: overrideStart.Add(30 * time.Minute),
+				},
+			},
+			wantStart: overrideStart.Add(time.Minute), wantEnd: overrideStart.Add(29 * time.Minute), wantSource: "override",
+		},
+		{
+			name:       "无缓存回退标准窗",
+			store:      &fakeWindowStore{},
+			wantStart:  time.Date(2026, 10, 29, 6, 31, 0, 0, shanghai),
+			wantEnd:    time.Date(2026, 10, 29, 7, 49, 0, 0, shanghai),
+			wantSource: "fallback",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &fakePlanStore{}
+			d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
+			svc := newService(t, tc.store, p, fakeAccounts{ids: []string{"a1"}}, d)
+			got, err := svc.CachedWindow(context.Background(), in)
+			if err != nil {
+				t.Fatalf("CachedWindow: %v", err)
+			}
+			if !got.Start.Equal(tc.wantStart) || !got.End.Equal(tc.wantEnd) || got.Source != tc.wantSource {
+				t.Fatalf("got %+v, want %v~%v source %s", got, tc.wantStart, tc.wantEnd, tc.wantSource)
+			}
+			if d.calls != 0 {
+				t.Fatalf("CachedWindow 不得发现平台：calls = %d", d.calls)
+			}
+			if len(p.inserted) != 0 {
+				t.Fatalf("CachedWindow 不得写计划行：%v", p.inserted)
+			}
+		})
+	}
+}

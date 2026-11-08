@@ -712,6 +712,51 @@ func (r *ScheduleRepo) EnsureTask(ctx context.Context, accountID, schoolTaskID, 
 	return t, created, nil
 }
 
+// ActiveAccountByOwner 返回用户名下的生效账号（一人一号）。
+// 没有生效账号时返回 errs.ErrNotFound；待审、已拒、管理员暂停与软删都不算。
+// 若历史数据出现多行生效账号，取最新创建的一行：读面只需一个稳定答案。
+func (r *ScheduleRepo) ActiveAccountByOwner(ctx context.Context, userID string) (coreschedule.SelfAccount, error) {
+	var acct coreschedule.SelfAccount
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT id::text, school_id::text FROM accounts
+		 WHERE owner_user_id = $1::uuid AND status = 'active' AND deleted_at IS NULL
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT 1`, userID).Scan(&acct.ID, &acct.SchoolID)
+	if err != nil {
+		return coreschedule.SelfAccount{}, mapError(err)
+	}
+	return acct, nil
+}
+
+// DayTaskRows 返回账号当日已有任务行的启用任务与台账计划时刻。
+// 排序即用户自选读面的选法：未了结（pending/running）优先，其次 run_at，
+// 最后任务名与任务 ID——第一行就是该账号当日最早要执行的任务。
+// 零行是正常结论（当日还没建计划），返回空列表与 nil。
+func (r *ScheduleRepo) DayTaskRows(ctx context.Context, accountID, day string) ([]coreschedule.SelfTask, error) {
+	rows, err := r.db.q(ctx).Query(ctx, `
+		SELECT s.school_task_id::text, s.run_at
+		  FROM sign_tasks s
+		  JOIN school_tasks st ON st.id = s.school_task_id AND st.enabled
+		  JOIN accounts a ON a.id = s.account_id
+		 WHERE s.account_id = $1::uuid AND s.day = $2::date
+		   AND a.status = 'active' AND a.deleted_at IS NULL
+		 ORDER BY (s.state IN ('pending', 'running')) DESC, s.run_at, st.name, st.id`,
+		accountID, day)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	var out []coreschedule.SelfTask
+	for rows.Next() {
+		var t coreschedule.SelfTask
+		if err := rows.Scan(&t.SchoolTaskID, &t.RunAt); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, t)
+	}
+	return out, mapError(rows.Err())
+}
+
 // DayTasks 返回账号当日已有任务行的启用任务 ID（按名称序）。
 // 只算启用任务：停用任务的行永远不会被 ClaimDue 认领，
 // 拿它当手动签到的目标只会入队一条死行。

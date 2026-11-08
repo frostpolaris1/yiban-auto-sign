@@ -357,7 +357,7 @@ test('invariant 6: clearing the preference also asks first', async ({ page }) =>
 })
 
 test('invariant 6: a deployment gate disables the controls and says why', async ({ page }) => {
-  await mockScheduleApi(page, { role: 'user', timePref: { offset_min: null, allowed: false, window: { start: '06:00', end: '06:30' } } })
+  await mockScheduleApi(page, { role: 'user', timePref: { offset_min: null, allowed: false, window: { start: '06:00', end: '06:30' }, estimated: null, estimate_note: '待生成' } })
   await page.goto('/')
 
   await expect(page.getByText('此部署未开放时间偏好')).toBeVisible()

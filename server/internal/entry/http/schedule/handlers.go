@@ -26,6 +26,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
+	"math"
 	"strconv"
 	"time"
 
@@ -40,6 +42,8 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	logfield "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
+	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
@@ -55,6 +59,10 @@ type Planner interface {
 	Report(ctx context.Context, in appschedule.Input) (appschedule.Preview, error)
 	Task(ctx context.Context, scope corescope.Scope, taskID string) (coreschedule.TaskInfo, error)
 	ListWindows(ctx context.Context, scope corescope.Scope, day string, refresh bool) ([]coreschedule.WindowView, error)
+	// SelfContext 解析用户自选读面的当日账号与任务；TaskID 不得下发。
+	SelfContext(ctx context.Context, userID, day string) (coreschedule.SelfContext, error)
+	// CachedWindow 只读缓存/覆盖/回退窗口，不发现平台、不构建计划。
+	CachedWindow(ctx context.Context, in appschedule.Input) (coreschedule.WindowRecord, error)
 }
 
 // TimePrefs 是自选用例端口（实现为 app/timepref.Service）。
@@ -89,6 +97,8 @@ type Config struct {
 	UsePrefs      bool
 	EdgeFront     time.Duration
 	EdgeBack      time.Duration
+	// Logger 为空时用 slog.Default；用户自选读面的降级路径要留痕。
+	Logger *slog.Logger
 }
 
 // Handler 处理 /api/schedule/*、/api/capacity 与 /api/me/time-pref。
@@ -98,6 +108,7 @@ type Handler struct {
 	stats   Stats
 	authz   Authorizer
 	cfg     Config
+	log     *slog.Logger
 }
 
 // NewHandler 构造处理器。缺少 Location 时按 UTC；服务层仍会校验。
@@ -108,7 +119,11 @@ func NewHandler(planner Planner, prefs TimePrefs, authz Authorizer, cfg Config) 
 	if cfg.Clock == nil {
 		cfg.Clock = coreclock.System{}
 	}
-	return &Handler{planner: planner, prefs: prefs, authz: authz, cfg: cfg}
+	log := cfg.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Handler{planner: planner, prefs: prefs, authz: authz, cfg: cfg, log: log}
 }
 
 // WithStats 注入看板聚合。未注入时两个统计端点回 500。
@@ -348,25 +363,17 @@ func (h *Handler) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams)
 	}
 	// 槽数与计划同源：只算整 5 分钟片（floor），最多两小时 24 片。
 	// 用 ceil 会多出计划永远用不到的尾槽（placePrefs 对越界偏移自动铺点）。
-	slices := int(window.WindowEnd.Sub(window.WindowStart) / (5 * time.Minute))
-	if slices > 24 {
-		slices = 24
-	}
-	// 计划对不足一片的窗口夹到 1 片（service.go 的 slices < 1）。
-	// 统计必须同源：否则 4 分钟窗口图里 0 槽，账号却落在 offset 0。
-	if slices < 1 {
-		slices = 1
-	}
-	slots := make([]oapi.PrefStatsSlot, 0, slices)
-	for index := 0; index < slices; index++ {
-		offset := index * 5
-		at := window.WindowStart.Add(time.Duration(offset) * time.Minute)
-		slots = append(slots, oapi.PrefStatsSlot{
-			OffsetMin: offset,
-			Label:     at.In(h.cfg.Location).Format("15:04"),
-			Count:     counts[offset],
+	// 用户自选读面与这里共用 slotFrames：同一窗口必得同一 offset/label/count。
+	// admin stats 契约原有「至多两小时 24 片」上限，保持不动。
+	frames := h.slotFrames(window.WindowStart, window.WindowEnd, counts, 24)
+	slots := make([]oapi.PrefStatsSlot, len(frames))
+	for i, frame := range frames {
+		slots[i] = oapi.PrefStatsSlot{
+			OffsetMin: frame.OffsetMin,
+			Label:     frame.Label,
+			Count:     frame.Count,
 			Cap:       h.cfg.SlotsPerSlice,
-		})
+		}
 	}
 	respond.JSON(c.Writer, 200, oapi.PrefStatsReport{
 		SchoolId:    schoolID,
@@ -376,6 +383,39 @@ func (h *Handler) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams)
 		WindowEnd:   window.WindowEnd,
 		Slots:       slots,
 	})
+}
+
+// prefSlotFrame 是一个 5 分钟槽的传输前形状：管理端统计与用户读面共用。
+// 两处必须由同一函数产出，拥挤度的 offset/label/count 才不会各算一套。
+type prefSlotFrame struct {
+	OffsetMin int
+	Label     string
+	Count     int
+}
+
+// slotFrames 把窗口切成整 5 分钟片（floor，不足一片夹到 1 片）。
+// 与计划同源：ceil 会多出计划永远用不到的尾槽；不足一片时计划也落 offset 0。
+// limit > 0 时为既有 admin stats 的两小时上限；用户读面传 0，按计划实际片数，
+// 长窗口不会在用户面丢掉后段拥挤度。
+func (h *Handler) slotFrames(start, end time.Time, counts map[int]int, limit int) []prefSlotFrame {
+	slices := int(end.Sub(start) / (5 * time.Minute))
+	if limit > 0 && slices > limit {
+		slices = limit
+	}
+	if slices < 1 {
+		slices = 1
+	}
+	frames := make([]prefSlotFrame, 0, slices)
+	for index := 0; index < slices; index++ {
+		offset := index * 5
+		at := start.Add(time.Duration(offset) * time.Minute)
+		frames = append(frames, prefSlotFrame{
+			OffsetMin: offset,
+			Label:     at.In(h.cfg.Location).Format("15:04"),
+			Count:     counts[offset],
+		})
+	}
+	return frames
 }
 
 // TimePrefGet 实现 GET /api/me/time-pref。
@@ -389,7 +429,12 @@ func (h *Handler) TimePrefGet(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	respond.JSON(c.Writer, 200, timePrefView(view))
+	out, _, err := h.timePrefResponse(c, view, user.ID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, 200, out)
 }
 
 // TimePrefSet 实现 PUT /api/me/time-pref。
@@ -425,7 +470,129 @@ func (h *Handler) TimePrefSet(c *gin.Context, _ oapi.TimePrefSetParams) {
 		fail(c, err)
 		return
 	}
-	respond.JSON(c.Writer, 200, timePrefView(view))
+	out, self, err := h.timePrefResponse(c, view, user.ID)
+	if err != nil {
+		// 写入已经成功：响应组装失败（窗口/拥挤度读面）不得报成写入失败。
+		// 回基础视图并留结构化日志；estimated 若已取到则保留。客户端可再 GET 补全。
+		args := []any{
+			logfield.KeyEvent, "time_pref.enrich_failed",
+			logfield.KeyUserID, user.ID,
+			logfield.KeyError, coremask.SafeErrorText(err),
+		}
+		if self.TaskID != "" {
+			args = append(args, logfield.KeySchoolTaskID, self.TaskID)
+		}
+		h.log.WarnContext(c.Request.Context(), "time preference response enrichment failed", args...)
+		respond.JSON(c.Writer, 200, out)
+		return
+	}
+	respond.JSON(c.Writer, 200, out)
+}
+
+// timePrefResponse 在基础自选视图上补齐账号任务窗口、拥挤度与台账预计时段。
+//
+// 窗口只走缓存只读路径（CachedWindow：覆盖 > 缓存 > 标准回退，不发现平台）；
+// 拥挤度走 OffsetCounts，与 admin time-prefs/stats 的 count/cap 同源；
+// slotFrames 与 admin 端点共用。用户读面因此零平台调用，也不构建全量计划。
+// 用户不传 task_id，响应也不回 task_id、school_id 或 account_id。
+// 无生效账号、无启用任务时保持基础视图：window 是标准窗口，
+// 无计划行故不裁剪边距，slots 沿用标准窗口、pct 记 0，estimated=null；
+// 有任务但无缓存/覆盖时 CachedWindow 回退标准窗并按边距裁剪。
+func (h *Handler) timePrefResponse(c *gin.Context, view apptimepref.View, userID string) (oapi.TimePref, coreschedule.SelfContext, error) {
+	out := timePrefView(view)
+	// 装配判空前置：缺 stats 时不再读账号/窗口，错误来源单一。
+	if h.stats == nil {
+		return out, coreschedule.SelfContext{}, errs.New(errs.CodeInternal, "stats service is not wired")
+	}
+	self, err := h.planner.SelfContext(c.Request.Context(), userID, h.today())
+	if err != nil {
+		return out, self, err
+	}
+	if self.RunAt != nil {
+		estimated := self.RunAt.In(h.cfg.Location).Format("15:04")
+		out.Estimated = &estimated
+		out.EstimateNote = "（今日计划，非承诺）"
+	}
+	if !self.HasTask {
+		return out, self, nil
+	}
+	window, err := h.planner.CachedWindow(c.Request.Context(), h.input(h.today(), self.SchoolID, self.TaskID))
+	if err != nil {
+		return out, self, err
+	}
+	counts, err := h.stats.OffsetCounts(c.Request.Context(), self.SchoolID)
+	if err != nil {
+		return out, self, err
+	}
+	out.Window = oapi.TimePrefWindow{
+		Start: window.Start.In(h.cfg.Location).Format("15:04"),
+		End:   window.End.In(h.cfg.Location).Format("15:04"),
+	}
+	slots := h.crowdedSlots(window.Start, window.End, counts, view.Allowed)
+	out.Slots = &slots
+	return out, self, nil
+}
+
+// crowdedSlots 把同一份 slotFrames 转成用户读面：pct 是 10% 档拥挤度，
+// 与 admin time-prefs/stats 的 count/cap 同源。
+// 用户面不限两小时：按计划实际片数，长窗口后段同样可见。
+// disabled 只随部署开关；edge_note 只在首/尾片且部署保留边距时出现。
+func (h *Handler) crowdedSlots(start, end time.Time, counts map[int]int, allowed bool) []oapi.TimePrefSlot {
+	frames := h.slotFrames(start, end, counts, 0)
+	slots := make([]oapi.TimePrefSlot, len(frames))
+	for i, frame := range frames {
+		slot := oapi.TimePrefSlot{
+			OffsetMin: frame.OffsetMin,
+			Label:     frame.Label,
+			Pct:       crowdPct(frame.Count, h.cfg.SlotsPerSlice),
+		}
+		if !allowed {
+			slot.Disabled = true
+			reason := "time preference is disabled"
+			slot.Reason = &reason
+		}
+		if slot.Disabled {
+			slots[i] = slot
+			continue
+		}
+		switch {
+		case i == 0 && h.cfg.EdgeFront > 0:
+			slot.EdgeNote = "开头 " + durationMinutes(h.cfg.EdgeFront) + " 分钟保留"
+		case i == len(frames)-1 && i != 0 && h.cfg.EdgeBack > 0:
+			slot.EdgeNote = "结尾 " + durationMinutes(h.cfg.EdgeBack) + " 分钟保留"
+		}
+		slots[i] = slot
+	}
+	return slots
+}
+
+// crowdPct 复刻旧线用户端口径：10% 一档，满员恰好 100，未满封顶 90；
+// 有 1 人至少 10，0 人 0。分母与 admin stats 的 cap 同源（SlotsPerSlice）。
+// 粗粒度是防调研：精确百分比加已知容量可反推人数。
+func crowdPct(count, capacity int) int {
+	if capacity < 1 {
+		capacity = 1
+	}
+	if count >= capacity {
+		return 100
+	}
+	if count <= 0 {
+		return 0
+	}
+	pct := int(math.RoundToEven(float64(count*10)/float64(capacity))) * 10
+	if pct < 10 {
+		return 10
+	}
+	if pct > 90 {
+		return 90
+	}
+	return pct
+}
+
+// durationMinutes 把边距时长写成旧线文案里的分钟数：1、0.5、2。
+// 旧线用 Python 的 %g（6 位有效数字），这里保持同一精度。
+func durationMinutes(d time.Duration) string {
+	return strconv.FormatFloat(float64(d)/float64(time.Minute), 'g', 6, 64)
 }
 
 // authorizeTask 判任务在作用域内且属于声明的学校，并返回任务元数据。
@@ -571,12 +738,15 @@ func planResponse(p appschedule.Preview, enabled bool) oapi.SchedulePlan {
 	}
 }
 
-// timePrefView 把自选读数转成传输形状。
+// timePrefView 把自选读数转成基础传输形状。
 // slots 始终由服务端生成：窗口为空时省略整个键，而不是给空数组。
+// 基础形状没有账号上下文：pct 记 0（无拥挤度数据），edge_note 空，
+// estimated=null 且 estimate_note=待生成；入口层取到任务后再覆写这些字段。
 func timePrefView(v apptimepref.View) oapi.TimePref {
 	out := oapi.TimePref{
-		OffsetMin: v.OffsetMin,
-		Allowed:   v.Allowed,
+		OffsetMin:    v.OffsetMin,
+		Allowed:      v.Allowed,
+		EstimateNote: "待生成",
 		Window: oapi.TimePrefWindow{
 			Start: v.Window.Start,
 			End:   v.Window.End,
@@ -589,6 +759,8 @@ func timePrefView(v apptimepref.View) oapi.TimePref {
 				OffsetMin: slot.OffsetMin,
 				Label:     slot.Label,
 				Disabled:  slot.Disabled,
+				Pct:       0,
+				EdgeNote:  "",
 			}
 			if slot.Reason != "" {
 				reason := slot.Reason
