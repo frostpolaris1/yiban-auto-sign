@@ -27,9 +27,15 @@ import (
 type fakeService struct {
 	cred appaccount.SigningCredential
 	err  error
+	// lastScope/lastID 记录入口层下传的接缝参数：作用域必须原样来自会话，
+	// id 必须原样来自路径，不被 handler 改写。
+	lastScope corescope.Scope
+	lastID    string
 }
 
-func (f *fakeService) SigningCredential(context.Context, corescope.Scope, string) (appaccount.SigningCredential, error) {
+func (f *fakeService) SigningCredential(_ context.Context, scope corescope.Scope, id string) (appaccount.SigningCredential, error) {
+	f.lastScope = scope
+	f.lastID = id
 	return f.cred, f.err
 }
 
@@ -322,13 +328,58 @@ func TestVerifyAdminAllowed(t *testing.T) {
 	}
 }
 
-func TestVerifyUserForbidden(t *testing.T) {
+// user 校验自己的账号：凭据读取自带作用域，属主放行；
+// 结果结构与 master/admin 同形（身份两字段仍按回执透出）。
+func TestVerifyUserOwnAccountAllowed(t *testing.T) {
 	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
-	engine, issued := newTestRouter(t, &fakeAuthorizer{scope: corescope.User("u1")}, svc, &fakeVerifier{})
+	verifier := &fakeVerifier{profile: contract.Profile{
+		SchoolName: "示例大学", UniversityID: "0000000001",
+	}}
+	engine, issued := newTestRouter(t, &fakeAuthorizer{scope: corescope.User("u1")}, svc, verifier)
 
 	rec := callVerify(t, engine, issued, true)
-	if rec.Code != http.StatusForbidden {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	// 作用域与路径 id 原样进凭据读取：属主判定只能来自这里。
+	if got := svc.lastScope; got.Kind() != corescope.KindUser || got.UserID() != "u1" {
+		t.Fatalf("scope = %+v, want User(u1)", got)
+	}
+	if svc.lastID != "acc-1" {
+		t.Fatalf("id = %q, want acc-1", svc.lastID)
+	}
+	result := decodeResult(t, rec)
+	if !result.Ok || result.Code != string(contract.OutcomeSuccess) {
+		t.Fatalf("result = %+v", result)
+	}
+	if verifier.calls != 1 {
+		t.Fatalf("verifier calls = %d, want 1", verifier.calls)
+	}
+	if result.Identity == nil || result.Identity.UniversityId != "0000000001" {
+		t.Fatalf("identity = %+v", result.Identity)
+	}
+}
+
+// user 验他人账号：作用域判定在 SigningCredential，越权与跨校同为 404，
+// 不泄露账号是否存在；平台请求一次都不发。
+func TestVerifyUserOutOfScopeNotFound(t *testing.T) {
+	svc := &fakeService{err: errs.New(errs.CodeNotFound, "account not found")}
+	verifier := &fakeVerifier{}
+	engine, issued := newTestRouter(t, &fakeAuthorizer{scope: corescope.User("u1")}, svc, verifier)
+
+	rec := callVerify(t, engine, issued, true)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	// 404 只能来自仍带 User 作用域的凭据读取，不能是入口层改写成别的范围。
+	if got := svc.lastScope; got.Kind() != corescope.KindUser || got.UserID() != "u1" {
+		t.Fatalf("scope = %+v, want User(u1)", got)
+	}
+	if svc.lastID != "acc-1" {
+		t.Fatalf("id = %q, want acc-1", svc.lastID)
+	}
+	if verifier.calls != 0 {
+		t.Fatalf("verifier calls = %d, want 0", verifier.calls)
 	}
 }
 

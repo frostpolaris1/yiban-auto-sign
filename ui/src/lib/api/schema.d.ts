@@ -955,7 +955,9 @@ export interface paths {
          * @description Reads the stored phone, password and device code, performs a login and
          *     reports the platform conclusion. The response never includes the
          *     credential. Platform conclusions return 200; a transport failure
-         *     returns 502 upstream_unavailable.
+         *     returns 502 upstream_unavailable. master and admin look up accounts in
+         *     their scope; a user only their own account, and an out-of-scope
+         *     account answers 404.
          *     Rate limited per client IP and per account id; a 429 carries Retry-After.
          */
         post: operations["AccountVerify"];
