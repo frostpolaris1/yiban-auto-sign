@@ -94,6 +94,11 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.Location == nil {
 		return nil, errors.New("worker: nil location")
 	}
+	if deps.Paused == nil {
+		// 全局暂停门（3a）是必填端口：装配缺失是编程错误，
+		// 失败关闭——急停面缺失不得静默读成「不暂停」放行认领。
+		return nil, errors.New("worker: nil pause gate")
+	}
 	log := deps.Logger
 	if log == nil {
 		log = slog.Default()
@@ -124,6 +129,12 @@ func (s *Service) CountRunning(ctx context.Context) (int64, error) {
 // （审计 P2-10：容量是按并行算的，执行却是串行）。
 // 每账号至多一行在批内，故并行不破坏"同账号串行"（由认领 SQL 保证）。
 //
+// 全局暂停门（3a）最先判定：engine.paused 生效时本轮整轮不动——
+// 不汇总、不回收租约、不认领，急停就是什么都不做。已到期的租约在
+// 恢复后仍会被回收（到期判据是绝对时刻，不依赖本轮执行）。
+// 暂停查询故障原样上抛、本轮不认领：故障不是「未暂停」，
+// 与 timepref「故障不是关闭」同口径（急停方向保守一致）。
+//
 // 两类失败要分清：
 //   - 业务结论（成功/跳过/失败）由 settleOutcome 落状态，Step 返回 nil；
 //   - 基础设施失败（库、网络、取消）上抛第一条；**该行若尚未提交签到
@@ -132,6 +143,13 @@ func (s *Service) CountRunning(ctx context.Context) (int64, error) {
 func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 	if limit < 1 {
 		limit = 1
+	}
+	paused, err := s.deps.Paused(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if paused {
+		return 0, nil
 	}
 	now := s.deps.Clock.Now()
 	// 轮末汇总：进程跨业务日时把上一日的任务结果记成一行日志。

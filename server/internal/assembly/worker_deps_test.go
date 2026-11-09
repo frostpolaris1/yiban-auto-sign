@@ -9,6 +9,7 @@ package assembly
 // Limiter 由 buildWorkerDeps 派生，故两处都豁免。
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"reflect"
@@ -67,6 +68,7 @@ func TestWorkerDepsPassesEveryFieldThrough(t *testing.T) {
 		alerts:    &fakeAlertsSentinel{},
 		picker:    &fakePickerSentinel{},
 		logger:    logger,
+		paused:    pauseGateSentinel,
 	}
 	got := buildWorkerDeps(&config.Config{}, want)
 
@@ -105,6 +107,9 @@ func TestWorkerDepsPassesEveryFieldThrough(t *testing.T) {
 	}
 	if got.Logger != want.logger {
 		t.Error("Logger 未原样搬运")
+	}
+	if got.Paused == nil || reflect.ValueOf(got.Paused).Pointer() != reflect.ValueOf(pauseGateSentinel).Pointer() {
+		t.Error("Paused 未原样搬运")
 	}
 	if got.Limiter == nil {
 		t.Error("Limiter 未派生")
@@ -146,6 +151,9 @@ type fakeNotifierSentinel struct{ appworker.Notifier }
 type fakeAlertsSentinel struct{ appworker.Alerts }
 
 type fakePickerSentinel struct{ appworker.TaskPicker }
+
+// pauseGateSentinel 是暂停门的哨兵函数：指针同一性比较用。
+func pauseGateSentinel(context.Context) (bool, error) { return false, nil }
 
 // fixedClock 是零值可比较的时钟哨兵。
 type fixedClock struct{}

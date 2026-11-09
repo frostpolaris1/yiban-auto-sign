@@ -24,6 +24,7 @@ func newSummaryService(t *testing.T, st *fakeStore, clk coreclock.Clock, logger 
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: defaultSigner(), Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: clk, Location: loc, Logger: logger,
+		Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

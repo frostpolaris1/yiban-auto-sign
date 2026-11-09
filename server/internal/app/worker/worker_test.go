@@ -441,11 +441,15 @@ func newService(t *testing.T, st *fakeStore, signer *fakeSigner, limiter fakeLim
 	return newServiceLogged(t, st, signer, limiter, nil)
 }
 
+// neverPaused 是测试缺省的暂停门：恒读「未暂停」，不挡认领。
+func neverPaused(context.Context) (bool, error) { return false, nil }
+
 func newServiceLogged(t *testing.T, st *fakeStore, signer *fakeSigner, limiter fakeLimiter, logger *slog.Logger) *appworker.Service {
 	t.Helper()
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: limiter, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Paused: neverPaused,
 		Logger: logger,
 	})
 	if err != nil {
@@ -459,6 +463,7 @@ func newServiceWithPicker(t *testing.T, st *fakeStore, signer *fakeSigner, limit
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: limiter, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Paused: neverPaused,
 		Picker: fixedPicker(pick),
 	})
 	if err != nil {
@@ -647,6 +652,7 @@ func TestRetryUsesFreshAttemptID(t *testing.T) {
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: clk, Location: loc,
+		Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -680,6 +686,7 @@ func TestWindowClosedSkips(t *testing.T) {
 		Limiter:  fakeLimiter{allow: true},
 		Clock:    coreclock.Fixed{T: time.Date(2026, 10, 29, 8, 0, 30, 0, loc)},
 		Location: loc,
+		Paused:   neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -708,6 +715,7 @@ func TestEarlyTaskRequeued(t *testing.T) {
 		Limiter:  fakeLimiter{allow: true},
 		Clock:    coreclock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, loc)},
 		Location: loc,
+		Paused:   neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -756,6 +764,7 @@ func TestTransientBounded(t *testing.T) {
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: clk, Location: loc,
+		Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -861,6 +870,7 @@ func TestCredentialInfraErrorPropagates(t *testing.T) {
 		Store: st, Creds: fakeCreds{err: errors.New("db down")},
 		Signer: defaultSigner(), Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -878,6 +888,7 @@ func TestCredentialBusinessErrorFails(t *testing.T) {
 		Store: st, Creds: fakeCreds{err: coreerrs.New(coreerrs.CodeNotFound, "account gone")},
 		Signer: defaultSigner(), Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

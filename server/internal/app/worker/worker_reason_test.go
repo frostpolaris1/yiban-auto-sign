@@ -98,6 +98,7 @@ func newReasonService(t *testing.T, st *fakeStore, signer appworker.Signer, sink
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Paused: neverPaused,
 		Logger: slog.New(slog.NewJSONHandler(sink, nil)),
 	})
 	if err != nil {
