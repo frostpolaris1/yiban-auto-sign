@@ -53,6 +53,7 @@ func newNotifyingService(t *testing.T, st *fakeStore, signer *fakeSigner, limite
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: limiter, Clock: coreclock.Fixed{T: testNow()}, Location: loc, Notifier: n,
+		Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

@@ -325,6 +325,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		notifyLib   *notifyhttp.Handler
 		systemLib   *systemhttp.Handler
 		auditLib    *audithttp.Handler
+		settingsSvc *appsettings.Service
 		db          *pg.DB
 		workerSvc   *appworker.Service
 		// authz 只给 master 专属的注册开关用。无数据库时为 nil，端点回 501。
@@ -454,7 +455,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, err
 		}
-		notifyLib, systemLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle,
+		notifyLib, systemLib, auditLib, settingsSvc, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle,
 			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, scheduleResolver)
 		if err != nil {
 			closeFn()
@@ -733,6 +734,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			picker: appworker.NewRandomTaskPicker(),
 			// 结论原因进日志（OCR M1）。
 			logger: logger,
+			// 3a 全局暂停门：每轮 Step 前查 settings 行 engine.paused 的
+			// 覆盖链生效值（DB>缺行 false）。故障上抛不认领，见 worker.Step。
+			paused: func(ctx context.Context) (bool, error) {
+				return scheduleResolver.ResolveBool(ctx, appsettings.KeyEnginePaused, false)
+			},
 		}))
 		if err != nil {
 			closeFn()
@@ -813,9 +819,12 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			appschedule.NewTaskQuery(scheduleRepo, clk, loc), adminSvc,
 			schedulehttp.Config{Location: loc, Clock: clk})
 		// 执行监控：快照用例与循环进程时刻同一实例（UX-5）。
+		// 3a：快照带全局暂停态（settings 行 engine.paused），写面挂二次口令
+		// （暂停 master/admin、恢复仅 master；写与审计同事务在用例层）。
 		engineState = appworker.NewEngineState()
 		engineLib = schedulehttp.NewEngineHandler(
-			appschedule.NewEngineQuery(scheduleRepo, clk, loc), engineState, adminSvc)
+			appschedule.NewEngineQuery(scheduleRepo, clk, loc), engineState, adminSvc).
+			WithPauseGate(settingsSvc, authSvc)
 		// 日切构建：启动补建 + 业务日 00:10 定时。参数与 HTTP 建计划同源。
 		daily, err := appschedule.NewDailyCron(&appschedule.DailyBuilder{
 			Service: scheduleSvc, Tasks: scheduleRepo, Clock: clk, Location: loc,
@@ -936,17 +945,17 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown,
 	webhook corewebhook.Sender, webhookCooldown appsettings.Cooldown,
 	autoApprove appsettings.AutoApproveStore, settingsRepo *pg.SettingsRepo,
-	scheduleResolver *appsettings.Resolver) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, error) {
+	scheduleResolver *appsettings.Resolver) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
 	}
 	inboxSvc, err := appnotify.NewInbox(appnotify.InboxDeps{
 		Repo:  pg.NewNotificationRepo(db),
 		Clock: clk,
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("assembly: notification inbox: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("assembly: notification inbox: %w", err)
 	}
 	announcementSvc, err := appsettings.NewService(appsettings.Deps{
 		Store:           pg.NewAnnouncementRepo(db),
@@ -963,25 +972,25 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		Logger:          logger,
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("assembly: announcement service: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("assembly: announcement service: %w", err)
 	}
 	reader, err := appaudit.NewReader(audits)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("assembly: audit reader: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("assembly: audit reader: %w", err)
 	}
 	// 巡检复用同一个 AuditRepo：适配器持有 HMAC 密钥，用例只拿结论。
 	inspector, err := appaudit.NewInspector(audits, clk)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("assembly: audit inspector: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("assembly: audit inspector: %w", err)
 	}
 
 	entries, err := config.Registry()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("assembly: configuration registry: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("assembly: configuration registry: %w", err)
 	}
 	roster, err := appsettings.NewRoster(rosterEntries(entries), config.Env{})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
 	}
 	// sett2：名册接覆盖链，写回键在 DB 行存在时报 source=db。
 	roster.WithOverrides(scheduleResolver)
@@ -990,7 +999,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		WithAutoApprove(announcementSvc).
 		WithWebhookTest(announcementSvc).
 		WithScheduleSettings(announcementSvc)
-	return notifyHandler, systemHandler, audithttp.NewHandler(reader).WithStatus(inspector), nil
+	return notifyHandler, systemHandler, audithttp.NewHandler(reader).WithStatus(inspector), announcementSvc, nil
 }
 
 // buildWebhookTestThrottle 构造测试推送的每管理员冷却。
@@ -1097,6 +1106,7 @@ type workerDeps struct {
 	alerts    appworker.Alerts
 	picker    appworker.TaskPicker
 	logger    *slog.Logger
+	paused    func(ctx context.Context) (bool, error)
 }
 
 // buildWorkerDeps 装配执行循环的依赖，限速器由 buildEgressGate 派生。
@@ -1118,6 +1128,7 @@ func buildWorkerDeps(cfg *config.Config, d workerDeps) appworker.Deps {
 		Alerts:    d.alerts,
 		Picker:    d.picker,
 		Logger:    d.logger,
+		Paused:    d.paused,
 	}
 }
 

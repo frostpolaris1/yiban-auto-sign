@@ -66,6 +66,7 @@ func newGiveUpServiceWithCreds(t *testing.T, st *fakeStore, creds appworker.Cred
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: creds, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: &advancingClock{base: testNow()}, Location: loc,
+		Paused: neverPaused,
 		Logger: newSinkLogger(sink),
 	})
 	if err != nil {

@@ -165,6 +165,7 @@ func TestLoopGracefulStopLeavesNoRunningRows(t *testing.T) {
 		Egress:  egressSvc,
 		Limiter: corerate.NewLimiter(corerate.DefaultRate, 6),
 		Clock:   clock.System{}, Location: time.UTC,
+		Paused: func(context.Context) (bool, error) { return false, nil },
 	})
 	if err != nil {
 		t.Fatalf("worker service: %v", err)

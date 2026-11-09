@@ -34,6 +34,7 @@ func TestRetryRotatesTargets(t *testing.T) {
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: clk, Location: loc,
+		Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -107,6 +108,7 @@ func TestSamplingFollowsRotatedTarget(t *testing.T) {
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: clk, Location: loc,
+		Paused:    neverPaused,
 		Locations: &fakeLocations{}, Photos: &fakePhotos{},
 	})
 	if err != nil {
@@ -147,6 +149,7 @@ func TestSingleTargetStaysFirst(t *testing.T) {
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: clk, Location: loc,
+		Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

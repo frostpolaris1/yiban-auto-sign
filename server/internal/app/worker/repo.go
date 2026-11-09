@@ -161,6 +161,8 @@ type Alerts interface {
 // Alerts 可为 nil：缺端口就不投递通知。
 // Logger 可为 nil：用 slog.Default。结论原因进日志，见 logOutcome。
 // Picker 可为 nil：手动签到多候选时用缺省随机源；测试可注入固定序列。
+// Paused 是全局暂停门（批 3a）：**必填**，装配缺失即构造失败——
+// 急停面缺失不得静默读成「不暂停」放行认领。
 type Deps struct {
 	Store     Store
 	Creds     Credentials
@@ -175,4 +177,8 @@ type Deps struct {
 	Alerts    Alerts
 	Picker    TaskPicker
 	Logger    *slog.Logger
+	// Paused 查询全局暂停开关（settings 行 engine.paused 的覆盖链生效值）。
+	// true 时 Step 整轮不动：不认领、不回收；查询故障原样上抛——
+	// 故障不是「未暂停」，急停面在故障时不得误放行。
+	Paused func(ctx context.Context) (bool, error)
 }

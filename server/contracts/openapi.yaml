@@ -2037,6 +2037,11 @@ paths:
         last_claim_at, last_tick_at and worker_started_at are
         in-process times: they are null before the loop starts and reset on
         restart, so they are never read back from the database.
+        paused reports the global execution pause switch. It is stored as a
+        settings row (engine.paused), so it survives process restarts and
+        takes effect on the next worker pass without a deploy; a missing row
+        reads as false (not paused). While paused the worker claims nothing:
+        due rows stay pending and are consumed after resume.
       x-roles: [master, admin]
       responses:
         '200':
@@ -2047,6 +2052,59 @@ paths:
                 $ref: '#/components/schemas/EngineSnapshot'
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/engine/pause:
+    put:
+      tags: [schedule]
+      operationId: AdminEnginePause
+      summary: Pause or resume the global execution engine.
+      description: |
+        Writes the global pause switch as a settings row (engine.paused,
+        lowercase true/false text). The switch is database-persistent: it
+        survives process restarts and takes effect on the next worker pass,
+        so no restart or deploy is needed. While paused the worker claims no
+        due tasks — pending rows stay pending and are consumed after resume;
+        a settings-store failure surfaces as an error instead of silently
+        resuming (a broken store never reads as "not paused").
+        The gate is split by the requested target value, not by the change
+        direction: pausing (paused=true) is available to master and admin;
+        resuming (paused=false) is master only, following the legacy
+        emergency-stop precedent where any administrator can stop and only
+        the master can restart. A caller outside the gate for its target
+        value answers 403 with zero writes and zero audit rows.
+        current_password is required: a missing value answers 400 and a
+        wrong password answers 403, both with zero writes and zero audit
+        rows; repeated failures share the global reauthentication throttle
+        (429 with Retry-After). The write commits with exactly one
+        settings.engine_paused audit row in one transaction; the detail
+        holds only the target state, and the actor is on the audit row's
+        own columns. Replays are idempotent — pausing while already paused
+        (or resuming while already running) still writes and still appends
+        exactly one audit row per successful call, because the audit
+        records the operation, not a diff. Resuming writes the row with
+        false rather than deleting it: a missing row also reads as false,
+        and no delete path exists on this endpoint.
+        The answer echoes the resulting switch state.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnginePauseUpdate'
+      responses:
+        '200':
+          description: Switch state after the write.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnginePauseStatus'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/admin/notify:
     get:
@@ -3951,6 +4009,19 @@ components:
       required: [enabled]
       properties:
         enabled: { type: boolean }
+    EnginePauseUpdate:
+      type: object
+      required: [paused, current_password]
+      properties:
+        paused: { type: boolean }
+        current_password:
+          type: string
+          description: The signed-in administrator's own login password, for the dangerous-action re-check.
+    EnginePauseStatus:
+      type: object
+      required: [paused]
+      properties:
+        paused: { type: boolean }
     RegisterRequest:
       type: object
       required:
@@ -5329,6 +5400,14 @@ components:
         retrying_truncated:
           type: boolean
           description: True when more retry rows exist beyond the 200-row cap; the client must not read the list as complete.
+        paused:
+          type: boolean
+          description: |
+            The global execution pause switch (settings row engine.paused).
+            The field is always present in responses; a missing settings row
+            reads as false. While true the worker claims no due tasks.
+            The switch is database-persistent and survives restarts; write
+            it through PUT /api/admin/engine/pause.
         last_claim_at:
           type: [string, "null"]
           format: date-time

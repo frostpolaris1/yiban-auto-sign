@@ -1318,9 +1318,59 @@ export interface paths {
          *     last_claim_at, last_tick_at and worker_started_at are
          *     in-process times: they are null before the loop starts and reset on
          *     restart, so they are never read back from the database.
+         *     paused reports the global execution pause switch. It is stored as a
+         *     settings row (engine.paused), so it survives process restarts and
+         *     takes effect on the next worker pass without a deploy; a missing row
+         *     reads as false (not paused). While paused the worker claims nothing:
+         *     due rows stay pending and are consumed after resume.
          */
         get: operations["AdminEngine"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/engine/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Pause or resume the global execution engine.
+         * @description Writes the global pause switch as a settings row (engine.paused,
+         *     lowercase true/false text). The switch is database-persistent: it
+         *     survives process restarts and takes effect on the next worker pass,
+         *     so no restart or deploy is needed. While paused the worker claims no
+         *     due tasks — pending rows stay pending and are consumed after resume;
+         *     a settings-store failure surfaces as an error instead of silently
+         *     resuming (a broken store never reads as "not paused").
+         *     The gate is split by the requested target value, not by the change
+         *     direction: pausing (paused=true) is available to master and admin;
+         *     resuming (paused=false) is master only, following the legacy
+         *     emergency-stop precedent where any administrator can stop and only
+         *     the master can restart. A caller outside the gate for its target
+         *     value answers 403 with zero writes and zero audit rows.
+         *     current_password is required: a missing value answers 400 and a
+         *     wrong password answers 403, both with zero writes and zero audit
+         *     rows; repeated failures share the global reauthentication throttle
+         *     (429 with Retry-After). The write commits with exactly one
+         *     settings.engine_paused audit row in one transaction; the detail
+         *     holds only the target state, and the actor is on the audit row's
+         *     own columns. Replays are idempotent — pausing while already paused
+         *     (or resuming while already running) still writes and still appends
+         *     exactly one audit row per successful call, because the audit
+         *     records the operation, not a diff. Resuming writes the row with
+         *     false rather than deleting it: a missing row also reads as false,
+         *     and no delete path exists on this endpoint.
+         *     The answer echoes the resulting switch state.
+         */
+        put: operations["AdminEnginePause"];
         post?: never;
         delete?: never;
         options?: never;
@@ -2653,6 +2703,14 @@ export interface components {
         AutoApproveUpdate: {
             enabled: boolean;
         };
+        EnginePauseUpdate: {
+            paused: boolean;
+            /** @description The signed-in administrator's own login password, for the dangerous-action re-check. */
+            current_password: string;
+        };
+        EnginePauseStatus: {
+            paused: boolean;
+        };
         RegisterRequest: {
             /** Format: email */
             email: string;
@@ -3632,6 +3690,14 @@ export interface components {
             retrying: components["schemas"]["EngineRetryRow"][];
             /** @description True when more retry rows exist beyond the 200-row cap; the client must not read the list as complete. */
             retrying_truncated: boolean;
+            /**
+             * @description The global execution pause switch (settings row engine.paused).
+             *     The field is always present in responses; a missing settings row
+             *     reads as false. While true the worker claims no due tasks.
+             *     The switch is database-persistent and survives restarts; write
+             *     it through PUT /api/admin/engine/pause.
+             */
+            paused?: boolean;
             /**
              * Format: date-time
              * @description In-process time of the last claim that processed at least one
@@ -5818,6 +5884,41 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminEnginePause: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnginePauseUpdate"];
+            };
+        };
+        responses: {
+            /** @description Switch state after the write. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnginePauseStatus"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };

@@ -81,6 +81,7 @@ func injectService(t *testing.T, st *fakeStore, signer *fakeSigner, locs *fakeLo
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Paused:    neverPaused,
 		Locations: locs, Photos: photos,
 	})
 	if err != nil {
@@ -103,6 +104,7 @@ func TestNilLocationSourceKeepsAuto(t *testing.T) {
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

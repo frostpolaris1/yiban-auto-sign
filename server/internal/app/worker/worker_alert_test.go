@@ -59,6 +59,7 @@ func newAlertServiceLogged(t *testing.T, st *fakeStore, signer appworker.Signer,
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Paused: neverPaused,
 		Alerts: alerts, Logger: logger,
 	})
 	if err != nil {

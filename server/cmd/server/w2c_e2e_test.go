@@ -300,6 +300,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Locations: locationSvc,
 		Photos:    photoSvc,
 		Notifier:  assembly.WorkerNotifier{Broker: e.broker, Clock: clk},
+		Paused:    func(context.Context) (bool, error) { return false, nil },
 	})
 	if err != nil {
 		t.Fatalf("new worker service: %v", err)

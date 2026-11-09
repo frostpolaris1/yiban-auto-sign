@@ -1439,6 +1439,18 @@ type EngineInflightRow struct {
 	SchoolName     string    `json:"school_name"`
 }
 
+// EnginePauseStatus defines model for EnginePauseStatus.
+type EnginePauseStatus struct {
+	Paused bool `json:"paused"`
+}
+
+// EnginePauseUpdate defines model for EnginePauseUpdate.
+type EnginePauseUpdate struct {
+	// CurrentPassword The signed-in administrator's own login password, for the dangerous-action re-check.
+	CurrentPassword string `json:"current_password"`
+	Paused          bool   `json:"paused"`
+}
+
 // EngineRetryRow defines model for EngineRetryRow.
 type EngineRetryRow struct {
 	AccountId string `json:"account_id"`
@@ -1479,6 +1491,13 @@ type EngineSnapshot struct {
 
 	// LastTickAt In-process time of the last completed loop pass; null before the first pass.
 	LastTickAt *time.Time `json:"last_tick_at"`
+
+	// Paused The global execution pause switch (settings row engine.paused).
+	// The field is always present in responses; a missing settings row
+	// reads as false. While true the worker claims no due tasks.
+	// The switch is database-persistent and survives restarts; write
+	// it through PUT /api/admin/engine/pause.
+	Paused *bool `json:"paused,omitempty"`
 
 	// Retrying Pending tasks with at least one business attempt, ordered by the
 	// next run time ascending, capped at the 200 soonest rows. Waiting
@@ -2763,6 +2782,13 @@ type AdminAutoApproveSetParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AdminEnginePauseParams defines parameters for AdminEnginePause.
+type AdminEnginePauseParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AdminEventsParams defines parameters for AdminEvents.
 type AdminEventsParams struct {
 	// LastEventID Last event id seen by the client, for resumption.
@@ -3255,6 +3281,9 @@ type AnnouncementSetJSONRequestBody = AnnouncementUpdate
 // AdminAutoApproveSetJSONRequestBody defines body for AdminAutoApproveSet for application/json ContentType.
 type AdminAutoApproveSetJSONRequestBody = AutoApproveUpdate
 
+// AdminEnginePauseJSONRequestBody defines body for AdminEnginePause for application/json ContentType.
+type AdminEnginePauseJSONRequestBody = EnginePauseUpdate
+
 // AdminNotifySetJSONRequestBody defines body for AdminNotifySet for application/json ContentType.
 type AdminNotifySetJSONRequestBody = NotifyPrefsUpdate
 
@@ -3516,6 +3545,9 @@ type ServerInterface interface {
 	// AdminEngine One-process execution monitor snapshot.
 	// (GET /api/admin/engine)
 	AdminEngine(c *gin.Context)
+	// AdminEnginePause Pause or resume the global execution engine.
+	// (PUT /api/admin/engine/pause)
+	AdminEnginePause(c *gin.Context, params AdminEnginePauseParams)
 	// AdminEvents Subscribe to the admin event stream (SSE).
 	// (GET /api/admin/events)
 	AdminEvents(c *gin.Context, params AdminEventsParams)
@@ -4818,6 +4850,49 @@ func (siw *ServerInterfaceWrapper) AdminEngine(c *gin.Context) {
 	}
 
 	siw.Handler.AdminEngine(c)
+}
+
+// AdminEnginePause operation middleware
+func (siw *ServerInterfaceWrapper) AdminEnginePause(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminEnginePauseParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminEnginePause(c, params)
 }
 
 // AdminEvents operation middleware
@@ -7427,6 +7502,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/admin/tasks", wrapper.AdminTaskList)
 	router.GET(options.BaseURL+"/api/admin/tasks/export", wrapper.AdminTaskExport)
 	router.GET(options.BaseURL+"/api/admin/engine", wrapper.AdminEngine)
+	router.PUT(options.BaseURL+"/api/admin/engine/pause", wrapper.AdminEnginePause)
 	router.GET(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifyGet)
 	router.PUT(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifySet)
 	router.GET(options.BaseURL+"/api/admin/settings", wrapper.AdminSettings)

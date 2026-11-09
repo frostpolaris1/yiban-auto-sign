@@ -41,6 +41,13 @@ const (
 	KeyScheduleAllowTimePref = "schedule.allow_time_pref"
 )
 
+// KeyEnginePaused 是全局执行暂停开关（批 3a 机制键）。
+// DB-only 机制键：不经名册（registry 无对应键，Known 恒 false，
+// 名册不会因它产生覆盖行查询）、无 env 对应位；
+// 缺行=false=不暂停，与 auto_approve 口径一致。
+// 读经覆盖链解析器（故障上抛、坏行回退缺省并出声），写经 SetBool。
+const KeyEnginePaused = "engine.paused"
+
 // SettingDomain 是一个整型键的合法域（registry domain 注入视图）。
 type SettingDomain struct {
 	Min int
