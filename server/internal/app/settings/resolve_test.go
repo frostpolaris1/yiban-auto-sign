@@ -11,11 +11,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 
 	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 )
 
 // fakeOverrideStore 是内存覆盖行仓储：rows 存原始行值，
@@ -230,6 +232,204 @@ func TestLookupForRoster(t *testing.T) {
 	}
 	if !resolver.Known(appsettings.KeyScheduleEdgeBackSec) || !resolver.Known("YIBAN_WINDOW_EDGE_BACK_SEC") {
 		t.Fatal("写回键（行键与名册键两种形态）必须 Known")
+	}
+}
+
+// ===== 批 3b：默认签到窗口对解析（schedule.default_sign_start_min/end_min）=====
+
+// keyedOverrideStore 是按键区分行的覆盖行替身：窗口对解析要对
+// start/end 两键读出不同状态（缺行/行值/坏行/存储故障）。
+// 行值写成非整数串即模拟 pg 侧的坏行校验错。
+type keyedOverrideStore struct {
+	intRows  map[string]string
+	boolRows map[string]string
+	readErr  error
+}
+
+func (f *keyedOverrideStore) IntOverride(_ context.Context, key string) (int, bool, error) {
+	if f.readErr != nil {
+		return 0, false, f.readErr
+	}
+	raw, ok := f.intRows[key]
+	if !ok {
+		return 0, false, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, true, errs.New(errs.CodeValidation, "settings value is not an integer")
+	}
+	return value, true, nil
+}
+
+func (f *keyedOverrideStore) BoolOverride(_ context.Context, key string) (bool, bool, error) {
+	if f.readErr != nil {
+		return false, false, f.readErr
+	}
+	raw, ok := f.boolRows[key]
+	if !ok {
+		return false, false, nil
+	}
+	switch raw {
+	case "true":
+		return true, true, nil
+	case "false":
+		return false, true, nil
+	default:
+		return false, true, errs.New(errs.CodeValidation, "settings value is not a boolean literal")
+	}
+}
+
+func (f *keyedOverrideStore) SetInt(_ context.Context, key string, value int, _ string) error {
+	if f.intRows == nil {
+		f.intRows = map[string]string{}
+	}
+	f.intRows[key] = strconv.Itoa(value)
+	return nil
+}
+
+func (f *keyedOverrideStore) SetBool(_ context.Context, key string, value bool, _ string) error {
+	if f.boolRows == nil {
+		f.boolRows = map[string]string{}
+	}
+	f.boolRows[key] = strconv.FormatBool(value)
+	return nil
+}
+
+func (f *keyedOverrideStore) ClearSetting(_ context.Context, key string) error {
+	delete(f.intRows, key)
+	delete(f.boolRows, key)
+	return nil
+}
+
+// newKeyedResolver 构造带日志捕获的解析器（keyed store；域仍只注入 edge 两键——
+// 窗口对键是 DB-only，域不走 registry 注入）。
+func newKeyedResolver(t *testing.T, store *keyedOverrideStore, log *slog.Logger) *appsettings.Resolver {
+	t.Helper()
+	return newTestResolver(t, store, log)
+}
+
+// 双缺行是常态：静默用常量对，零告警。
+func TestResolveSignWindowFallsBackWithoutRows(t *testing.T) {
+	var buf bytes.Buffer
+	resolver := newKeyedResolver(t, &keyedOverrideStore{intRows: map[string]string{}},
+		slog.New(slog.NewTextHandler(&buf, nil)))
+	start, end, err := resolver.ResolveSignWindow(context.Background(),
+		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+	if err != nil || start != coreschedule.DefaultSignWindowStartMinute || end != coreschedule.DefaultSignWindowEndMinute {
+		t.Fatalf("ResolveSignWindow = (%d, %d, %v), want builtin constants", start, end, err)
+	}
+	if warnLines(&buf) != 0 {
+		t.Fatalf("双缺行不得告警: %q", buf.String())
+	}
+}
+
+// 两侧行都在且合法：整对用行值。
+func TestResolveSignWindowUsesStoredPair(t *testing.T) {
+	resolver := newKeyedResolver(t, &keyedOverrideStore{intRows: map[string]string{
+		appsettings.KeyScheduleDefaultSignStartMin: "480",
+		appsettings.KeyScheduleDefaultSignEndMin:   "540",
+	}}, nil)
+	start, end, err := resolver.ResolveSignWindow(context.Background(),
+		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+	if err != nil || start != 480 || end != 540 {
+		t.Fatalf("ResolveSignWindow = (%d, %d, %v), want stored pair (480, 540)", start, end, err)
+	}
+}
+
+// 半对：一侧有行一侧缺行，整对回退常量并告警一次（防跨语义拼接）。
+func TestResolveSignWindowHalfPairFallsBackWithWarn(t *testing.T) {
+	var buf bytes.Buffer
+	store := &keyedOverrideStore{intRows: map[string]string{
+		appsettings.KeyScheduleDefaultSignStartMin: "480",
+	}}
+	resolver := newKeyedResolver(t, store, slog.New(slog.NewTextHandler(&buf, nil)))
+	start, end, err := resolver.ResolveSignWindow(context.Background(),
+		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+	if err != nil || start != coreschedule.DefaultSignWindowStartMinute || end != coreschedule.DefaultSignWindowEndMinute {
+		t.Fatalf("half pair start = (%d, %d, %v), want builtin pair", start, end, err)
+	}
+	if warnLines(&buf) != 1 {
+		t.Fatalf("半对必须告警恰一次: %q", buf.String())
+	}
+	// 反向半对：只有 end 行，同样整对回退。
+	store2 := &keyedOverrideStore{intRows: map[string]string{
+		appsettings.KeyScheduleDefaultSignEndMin: "540",
+	}}
+	var buf2 bytes.Buffer
+	resolver2 := newKeyedResolver(t, store2, slog.New(slog.NewTextHandler(&buf2, nil)))
+	start, end, err = resolver2.ResolveSignWindow(context.Background(),
+		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+	if err != nil || start != coreschedule.DefaultSignWindowStartMinute || end != coreschedule.DefaultSignWindowEndMinute {
+		t.Fatalf("half pair end = (%d, %d, %v), want builtin pair", start, end, err)
+	}
+	if warnLines(&buf2) != 1 {
+		t.Fatalf("反向半对必须告警恰一次: %q", buf2.String())
+	}
+}
+
+// 非法对：越域（1440、-1）与 start>=end 都整对回退常量并告警。
+func TestResolveSignWindowInvalidPairFallsBack(t *testing.T) {
+	for name, rows := range map[string]map[string]string{
+		"start_above_domain": {"schedule.default_sign_start_min": "1440", "schedule.default_sign_end_min": "1500"},
+		"end_negative":       {"schedule.default_sign_start_min": "-1", "schedule.default_sign_end_min": "500"},
+		"start_equals_end":   {"schedule.default_sign_start_min": "500", "schedule.default_sign_end_min": "500"},
+		"start_after_end":    {"schedule.default_sign_start_min": "500", "schedule.default_sign_end_min": "400"},
+	} {
+		var buf bytes.Buffer
+		resolver := newKeyedResolver(t, &keyedOverrideStore{intRows: rows},
+			slog.New(slog.NewTextHandler(&buf, nil)))
+		start, end, err := resolver.ResolveSignWindow(context.Background(),
+			coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+		if err != nil || start != coreschedule.DefaultSignWindowStartMinute || end != coreschedule.DefaultSignWindowEndMinute {
+			t.Fatalf("%s: ResolveSignWindow = (%d, %d, %v), want builtin pair", name, start, end, err)
+		}
+		if warnLines(&buf) != 1 {
+			t.Fatalf("%s: 非法对必须告警恰一次: %q", name, buf.String())
+		}
+	}
+}
+
+// 坏行（手工 SQL 写坏）：整对回退常量并告警，不把坏值原文带出。
+func TestResolveSignWindowBadRowFallsBack(t *testing.T) {
+	var buf bytes.Buffer
+	resolver := newKeyedResolver(t, &keyedOverrideStore{intRows: map[string]string{
+		appsettings.KeyScheduleDefaultSignStartMin: "abc",
+		appsettings.KeyScheduleDefaultSignEndMin:   "540",
+	}}, slog.New(slog.NewTextHandler(&buf, nil)))
+	start, end, err := resolver.ResolveSignWindow(context.Background(),
+		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+	if err != nil || start != coreschedule.DefaultSignWindowStartMinute || end != coreschedule.DefaultSignWindowEndMinute {
+		t.Fatalf("bad row = (%d, %d, %v), want builtin pair", start, end, err)
+	}
+	if warnLines(&buf) != 1 {
+		t.Fatalf("坏行必须告警恰一次: %q", buf.String())
+	}
+}
+
+// 存储故障原样上抛：故障不是配置状态，不得当缺行回退。
+func TestResolveSignWindowPropagatesStoreFailure(t *testing.T) {
+	resolver := newKeyedResolver(t, &keyedOverrideStore{readErr: errors.New("db down")}, nil)
+	if _, _, err := resolver.ResolveSignWindow(context.Background(),
+		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute); err == nil {
+		t.Fatal("store failure must propagate")
+	}
+}
+
+// 对级告警每进程只出一次：连续两次解析只记一条 Warn。
+func TestResolveSignWindowWarnsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	resolver := newKeyedResolver(t, &keyedOverrideStore{intRows: map[string]string{
+		appsettings.KeyScheduleDefaultSignStartMin: "480",
+	}}, slog.New(slog.NewTextHandler(&buf, nil)))
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, _, err := resolver.ResolveSignWindow(ctx,
+			coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	if warnLines(&buf) != 1 {
+		t.Fatalf("warn count = %d, want 1: %q", warnLines(&buf), buf.String())
 	}
 }
 

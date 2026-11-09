@@ -8,6 +8,7 @@ package settings_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
@@ -15,6 +16,7 @@ import (
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
@@ -285,6 +287,316 @@ func TestScheduleSettingsAuditFailureRollsBack(t *testing.T) {
 
 	err := svc.SetSchedule(context.Background(), corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
 		{Key: appsettings.KeyScheduleEdgeFrontSec, Op: appsettings.ScheduleOpSet, Value: 120},
+	})
+	if err == nil {
+		t.Fatal("audit failure must fail the PUT")
+	}
+	if !tx.rolledBack {
+		t.Fatal("audit failure must roll the transaction back")
+	}
+	if len(audits.entries) != 0 {
+		t.Fatalf("audit rows = %d, want 0", len(audits.entries))
+	}
+}
+
+// ===== 批 3b：四枚 DB-only 键进写面（周末门＋默认窗口对）=====
+
+// keyedWriteStore 是按键区分行的写面替身：成对校验要对 start/end
+// 两键读出不同生效值，fakeScheduleStore 的单行位不够用。
+type keyedWriteStore struct {
+	intRows    map[string]string
+	boolRows   map[string]string
+	intWrites  map[string]int
+	boolWrites map[string]bool
+	clears     []string
+	readErr    error
+	failWrite  bool
+}
+
+func newKeyedWriteStore() *keyedWriteStore {
+	return &keyedWriteStore{
+		intRows: map[string]string{}, boolRows: map[string]string{},
+		intWrites: map[string]int{}, boolWrites: map[string]bool{},
+	}
+}
+
+func (f *keyedWriteStore) IntOverride(_ context.Context, key string) (int, bool, error) {
+	if f.readErr != nil {
+		return 0, false, f.readErr
+	}
+	raw, ok := f.intRows[key]
+	if !ok {
+		return 0, false, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, true, errs.New(errs.CodeValidation, "settings value is not an integer")
+	}
+	return value, true, nil
+}
+
+func (f *keyedWriteStore) BoolOverride(_ context.Context, key string) (bool, bool, error) {
+	if f.readErr != nil {
+		return false, false, f.readErr
+	}
+	raw, ok := f.boolRows[key]
+	if !ok {
+		return false, false, nil
+	}
+	switch raw {
+	case "true":
+		return true, true, nil
+	case "false":
+		return false, true, nil
+	default:
+		return false, true, errs.New(errs.CodeValidation, "settings value is not a boolean literal")
+	}
+}
+
+func (f *keyedWriteStore) SetInt(_ context.Context, key string, value int, _ string) error {
+	if f.failWrite {
+		return errs.New(errs.CodeInternal, "write rejected")
+	}
+	if f.intRows == nil {
+		f.intRows = map[string]string{}
+	}
+	if f.intWrites == nil {
+		f.intWrites = map[string]int{}
+	}
+	f.intWrites[key] = value
+	f.intRows[key] = strconv.Itoa(value)
+	return nil
+}
+
+func (f *keyedWriteStore) SetBool(_ context.Context, key string, value bool, _ string) error {
+	if f.failWrite {
+		return errs.New(errs.CodeInternal, "write rejected")
+	}
+	if f.boolRows == nil {
+		f.boolRows = map[string]string{}
+	}
+	if f.boolWrites == nil {
+		f.boolWrites = map[string]bool{}
+	}
+	f.boolWrites[key] = value
+	f.boolRows[key] = strconv.FormatBool(value)
+	return nil
+}
+
+func (f *keyedWriteStore) ClearSetting(_ context.Context, key string) error {
+	if f.failWrite {
+		return errs.New(errs.CodeInternal, "write rejected")
+	}
+	f.clears = append(f.clears, key)
+	delete(f.intRows, key)
+	delete(f.boolRows, key)
+	return nil
+}
+
+// 周末门键写回：set 落行、null 删行、audit detail 含 bool 旧→新；
+// 旧三键不受影响（缺=不动）。
+func TestScheduleSettingsWeekendKeysWriteAndClear(t *testing.T) {
+	store := newKeyedWriteStore()
+	audits := &fakeAudit{}
+	svc, _ := newScheduleService(t, store, audits)
+	ctx := context.Background()
+
+	// set：true 落行，恰一行审计，changes 记 [nil true]。
+	if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: true},
+	}); err != nil {
+		t.Fatalf("SetSchedule(sunday): %v", err)
+	}
+	if !store.boolWrites[appsettings.KeyScheduleSundaySign] {
+		t.Fatalf("sunday row = %v", store.boolRows)
+	}
+	pair := audits.entries[0].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSundaySign]
+	if pair[0] != nil || pair[1] != true {
+		t.Fatalf("sunday pair = %#v, want [nil true]", pair)
+	}
+
+	// 旧行存在时旧→新：false 覆盖 true。
+	if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSaturdaySign, Op: appsettings.ScheduleOpSet, Value: false},
+	}); err != nil {
+		t.Fatalf("SetSchedule(saturday): %v", err)
+	}
+	pair = audits.entries[1].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSaturdaySign]
+	if pair[0] != nil || pair[1] != false {
+		t.Fatalf("saturday pair = %#v, want [nil false]", pair)
+	}
+
+	// null 删行：ClearSetting 落到周末键；缺行=false 由读面口径保证。
+	if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpClear},
+	}); err != nil {
+		t.Fatalf("SetSchedule(clear): %v", err)
+	}
+	if store.boolRows[appsettings.KeyScheduleSundaySign] != "" {
+		t.Fatalf("sunday row survived clear: %q", store.boolRows[appsettings.KeyScheduleSundaySign])
+	}
+	value, found, err := store.BoolOverride(ctx, appsettings.KeyScheduleSundaySign)
+	if err != nil || found || value {
+		t.Fatalf("after clear BoolOverride = (%v, %v, %v), want missing row = false", value, found, err)
+	}
+
+	// 部分补丁不受扩字段影响：只动 allow_time_pref，周末键行零触碰。
+	store2 := newKeyedWriteStore()
+	store2.boolRows[appsettings.KeyScheduleSaturdaySign] = "true"
+	audits2 := &fakeAudit{}
+	svc2, _ := newScheduleService(t, store2, audits2)
+	if err := svc2.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleAllowTimePref, Op: appsettings.ScheduleOpSet, Value: true},
+	}); err != nil {
+		t.Fatalf("SetSchedule(old key): %v", err)
+	}
+	if store2.boolRows[appsettings.KeyScheduleSaturdaySign] != "true" {
+		t.Fatalf("weekend row changed by old-key patch: %v", store2.boolRows)
+	}
+	if _, ok := audits2.entries[0].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSaturdaySign]; ok {
+		t.Fatal("未列出的周末键不得进 detail")
+	}
+}
+
+// 默认窗口对：成对写入成功；单独改一侧与另一侧生效值组合后
+// 仍需 start<end（缺行回退常量参与组合），违规 400 零写零审计。
+func TestScheduleSettingsSignWindowPairValidation(t *testing.T) {
+	ctx := context.Background()
+	builtinStart := coreschedule.DefaultSignWindowStartMinute
+	builtinEnd := coreschedule.DefaultSignWindowEndMinute
+
+	// 成对写入（无行）：两行都落，恰一行审计。
+	store := newKeyedWriteStore()
+	audits := &fakeAudit{}
+	svc, _ := newScheduleService(t, store, audits)
+	if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpSet, Value: 480},
+		{Key: appsettings.KeyScheduleDefaultSignEndMin, Op: appsettings.ScheduleOpSet, Value: 540},
+	}); err != nil {
+		t.Fatalf("SetSchedule(pair): %v", err)
+	}
+	if store.intWrites[appsettings.KeyScheduleDefaultSignStartMin] != 480 ||
+		store.intWrites[appsettings.KeyScheduleDefaultSignEndMin] != 540 {
+		t.Fatalf("pair rows = %v", store.intWrites)
+	}
+	if len(audits.entries) != 1 {
+		t.Fatalf("audit rows = %d, want 1", len(audits.entries))
+	}
+
+	// 负例表：非法域值与组合违规都 400 类拒绝，零写零审计。
+	negatives := []struct {
+		name    string
+		store   *keyedWriteStore
+		changes []appsettings.ScheduleChange
+	}{
+		{
+			name:  "start above domain",
+			store: newKeyedWriteStore(),
+			changes: []appsettings.ScheduleChange{
+				{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpSet, Value: 1440},
+				{Key: appsettings.KeyScheduleDefaultSignEndMin, Op: appsettings.ScheduleOpSet, Value: 1500},
+			},
+		},
+		{
+			name:  "negative minute",
+			store: newKeyedWriteStore(),
+			changes: []appsettings.ScheduleChange{
+				{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpSet, Value: -1},
+				{Key: appsettings.KeyScheduleDefaultSignEndMin, Op: appsettings.ScheduleOpSet, Value: 500},
+			},
+		},
+		{
+			name:  "lone start over builtin end",
+			store: newKeyedWriteStore(),
+			changes: []appsettings.ScheduleChange{
+				{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpSet, Value: 600},
+			},
+		},
+		{
+			name:  "lone end below builtin start",
+			store: newKeyedWriteStore(),
+			changes: []appsettings.ScheduleChange{
+				{Key: appsettings.KeyScheduleDefaultSignEndMin, Op: appsettings.ScheduleOpSet, Value: 300},
+			},
+		},
+		{
+			name: "start crosses stored end",
+			store: func() *keyedWriteStore {
+				s := newKeyedWriteStore()
+				s.intRows[appsettings.KeyScheduleDefaultSignEndMin] = "400"
+				return s
+			}(),
+			changes: []appsettings.ScheduleChange{
+				{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpSet, Value: 600},
+			},
+		},
+		{
+			name: "end crosses stored start",
+			store: func() *keyedWriteStore {
+				s := newKeyedWriteStore()
+				s.intRows[appsettings.KeyScheduleDefaultSignStartMin] = "500"
+				return s
+			}(),
+			changes: []appsettings.ScheduleChange{
+				{Key: appsettings.KeyScheduleDefaultSignEndMin, Op: appsettings.ScheduleOpSet, Value: 400},
+			},
+		},
+	}
+	for _, negative := range negatives {
+		auditsNeg := &fakeAudit{}
+		svcNeg, _ := newScheduleService(t, negative.store, auditsNeg)
+		err := svcNeg.SetSchedule(ctx, corescope.Master(), scheduleActor, negative.changes)
+		if err == nil || errs.From(err).Code != errs.CodeValidation {
+			t.Fatalf("%s: err = %v, want validation", negative.name, err)
+		}
+		if len(negative.store.intWrites) != 0 || len(negative.store.boolWrites) != 0 || len(negative.store.clears) != 0 {
+			t.Fatalf("%s: 被拒写到达存储: %v", negative.name, negative.store.intWrites)
+		}
+		if len(auditsNeg.entries) != 0 {
+			t.Fatalf("%s: 被拒写写了审计: %d rows", negative.name, len(auditsNeg.entries))
+		}
+	}
+
+	// 组合正例：DB end=400 时 start=350 单独改成功（350<400）。
+	storeOK := newKeyedWriteStore()
+	storeOK.intRows[appsettings.KeyScheduleDefaultSignEndMin] = "400"
+	svcOK, _ := newScheduleService(t, storeOK, &fakeAudit{})
+	if err := svcOK.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpSet, Value: 350},
+	}); err != nil {
+		t.Fatalf("single start within stored end: %v", err)
+	}
+	if storeOK.intWrites[appsettings.KeyScheduleDefaultSignStartMin] != 350 {
+		t.Fatalf("start row = %v", storeOK.intWrites)
+	}
+
+	// 删除一侧不挡路（组合 300<470 通过）；删除后行消失。
+	storeClear := newKeyedWriteStore()
+	storeClear.intRows[appsettings.KeyScheduleDefaultSignStartMin] = "300"
+	svcClear, _ := newScheduleService(t, storeClear, &fakeAudit{})
+	if err := svcClear.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleDefaultSignEndMin, Op: appsettings.ScheduleOpClear},
+	}); err != nil {
+		t.Fatalf("clear end with stored start: %v", err)
+	}
+	if _, found, _ := storeClear.IntOverride(ctx, appsettings.KeyScheduleDefaultSignEndMin); found {
+		t.Fatal("end row must be gone after clear")
+	}
+
+	// 语义对照（防常量漂移）：常量对本身合法（start<end 且在域内）。
+	if builtinStart >= builtinEnd || builtinStart < 0 || builtinEnd > 1439 {
+		t.Fatalf("builtin pair (%d, %d) must be a valid pair", builtinStart, builtinEnd)
+	}
+}
+
+// 扩字段写回与审计同事务：审计失败整体回滚（新键同口径）。
+func TestScheduleSettingsWeekendKeysAuditFailureRollsBack(t *testing.T) {
+	store := newKeyedWriteStore()
+	audits := &fakeAudit{err: errs.New(errs.CodeInternal, "audit rejected")}
+	svc, tx := newScheduleService(t, store, audits)
+
+	err := svc.SetSchedule(context.Background(), corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: true},
 	})
 	if err == nil {
 		t.Fatal("audit failure must fail the PUT")
