@@ -246,7 +246,8 @@ func TestStructureRowsPinned(t *testing.T) {
 	// 用户签到日历：app 与 entry/http 各增 calendar（只读面）。
 	// arch-a1b：app 的 updatecheck 改名 selfcheck、admin 改名 schooladmin；
 	// entry/http 的 settings 拆为 notify 与 system（路由与形状不变）。
-	const want = "3d7a176de5707e9c36685891981608d9be2ed74b428ccdda1133eab1c6c08edc"
+	// kqa（2d webhook 渠道）：core 与 adapters 各增 webhook（端口/词表与出口实现）。
+	const want = "ddf82d11e05c9b490933ecf4df5a3ae5d2bc53ece349157bcfa946ffb3df05c5"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}
