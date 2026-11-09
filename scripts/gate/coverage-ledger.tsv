@@ -87,3 +87,7 @@ server/cmd/server/notify_delivery_e2e_test.go	uncovered=Go 测试文件自身即
 server/cmd/server/notify_webhook_e2e_test.go	uncovered=Go 测试文件自身即门（真库 e2e：恰一条真发与未配置跳过；收口档真跑）
 server/internal/adapters/pg/notify_webhook_e2e_test.go	uncovered=Go 测试文件自身即门（真库：webhook 账本行读写与 CountSentOnDay 跨日窗口；收口档真跑）
 server/internal/adapters/pg/settings_e2e_test.go	uncovered=Go 测试文件自身即门（真库：prefs/坏行/公告/审计列表等 settings 写读；收口档真跑）
+server/contracts/README.md	covered_by=go test ./internal/entry/http/oapi TestContractRoleTablesAgree（角色表逐行钉住；描述行随批次人工更新）
+scripts/contract-gate.sh	uncovered=门禁脚本：本批以 BREAKS_ALLOWLIST=/dev/null 突变自证咬合（空名册→红，实名册→绿）；tests/test_contract_gate_wiring.py 只钉 CI 接线面，脚本内部过滤无车道测试——显式豁免记录在案
+server/contracts/.breaking-allowlist.tsv	uncovered=豁免名册数据：消费方为 contract-gate.sh 过滤步骤，同上突变自证
+server/tools/structure/structure_test.go	uncovered=Go 包门 go test ./tools/structure 真跑钉住哈希自证（哈希即本文件常量）

@@ -7,6 +7,13 @@
 #      warning 及以上即失败。当前 0 发现，所以不需要基线豁免文件。
 #   2. oasdiff breaking：与 --base 指向的 git ref 里的同一份 spec 相比；
 #      ERR 级破坏性变更新增即失败（删除端点、改响应字段类型等）。
+#      豁免走 `server/contracts/.breaking-allowlist.tsv`：只按
+#      `id<TAB>method<TAB>path<TAB>批次` 三元组精确放行**单条 finding**，
+#      同一检查的其余端点、以及全部其它检查不受影响。新增行必须写批次链接，
+#      语义是「该端点的该变更已被当批评审接受」，不是关闭规则——
+#      本项目的响应枚举闭集按批次演进（渠道词表 2d 扩 webhook），
+#      契约唯一消费者是仓内生成物（oapi.gen.go / schema.d.ts 同批 --check 钉住，
+#      ui tsc 同批咬合），不存在第三方穷举客户端，enum-additive 不构成现实破坏面。
 #
 # 口径：
 #   - 缺工具 = 环境错误，exit 2（跳过 ≠ 绿）。
@@ -92,7 +99,42 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 git show "$BASE:$SPEC" > "$TMP_DIR/base.yaml" 2>/dev/null ||
     die_env "$SPEC does not exist at base ref '$BASE'; nothing to compare"
 
-echo "== oasdiff breaking（$BASE -> HEAD，ERR 级）=="
-"$OASDIFF" breaking --fail-on ERR "$TMP_DIR/base.yaml" "$SPEC"
+echo "== oasdiff breaking（$BASE -> HEAD，ERR 级，allowlist 过滤后）=="
+PY="$(command -v python3 || command -v python || true)"
+[ -n "$PY" ] || die_env "python3 not found; the breaking-allowlist filter needs it"
+FINDINGS="$TMP_DIR/findings.json"
+"$OASDIFF" breaking --format json "$TMP_DIR/base.yaml" "$SPEC" > "$FINDINGS"
+ALLOWLIST="${BREAKS_ALLOWLIST:-$ROOT/server/contracts/.breaking-allowlist.tsv}"
+"$PY" - "$ALLOWLIST" "$FINDINGS" <<'PYEOF'
+import json, sys
+allow_path, findings_path = sys.argv[1], sys.argv[2]
+allow = set()
+try:
+    with open(allow_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                allow.add((parts[0], parts[1].lower(), parts[2]))
+except FileNotFoundError:
+    pass
+remaining = []
+for x in json.load(open(findings_path, encoding="utf-8")):
+    key = (x.get("id", ""), str(x.get("operation", "")).lower(), x.get("path", ""))
+    if key in allow:
+        print("ALLOWED\t[%s] %s %s" % key, file=sys.stderr)
+        continue
+    remaining.append(x)
+if remaining:
+    print("%d 个未获准的 ERR 级破坏性变更：" % len(remaining), file=sys.stderr)
+    for x in remaining:
+        print("ERR\t[%s] %s %s\n\t%s" % (
+            x.get("id", ""), x.get("operation", ""), x.get("path", ""),
+            x.get("text", "")), file=sys.stderr)
+    sys.exit(1)
+print("oasdiff breaking: ok（0 个非获准 ERR 变更）")
+PYEOF
 
 echo "contract-gate: ok"
