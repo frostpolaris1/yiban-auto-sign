@@ -2,7 +2,8 @@
 //
 // # 功能
 // Roster 把配置名册按组展开为只读报告：非敏感键给解析值，
-// 敏感键只给 {set, masked, source}，永不回显原文。
+// 敏感键只给 {set, masked, source}，永不回显原文；
+// 注入 Resolver（sett2）后，写回键在 DB 行存在时报 source=db 与行值。
 // Service 读写全站公告：正文单行、去首尾空白、上限 200 字符；
 // 写入与 settings.announcement 审计同事务。
 // Service 还向当前管理员自己的邮箱发一封测试信：复用 core/mail 端口，
@@ -66,6 +67,8 @@ const (
 	SourceDefault Source = "default"
 	// SourceUnknown 表示环境未提供且名册没有缺省值。
 	SourceUnknown Source = "unknown"
+	// SourceDB 表示 settings 表覆盖行提供该键（sett2 写回，DB>env）。
+	SourceDB Source = "db"
 )
 
 // maskedValue 是敏感键的固定掩码。它不含原值任何字符。
@@ -119,6 +122,9 @@ type Report struct {
 type Roster struct {
 	entries []Entry
 	source  ValueSource
+	// overrides 是 DB 覆盖链解析器（sett2 写回）。为 nil 时名册保持
+	// 纯 env/default 读法，不产生任何 DB 查询。
+	overrides *Resolver
 }
 
 // NewRoster 构造名册报告器。名册为空、键重复或来源缺失即失败：
@@ -146,11 +152,22 @@ func NewRoster(entries []Entry, source ValueSource) (*Roster, error) {
 	return &Roster{entries: copied, source: source}, nil
 }
 
+// WithOverrides 注入 DB 覆盖链解析器（sett2 写回）。
+// 注入后名册对写回键做存在性感知查询：DB 行存在报 source=db。
+func (r *Roster) WithOverrides(resolver *Resolver) *Roster {
+	r.overrides = resolver
+	return r
+}
+
 // Report 展开全部键。敏感键只给掩码视图。
-func (r *Roster) Report() Report {
+// 覆盖链存储故障原样上抛：故障不是配置状态。
+func (r *Roster) Report(ctx context.Context) (Report, error) {
 	byGroup := map[string][]Item{}
 	for _, entry := range r.entries {
-		item := r.item(entry)
+		item, err := r.item(ctx, entry)
+		if err != nil {
+			return Report{}, err
+		}
 		byGroup[entry.Group] = append(byGroup[entry.Group], item)
 	}
 	names := make([]string, 0, len(byGroup))
@@ -162,12 +179,23 @@ func (r *Roster) Report() Report {
 	for _, name := range names {
 		groups = append(groups, Group{Name: name, Items: byGroup[name]})
 	}
-	return Report{Groups: groups}
+	return Report{Groups: groups}, nil
 }
 
 // item 解析单个键的来源与值。环境值为空串按未设置处理：
 // 与 config.Load 的取值口径一致，避免空值冒充已设置。
-func (r *Roster) item(entry Entry) Item {
+// 写回键（overrides.Known）在 env/default 之前先查 DB 覆盖行：
+// 行存在报 source=db 与解析后的行值；坏行按未覆盖处理（解析器出声）。
+func (r *Roster) item(ctx context.Context, entry Entry) (Item, error) {
+	if r.overrides != nil && r.overrides.Known(entry.Key) && !entry.Sensitive {
+		found, value, err := r.overrides.Lookup(ctx, entry.Key)
+		if err != nil {
+			return Item{}, err
+		}
+		if found {
+			return Item{Key: entry.Key, Group: entry.Group, Source: SourceDB, Value: value}, nil
+		}
+	}
 	raw, provided := r.source.Lookup(entry.Key)
 	set := provided && raw != ""
 	source := SourceUnknown
@@ -184,14 +212,14 @@ func (r *Roster) item(entry Entry) Item {
 			masked = maskedValue
 		}
 		item.Sensitive = &Sensitive{Set: set, Masked: masked, Source: source}
-		return item
+		return item, nil
 	}
 	if set {
 		item.Value = raw
 	} else if entry.HasDefault {
 		item.Value = entry.Default
 	}
-	return item
+	return item, nil
 }
 
 // MaxAnnouncementChars 是公告正文的字符上限，与旧部署一致。
@@ -232,6 +260,12 @@ type Deps struct {
 	// AutoApprove 是全局自动审批开关。为 nil 时读写都失败关闭：
 	// 装配必须显式决定，缺失不得读成「关闭」。
 	AutoApprove AutoApproveStore
+	// Schedule 是调度三键（sett2 写回）的覆盖行存取。
+	// 为 nil 时写回端点回 501：写面缺失必须显性。
+	Schedule ScheduleStore
+	// Resolver 是覆盖链解析器（registry 域的单点持有者）。
+	// 为 nil 时写回端点回 501；名册覆盖读数用它装配（WithOverrides）。
+	Resolver *Resolver
 	// Mail 投递测试邮件。为 nil 表示 SMTP 关闭：
 	// 测试邮件端点回 409，**不**静默成功。
 	Mail coremail.Sender
