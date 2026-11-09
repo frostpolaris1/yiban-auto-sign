@@ -87,6 +87,13 @@ type CapacityAlerts interface {
 	Dispatch(ctx context.Context, event corenotify.Event) error
 }
 
+// DefaultSignWindow 解析全局默认签到窗口对（批 3b）：
+// 返回业务日内的分钟值（start<end）。实现是 app/settings.Resolver 的
+// ResolveSignWindow（DB 行>缺省常量，半对整对回退）。
+// 为 nil 时直接用 core/schedule 常量对，行为与既有完全一致。
+// 返回错误时本次窗口解析失败上抛：故障不是配置状态。
+type DefaultSignWindow func(ctx context.Context) (startMin, endMin int, err error)
+
 // Deps 是计划用例的依赖。
 // Tx 让"写窗口＋重排＋补插"三步同事务：任一步失败整体回滚，
 // 不留下"版本已推进但计划未重排"的半成品。
@@ -104,6 +111,10 @@ type Deps struct {
 	Notifier Notifier
 	// CapacityAlerts 可为 nil：缺端口就不投递容量缺口通知。
 	CapacityAlerts CapacityAlerts
+	// Defaults 解析全局默认签到窗口对（批 3b）。为 nil 时用
+	// core/schedule 常量对（fallback 窗口与用户自选读面的展示窗），
+	// 行为与既有完全一致。
+	Defaults DefaultSignWindow
 	// Logger 可为 nil：用 slog.Default。窗口发现失败的原因进日志。
 	Logger *slog.Logger
 }

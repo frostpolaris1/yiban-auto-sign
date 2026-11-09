@@ -54,11 +54,15 @@ type BuildParams struct {
 	EdgeBack      time.Duration
 }
 
-// BuildOverrides 是一次构建解析出的可写回键读数（sett2）。
+// BuildOverrides 是一次构建解析出的可写回键读数（sett2；批 3b 扩周末门）。
 type BuildOverrides struct {
 	UsePrefs  bool
 	EdgeFront time.Duration
 	EdgeBack  time.Duration
+	// SundaySign / SaturdaySign 是周末门生效值（批 3b DB-only 键）：
+	// false=当日不铺任何计划行。缺行=false 由解析端（assembly）保证。
+	SundaySign   bool
+	SaturdaySign bool
 }
 
 // Overrides 解析构建参数里的可写回键（settings 写回，DB>env）。
@@ -82,26 +86,53 @@ type DailyBuilder struct {
 	// nil 时用 Params 原值。口径：**当日已铺行不回改**——
 	// 改值自下一次构建（次日凌晨 00:10）生效。
 	Overrides Overrides
+	// Logger 可为 nil：用 slog.Default。周末门关闭时如实记一行
+	//（批 3b：不铺行不留日志就没有任何痕迹）。
+	Logger *slog.Logger
 }
 
 // BuildToday 构建当日全部启用任务的计划。
 // 返回成功构建的任务数与首个错误；单个任务失败不阻断其余任务。
+// 批 3b 周末门：当日 weekday 对应键为 false（缺行=false=不签，
+// 对齐旧线 SUNDAY/SATURDAY_SIGN 缺省 0）时整日不铺行——
+// 返回 0 行并如实记一行「周末门关闭」；键读取失败上抛不铺（保守方向）。
 func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 	if b == nil || b.Service == nil || b.Tasks == nil || b.Clock == nil || b.Location == nil {
 		return 0, fmt.Errorf("schedule: incomplete daily builder")
 	}
 	day := coreclock.BusinessDay(b.Clock.Now(), b.Location)
-	tasks, err := b.Tasks.EnabledTasks(ctx)
-	if err != nil {
-		return 0, err
-	}
 	usePrefs, edgeFront, edgeBack := b.Params.UsePrefs, b.Params.EdgeFront, b.Params.EdgeBack
+	sundaySign, saturdaySign := false, false
 	if b.Overrides != nil {
 		overrides, err := b.Overrides(ctx)
 		if err != nil {
+			// 读取失败上抛不铺：构建值错了比不建更糟，下一轮定时重试。
 			return 0, err
 		}
 		usePrefs, edgeFront, edgeBack = overrides.UsePrefs, overrides.EdgeFront, overrides.EdgeBack
+		sundaySign, saturdaySign = overrides.SundaySign, overrides.SaturdaySign
+	}
+	// 周末门：先于任务列表判定——不铺行即零负载，也不必查任务名册。
+	// weekday 从业务日串解析，与铺行日严格一致。
+	dayDate, err := time.ParseInLocation("2006-01-02", day, b.Location)
+	if err != nil {
+		return 0, fmt.Errorf("schedule: daily builder day %q: %w", day, err)
+	}
+	switch weekday := dayDate.Weekday(); weekday {
+	case time.Sunday:
+		if !sundaySign {
+			b.logWeekendGateClosed(day, "sunday")
+			return 0, nil
+		}
+	case time.Saturday:
+		if !saturdaySign {
+			b.logWeekendGateClosed(day, "saturday")
+			return 0, nil
+		}
+	}
+	tasks, err := b.Tasks.EnabledTasks(ctx)
+	if err != nil {
+		return 0, err
 	}
 	built := 0
 	var firstErr error
@@ -133,6 +164,20 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 		built++
 	}
 	return built, firstErr
+}
+
+// logWeekendGateClosed 如实记一行「周末门关闭」：不铺行不留日志
+// 就没有任何痕迹，运维会误以为构建空转。weekday 词取 sunday/saturday。
+func (b *DailyBuilder) logWeekendGateClosed(day, weekday string) {
+	log := b.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Info("schedule: weekend gate closed; no plan rows built",
+		logfield.KeyEvent, "schedule.weekend_gate_closed",
+		logfield.KeyDay, day,
+		logfield.KeyReason, weekday,
+	)
 }
 
 // DailyCron 是日切构建的宿主。零值不可用；请用 NewDailyCron 构造。

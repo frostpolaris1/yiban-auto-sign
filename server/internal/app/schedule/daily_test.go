@@ -208,3 +208,103 @@ func TestBuildTodayOverridesFailureFailsBuild(t *testing.T) {
 		t.Fatalf("Build calls = %d, want 0", planner.calls)
 	}
 }
+
+// ===== 批 3b：周末门（schedule.sunday_sign / saturday_sign）=====
+//
+// 判据：按当日 weekday 判对应键，缺行=false=当日不铺任何计划行
+//（返回 0 行零构建，行为与旧线缺省一致——这是本批唯一预期行为反转）；
+// 键=true 照常铺行；读取失败上抛不铺（保守方向，急停同向）。
+
+// weekendBuilder 构造指定时刻的日切构建器（周末门测试用）。
+func weekendBuilder(now time.Time, tasks fakeTasks, planner *fakePlanner, ov appschedule.BuildOverrides) *appschedule.DailyBuilder {
+	b := testBuilder(tasks, planner)
+	b.Clock = coreclock.Fixed{T: now}
+	b.Overrides = func(context.Context) (appschedule.BuildOverrides, error) {
+		return ov, nil
+	}
+	return b
+}
+
+// 2026-11-14 是周六、2026-11-15 是周日（业务日 00:10 触发形态）。
+var (
+	weekendSaturday = time.Date(2026, 11, 14, 0, 10, 0, 0, dailySH)
+	weekendSunday   = time.Date(2026, 11, 15, 0, 10, 0, 0, dailySH)
+)
+
+var weekendTasks = fakeTasks{tasks: []coreschedule.TaskInfo{
+	{ID: "t1", SchoolID: "s1", Enabled: true},
+	{ID: "t2", SchoolID: "s2", Enabled: true},
+}}
+
+// 周六键缺行（false）：当日不铺任何计划行——行为反转钉住。
+func TestBuildTodayWeekendGateClosesSaturday(t *testing.T) {
+	planner := &fakePlanner{}
+	b := weekendBuilder(weekendSaturday, weekendTasks, planner, appschedule.BuildOverrides{})
+	built, err := b.BuildToday(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if built != 0 || planner.calls != 0 {
+		t.Fatalf("built=%d calls=%d, want 0/0（周六门关闭）", built, planner.calls)
+	}
+}
+
+// 周日键缺行（false）：当日不铺任何计划行。
+func TestBuildTodayWeekendGateClosesSunday(t *testing.T) {
+	planner := &fakePlanner{}
+	b := weekendBuilder(weekendSunday, weekendTasks, planner, appschedule.BuildOverrides{})
+	built, err := b.BuildToday(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if built != 0 || planner.calls != 0 {
+		t.Fatalf("built=%d calls=%d, want 0/0（周日门关闭）", built, planner.calls)
+	}
+}
+
+// 键=true 照常铺行：周六开闸铺全部任务。
+func TestBuildTodayWeekendGateOpenSaturday(t *testing.T) {
+	planner := &fakePlanner{}
+	b := weekendBuilder(weekendSaturday, weekendTasks, planner,
+		appschedule.BuildOverrides{SaturdaySign: true})
+	built, err := b.BuildToday(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if built != 2 || planner.calls != 2 {
+		t.Fatalf("built=%d calls=%d, want 2/2", built, planner.calls)
+	}
+	if planner.lastDay != "2026-11-14" {
+		t.Fatalf("day = %q, want 2026-11-14（周六业务日）", planner.lastDay)
+	}
+}
+
+// 键=true 照常铺行：周日开闸铺全部任务。
+func TestBuildTodayWeekendGateOpenSunday(t *testing.T) {
+	planner := &fakePlanner{}
+	b := weekendBuilder(weekendSunday, weekendTasks, planner,
+		appschedule.BuildOverrides{SundaySign: true})
+	built, err := b.BuildToday(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if built != 2 || planner.calls != 2 {
+		t.Fatalf("built=%d calls=%d, want 2/2", built, planner.calls)
+	}
+}
+
+// 周末门读取失败上抛不铺：保守方向（急停同 3a），错值不铺。
+func TestBuildTodayWeekendGateFailureFailsBuild(t *testing.T) {
+	planner := &fakePlanner{}
+	b := weekendBuilder(weekendSaturday, weekendTasks, planner, appschedule.BuildOverrides{})
+	b.Overrides = func(context.Context) (appschedule.BuildOverrides, error) {
+		return appschedule.BuildOverrides{}, errors.New("db down")
+	}
+	built, err := b.BuildToday(context.Background())
+	if err == nil || built != 0 {
+		t.Fatalf("BuildToday = (%d, %v), want failure with 0 builds", built, err)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("Build calls = %d, want 0", planner.calls)
+	}
+}

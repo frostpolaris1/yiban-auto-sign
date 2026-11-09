@@ -270,11 +270,15 @@ func (s *Service) CachedWindow(ctx context.Context, in Input) (coreschedule.Wind
 	if err != nil {
 		return coreschedule.WindowRecord{}, validation("day must be YYYY-MM-DD")
 	}
+	startMin, endMin, err := s.defaultWindow(ctx)
+	if err != nil {
+		return coreschedule.WindowRecord{}, err
+	}
 	raw := coreschedule.WindowRecord{
 		SchoolTaskID: in.SchoolTaskID,
 		Day:          in.Day,
-		Start:        fallbackAt(dayDate, loc, coreschedule.DefaultSignWindowStartMinute),
-		End:          fallbackAt(dayDate, loc, coreschedule.DefaultSignWindowEndMinute),
+		Start:        fallbackAt(dayDate, loc, startMin),
+		End:          fallbackAt(dayDate, loc, endMin),
 		Source:       string(contract.WindowFallback),
 	}
 	cached, cacheErr := s.deps.Windows.GetWindow(ctx, in.SchoolTaskID, in.Day)
@@ -814,10 +818,14 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 	case res.cacheOK:
 		res.effective = res.cached
 	default:
+		startMin, endMin, err := s.defaultWindow(ctx)
+		if err != nil {
+			return res, err
+		}
 		res.effective = coreschedule.WindowRecord{
 			SchoolTaskID: in.SchoolTaskID, Day: in.Day,
-			Start:  fallbackAt(day, loc, coreschedule.DefaultSignWindowStartMinute),
-			End:    fallbackAt(day, loc, coreschedule.DefaultSignWindowEndMinute),
+			Start:  fallbackAt(day, loc, startMin),
+			End:    fallbackAt(day, loc, endMin),
 			Source: string(contract.WindowFallback),
 		}
 	}
@@ -856,6 +864,18 @@ func windowFailure(err error) (string, string) {
 func fallbackAt(day time.Time, loc *time.Location, minuteOfDay int) time.Time {
 	return time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc).
 		Add(time.Duration(minuteOfDay) * time.Minute)
+}
+
+// defaultWindow 解析全局默认签到窗口对（批 3b）。
+// 未接写回层（Defaults 为 nil）时直接用 core 常量对：常量仍单源在
+// core/schedule，本层不复制第二份。解析端（app/settings.ResolveSignWindow）
+// 负责「DB 行>常量、半对整对回退」；存储故障原样上抛——
+// 故障不是配置状态，错窗口比无窗口更糟。
+func (s *Service) defaultWindow(ctx context.Context) (int, int, error) {
+	if s.deps.Defaults == nil {
+		return coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute, nil
+	}
+	return s.deps.Defaults(ctx)
 }
 
 // buildRows 是 Preview 与 Build 的唯一构建函数。
