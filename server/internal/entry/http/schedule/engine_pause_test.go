@@ -20,7 +20,6 @@ import (
 
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
-	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -31,12 +30,11 @@ import (
 
 // pauseGateFake 是暂停读写用例的替身：记录写入与读取结果。
 type pauseGateFake struct {
-	writes    []bool
-	writesBy  []string
-	auditRows []coreaudit.Entry
-	paused    bool
-	readErr   error
-	writeErr  error
+	writes   []bool
+	writesBy []string
+	paused   bool
+	readErr  error
+	writeErr error
 }
 
 func (p *pauseGateFake) EnginePaused(context.Context) (bool, error) {
