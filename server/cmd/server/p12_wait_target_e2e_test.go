@@ -216,6 +216,7 @@ func newWtStack(t *testing.T, signer *wtSigner) *wtStack {
 		Egress:  egressSvc,
 		Limiter: corerate.NewLimiter(corerate.DefaultRate, 6),
 		Clock:   clk, Location: time.UTC,
+		Paused: func(context.Context) (bool, error) { return false, nil },
 	})
 	if err != nil {
 		t.Fatalf("worker service: %v", err)

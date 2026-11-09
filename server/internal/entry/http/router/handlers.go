@@ -461,6 +461,15 @@ func (s *server) AdminEngine(c *gin.Context) {
 	s.engine.Snapshot(c)
 }
 
+// AdminEnginePause 委托全局暂停写面（3a）。未装配时仍是 501。
+func (s *server) AdminEnginePause(c *gin.Context, _ oapi.AdminEnginePauseParams) {
+	if s.engine == nil {
+		notImplemented(c)
+		return
+	}
+	s.engine.Pause(c, oapi.AdminEnginePauseParams{})
+}
+
 // TimePrefGet 委托自选时间片处理器。未装配时仍是 501。
 func (s *server) TimePrefGet(c *gin.Context) {
 	if s.schedule == nil {
