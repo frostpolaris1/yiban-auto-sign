@@ -91,3 +91,4 @@ server/contracts/README.md	covered_by=go test ./internal/entry/http/oapi TestCon
 scripts/contract-gate.sh	uncovered=门禁脚本：本批以 BREAKS_ALLOWLIST=/dev/null 突变自证咬合（空名册→红，实名册→绿）；tests/test_contract_gate_wiring.py 只钉 CI 接线面，脚本内部过滤无车道测试——显式豁免记录在案
 server/contracts/.breaking-allowlist.tsv	uncovered=豁免名册数据：消费方为 contract-gate.sh 过滤步骤，同上突变自证
 server/tools/structure/structure_test.go	uncovered=Go 包门 go test ./tools/structure 真跑钉住哈希自证（哈希即本文件常量）
+tests/test_contract_gate_wiring.py	covered_by=python -I tests/test_contract_gate_wiring.py -q（自跑 30 项；kqa 收口随门禁 filter 新语义同步断言并修 UTF-8 解码）

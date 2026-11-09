@@ -14,6 +14,8 @@
 #      本项目的响应枚举闭集按批次演进（渠道词表 2d 扩 webhook），
 #      契约唯一消费者是仓内生成物（oapi.gen.go / schema.d.ts 同批 --check 钉住，
 #      ui tsc 同批咬合），不存在第三方穷举客户端，enum-additive 不构成现实破坏面。
+#      级别判据：只 ERR（level>=3）判红，warn/info findings 展示不失败——与
+#      旧 `--fail-on ERR` 语义逐字一致（kqa 收口 2026-11-10，随 c542e68c 复审引入）。
 #
 # 口径：
 #   - 缺工具 = 环境错误，exit 2（跳过 ≠ 绿）。
@@ -125,6 +127,11 @@ for x in json.load(open(findings_path, encoding="utf-8")):
     key = (x.get("id", ""), str(x.get("operation", "")).lower(), x.get("path", ""))
     if key in allow:
         print("ALLOWED\t[%s] %s %s" % key, file=sys.stderr)
+        continue
+    if int(x.get("level", 3)) < 3:
+        # 非 ERR 级 findings 只展示不判红——与旧 `--fail-on ERR` 语义逐字一致。
+        print("NOTE\t[%s] %s %s\t%s" % (key[0], key[1].upper(), key[2],
+                                        x.get("text", "")), file=sys.stderr)
         continue
     remaining.append(x)
 if remaining:
