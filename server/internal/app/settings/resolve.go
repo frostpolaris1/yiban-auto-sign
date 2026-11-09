@@ -69,6 +69,16 @@ func settingsKeyOf(key string) string {
 	return key
 }
 
+// RegistryKeyAliases 返回名册键→settings 行键的映射副本（装配层用）。
+// 组合根据此把名册 domain 注入到正确的行键上；映射本体只在此一处。
+func RegistryKeyAliases() map[string]string {
+	out := make(map[string]string, len(registryAlias))
+	for registryKey, settingsKey := range registryAlias {
+		out[registryKey] = settingsKey
+	}
+	return out
+}
+
 // isIntKey 报告 settings 行键是否整型写回键。
 func isIntKey(key string) bool {
 	for _, intKey := range scheduleIntKeys {

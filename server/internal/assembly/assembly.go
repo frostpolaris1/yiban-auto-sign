@@ -1277,20 +1277,26 @@ func (n ScheduleNotifier) PlanEvent(_ context.Context, schoolID, taskID, day, ki
 // 写面不得猜域。布尔键无域，只认真小写 true/false 字面。
 func buildScheduleResolver(store appsettings.ScheduleStore,
 	entries []config.RegistryEntry, logger *slog.Logger) (*appsettings.Resolver, error) {
-	writable := map[string]bool{
-		appsettings.KeyScheduleEdgeFrontSec:  true,
-		appsettings.KeyScheduleEdgeBackSec:   true,
-		appsettings.KeyScheduleAllowTimePref: true,
+	// 名册键→行键的映射单源在 app/settings（RegistryKeyAliases）；
+	// 这里只把名册 domain 注入到正确的行键上。
+	aliases := appsettings.RegistryKeyAliases()
+	byKey := make(map[string]config.RegistryEntry, len(entries))
+	for _, entry := range entries {
+		byKey[entry.Key] = entry
 	}
 	domains := make(map[string]appsettings.SettingDomain, 2)
-	for _, entry := range entries {
-		if !writable[entry.Key] || entry.Scope != config.ScopeServer {
-			continue
+	for registryKey, settingsKey := range aliases {
+		entry, ok := byKey[registryKey]
+		if !ok || entry.Scope != config.ScopeServer {
+			return nil, fmt.Errorf("assembly: writable key %s is not a server registry entry", registryKey)
+		}
+		if settingsKey == appsettings.KeyScheduleAllowTimePref {
+			continue // 布尔键无域：字面判定在读取端口内
 		}
 		if len(entry.Domain) != 2 {
-			return nil, fmt.Errorf("assembly: writable key %s has no registry domain", entry.Key)
+			return nil, fmt.Errorf("assembly: writable key %s has no registry domain", registryKey)
 		}
-		domains[entry.Key] = appsettings.SettingDomain{
+		domains[settingsKey] = appsettings.SettingDomain{
 			Min: int(entry.Domain[0]), Max: int(entry.Domain[1]),
 		}
 	}

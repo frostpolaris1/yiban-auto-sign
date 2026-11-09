@@ -22,6 +22,7 @@ import (
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 func requireValidation(t *testing.T, err error) {
@@ -439,5 +440,74 @@ func TestSettingsWritebackAccessorE2E(t *testing.T) {
 	// 既有布尔开关行为不变：registration.enabled 缺行按关闭。
 	if enabled, err := repo.RegistrationEnabled(e.ctx); err != nil || enabled {
 		t.Fatalf("RegistrationEnabled missing row = (%v, %v)", enabled, err)
+	}
+}
+
+// 调度设置写回（sett2）用例接真库：写入落行、审计同事务；
+// 审计追加失败时覆盖行不落地（整体回滚）。
+func TestScheduleSettingsServiceE2E(t *testing.T) {
+	e := newEnv(t)
+	master := e.createUser("schedule-writeback-master@example.com")
+	resolver, err := appsettings.NewResolver(pg.NewSettingsRepo(e.db), map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store:    pg.NewAnnouncementRepo(e.db),
+		Audit:    e.audits,
+		Tx:       e.db,
+		Clock:    coreclock.Fixed{T: time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)},
+		Schedule: pg.NewSettingsRepo(e.db),
+		Resolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	actor := appaudit.Actor{UserID: master.ID, Role: coreauth.RoleMaster, Label: "m***@example.com"}
+
+	// 成功：覆盖行与审计行同事务落库；detail 只含变更键旧→新。
+	err = svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleEdgeFrontSec, Op: appsettings.ScheduleOpSet, Value: 120},
+	})
+	if err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyScheduleEdgeFrontSec); value != "120" {
+		t.Fatalf("settings value = %q, want 120", value)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'settings.schedule_writeback'"); rows != 1 {
+		t.Fatalf("audit rows = %d, want 1", rows)
+	}
+	detail := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'settings.schedule_writeback' ORDER BY id DESC LIMIT 1")
+	if !strings.Contains(detail, `"changes"`) || !strings.Contains(detail, "schedule.edge_front_sec") {
+		t.Fatalf("audit detail = %q", detail)
+	}
+
+	// 审计追加失败：覆盖行必须回滚，不得留下无审计的写入。
+	if _, err := e.db.Exec(e.ctx, `
+		CREATE FUNCTION reject_audit() RETURNS trigger AS $$
+		BEGIN
+		    RAISE EXCEPTION 'audit rejected';
+		END;
+		$$ LANGUAGE plpgsql`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx, `
+		CREATE TRIGGER reject_audit_insert BEFORE INSERT ON audit_logs
+		FOR EACH ROW EXECUTE FUNCTION reject_audit()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	err = svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleEdgeFrontSec, Op: appsettings.ScheduleOpSet, Value: 90},
+	})
+	if err == nil {
+		t.Fatal("SetSchedule must fail when the audit append fails")
+	}
+	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyScheduleEdgeFrontSec); value != "120" {
+		t.Fatalf("settings value after failed put = %q, want the pre-failure 120", value)
 	}
 }
