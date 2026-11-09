@@ -190,7 +190,7 @@ either side drifts.
 | GET | `/api/admin/tasks/export` | master/admin | UX-3 swh |
 | GET | `/api/admin/engine` | master/admin | UX-5 aqn |
 | GET | `/api/admin/notify` | master/admin | 2ws A |
-|  |  |  | 各自管理自己的订阅：返回全部类别×渠道的有效状态；缺行按默认（review=in_app+email；credential_invalid=in_app；sign_failed_daily=email；capacity_rejected=in_app）。本阶段只存取，不投递。 |
+|  |  |  | 各自管理自己的订阅：返回全部类别×三渠道（in_app/email/webhook）共 12 项的有效状态；缺行按默认（review=in_app+email+webhook；credential_invalid=in_app+webhook；sign_failed_daily=email；capacity_rejected=in_app）。投递已接线：站内信＋邮件账本＋webhook 出口（kqa）。 |
 | PUT | `/api/admin/notify` | master/admin | 2ws A |
 |  |  |  | 幂等替换本人的覆盖集；未知类别/渠道或重复对 400；未列出的对回默认。 |
 | GET | `/api/admin/auto-approve` | master/admin | ykxf |
@@ -201,6 +201,8 @@ either side drifts.
 |  |  |  | 只读配置名册，按组返回；敏感键只给 `{set, masked, source}`，永不回显原文；source=env/default/unknown（file 保留，本服务不产出）。键全集来自编译期嵌入的 `internal/configdata/registry.json`。 |
 | POST | `/api/admin/mail/test` | master | c3e |
 |  |  |  | 向当前会话邮箱同步发一封测试信；空请求体，收件人不可由客户端指定；邮件投递关闭（SMTP 未启用）与无邮箱均 409（文案不同）、发送失败 502（不含 SMTP 应答/主机/口令）；每次外呼（成功/失败）写 `settings.mail_test` 审计，detail 只含 result 与粗分类；每管理员 60s 冷却（进程内，重启清空）429＋Retry-After。 |
+| POST | `/api/admin/webhook/test` | master | kqa |
+|  |  |  | 向已配置的 webhook 出口同步发一条测试推送（force：跳过节流与当日额度）；空请求体；渠道未启用（ENABLE 关或 SECRET 空）409；发送失败 502（只含粗分类，不含对端应答/URL/密钥）；每次尝试（成功/失败）写 `settings.webhook_test` 审计；每管理员 60s 冷却（进程内，重启清空）429＋Retry-After。 |
 | PUT | `/api/admin/announcement` | master | 2ws A |
 |  |  |  | 发布或下线全站公告；去首尾空白后单行、上限 200 字（与旧线一致）；写 `settings.announcement` 审计，detail 不含正文。 |
 | GET | `/api/announcement` | master/admin/user | 2ws A |
