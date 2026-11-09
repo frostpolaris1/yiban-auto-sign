@@ -203,11 +203,17 @@ func (e *notifyDeliveryEnv) dispatcher(mail coremail.Sender, clk *notifyTestCloc
 
 // deliveryStateFromDB 读某用户某业务键下的唯一账本行状态。
 func (e *notifyDeliveryEnv) deliveryStateFromDB(userID, dedupe string) (string, int64, string, string, string) {
+	return e.deliveryStateFromDBChannel(userID, dedupe, "email")
+}
+
+// deliveryStateFromDBChannel 按渠道取账本行状态（契约三渠道后
+// 同一事件可有 email 与 webhook 两行）。
+func (e *notifyDeliveryEnv) deliveryStateFromDBChannel(userID, dedupe, channel string) (string, int64, string, string, string) {
 	e.t.Helper()
 	id := e.scalarString(
 		`SELECT d.id::text FROM notification_deliveries d
 		   JOIN notifications n ON n.id = d.notification_id
-		  WHERE n.user_id = $1::uuid AND n.dedupe_key = $2`, userID, dedupe)
+		  WHERE n.user_id = $1::uuid AND n.dedupe_key = $2 AND d.channel = $3`, userID, dedupe, channel)
 	return e.deliveryState(id)
 }
 
@@ -274,10 +280,13 @@ func TestNotifyDeliveryDeliversToScopedAdmins(t *testing.T) {
 	if got := e.notificationCount(adminB.ID, dedupe); got != 0 {
 		t.Fatalf("跨校 admin 收到 %d 行", got)
 	}
+	// 契约扩到三渠道后 credential_invalid 的 webhook 默认开启：
+	// email 渠道仍为 0；webhook 渠道每个订阅者一行（端口未注入，
+	// 投递一轮后落 skipped(webhook_not_configured)）。
 	if got := e.scalarInt(
-		`SELECT count(*) FROM notification_deliveries WHERE notification_id IN
+		`SELECT count(*) FROM notification_deliveries WHERE channel = 'email' AND notification_id IN
 		   (SELECT id FROM notifications WHERE dedupe_key = $1)`, dedupe); got != 0 {
-		t.Fatalf("默认态账本行 = %d, want 0", got)
+		t.Fatalf("默认态 email 账本行 = %d, want 0", got)
 	}
 
 	// 显式订阅 email：同一业务键的重复事件只为已有通知补账本行。
@@ -292,9 +301,14 @@ func TestNotifyDeliveryDeliversToScopedAdmins(t *testing.T) {
 		}
 	}
 	if got := e.scalarInt(
-		`SELECT count(*) FROM notification_deliveries WHERE notification_id IN
+		`SELECT count(*) FROM notification_deliveries WHERE channel = 'email' AND notification_id IN
 		   (SELECT id FROM notifications WHERE dedupe_key = $1)`, dedupe); got != 2 {
-		t.Fatalf("账本行 = %d, want 2（master + adminA）", got)
+		t.Fatalf("email 账本行 = %d, want 2（master + adminA）", got)
+	}
+	if got := e.scalarInt(
+		`SELECT count(*) FROM notification_deliveries WHERE channel = 'webhook' AND notification_id IN
+		   (SELECT id FROM notifications WHERE dedupe_key = $1)`, dedupe); got != 2 {
+		t.Fatalf("webhook 账本行 = %d, want 2（默认开启）", got)
 	}
 	if got := e.notificationCount(master.ID, dedupe); got != 1 {
 		t.Fatalf("重复事件通知 = %d, want 1", got)
@@ -326,6 +340,12 @@ func TestNotifyDeliveryDeliversToScopedAdmins(t *testing.T) {
 	if got := e.scalarInt(
 		`SELECT count(*) FROM notification_deliveries WHERE status = 'sent'`); got != 2 {
 		t.Fatalf("sent 行 = %d, want 2", got)
+	}
+	// webhook 端口未注入：SendDue 一轮后 webhook 行显性跳过，不静默丢行。
+	if got := e.scalarInt(
+		`SELECT count(*) FROM notification_deliveries
+		  WHERE channel = 'webhook' AND status = 'skipped' AND skip_reason = 'webhook_not_configured'`); got != 2 {
+		t.Fatalf("webhook skipped 行 = %d, want 2", got)
 	}
 }
 

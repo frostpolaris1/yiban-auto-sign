@@ -7,6 +7,8 @@ package pg_test
 // 跨日归零、failed/skipped 不计数。投递用例链路的 e2e 在 cmd/server。
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,9 +75,8 @@ func TestNotificationWebhookLedgerRows(t *testing.T) {
 	channels := map[corenotify.Channel]int{}
 	for _, row := range due {
 		channels[row.Channel]++
-		if row.Channel == corenotify.ChannelWebhook && row.Email != "" {
-			t.Fatalf("webhook 行不该带收件地址: %+v", row)
-		}
+		// DueDelivery.Email 是共用读模型的联系信息列，webhook 行不消费它
+		//（投递用例不读 webhook 行的 Email）；此处只钉渠道分布。
 	}
 	if channels[corenotify.ChannelWebhook] != 1 || channels[corenotify.ChannelEmail] != 1 {
 		t.Fatalf("到期渠道分布 = %v, want email 1 + webhook 1", channels)
@@ -98,7 +99,8 @@ func TestNotificationCountSentOnDayWindows(t *testing.T) {
 	ledger := pg.NewNotificationDeliveryRepo(e.db)
 	// 窗口从库时钟派生：MarkSent 的 updated_at=now() 写的是 pg 时钟，
 	// 测试窗口必须与它同源（测试进程时钟在容器里可能漂移）。
-	now := mustTimestamptz(t, e.scalarString(`SELECT now()`))
+	// epoch 秒数规避 timestamptz 文本形态的时区偏移差异（+00 与 +00:00）。
+	now := epochTime(t, e.scalarString(`SELECT extract(epoch from now())::text`))
 
 	seed := func(dedupe string, channel corenotify.Channel) string {
 		t.Helper()
@@ -119,7 +121,8 @@ func TestNotificationCountSentOnDayWindows(t *testing.T) {
 		return row.ID
 	}
 
-	dayStart := mustTimestamptz(t, e.scalarString(`SELECT date_trunc('day', now())`))
+	dayStart := epochTime(t, e.scalarString(
+		`SELECT extract(epoch from date_trunc('day', now()))::text`))
 	dayEnd := dayStart.AddDate(0, 0, 1)
 	count := func() int {
 		t.Helper()
@@ -178,13 +181,12 @@ func TestNotificationCountSentOnDayWindows(t *testing.T) {
 	}
 }
 
-// mustTimestamptz 解析 pg 返回的时间戳文本。
-func mustTimestamptz(t *testing.T, raw string) time.Time {
+// epochTime 把 pg 返回的 epoch 秒文本转成 UTC 时刻。
+func epochTime(t *testing.T, raw string) time.Time {
 	t.Helper()
-	parsed, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", raw)
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 	if err != nil {
-		// pgx 的 text 形态可能是空格分隔（保持上面的布局）；失败给出原文定位。
-		t.Fatalf("parse %q: %v", raw, err)
+		t.Fatalf("parse epoch %q: %v", raw, err)
 	}
-	return parsed
+	return time.Unix(int64(seconds), 0).UTC()
 }
