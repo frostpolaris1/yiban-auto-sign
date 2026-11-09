@@ -443,6 +443,98 @@ func TestSettingsWritebackAccessorE2E(t *testing.T) {
 	}
 }
 
+// 全局暂停（3a）用例接真库：写入落行、审计恰一行同事务；
+// 审计追加失败时覆盖行不落地（整体回滚）；跨服务实例读回（无进程态缓存）。
+func TestEnginePauseServiceE2E(t *testing.T) {
+	e := newEnv(t)
+	master := e.createUser("engine-pause-master@example.com")
+	repo := pg.NewSettingsRepo(e.db)
+	resolver, err := appsettings.NewResolver(repo, map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	newSvc := func() *appsettings.Service {
+		svc, err := appsettings.NewService(appsettings.Deps{
+			Store: pg.NewAnnouncementRepo(e.db), Audit: e.audits, Tx: e.db,
+			Clock:    coreclock.Fixed{T: time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)},
+			Schedule: repo, Resolver: resolver,
+		})
+		if err != nil {
+			t.Fatalf("NewService: %v", err)
+		}
+		return svc
+	}
+	svc := newSvc()
+	actor := appaudit.Actor{UserID: master.ID, Role: coreauth.RoleMaster, Label: "m***@example.com"}
+
+	// 暂停：行 true、恰一行审计、detail 只含字段与目标状态。
+	if err := svc.SetEnginePaused(e.ctx, corescope.Master(), actor, true); err != nil {
+		t.Fatalf("SetEnginePaused(true): %v", err)
+	}
+	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyEnginePaused); value != "true" {
+		t.Fatalf("settings value = %q, want true", value)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'settings.engine_paused'"); rows != 1 {
+		t.Fatalf("audit rows = %d, want 1", rows)
+	}
+	detail := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'settings.engine_paused' ORDER BY id DESC LIMIT 1")
+	if detail != `{"field":"engine_paused","to":"paused"}` {
+		t.Fatalf("audit detail = %q, want field+to only", detail)
+	}
+
+	// 持久跨重启（谓词 7）：新构造的用例与仓储实例读回 true——
+	// 值只活在 settings 行里，没有进程态缓存。
+	if paused, err := newSvc().EnginePaused(e.ctx); err != nil || !paused {
+		t.Fatalf("fresh service EnginePaused = (%v, %v), want (true, nil)", paused, err)
+	}
+
+	// 审计追加失败：覆盖行必须回滚，不得留下无审计的写入（谓词 6）。
+	if _, err := e.db.Exec(e.ctx, `
+		CREATE FUNCTION reject_audit() RETURNS trigger AS $$
+		BEGIN
+		    RAISE EXCEPTION 'audit rejected';
+		END;
+		$$ LANGUAGE plpgsql`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx, `
+		CREATE TRIGGER reject_audit_insert BEFORE INSERT ON audit_logs
+		FOR EACH ROW EXECUTE FUNCTION reject_audit()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	if err := svc.SetEnginePaused(e.ctx, corescope.Master(), actor, false); err == nil {
+		t.Fatal("resume must fail when the audit append fails")
+	}
+	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyEnginePaused); value != "true" {
+		t.Fatalf("settings value after failed resume = %q, want the pre-failure true", value)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'settings.engine_paused'"); rows != 1 {
+		t.Fatalf("audit rows after failure = %d, want still 1", rows)
+	}
+
+	// 审计触发器撤掉后恢复成功：行 false（写行不删行），审计恰两行。
+	if _, err := e.db.Exec(e.ctx, "DROP TRIGGER reject_audit_insert ON audit_logs"); err != nil {
+		t.Fatalf("drop trigger: %v", err)
+	}
+	if err := svc.SetEnginePaused(e.ctx, corescope.Master(), actor, false); err != nil {
+		t.Fatalf("SetEnginePaused(false): %v", err)
+	}
+	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyEnginePaused); value != "false" {
+		t.Fatalf("settings value after resume = %q, want false（写行不删行）", value)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'settings.engine_paused'"); rows != 2 {
+		t.Fatalf("audit rows after resume = %d, want 2（幂等重放每次恰一行）", rows)
+	}
+	if to := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'settings.engine_paused' ORDER BY id DESC LIMIT 1"); !strings.Contains(to, `"to":"resumed"`) {
+		t.Fatalf("resume detail = %q, want to=resumed", to)
+	}
+}
+
 // 调度设置写回（sett2）用例接真库：写入落行、审计同事务；
 // 审计追加失败时覆盖行不落地（整体回滚）。
 func TestScheduleSettingsServiceE2E(t *testing.T) {
