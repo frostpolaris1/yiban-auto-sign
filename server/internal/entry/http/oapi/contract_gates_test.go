@@ -467,6 +467,17 @@ func scanNullable(t *testing.T, doc string) []nullableProp {
 	return out
 }
 
+// nullableOptionalExemptions 是可空但不 required 的显式豁免登记：
+// 每个 schema 一处一条理由。缺省规则服务响应面（缺键与 null 是两种
+// 形状，生成物靠 required 去 omitempty）；请求侧「缺字段=不动、
+// 显式 null=删行」的部分补丁语义不适用该口径，逐条登记防滥用。
+var nullableOptionalExemptions = map[string]string{
+	// sett2 调度设置写回的请求体：三键全 optional，缺字段=不动该键，
+	// 显式 null=删覆盖行回 env。处理器自解码原始 JSON（键存在性判定），
+	// 不经生成物编码，required 的 omitempty 口径不适用。
+	"AdminScheduleSettingsUpdate": "请求对象；部分补丁语义（缺字段=不动、null=删行），响应侧无此形状",
+}
+
 // 可空响应字段必须 required：缺键与 null 对客户端是两种形状。
 // 生成物靠 required 去掉 omitempty，故本门同时钉住 Go 的编码结果。
 func TestNullablePropertiesAreRequired(t *testing.T) {
@@ -476,6 +487,9 @@ func TestNullablePropertiesAreRequired(t *testing.T) {
 		t.Fatalf("可空属性 = %d, want at least 17; 门没有扫到东西", len(props))
 	}
 	for _, p := range props {
+		if _, exempt := nullableOptionalExemptions[p.schema]; exempt {
+			continue
+		}
 		if !p.required {
 			t.Errorf("%s.%s 可空但未列入 required（openapi.yaml:%d）：输出会缺键",
 				p.schema, p.prop, p.line)
@@ -540,6 +554,9 @@ var additionalPropertiesExemptions = map[string][]string{
 	"AccountDetectResult": {"响应对象；未知字段被编码器忽略"},
 	// 2cu 审计链巡检：响应对象；未知字段被编码器忽略。
 	"AuditStatusReport": {"响应对象；未知字段被编码器忽略"},
+	// sett2 调度设置写回：请求对象；未知键由处理器显式拒绝（400），
+	// 比解码器静默忽略更严——声明与行为一致，豁免只为过登记门。
+	"AdminScheduleSettingsUpdate": {"请求对象；未知键由处理器显式 400，非静默忽略"},
 }
 
 // contractNoAdditionalProperties 匹配 YAML 映射里的一项 additionalProperties: false。

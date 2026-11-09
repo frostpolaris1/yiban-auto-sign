@@ -1,19 +1,22 @@
 // Package system 把设置名册、全站公告与测试邮件映射到 HTTP。
 //
 // 功能：
-// GET /api/admin/settings（master/admin 只读名册）、
+// GET /api/admin/settings（master/admin 只读名册，写回键报 source=db）、
+// PUT /api/admin/schedule-settings（master 部分补丁写回调度三键，sett2）、
 // POST /api/admin/mail/test（master 向自己的邮箱发测试信）、
 // POST /api/admin/webhook/test（master 经配置的 webhook 出口发测试推送）、
 // PUT /api/admin/announcement（master）、GET /api/announcement（所有已登录角色）。
 // 本包**不**写 SQL、**不**回显敏感值。
 //
 // 归属：entry/http 入口层。用例来自 app/settings；
-// 角色是运行时门：设置名册限 master/admin，公告写与测试邮件、
-// 测试推送限 master。
+// 角色是运行时门：设置名册限 master/admin，调度设置写回、公告写与
+// 测试邮件、测试推送限 master。
 //
 // 口径：敏感配置只回 {set, masked, source}；公告正文不经审计 detail。
 // 测试邮件收件人只取会话用户邮箱，测试推送目标只取配置的出口；
 // 响应只给固定文案，不含对端细节。
+// 调度设置写回是部分补丁：缺字段=不动、null=删行回 env、值=upsert；
+// 未知字段在这里显式 400，不被解码器静默忽略。
 package system
 
 import (
@@ -35,8 +38,9 @@ import (
 )
 
 // Roster 是只读设置名册端口。
+// 覆盖链存储故障原样上抛：故障不是配置状态。
 type Roster interface {
-	Report() appsettings.Report
+	Report(ctx context.Context) (appsettings.Report, error)
 }
 
 // Announcement 是公告用例端口。
@@ -61,13 +65,20 @@ type AutoApprove interface {
 	SetAutoApprove(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, enabled bool) (bool, error)
 }
 
+// ScheduleSettings 是调度设置写回端口（sett2）。
+// 未注入时端点回 501：写面缺失必须显性。
+type ScheduleSettings interface {
+	SetSchedule(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, changes []appsettings.ScheduleChange) error
+}
+
 // Handler 处理设置名册、公告、测试邮件、测试推送与自动审批开关端点。
 type Handler struct {
-	roster       Roster
-	announcement Announcement
-	mailTest     MailTest
-	webhookTest  WebhookTest
-	autoApprove  AutoApprove
+	roster           Roster
+	announcement     Announcement
+	mailTest         MailTest
+	webhookTest      WebhookTest
+	autoApprove      AutoApprove
+	scheduleSettings ScheduleSettings
 }
 
 // NewHandler 构造系统设置处理器。
@@ -89,6 +100,13 @@ func (h *Handler) WithWebhookTest(test WebhookTest) *Handler {
 	return h
 }
 
+// WithScheduleSettings 注入调度设置写回用例（sett2）。
+// 未注入时端点回 501：生产装配必须注入，缺失必须显性。
+func (h *Handler) WithScheduleSettings(s ScheduleSettings) *Handler {
+	h.scheduleSettings = s
+	return h
+}
+
 // AdminSettings 实现 GET /api/admin/settings。
 func (h *Handler) AdminSettings(c *gin.Context) {
 	session, ok := requester(c)
@@ -102,7 +120,16 @@ func (h *Handler) AdminSettings(c *gin.Context) {
 		respond.NotImplemented(c.Writer, c.Request)
 		return
 	}
-	report := h.roster.Report()
+	report, err := h.roster.Report(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, settingsReportResponse(report))
+}
+
+// settingsReportResponse 把名册报告转成传输形状。GET 与写回端点共用同一形态。
+func settingsReportResponse(report appsettings.Report) oapi.SettingsReport {
 	groups := make([]oapi.SettingGroup, 0, len(report.Groups))
 	for _, group := range report.Groups {
 		items := make([]oapi.SettingItem, 0, len(group.Items))
@@ -111,7 +138,90 @@ func (h *Handler) AdminSettings(c *gin.Context) {
 		}
 		groups = append(groups, oapi.SettingGroup{Name: group.Name, Items: items})
 	}
-	respond.JSON(c.Writer, http.StatusOK, oapi.SettingsReport{Groups: groups})
+	return oapi.SettingsReport{Groups: groups}
+}
+
+// AdminScheduleSettingsSet 实现 PUT /api/admin/schedule-settings。仅 master。
+//
+// 部分补丁语义：缺字段=不动该键；显式 null=删覆盖行回 env；值=upsert。
+// 键存在性只能在解码原始 JSON 时判定（与 TimePrefSet 同因），
+// 未知字段在这里显式拒绝（400），不被解码器静默忽略。
+// 域校验与写入都在用例层：任何拒绝零写入零审计。
+func (h *Handler) AdminScheduleSettingsSet(c *gin.Context, _ oapi.AdminScheduleSettingsSetParams) {
+	session, ok := requester(c)
+	if !ok {
+		return
+	}
+	if session.User.Role != coreauth.RoleMaster {
+		fail(c, errs.New(errs.CodeForbidden, "master role is required"))
+		return
+	}
+	if h.scheduleSettings == nil || h.roster == nil {
+		respond.NotImplemented(c.Writer, c.Request)
+		return
+	}
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
+		respond.BindError(c.Writer, c.Request, err)
+		return
+	}
+	changes, err := scheduleChangesFromJSON(body)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if err := h.scheduleSettings.SetSchedule(c.Request.Context(), scopeOf(session.User),
+		appaudit.NewActor(session.User), changes); err != nil {
+		fail(c, err)
+		return
+	}
+	report, err := h.roster.Report(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, settingsReportResponse(report))
+}
+
+// scheduleBodyKeys 把 PUT 请求体字段名（对齐旧线设置页字段）映射到
+// settings 表键名。三键之外的字段一律未知（400）。
+var scheduleBodyKeys = map[string]string{
+	"edge_front_sec":  appsettings.KeyScheduleEdgeFrontSec,
+	"edge_back_sec":   appsettings.KeyScheduleEdgeBackSec,
+	"allow_time_pref": appsettings.KeyScheduleAllowTimePref,
+}
+
+// scheduleChangesFromJSON 把原始 JSON 体折成写意图。
+// 未知字段、JSON 类型错、空更新都在这里 400；域校验在用例层。
+func scheduleChangesFromJSON(body map[string]json.RawMessage) ([]appsettings.ScheduleChange, error) {
+	changes := make([]appsettings.ScheduleChange, 0, len(body))
+	for field, raw := range body {
+		key, known := scheduleBodyKeys[field]
+		if !known {
+			return nil, errs.New(errs.CodeValidation, "unknown schedule setting key "+field)
+		}
+		if string(raw) == "null" {
+			changes = append(changes, appsettings.ScheduleChange{Key: key, Op: appsettings.ScheduleOpClear})
+			continue
+		}
+		if key == appsettings.KeyScheduleAllowTimePref {
+			var value bool
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return nil, errs.New(errs.CodeValidation, field+" requires a boolean literal")
+			}
+			changes = append(changes, appsettings.ScheduleChange{Key: key, Op: appsettings.ScheduleOpSet, Value: value})
+			continue
+		}
+		var value int
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, errs.New(errs.CodeValidation, field+" requires an integer")
+		}
+		changes = append(changes, appsettings.ScheduleChange{Key: key, Op: appsettings.ScheduleOpSet, Value: value})
+	}
+	if len(changes) == 0 {
+		return nil, errs.New(errs.CodeValidation, "schedule settings update is empty")
+	}
+	return changes, nil
 }
 
 // AdminMailTest 实现 POST /api/admin/mail/test。仅 master。

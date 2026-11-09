@@ -22,6 +22,7 @@ import (
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 func requireValidation(t *testing.T, err error) {
@@ -340,5 +341,173 @@ func TestAuditLogListE2E(t *testing.T) {
 	// detail 原样返回（脱敏在用例出口，见 app/audit 单测）。
 	if !strings.Contains(first[0].Detail, `"field"`) {
 		t.Fatalf("detail = %q", first[0].Detail)
+	}
+}
+
+// sett2 写回访问器：存在性感知读取、int/bool 读写对、删行与坏行判定。
+// 坏行（手工 SQL 写坏）必须报校验错而不是「缺行」：用例层据此回退 env 并出声。
+func TestSettingsWritebackAccessorE2E(t *testing.T) {
+	e := newEnv(t)
+	user := e.createUser("settings-writeback@example.com")
+	repo := pg.NewSettingsRepo(e.db)
+	const edgeKey = "schedule.edge_front_sec"
+	const boolKey = "schedule.allow_time_pref"
+
+	// 缺行：found=false，零错误。
+	if value, found, err := repo.IntOverride(e.ctx, edgeKey); err != nil || found || value != 0 {
+		t.Fatalf("missing int row = (%d, %v, %v)", value, found, err)
+	}
+	if value, found, err := repo.BoolOverride(e.ctx, boolKey); err != nil || found || value {
+		t.Fatalf("missing bool row = (%v, %v, %v)", value, found, err)
+	}
+
+	// upsert 写读回环：updated_by 记录操作者，updated_at 由触发器维护。
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return repo.SetInt(ctx, edgeKey, 120, user.ID)
+	}); err != nil {
+		t.Fatalf("SetInt: %v", err)
+	}
+	if value, found, err := repo.IntOverride(e.ctx, edgeKey); err != nil || !found || value != 120 {
+		t.Fatalf("int roundtrip = (%d, %v, %v)", value, found, err)
+	}
+	if by := e.scalarString("SELECT updated_by::text FROM settings WHERE key = $1", edgeKey); by != user.ID {
+		t.Fatalf("updated_by = %q, want %q", by, user.ID)
+	}
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return repo.SetBool(ctx, boolKey, true, user.ID)
+	}); err != nil {
+		t.Fatalf("SetBool: %v", err)
+	}
+	if value, found, err := repo.BoolOverride(e.ctx, boolKey); err != nil || !found || !value {
+		t.Fatalf("bool roundtrip = (%v, %v, %v)", value, found, err)
+	}
+
+	// 二次写是 upsert 更新，不是第二行。
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return repo.SetInt(ctx, edgeKey, 90, user.ID)
+	}); err != nil {
+		t.Fatalf("SetInt again: %v", err)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM settings WHERE key = $1", edgeKey); rows != 1 {
+		t.Fatalf("rows after rewrite = %d, want 1", rows)
+	}
+	if value, _, _ := repo.IntOverride(e.ctx, edgeKey); value != 90 {
+		t.Fatalf("int after rewrite = %d, want 90", value)
+	}
+
+	// 手工坏行：int 位塞非整数、bool 位塞非字面，都报校验错。
+	if _, err := e.db.Exec(e.ctx, `UPDATE settings SET value = 'abc' WHERE key = $1`, edgeKey); err != nil {
+		t.Fatalf("corrupt int row: %v", err)
+	}
+	if _, found, err := repo.IntOverride(e.ctx, edgeKey); err == nil {
+		t.Fatalf("corrupt int row = found %v without error", found)
+	} else {
+		requireValidation(t, err)
+	}
+	if _, err := e.db.Exec(e.ctx, `UPDATE settings SET value = 'TRUE' WHERE key = $1`, boolKey); err != nil {
+		t.Fatalf("corrupt bool row: %v", err)
+	}
+	if _, found, err := repo.BoolOverride(e.ctx, boolKey); err == nil {
+		t.Fatalf("corrupt bool row = found %v without error", found)
+	} else {
+		requireValidation(t, err)
+	}
+
+	// 操作者为空是校验错：写入零行。
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return repo.SetInt(ctx, edgeKey, 60, "")
+	}); err == nil {
+		t.Fatal("empty actor must be rejected")
+	} else {
+		requireValidation(t, err)
+	}
+
+	// 删行：行消失；删不存在的行是幂等成功。
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return repo.ClearSetting(ctx, edgeKey)
+	}); err != nil {
+		t.Fatalf("ClearSetting: %v", err)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM settings WHERE key = $1", edgeKey); rows != 0 {
+		t.Fatalf("rows after clear = %d, want 0", rows)
+	}
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return repo.ClearSetting(ctx, edgeKey)
+	}); err != nil {
+		t.Fatalf("ClearSetting absent row: %v", err)
+	}
+
+	// 既有布尔开关行为不变：registration.enabled 缺行按关闭。
+	if enabled, err := repo.RegistrationEnabled(e.ctx); err != nil || enabled {
+		t.Fatalf("RegistrationEnabled missing row = (%v, %v)", enabled, err)
+	}
+}
+
+// 调度设置写回（sett2）用例接真库：写入落行、审计同事务；
+// 审计追加失败时覆盖行不落地（整体回滚）。
+func TestScheduleSettingsServiceE2E(t *testing.T) {
+	e := newEnv(t)
+	master := e.createUser("schedule-writeback-master@example.com")
+	resolver, err := appsettings.NewResolver(pg.NewSettingsRepo(e.db), map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store:    pg.NewAnnouncementRepo(e.db),
+		Audit:    e.audits,
+		Tx:       e.db,
+		Clock:    coreclock.Fixed{T: time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)},
+		Schedule: pg.NewSettingsRepo(e.db),
+		Resolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	actor := appaudit.Actor{UserID: master.ID, Role: coreauth.RoleMaster, Label: "m***@example.com"}
+
+	// 成功：覆盖行与审计行同事务落库；detail 只含变更键旧→新。
+	err = svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleEdgeFrontSec, Op: appsettings.ScheduleOpSet, Value: 120},
+	})
+	if err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyScheduleEdgeFrontSec); value != "120" {
+		t.Fatalf("settings value = %q, want 120", value)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'settings.schedule_writeback'"); rows != 1 {
+		t.Fatalf("audit rows = %d, want 1", rows)
+	}
+	detail := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'settings.schedule_writeback' ORDER BY id DESC LIMIT 1")
+	if !strings.Contains(detail, `"changes"`) || !strings.Contains(detail, "schedule.edge_front_sec") {
+		t.Fatalf("audit detail = %q", detail)
+	}
+
+	// 审计追加失败：覆盖行必须回滚，不得留下无审计的写入。
+	if _, err := e.db.Exec(e.ctx, `
+		CREATE FUNCTION reject_audit() RETURNS trigger AS $$
+		BEGIN
+		    RAISE EXCEPTION 'audit rejected';
+		END;
+		$$ LANGUAGE plpgsql`); err != nil {
+		t.Fatalf("create trigger function: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx, `
+		CREATE TRIGGER reject_audit_insert BEFORE INSERT ON audit_logs
+		FOR EACH ROW EXECUTE FUNCTION reject_audit()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	err = svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleEdgeFrontSec, Op: appsettings.ScheduleOpSet, Value: 90},
+	})
+	if err == nil {
+		t.Fatal("SetSchedule must fail when the audit append fails")
+	}
+	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyScheduleEdgeFrontSec); value != "120" {
+		t.Fatalf("settings value after failed put = %q, want the pre-failure 120", value)
 	}
 }

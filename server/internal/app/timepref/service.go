@@ -43,12 +43,15 @@ type Store interface {
 }
 
 // Deps 是用例依赖。
-// Allow 是部署开关 YIBAN_ALLOW_TIME_PREF。
+// Allow 是部署开关（YIBAN_ALLOW_TIME_PREF）的每请求解析：
+// settings 写回后 DB 覆盖 env（sett2），故取函数而非定值。
+// 返回错误原样上抛——故障不是「关闭」；装配未接写回层时
+// 传「恒返 env 值」的闭包即可，行为与定值完全一致。
 // Cooldown 是两次写入之间的最小间隔；非正值表示不限制。
 type Deps struct {
 	Store    Store
 	Clock    coreclock.Clock
-	Allow    bool
+	Allow    func(ctx context.Context) (bool, error)
 	Cooldown time.Duration
 }
 
@@ -90,7 +93,16 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.Clock == nil {
 		return nil, errors.New("timepref: nil clock")
 	}
+	if deps.Allow == nil {
+		return nil, errors.New("timepref: nil allow resolver")
+	}
 	return &Service{deps: deps}, nil
+}
+
+// allowed 每请求解析部署开关。解析失败原样上抛：
+// 关闭是业务状态，故障是故障，不得混读。
+func (s *Service) allowed(ctx context.Context) (bool, error) {
+	return s.deps.Allow(ctx)
 }
 
 // Get 返回用户当前自选。没有记录时 OffsetMin 为 nil。
@@ -99,14 +111,18 @@ func (s *Service) Get(ctx context.Context, userID string) (View, error) {
 	if userID == "" {
 		return View{}, coreerrs.New(coreerrs.CodeInternal, "time preference requires a user")
 	}
+	allow, err := s.allowed(ctx)
+	if err != nil {
+		return View{}, err
+	}
 	pref, err := s.deps.Store.Get(ctx, userID)
 	if err != nil {
 		if errors.Is(err, coreerrs.ErrNotFound) {
-			return s.view(nil), nil
+			return s.view(nil, allow), nil
 		}
 		return View{}, err
 	}
-	return s.view(pref.OffsetMin), nil
+	return s.view(pref.OffsetMin, allow), nil
 }
 
 // Set 写或清除自选。
@@ -116,7 +132,11 @@ func (s *Service) Set(ctx context.Context, userID string, offset *int) (View, er
 	if userID == "" {
 		return View{}, coreerrs.New(coreerrs.CodeInternal, "time preference requires a user")
 	}
-	if !s.deps.Allow {
+	allow, err := s.allowed(ctx)
+	if err != nil {
+		return View{}, err
+	}
+	if !allow {
 		return View{}, coreerrs.New(coreerrs.CodeForbidden, "time preference is disabled")
 	}
 	if offset != nil {
@@ -134,19 +154,19 @@ func (s *Service) Set(ctx context.Context, userID string, offset *int) (View, er
 		return View{}, coreerrs.New(coreerrs.CodeRateLimited,
 			"time preference changed too recently")
 	}
-	return s.view(offset), nil
+	return s.view(offset, allow), nil
 }
 
 // view 组装读面。窗口与槽位只由 core/schedule 的默认常量派生：
 // 计划回退窗口与自选展示窗口不会出现两套 06:30/07:50。
 // 这里是服务端标准窗口；实际执行窗口可被平台窗口或 override 平移，
 // slot label 只表示相对标准窗口的偏好时刻。
-func (s *Service) view(offset *int) View {
+func (s *Service) view(offset *int, allow bool) View {
 	start := coreschedule.DefaultSignWindowStartMinute
 	end := coreschedule.DefaultSignWindowEndMinute
 	out := View{
 		OffsetMin: offset,
-		Allowed:   s.deps.Allow,
+		Allowed:   allow,
 		Window:    Window{Start: clockLabel(start), End: clockLabel(end)},
 	}
 	width := end - start
@@ -159,7 +179,7 @@ func (s *Service) view(offset *int) View {
 		slots = limit
 	}
 	reason := ""
-	if !s.deps.Allow {
+	if !allow {
 		// 关闭开关时槽位仍列出，但全部不可选：界面显示原因而不是空白。
 		reason = "time preference is disabled"
 	}
@@ -169,7 +189,7 @@ func (s *Service) view(offset *int) View {
 		out.Slots = append(out.Slots, Slot{
 			OffsetMin: offsetMin,
 			Label:     clockLabel(start + offsetMin),
-			Disabled:  !s.deps.Allow,
+			Disabled:  !allow,
 			Reason:    reason,
 		})
 	}

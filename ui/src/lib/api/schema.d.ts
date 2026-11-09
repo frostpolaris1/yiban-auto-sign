@@ -1387,10 +1387,47 @@ export interface paths {
          *     provides the key, default when the roster registers a default, and
          *     unknown when the key is unset with no default. The file source is
          *     reserved for a configuration layer that reads files; the current
-         *     server never reports it.
+         *     server never reports it. The writable schedule keys
+         *     (schedule.edge_front_sec, schedule.edge_back_sec,
+         *     schedule.allow_time_pref) additionally read a settings-table
+         *     override row: when a valid row exists the item reports source=db
+         *     with the stored value, which wins over the environment.
          */
         get: operations["AdminSettings"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/schedule-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Write runtime overrides for the schedule settings.
+         * @description Master only. A partial patch of the three writable schedule keys:
+         *     a field absent from the body leaves that key untouched; an explicit
+         *     null deletes the stored override row so the key reads its
+         *     environment value again; a value upserts the override row. The edge
+         *     fields accept integers between 0 and 300 (seconds); allow_time_pref
+         *     accepts the true/false literals. An out-of-domain value, a wrong
+         *     JSON type or an unknown field answers 400 with zero writes and zero
+         *     audit rows. The write and one settings.schedule_writeback audit row
+         *     commit in one transaction; the audit detail holds only the changed
+         *     keys with their previous and new values. Edge changes take effect at
+         *     the next daily plan build (rows already built for today are not
+         *     rebuilt); allow_time_pref takes effect on the next request. The
+         *     answer is the full roster in the same shape as
+         *     GET /api/admin/settings.
+         */
+        put: operations["AdminScheduleSettingsSet"];
         post?: never;
         delete?: never;
         options?: never;
@@ -2374,10 +2411,12 @@ export interface components {
          * @description env: the process environment provides the key. file: a file-backed
          *     configuration layer provides it (never reported by this server).
          *     default: unset, the roster registers a default. unknown: unset with
-         *     no registered default.
+         *     no registered default. db: a settings-table override row provides
+         *     the key (writable schedule keys only; the database value wins over
+         *     the environment).
          * @enum {string}
          */
-        SettingSource: "env" | "file" | "default" | "unknown";
+        SettingSource: "env" | "file" | "default" | "unknown" | "db";
         /** @description One roster key with its resolved view. */
         SettingItem: {
             key: string;
@@ -2408,6 +2447,19 @@ export interface components {
         };
         SettingsReport: {
             groups: components["schemas"]["SettingGroup"][];
+        };
+        /**
+         * @description Partial patch of the writable schedule keys. Every field is
+         *     optional: absent leaves the key untouched, null deletes the
+         *     override row, a value upserts it. Unknown fields answer 400.
+         */
+        AdminScheduleSettingsUpdate: {
+            /** @description Seconds trimmed from the front of the window. */
+            edge_front_sec?: number | null;
+            /** @description Seconds trimmed from the back of the window. */
+            edge_back_sec?: number | null;
+            /** @description Master switch for user time preferences. */
+            allow_time_pref?: boolean | null;
         };
         MailTestResult: {
             /**
@@ -5847,6 +5899,41 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminScheduleSettingsSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminScheduleSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description The full configuration roster after the write. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsReport"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };

@@ -108,7 +108,10 @@ func TestRosterReportsValuesAndSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoster: %v", err)
 	}
-	report := roster.Report()
+	report, err := roster.Report(context.Background())
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
 	if len(report.Groups) != 2 || report.Groups[0].Name != "乙" || report.Groups[1].Name != "甲" {
 		t.Fatalf("group order = %+v, want 乙 then 甲", report.Groups)
 	}
@@ -137,7 +140,11 @@ func TestRosterTreatsEmptyEnvAsUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoster: %v", err)
 	}
-	item := roster.Report().Groups[0].Items[0]
+	report, err := roster.Report(context.Background())
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	item := report.Groups[0].Items[0]
 	if item.Source != appsettings.SourceDefault || item.Value != "d" {
 		t.Fatalf("item = %+v, want default", item)
 	}
@@ -153,7 +160,10 @@ func TestRosterNeverEchoesSensitiveValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRoster: %v", err)
 	}
-	report := roster.Report()
+	report, err := roster.Report(context.Background())
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
 	seen := 0
 	for _, group := range report.Groups {
 		for _, item := range group.Items {

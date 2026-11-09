@@ -39,7 +39,8 @@ func (f *fakeStore) PutWithin(_ context.Context, userID string, offset *int, now
 func newService(t *testing.T, store *fakeStore, now time.Time, allow bool, cooldown time.Duration) *apptimepref.Service {
 	t.Helper()
 	svc, err := apptimepref.NewService(apptimepref.Deps{
-		Store: store, Clock: coreclock.Fixed{T: now}, Allow: allow, Cooldown: cooldown,
+		Store: store, Clock: coreclock.Fixed{T: now},
+		Allow: func(context.Context) (bool, error) { return allow, nil }, Cooldown: cooldown,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

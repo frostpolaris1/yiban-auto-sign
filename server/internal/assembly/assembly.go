@@ -381,8 +381,21 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: audit repo: %w", err)
 		}
-		// settings 行同时服务注册开关、自动审批开关与设置页写入。
+		// settings 行同时服务注册开关、自动审批开关与设置页写入，
+		// 以及 sett2 的调度三键覆盖链（DB>env）。
 		settingsRepo := pg.NewSettingsRepo(db)
+		// 覆盖链解析器：整型域取自嵌入名册 domain（唯一源），缺域即启动失败。
+		// 名册在这里提前解析一次，resolver 域与设置页名册共用同一份条目。
+		registryEntries, err := config.Registry()
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: configuration registry: %w", err)
+		}
+		scheduleResolver, err := buildScheduleResolver(settingsRepo, registryEntries, logger)
+		if err != nil {
+			closeFn()
+			return nil, err
+		}
 		// 设置面：订阅、公告、名册、测试邮件与审计列表。
 		// 名册缺失只让 GET /api/admin/settings 回 501：其余端点不依赖它。
 		// 邮件端口先于设置面构造：测试邮件与忘记口令共用同一实现。
@@ -441,7 +454,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, err
 		}
-		notifyLib, systemLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle, webhookSender, webhookTestThrottle, settingsRepo)
+		notifyLib, systemLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle,
+			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, scheduleResolver)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -764,7 +778,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		prefSvc, err := apptimepref.NewService(apptimepref.Deps{
 			Store: prefRepo, Clock: clk,
-			Allow: cfg.AllowTimePref, Cooldown: cfg.TimePrefCooldown,
+			Allow: func(ctx context.Context) (bool, error) {
+				// sett2：自选开关每请求读 DB 覆盖行，行缺失回 env 值。
+				return scheduleResolver.ResolveBool(ctx, appsettings.KeyScheduleAllowTimePref, cfg.AllowTimePref)
+			},
+			Cooldown: cfg.TimePrefCooldown,
 		})
 		if err != nil {
 			closeFn()
@@ -786,7 +804,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Rate: cfg.EgressRate, Util: corecapacity.UtilDefault,
 			SlotsPerSlice: slots, Front: true, UsePrefs: cfg.AllowTimePref,
 			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
-			Logger: logger,
+			// sett2：可写回键每请求解析（DB 覆盖 env）；静态值仍是 env 兜底。
+			Overrides: settingsOverrides{resolver: scheduleResolver, cfg: cfg},
+			Logger:    logger,
 		}).WithStats(statsSvc)
 		// 运行页任务检索：只读，与计划用例共用排期仓储。
 		taskLib = schedulehttp.NewTasksHandler(
@@ -803,6 +823,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 				Workers: cfg.Workers, Avg: cfg.AvgAttempt, Rate: cfg.EgressRate,
 				Util: corecapacity.UtilDefault, SlotsPerSlice: slots, Front: true,
 				UsePrefs: cfg.AllowTimePref, EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
+			},
+			// sett2：日切构建每次重读覆盖行；当日已铺行不回改，改值次日生效。
+			Overrides: func(ctx context.Context) (appschedule.BuildOverrides, error) {
+				return buildScheduleOverrides(ctx, scheduleResolver, cfg)
 			},
 		}, logger)
 		if err != nil {
@@ -911,7 +935,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown,
 	webhook corewebhook.Sender, webhookCooldown appsettings.Cooldown,
-	autoApprove appsettings.AutoApproveStore) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, error) {
+	autoApprove appsettings.AutoApproveStore, settingsRepo *pg.SettingsRepo,
+	scheduleResolver *appsettings.Resolver) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
@@ -933,6 +958,8 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		Cooldown:        cooldown,
 		WebhookCooldown: webhookCooldown,
 		AutoApprove:     autoApprove,
+		Schedule:        settingsRepo,
+		Resolver:        scheduleResolver,
 		Logger:          logger,
 	})
 	if err != nil {
@@ -956,10 +983,13 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
 	}
+	// sett2：名册接覆盖链，写回键在 DB 行存在时报 source=db。
+	roster.WithOverrides(scheduleResolver)
 	notifyHandler := notifyhttp.NewHandler(notifySvc).WithInbox(inboxSvc)
 	systemHandler := systemhttp.NewHandler(roster, announcementSvc, announcementSvc).
 		WithAutoApprove(announcementSvc).
-		WithWebhookTest(announcementSvc)
+		WithWebhookTest(announcementSvc).
+		WithScheduleSettings(announcementSvc)
 	return notifyHandler, systemHandler, audithttp.NewHandler(reader).WithStatus(inspector), nil
 }
 
@@ -1240,4 +1270,85 @@ func (n ScheduleNotifier) PlanEvent(_ context.Context, schoolID, taskID, day, ki
 		Type: kind, SchoolID: schoolID, TaskID: taskID, Day: day,
 		At: n.Clock.Now(), Payload: payload,
 	})
+}
+
+// buildScheduleResolver 构造 sett2 覆盖链解析器。
+// 整型域取自嵌入名册 domain（唯一源）：两枚 edge 键缺域即启动失败，
+// 写面不得猜域。布尔键无域，只认真小写 true/false 字面。
+func buildScheduleResolver(store appsettings.ScheduleStore,
+	entries []config.RegistryEntry, logger *slog.Logger) (*appsettings.Resolver, error) {
+	// 名册键→行键的映射单源在 app/settings（RegistryKeyAliases）；
+	// 这里只把名册 domain 注入到正确的行键上。
+	aliases := appsettings.RegistryKeyAliases()
+	byKey := make(map[string]config.RegistryEntry, len(entries))
+	for _, entry := range entries {
+		byKey[entry.Key] = entry
+	}
+	domains := make(map[string]appsettings.SettingDomain, 2)
+	for registryKey, settingsKey := range aliases {
+		entry, ok := byKey[registryKey]
+		if !ok || entry.Scope != config.ScopeServer {
+			return nil, fmt.Errorf("assembly: writable key %s is not a server registry entry", registryKey)
+		}
+		if settingsKey == appsettings.KeyScheduleAllowTimePref {
+			continue // 布尔键无域：字面判定在读取端口内
+		}
+		if len(entry.Domain) != 2 {
+			return nil, fmt.Errorf("assembly: writable key %s has no registry domain", registryKey)
+		}
+		domains[settingsKey] = appsettings.SettingDomain{
+			Min: int(entry.Domain[0]), Max: int(entry.Domain[1]),
+		}
+	}
+	resolver, err := appsettings.NewResolver(store, domains, logger)
+	if err != nil {
+		return nil, fmt.Errorf("assembly: schedule settings resolver: %w", err)
+	}
+	return resolver, nil
+}
+
+// settingsOverrides 把覆盖链解析接到排期消费面（schedulehttp 每请求读）。
+type settingsOverrides struct {
+	resolver *appsettings.Resolver
+	cfg      *config.Config
+}
+
+// UsePrefs 解析自选偏好总开关：DB 行存在且合法用行值，否则 env 值。
+func (o settingsOverrides) UsePrefs(ctx context.Context) (bool, error) {
+	return o.resolver.ResolveBool(ctx, appsettings.KeyScheduleAllowTimePref, o.cfg.AllowTimePref)
+}
+
+// Edges 解析窗口两端裁剪秒：DB 行存在且在域内用行值，否则 env 值。
+func (o settingsOverrides) Edges(ctx context.Context) (time.Duration, time.Duration, error) {
+	front, err := o.resolver.ResolveInt(ctx, appsettings.KeyScheduleEdgeFrontSec, int(o.cfg.EdgeFront/time.Second))
+	if err != nil {
+		return 0, 0, err
+	}
+	back, err := o.resolver.ResolveInt(ctx, appsettings.KeyScheduleEdgeBackSec, int(o.cfg.EdgeBack/time.Second))
+	if err != nil {
+		return 0, 0, err
+	}
+	return time.Duration(front) * time.Second, time.Duration(back) * time.Second, nil
+}
+
+// buildScheduleOverrides 组装日切构建的可写回键读数。
+// 口径：当日已铺行不回改——改值自下一次构建（次日凌晨 00:10）生效。
+func buildScheduleOverrides(ctx context.Context, resolver *appsettings.Resolver, cfg *config.Config) (appschedule.BuildOverrides, error) {
+	usePrefs, err := resolver.ResolveBool(ctx, appsettings.KeyScheduleAllowTimePref, cfg.AllowTimePref)
+	if err != nil {
+		return appschedule.BuildOverrides{}, err
+	}
+	front, err := resolver.ResolveInt(ctx, appsettings.KeyScheduleEdgeFrontSec, int(cfg.EdgeFront/time.Second))
+	if err != nil {
+		return appschedule.BuildOverrides{}, err
+	}
+	back, err := resolver.ResolveInt(ctx, appsettings.KeyScheduleEdgeBackSec, int(cfg.EdgeBack/time.Second))
+	if err != nil {
+		return appschedule.BuildOverrides{}, err
+	}
+	return appschedule.BuildOverrides{
+		UsePrefs:  usePrefs,
+		EdgeFront: time.Duration(front) * time.Second,
+		EdgeBack:  time.Duration(back) * time.Second,
+	}, nil
 }

@@ -60,7 +60,9 @@ func (stubInbox) MarkAllRead(context.Context, string) error { return nil }
 
 type stubRoster struct{}
 
-func (stubRoster) Report() appsettings.Report { return appsettings.Report{} }
+func (stubRoster) Report(context.Context) (appsettings.Report, error) {
+	return appsettings.Report{}, nil
+}
 
 type stubAnnouncement struct{ text string }
 
@@ -100,13 +102,23 @@ func (s *stubAutoApprove) SetAutoApprove(_ context.Context, _ corescope.Scope, _
 	return enabled, nil
 }
 
+// stubScheduleSettings 是调度设置写回用例的内存替身（sett2）。
+type stubScheduleSettings struct{ sets int }
+
+func (s *stubScheduleSettings) SetSchedule(context.Context, corescope.Scope, appaudit.Actor,
+	[]appsettings.ScheduleChange) error {
+	s.sets++
+	return nil
+}
+
 func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 	t.Helper()
 	return newSettingsEngineWith(t,
 		notifyhttp.NewHandler(stubNotify{}).WithInbox(stubInbox{}),
 		systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}).
 			WithAutoApprove(&stubAutoApprove{}).
-			WithWebhookTest(stubWebhookTest{}))
+			WithWebhookTest(stubWebhookTest{}).
+			WithScheduleSettings(&stubScheduleSettings{}))
 }
 
 func newSettingsEngineWith(t *testing.T, notify *notifyhttp.Handler, system *systemhttp.Handler) (*gin.Engine, *stubIssuer) {
@@ -211,6 +223,10 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 		{"auto approve write admin", http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, admin, true, http.StatusForbidden},
 		{"auto approve write without csrf", http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, master, false, http.StatusForbidden},
 		{"auto approve write master", http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, master, true, http.StatusOK},
+		{"schedule settings user", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, user, true, http.StatusForbidden},
+		{"schedule settings admin", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, admin, true, http.StatusForbidden},
+		{"schedule settings without csrf", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, master, false, http.StatusForbidden},
+		{"schedule settings master", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, master, true, http.StatusOK},
 		{"mail test user", http.MethodPost, "/api/admin/mail/test", "", user, true, http.StatusForbidden},
 		{"mail test admin", http.MethodPost, "/api/admin/mail/test", "", admin, true, http.StatusForbidden},
 		{"mail test master without csrf", http.MethodPost, "/api/admin/mail/test", "", master, false, http.StatusForbidden},
@@ -267,6 +283,7 @@ func TestSettingsRoutesNilHandlersReturn501(t *testing.T) {
 		{http.MethodGet, "/api/admin/settings", "", false},
 		{http.MethodGet, "/api/admin/auto-approve", "", false},
 		{http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, true},
+		{http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, true},
 		{http.MethodPost, "/api/admin/mail/test", "", true},
 		{http.MethodPost, "/api/admin/webhook/test", "", true},
 		{http.MethodGet, "/api/announcement", "", false},
@@ -308,6 +325,7 @@ func TestSettingsRoutesSingleSideWiring(t *testing.T) {
 	}
 	systemCases := []settingsEndpoint{
 		{http.MethodGet, "/api/admin/settings", "", false, http.StatusOK},
+		{http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, true, http.StatusOK},
 		{http.MethodPost, "/api/admin/mail/test", "", true, http.StatusOK},
 		{http.MethodPost, "/api/admin/webhook/test", "", true, http.StatusOK},
 		{http.MethodGet, "/api/announcement", "", false, http.StatusOK},
@@ -341,7 +359,8 @@ func TestSettingsRoutesSingleSideWiring(t *testing.T) {
 
 	t.Run("system only", func(t *testing.T) {
 		systemHandler := systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}).
-			WithWebhookTest(stubWebhookTest{})
+			WithWebhookTest(stubWebhookTest{}).
+			WithScheduleSettings(&stubScheduleSettings{})
 		engine, issuer := newSettingsEngineWith(t, nil, systemHandler)
 		master := issueUser(t, issuer, auth.RoleMaster)
 		for _, tc := range notifyCases {

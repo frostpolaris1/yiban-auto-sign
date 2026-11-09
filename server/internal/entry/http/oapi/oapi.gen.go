@@ -520,6 +520,7 @@ func (e SchoolUpdateTimezone) Valid() bool {
 
 // Defines values for SettingSource.
 const (
+	SettingSourceDb      SettingSource = "db"
 	SettingSourceDefault SettingSource = "default"
 	SettingSourceEnv     SettingSource = "env"
 	SettingSourceFile    SettingSource = "file"
@@ -529,6 +530,8 @@ const (
 // Valid indicates whether the value is a known member of the SettingSource enum.
 func (e SettingSource) Valid() bool {
 	switch e {
+	case SettingSourceDb:
+		return true
 	case SettingSourceDefault:
 		return true
 	case SettingSourceEnv:
@@ -1214,6 +1217,20 @@ type AccountVerifyResult struct {
 	// Message Masked platform text; absent when empty.
 	Message *string `json:"message,omitempty"`
 	Ok      bool    `json:"ok"`
+}
+
+// AdminScheduleSettingsUpdate Partial patch of the writable schedule keys. Every field is
+// optional: absent leaves the key untouched, null deletes the
+// override row, a value upserts it. Unknown fields answer 400.
+type AdminScheduleSettingsUpdate struct {
+	// AllowTimePref Master switch for user time preferences.
+	AllowTimePref *bool `json:"allow_time_pref,omitempty"`
+
+	// EdgeBackSec Seconds trimmed from the back of the window.
+	EdgeBackSec *int `json:"edge_back_sec,omitempty"`
+
+	// EdgeFrontSec Seconds trimmed from the front of the window.
+	EdgeFrontSec *int `json:"edge_front_sec,omitempty"`
 }
 
 // AdminTaskRow defines model for AdminTaskRow.
@@ -2026,14 +2043,18 @@ type SettingItem struct {
 		// Source env: the process environment provides the key. file: a file-backed
 		// configuration layer provides it (never reported by this server).
 		// default: unset, the roster registers a default. unknown: unset with
-		// no registered default.
+		// no registered default. db: a settings-table override row provides
+		// the key (writable schedule keys only; the database value wins over
+		// the environment).
 		Source SettingSource `json:"source"`
 	} `json:"sensitive"`
 
 	// Source env: the process environment provides the key. file: a file-backed
 	// configuration layer provides it (never reported by this server).
 	// default: unset, the roster registers a default. unknown: unset with
-	// no registered default.
+	// no registered default. db: a settings-table override row provides
+	// the key (writable schedule keys only; the database value wins over
+	// the environment).
 	Source SettingSource `json:"source"`
 
 	// Value Resolved value of a non-sensitive key: the environment value when
@@ -2061,7 +2082,9 @@ type SettingItem_Value struct {
 // SettingSource env: the process environment provides the key. file: a file-backed
 // configuration layer provides it (never reported by this server).
 // default: unset, the roster registers a default. unknown: unset with
-// no registered default.
+// no registered default. db: a settings-table override row provides
+// the key (writable schedule keys only; the database value wins over
+// the environment).
 type SettingSource string
 
 // SettingsReport defines model for SettingsReport.
@@ -2760,6 +2783,13 @@ type AdminNotifySetParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AdminScheduleSettingsSetParams defines parameters for AdminScheduleSettingsSet.
+type AdminScheduleSettingsSetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AdminTaskListParams defines parameters for AdminTaskList.
 type AdminTaskListParams struct {
 	// Cursor Opaque page cursor taken from next_cursor.
@@ -3228,6 +3258,9 @@ type AdminAutoApproveSetJSONRequestBody = AutoApproveUpdate
 // AdminNotifySetJSONRequestBody defines body for AdminNotifySet for application/json ContentType.
 type AdminNotifySetJSONRequestBody = NotifyPrefsUpdate
 
+// AdminScheduleSettingsSetJSONRequestBody defines body for AdminScheduleSettingsSet for application/json ContentType.
+type AdminScheduleSettingsSetJSONRequestBody = AdminScheduleSettingsUpdate
+
 // AuthChangePasswordJSONRequestBody defines body for AuthChangePassword for application/json ContentType.
 type AuthChangePasswordJSONRequestBody = ChangePasswordRequest
 
@@ -3495,6 +3528,9 @@ type ServerInterface interface {
 	// AdminNotifySet Replace the caller's subscription overrides.
 	// (PUT /api/admin/notify)
 	AdminNotifySet(c *gin.Context, params AdminNotifySetParams)
+	// AdminScheduleSettingsSet Write runtime overrides for the schedule settings.
+	// (PUT /api/admin/schedule-settings)
+	AdminScheduleSettingsSet(c *gin.Context, params AdminScheduleSettingsSetParams)
 	// AdminSettings Read the deployment configuration roster, grouped.
 	// (GET /api/admin/settings)
 	AdminSettings(c *gin.Context)
@@ -4921,6 +4957,49 @@ func (siw *ServerInterfaceWrapper) AdminNotifySet(c *gin.Context) {
 	}
 
 	siw.Handler.AdminNotifySet(c, params)
+}
+
+// AdminScheduleSettingsSet operation middleware
+func (siw *ServerInterfaceWrapper) AdminScheduleSettingsSet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminScheduleSettingsSetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminScheduleSettingsSet(c, params)
 }
 
 // AdminSettings operation middleware
@@ -7351,6 +7430,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifyGet)
 	router.PUT(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifySet)
 	router.GET(options.BaseURL+"/api/admin/settings", wrapper.AdminSettings)
+	router.PUT(options.BaseURL+"/api/admin/schedule-settings", wrapper.AdminScheduleSettingsSet)
 	router.POST(options.BaseURL+"/api/admin/mail/test", wrapper.AdminMailTest)
 	router.POST(options.BaseURL+"/api/admin/webhook/test", wrapper.AdminWebhookTest)
 	router.PUT(options.BaseURL+"/api/admin/announcement", wrapper.AnnouncementSet)

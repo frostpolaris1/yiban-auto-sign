@@ -2125,7 +2125,11 @@ paths:
         provides the key, default when the roster registers a default, and
         unknown when the key is unset with no default. The file source is
         reserved for a configuration layer that reads files; the current
-        server never reports it.
+        server never reports it. The writable schedule keys
+        (schedule.edge_front_sec, schedule.edge_back_sec,
+        schedule.allow_time_pref) additionally read a settings-table
+        override row: when a valid row exists the item reports source=db
+        with the stored value, which wins over the environment.
       x-roles: [master, admin]
       responses:
         '200':
@@ -2136,6 +2140,47 @@ paths:
                 $ref: '#/components/schemas/SettingsReport'
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/schedule-settings:
+    put:
+      tags: [settings]
+      operationId: AdminScheduleSettingsSet
+      summary: Write runtime overrides for the schedule settings.
+      description: |
+        Master only. A partial patch of the three writable schedule keys:
+        a field absent from the body leaves that key untouched; an explicit
+        null deletes the stored override row so the key reads its
+        environment value again; a value upserts the override row. The edge
+        fields accept integers between 0 and 300 (seconds); allow_time_pref
+        accepts the true/false literals. An out-of-domain value, a wrong
+        JSON type or an unknown field answers 400 with zero writes and zero
+        audit rows. The write and one settings.schedule_writeback audit row
+        commit in one transaction; the audit detail holds only the changed
+        keys with their previous and new values. Edge changes take effect at
+        the next daily plan build (rows already built for today are not
+        rebuilt); allow_time_pref takes effect on the next request. The
+        answer is the full roster in the same shape as
+        GET /api/admin/settings.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminScheduleSettingsUpdate'
+      responses:
+        '200':
+          description: The full configuration roster after the write.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsReport'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/admin/mail/test:
     post:
@@ -3542,8 +3587,10 @@ components:
         env: the process environment provides the key. file: a file-backed
         configuration layer provides it (never reported by this server).
         default: unset, the roster registers a default. unknown: unset with
-        no registered default.
-      enum: [env, file, default, unknown]
+        no registered default. db: a settings-table override row provides
+        the key (writable schedule keys only; the database value wins over
+        the environment).
+      enum: [env, file, default, unknown, db]
     SettingItem:
       type: object
       description: One roster key with its resolved view.
@@ -3596,6 +3643,27 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SettingGroup'
+    AdminScheduleSettingsUpdate:
+      type: object
+      description: |
+        Partial patch of the writable schedule keys. Every field is
+        optional: absent leaves the key untouched, null deletes the
+        override row, a value upserts it. Unknown fields answer 400.
+      additionalProperties: false
+      properties:
+        edge_front_sec:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 300
+          description: Seconds trimmed from the front of the window.
+        edge_back_sec:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 300
+          description: Seconds trimmed from the back of the window.
+        allow_time_pref:
+          type: [boolean, "null"]
+          description: Master switch for user time preferences.
     MailTestResult:
       type: object
       required: [message]
