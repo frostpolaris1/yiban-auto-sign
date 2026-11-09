@@ -182,12 +182,14 @@ func (h *EngineHandler) Pause(c *gin.Context, _ oapi.AdminEnginePauseParams) {
 		fail(c, errs.New(errs.CodeForbidden, "master role is required"))
 		return
 	}
-	if !h.reauthenticate(c, user.ID, body.CurrentPassword) {
-		return
-	}
 	if h.pause == nil {
 		// 装配缺失是接线错误：失败关闭，不静默当成功。
+		// 置于口令复核之前（批 3a 复审 P3-1）：未接线部署不得白付
+		// 一次复核——成功复核还清零该用户的再认证节流计数。
 		fail(c, errs.New(errs.CodeInternal, "pause gate is not wired"))
+		return
+	}
+	if !h.reauthenticate(c, user.ID, body.CurrentPassword) {
 		return
 	}
 	if err := h.pause.SetEnginePaused(c.Request.Context(), scope,
