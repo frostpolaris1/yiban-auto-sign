@@ -261,10 +261,11 @@ type Deps struct {
 	// 装配必须显式决定，缺失不得读成「关闭」。
 	AutoApprove AutoApproveStore
 	// Schedule 是调度三键（sett2 写回）的覆盖行存取。
-	// 为 nil 时写回端点回 501：写面缺失必须显性。
+	// 为 nil 时写回用例失败关闭（CodeInternal→HTTP 500，见 SetSchedule 前置校验）；
+	// 501 只属于 handler 未注入端口的装配层缺失。写面缺失必须显性，不得静默读成关闭。
 	Schedule ScheduleStore
 	// Resolver 是覆盖链解析器（registry 域的单点持有者）。
-	// 为 nil 时写回端点回 501；名册覆盖读数用它装配（WithOverrides）。
+	// 为 nil 时同 Schedule：写回 500 失败关闭；名册覆盖读数用它装配（WithOverrides）。
 	Resolver *Resolver
 	// Mail 投递测试邮件。为 nil 表示 SMTP 关闭：
 	// 测试邮件端点回 409，**不**静默成功。

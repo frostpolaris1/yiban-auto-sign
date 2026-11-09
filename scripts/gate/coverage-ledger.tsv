@@ -119,6 +119,5 @@ server/internal/entry/http/oapi/oapi.gen.go	uncovered=生成物：由 scripts/ge
 ui/src/lib/api/schema.d.ts	uncovered=生成物：由 ui generate-api.mjs --check 钉住
 server/internal/adapters/config/registry.go	uncovered=Go 测试文件自身即门：RegistryEntry.Domain 解析由 TestEmbeddedRegistryLoads 与 registry parity 门钉住
 server/internal/assembly/assembly.go	uncovered=组合根：resolver 缺域即启动失败与消费点接线由 go build＋internal/assembly 包用例钉住；行为面归各消费包守卫
-cmd/server/w2c_e2e_test.go	uncovered=Go 测试文件自身即门（go test ./cmd/server 带真库 DSN），不需要 Python 侧覆盖
 server/contracts/README.md	uncovered=契约名册：端点行与角色表逐行对齐由 internal/entry/http/oapi 的 TestContractRoleTablesAgree 钉住
 server/contracts/.breaking-allowlist.tsv	uncovered=豁免名册：由 scripts/contract-gate.sh 的 oasdiff 实跑消费；突变自证（BREAKS_ALLOWLIST=/dev/null 转红）随批存证
