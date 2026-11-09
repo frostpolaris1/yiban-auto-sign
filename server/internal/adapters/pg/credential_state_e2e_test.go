@@ -119,6 +119,8 @@ func db1WorkerWith(t *testing.T, store appworker.Store, signer db1Signer) *appwo
 		Limiter:  db1Limiter{},
 		Clock:    coreclock.Fixed{T: db1At()},
 		Location: time.UTC,
+		// 3a 起暂停门必填：本 e2e 走「从不暂停」恒假门（零断言变化）。
+		Paused: func(context.Context) (bool, error) { return false, nil },
 	})
 	if err != nil {
 		t.Fatalf("new worker service: %v", err)

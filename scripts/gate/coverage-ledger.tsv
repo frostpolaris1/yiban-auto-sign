@@ -145,3 +145,6 @@ server/cmd/server/engine_pause_e2e_test.go	uncovered=Go 测试文件自身即门
 server/cmd/server/loop_e2e_test.go	uncovered=Go 测试文件自身即门（go test ./cmd/server 真跑），不需要 Python 侧覆盖
 server/cmd/server/p12_wait_target_e2e_test.go	uncovered=Go 测试文件自身即门（go test ./cmd/server 真跑），不需要 Python 侧覆盖
 server/cmd/server/w2c_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：YIBAN_TEST_DATABASE_URL 下 go test ./cmd/server 跑 W2C verify e2e），不需要 Python 侧覆盖
+server/canonical.tsv	uncovered=人工对账门：go test ./tools/gate 钉住哈希（TestCanonicalRuleRowsPinned）＋verify 双跑（±-tests）
+server/tools/gate/anchors_test.go	uncovered=Go 包门 go test ./tools/gate 自证（哈希即本文件常量）
+server/internal/adapters/pg/credential_state_e2e_test.go	uncovered=Go 测试文件自身即门（真库 e2e；本批仅补恒假 Paused 注入，零断言变化）

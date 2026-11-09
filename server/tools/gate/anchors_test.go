@@ -152,7 +152,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// status.literal allow 增列 cmd/server/ykxf_e2e_test.go 与
 	// internal/app/account/auto_approve_test.go（账号状态词 pending/active
 	// 来自 core/account，测试断言按该词表书写）。
-	const want = "c684bca884306e4701bf9d2526fd26ab8713a9fb5ea67cc9f6ecb8b8adde0436"
+	// 3a：env.get allow 增列 cmd/server/engine_pause_e2e_test.go
+	// （全局暂停真库 e2e 沿用 loop/p12_wait_target 的 os.Getenv 读测试 DSN 口径）。
+	const want = "0faa8a6a0519a28b685d5f7f584c96a4a56eea903efbd0494eab0473f62dd075"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}
