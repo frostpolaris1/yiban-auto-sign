@@ -310,24 +310,24 @@ func TestCustomStatusJudge(t *testing.T) {
 // 端口根本没有被调用。
 func TestCustomRejectsUnsafeURLBeforeDial(t *testing.T) {
 	cases := []string{
-		"http://public.example.test/hook",  // 非 https
-		"https://2130706433/hook",          // 十进制整数
-		"https://0x7f000001/hook",          // 0x 十六进制
-		"https://0177.0.0.1/hook",          // 前导零八进制
-		"https://127.1/hook",               // 短式回环
-		"https://localhost/hook",           // localhost
-		"https://localhost./hook",          // 尾点归一后同名
+		"http://public.example.test/hook",        // 非 https
+		"https://2130706433/hook",                // 十进制整数
+		"https://0x7f000001/hook",                // 0x 十六进制
+		"https://0177.0.0.1/hook",                // 前导零八进制
+		"https://127.1/hook",                     // 短式回环
+		"https://localhost/hook",                 // localhost
+		"https://localhost./hook",                // 尾点归一后同名
 		"https://127.0.0.1:443\\@evil.test/hook", // 反斜杠
-		"https://evil.test@127.0.0.1/hook", // userinfo 掩护下的回环
-		"https://169.254.169.254/latest",   // 链路本地（云元数据）
-		"https://100.100.100.200/meta",     // CGNAT 段（阿里云元数据）
-		"https://100.64.0.1/hook",          // CGNAT 段内地址
-		"https://10.0.0.1/hook",            // 私网
-		"https://192.168.1.1/hook",         // 私网
-		"https://172.16.0.1/hook",          // 私网
-		"https://[::1]/hook",               // v6 回环
-		"https://[::ffff:127.0.0.1]/hook",  // v4-mapped 回环
-		"https://240.0.0.1/hook",           // 保留段
+		"https://evil.test@127.0.0.1/hook",       // userinfo 掩护下的回环
+		"https://169.254.169.254/latest",         // 链路本地（云元数据）
+		"https://100.100.100.200/meta",           // CGNAT 段（阿里云元数据）
+		"https://100.64.0.1/hook",                // CGNAT 段内地址
+		"https://10.0.0.1/hook",                  // 私网
+		"https://192.168.1.1/hook",               // 私网
+		"https://172.16.0.1/hook",                // 私网
+		"https://[::1]/hook",                     // v6 回环
+		"https://[::ffff:127.0.0.1]/hook",        // v4-mapped 回环
+		"https://240.0.0.1/hook",                 // 保留段
 	}
 	for _, raw := range cases {
 		t.Run(raw, func(t *testing.T) {

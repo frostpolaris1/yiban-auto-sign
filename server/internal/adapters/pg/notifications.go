@@ -396,7 +396,7 @@ func (r *NotificationDeliveryRepo) MarkSkipped(ctx context.Context, id, reason s
 //
 // webhook 当日额度的单源就是账本本身：只有 sent 行占用额度，
 // failed/skipped 不计数、无需退还。时间口径用 updated_at
-//（MarkSent 写入的真发成功时刻），不是 created_at（入队时刻）：
+// （MarkSent 写入的真发成功时刻），不是 created_at（入队时刻）：
 // 跨日重试成功的行归它真发的那一天。
 func (r *NotificationDeliveryRepo) CountSentOnDay(ctx context.Context,
 	channel corenotify.Channel, from, to time.Time) (int, error) {

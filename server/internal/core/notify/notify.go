@@ -99,18 +99,18 @@ type Pref struct {
 // webhook 列默认只开 review_pending 与 credential_invalid：
 // 手机推送留给需要人立刻处理的告警，日额度有限，日常报表类不挤占。
 var defaults = map[Pair]bool{
-	{Category: CategoryReviewPending, Channel: ChannelInApp}:     true,
-	{Category: CategoryReviewPending, Channel: ChannelEmail}:     true,
-	{Category: CategoryReviewPending, Channel: ChannelWebhook}:   true,
-	{Category: CategoryCredentialInvalid, Channel: ChannelInApp}: true,
-	{Category: CategoryCredentialInvalid, Channel: ChannelEmail}: false,
+	{Category: CategoryReviewPending, Channel: ChannelInApp}:       true,
+	{Category: CategoryReviewPending, Channel: ChannelEmail}:       true,
+	{Category: CategoryReviewPending, Channel: ChannelWebhook}:     true,
+	{Category: CategoryCredentialInvalid, Channel: ChannelInApp}:   true,
+	{Category: CategoryCredentialInvalid, Channel: ChannelEmail}:   false,
 	{Category: CategoryCredentialInvalid, Channel: ChannelWebhook}: true,
-	{Category: CategorySignFailedDaily, Channel: ChannelInApp}:   false,
-	{Category: CategorySignFailedDaily, Channel: ChannelEmail}:   true,
-	{Category: CategorySignFailedDaily, Channel: ChannelWebhook}: false,
-	{Category: CategoryCapacityRejected, Channel: ChannelInApp}:  true,
-	{Category: CategoryCapacityRejected, Channel: ChannelEmail}:  false,
-	{Category: CategoryCapacityRejected, Channel: ChannelWebhook}: false,
+	{Category: CategorySignFailedDaily, Channel: ChannelInApp}:     false,
+	{Category: CategorySignFailedDaily, Channel: ChannelEmail}:     true,
+	{Category: CategorySignFailedDaily, Channel: ChannelWebhook}:   false,
+	{Category: CategoryCapacityRejected, Channel: ChannelInApp}:    true,
+	{Category: CategoryCapacityRejected, Channel: ChannelEmail}:    false,
+	{Category: CategoryCapacityRejected, Channel: ChannelWebhook}:  false,
 }
 
 // Default 返回一对的默认状态。未知对返回 false（零值）；

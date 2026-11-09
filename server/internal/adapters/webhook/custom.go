@@ -1,5 +1,5 @@
 // 自定义 webhook 出口：POST {SECRET}（URL 本身即凭据），JSON {title, content}
-//（保持旧线兼容格式）。成功判据是 2xx 且响应体里顶层带数值 code/errcode 的
+// （保持旧线兼容格式）。成功判据是 2xx 且响应体里顶层带数值 code/errcode 的
 // JSON 对象没有声明非 0（钉钉族「200 + 错误 body」判据，移植旧线）；
 // 非 2xx：5xx/连接/超时按可重试分类，4xx 与 3xx 按 refused。
 package webhook
@@ -21,7 +21,7 @@ import (
 //
 // 发送前跑两段 SSRF 复核：静态白名单（isSafeURL）+ 域名解析逐 IP 复核
 // （fail-closed）。复核通过后用 DialContext 直连**已复核 IP**
-//（不再二次解析，闭合 DNS rebinding 的 TOCTOU；TLS SNI 仍走原 host，
+// （不再二次解析，闭合 DNS rebinding 的 TOCTOU；TLS SNI 仍走原 host，
 // 证书校验不变）。
 func (s *Sender) sendCustom(ctx context.Context, push corewebhook.Push) error {
 	ips, safe := s.resolveCustom(ctx)

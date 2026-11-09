@@ -106,7 +106,7 @@ func New(cfg Config) (*Sender, error) {
 
 // noRedirect 把客户端包成「不跟随重定向」的形态。两条出口都不跟随：
 // 跳转目标从未经过白名单（custom），或跳转后的回执不再是本出口协议
-//（serverchan）。对测试注入的 Client 同样生效——「不跟随」是出口行为，
+// （serverchan）。对测试注入的 Client 同样生效——「不跟随」是出口行为，
 // 不随注入面漂移。浅拷贝足够：Client 的字段都是值语义。
 func noRedirect(c *http.Client) *http.Client {
 	clone := *c
