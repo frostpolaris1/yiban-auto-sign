@@ -254,3 +254,72 @@ func TestScheduleSettingsPutIsMasterOnly(t *testing.T) {
 		t.Fatalf("被拒角色触达存储或审计")
 	}
 }
+
+// ===== 批 3b：四枚 DB-only 键的传输映射与成对校验 =====
+
+// 新字段 PUT 往返：周末门布尔与窗口分钟对落行；null 删行回缺行语义。
+func TestScheduleSettingsPutWeekendAndWindowFields(t *testing.T) {
+	f := newScheduleSettingsFixture(t)
+	ctx := context.Background()
+
+	// 周末门布尔：true 落行。
+	if rec := f.putScheduleSettings(t, `{"sunday_sign":true,"saturday_sign":true}`, coreauth.RoleMaster); rec.Code != http.StatusOK {
+		t.Fatalf("weekend put = %d: %s", rec.Code, rec.Body.String())
+	}
+	if f.store.boolRows[appsettings.KeyScheduleSundaySign] != "true" ||
+		f.store.boolRows[appsettings.KeyScheduleSaturdaySign] != "true" {
+		t.Fatalf("weekend rows = %v", f.store.boolRows)
+	}
+
+	// 窗口分钟对：成对写入 480/540。
+	if rec := f.putScheduleSettings(t, `{"default_sign_start_min":480,"default_sign_end_min":540}`, coreauth.RoleMaster); rec.Code != http.StatusOK {
+		t.Fatalf("window put = %d: %s", rec.Code, rec.Body.String())
+	}
+	if f.store.intRows[appsettings.KeyScheduleDefaultSignStartMin] != "480" ||
+		f.store.intRows[appsettings.KeyScheduleDefaultSignEndMin] != "540" {
+		t.Fatalf("window rows = %v", f.store.intRows)
+	}
+
+	// 显式 null 删行：删后 BoolOverride 缺行=false（周末门缺行语义）。
+	if rec := f.putScheduleSettings(t, `{"sunday_sign":null}`, coreauth.RoleMaster); rec.Code != http.StatusOK {
+		t.Fatalf("null put = %d: %s", rec.Code, rec.Body.String())
+	}
+	if value, found, err := f.store.BoolOverride(ctx, appsettings.KeyScheduleSundaySign); err != nil || found || value {
+		t.Fatalf("after null BoolOverride = (%v, %v, %v), want missing = false", value, found, err)
+	}
+}
+
+// 新字段负例：类型错、越域、单侧组合违规都 400 且零写入零审计；
+// 成对合法写入 200。
+func TestScheduleSettingsPutRejectsWeekendAndWindowBodies(t *testing.T) {
+	for _, body := range []string{
+		`{"sunday_sign":1}`,
+		`{"sunday_sign":"true"}`,
+		`{"default_sign_start_min":1440,"default_sign_end_min":1500}`,
+		`{"default_sign_start_min":-1,"default_sign_end_min":500}`,
+		`{"default_sign_start_min":"60"}`,
+		`{"default_sign_start_min":600}`,
+		`{"default_sign_end_min":300}`,
+	} {
+		f := newScheduleSettingsFixture(t)
+		rec := f.putScheduleSettings(t, body, coreauth.RoleMaster)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, want 400: %s", body, rec.Code, rec.Body.String())
+		}
+		if f.store.intWrites != 0 || f.store.boolWrites != 0 || f.store.clears != 0 {
+			t.Fatalf("body %s 写了存储: %v %v %v", body, f.store.intRows, f.store.boolRows, f.store.clears)
+		}
+		if len(f.audits.entries) != 0 {
+			t.Fatalf("body %s 写了审计: %d rows", body, len(f.audits.entries))
+		}
+	}
+	// 成对合法：200 且两行落库。
+	f := newScheduleSettingsFixture(t)
+	if rec := f.putScheduleSettings(t, `{"default_sign_start_min":600,"default_sign_end_min":650}`, coreauth.RoleMaster); rec.Code != http.StatusOK {
+		t.Fatalf("valid pair status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if f.store.intRows[appsettings.KeyScheduleDefaultSignStartMin] != "600" ||
+		f.store.intRows[appsettings.KeyScheduleDefaultSignEndMin] != "650" {
+		t.Fatalf("pair rows = %v", f.store.intRows)
+	}
+}
