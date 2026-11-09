@@ -31,7 +31,9 @@ type lookupIP func(ctx context.Context, host string) ([]net.IPAddr, error)
 
 // isSafeURL 是自定义地址的静态白名单：https + 非回环/内网/链路本地/
 // 未指定/CGNAT/组播/保留段 + 拒 IPv4 字面量变体与反斜杠。
-// 域名目标放行到静态层，但发送前必须再过 isSafeURLResolved。
+// 域名目标放行到静态层，但发送前必须再过 custom.go 的 resolveCustom
+// 解析复核（逐 IP 判不可路由段，fail-closed；解析与连接间的 DNS
+// rebinding TOCTOU 由 DialContext 直连已复核 IP 闭合）。
 func isSafeURL(raw string) bool {
 	if strings.Contains(raw, "\\") {
 		return false
@@ -53,42 +55,6 @@ func isSafeURL(raw string) bool {
 	// 非 net.ParseIP 可解析的 host：若形如 IPv4 字面量变体则拒；
 	// 只有真域名（含点号且非全数字组件）放行到解析复核。
 	return !isIPv4LiteralLike(host)
-}
-
-// isSafeURLResolved 是发送期复核：静态白名单 + 域名解析后逐 IP 复核。
-// 静态白名单对域名一律放行，而「DNS 解析到 169.254.169.254 的域名」
-// 只能靠解析复核拦下；解析失败同样拒（fail-closed）。
-// 解析与连接之间的 DNS rebinding TOCTOU 由调用方用 DialContext
-// 直连已复核 IP 闭合（见 custom.go 的 verifiedDialer）。
-func isSafeURLResolved(ctx context.Context, raw string, lookup lookupIP) bool {
-	if !isSafeURL(raw) {
-		return false
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return false
-	}
-	host := normalizeHost(parsed.Hostname())
-	if host == "" {
-		return false
-	}
-	if net.ParseIP(host) != nil {
-		return true // 字面量：静态层已判过，无需解析
-	}
-	if lookup == nil {
-		lookup = defaultLookup
-	}
-	ips, err := lookup(ctx, host)
-	if err != nil || len(ips) == 0 {
-		return false
-	}
-	for _, addr := range ips {
-		// 剥离 v6 zone（%eth0）：zone 只出现在链路本地地址，剥出裸 IP 再判。
-		if isNonroutableTarget(addr.IP) {
-			return false
-		}
-	}
-	return true
 }
 
 // defaultLookup 是生产解析器。
@@ -194,7 +160,7 @@ func isAllDigits(s string) bool {
 // isAllHex 报告 s 是否全为十六进制数字。
 func isAllHex(s string) bool {
 	for _, r := range s {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
 			return false
 		}
 	}
