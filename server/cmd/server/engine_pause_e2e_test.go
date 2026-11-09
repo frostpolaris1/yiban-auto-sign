@@ -106,7 +106,7 @@ func TestEnginePauseGatesConsumptionEndToEnd(t *testing.T) {
 	if err := db.InTx(ctx, func(ctx context.Context) error {
 		var txErr error
 		acct, txErr = accts.Create(ctx, coreaccount.New{
-			SchoolID: school.ID, OwnerUserID: owner.ID, Phone: "13800070002",
+			SchoolID: school.ID, OwnerUserID: owner.ID, Phone: "13800070001",
 		}, 10000)
 		return txErr
 	}); err != nil {
