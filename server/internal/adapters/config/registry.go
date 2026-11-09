@@ -45,6 +45,9 @@ type RegistryEntry struct {
 	Sensitive  bool
 	Default    any
 	HasDefault bool
+	// Domain 是数值键的合法域 [min,max]（名册 domain 字段的数值二元组）；
+	// 布尔与字符串键为 nil。sett2 写回面的域校验从这里注入。
+	Domain []float64
 }
 
 // RegistryJSON 返回嵌入名册的原文副本。
@@ -83,6 +86,7 @@ func ParseRegistry(raw []byte) ([]RegistryEntry, error) {
 			Scope     string          `json:"scope"`
 			Sensitive bool            `json:"sensitive"`
 			Default   json.RawMessage `json:"default"`
+			Domain    json.RawMessage `json:"domain"`
 		}
 		if err := json.Unmarshal(document[key], &item); err != nil {
 			return nil, fmt.Errorf("config: registry key %s: %w", key, err)
@@ -100,6 +104,25 @@ func ParseRegistry(raw []byte) ([]RegistryEntry, error) {
 		entry := RegistryEntry{Key: key, Type: item.Type, Scope: scope, Sensitive: item.Sensitive}
 		if len(item.Group) > 0 {
 			entry.Group = item.Group[0]
+		}
+		if len(item.Domain) > 0 {
+			// domain 有两种形状：数值二元组 [min,max]（int/float 键）
+			// 与字符串闭集（enum 键，如 YIBAN_ENV）。写回面只消费
+			// 数值域；枚举域由各自的读取代码持有，这里不展开。
+			var domain []any
+			if err := json.Unmarshal(item.Domain, &domain); err != nil {
+				return nil, fmt.Errorf("config: registry key %s domain: %w", key, err)
+			}
+			if len(domain) == 2 {
+				min, minOK := domain[0].(float64)
+				max, maxOK := domain[1].(float64)
+				if minOK && maxOK {
+					if min > max {
+						return nil, fmt.Errorf("config: registry key %s domain must be [min,max]", key)
+					}
+					entry.Domain = []float64{min, max}
+				}
+			}
 		}
 		if len(item.Default) > 0 && string(item.Default) != "null" {
 			var value any

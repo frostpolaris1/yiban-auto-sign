@@ -331,7 +331,9 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		t.Fatalf("new calendar service: %v", err)
 	}
 	prefSvc, err := apptimepref.NewService(apptimepref.Deps{
-		Store: e.prefs, Clock: clk, Allow: true, Cooldown: 30 * time.Second,
+		Store: e.prefs, Clock: clk,
+		// sett2：Allow 改为每请求解析；e2e 不接覆盖层，恒返 env 值（true）。
+		Allow: func(context.Context) (bool, error) { return true, nil }, Cooldown: 30 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("new time preference service: %v", err)

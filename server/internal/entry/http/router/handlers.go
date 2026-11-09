@@ -677,6 +677,15 @@ func (s *server) AdminSettings(c *gin.Context) {
 	s.system.AdminSettings(c)
 }
 
+// AdminScheduleSettingsSet 委托调度设置写回。未装配时仍是 501。
+func (s *server) AdminScheduleSettingsSet(c *gin.Context, params oapi.AdminScheduleSettingsSetParams) {
+	if s.system == nil {
+		notImplemented(c)
+		return
+	}
+	s.system.AdminScheduleSettingsSet(c, params)
+}
+
 // AdminAutoApprove 委托自动审批开关读取。未装配时仍是 501。
 func (s *server) AdminAutoApprove(c *gin.Context) {
 	if s.system == nil {

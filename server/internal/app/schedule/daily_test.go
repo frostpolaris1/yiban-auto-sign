@@ -30,6 +30,8 @@ type fakePlanner struct {
 	lastTask string
 	// done 非 nil 时每次 Build 投递一个信号；用于等待后台补建。
 	done chan struct{}
+	// lastInput 记录最近一次 Build 的参数（sett2 覆盖链断言用）。
+	lastInput appschedule.Input
 }
 
 func (f *fakePlanner) Build(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
@@ -41,6 +43,7 @@ func (f *fakePlanner) Build(_ context.Context, in appschedule.Input) (appschedul
 		}
 	}
 	f.lastDay, f.lastTask = in.Day, in.SchoolTaskID
+	f.lastInput = in
 	if in.SchoolTaskID == f.failID {
 		return appschedule.Preview{}, errors.New("discover failed")
 	}
@@ -146,5 +149,62 @@ func TestDailyCronStopWithoutStart(t *testing.T) {
 func TestNewDailyCronRequiresBuilder(t *testing.T) {
 	if _, err := appschedule.NewDailyCron(nil, nil); err == nil {
 		t.Fatal("nil builder 必须失败")
+	}
+}
+
+// sett2 覆盖链：构建时取 DB 解析值建当日计划；解析失败则本轮构建失败。
+func TestBuildTodayUsesResolvedOverrides(t *testing.T) {
+	planner := &fakePlanner{}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	b.Params.UsePrefs = false
+	b.Params.EdgeFront, b.Params.EdgeBack = 60*time.Second, 60*time.Second
+	b.Overrides = func(context.Context) (appschedule.BuildOverrides, error) {
+		return appschedule.BuildOverrides{
+			UsePrefs: true, EdgeFront: 120 * time.Second, EdgeBack: 30 * time.Second,
+		}, nil
+	}
+	if _, err := b.BuildToday(context.Background()); err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	in := planner.lastInput
+	if !in.UsePrefs || in.EdgeFront != 120*time.Second || in.EdgeBack != 30*time.Second {
+		t.Fatalf("input = usePrefs %v front %v back %v, want db resolved values", in.UsePrefs, in.EdgeFront, in.EdgeBack)
+	}
+}
+
+// 未接写回层（Overrides 为 nil）时构建用 Params 原值：行为与基线一致。
+func TestBuildTodayWithoutOverridesKeepsParams(t *testing.T) {
+	planner := &fakePlanner{}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	b.Params.UsePrefs = true
+	b.Params.EdgeFront, b.Params.EdgeBack = 45*time.Second, 15*time.Second
+	if _, err := b.BuildToday(context.Background()); err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	in := planner.lastInput
+	if !in.UsePrefs || in.EdgeFront != 45*time.Second || in.EdgeBack != 15*time.Second {
+		t.Fatalf("input = usePrefs %v front %v back %v, want params values", in.UsePrefs, in.EdgeFront, in.EdgeBack)
+	}
+}
+
+// 解析失败（存储故障）时本轮构建失败：错值建计划比不建更糟。
+func TestBuildTodayOverridesFailureFailsBuild(t *testing.T) {
+	planner := &fakePlanner{}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	b.Overrides = func(context.Context) (appschedule.BuildOverrides, error) {
+		return appschedule.BuildOverrides{}, errors.New("db down")
+	}
+	built, err := b.BuildToday(context.Background())
+	if err == nil || built != 0 {
+		t.Fatalf("BuildToday = (%d, %v), want 0 builds with error", built, err)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("Build calls = %d, want 0", planner.calls)
 	}
 }

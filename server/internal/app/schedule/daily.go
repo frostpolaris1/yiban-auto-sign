@@ -54,6 +54,18 @@ type BuildParams struct {
 	EdgeBack      time.Duration
 }
 
+// BuildOverrides 是一次构建解析出的可写回键读数（sett2）。
+type BuildOverrides struct {
+	UsePrefs  bool
+	EdgeFront time.Duration
+	EdgeBack  time.Duration
+}
+
+// Overrides 解析构建参数里的可写回键（settings 写回，DB>env）。
+// nil 表示装配未接写回层：BuildToday 用 Params 原值，行为与既有完全一致。
+// 返回错误时本次构建失败：构建值错了比不建更糟，下一轮定时重试。
+type Overrides func(ctx context.Context) (BuildOverrides, error)
+
 // DailyPlanner 是日切构建需要的计划面（*Service 实现）。
 type DailyPlanner interface {
 	Build(ctx context.Context, in Input) (Preview, error)
@@ -66,6 +78,10 @@ type DailyBuilder struct {
 	Clock    coreclock.Clock
 	Location *time.Location
 	Params   BuildParams
+	// Overrides 每次构建重读可写回键（settings 写回，批 sett2）。
+	// nil 时用 Params 原值。口径：**当日已铺行不回改**——
+	// 改值自下一次构建（次日凌晨 00:10）生效。
+	Overrides Overrides
 }
 
 // BuildToday 构建当日全部启用任务的计划。
@@ -78,6 +94,14 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 	tasks, err := b.Tasks.EnabledTasks(ctx)
 	if err != nil {
 		return 0, err
+	}
+	usePrefs, edgeFront, edgeBack := b.Params.UsePrefs, b.Params.EdgeFront, b.Params.EdgeBack
+	if b.Overrides != nil {
+		overrides, err := b.Overrides(ctx)
+		if err != nil {
+			return 0, err
+		}
+		usePrefs, edgeFront, edgeBack = overrides.UsePrefs, overrides.EdgeFront, overrides.EdgeBack
 	}
 	built := 0
 	var firstErr error
@@ -96,9 +120,9 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 			Util:          b.Params.Util,
 			SlotsPerSlice: b.Params.SlotsPerSlice,
 			Front:         b.Params.Front,
-			UsePrefs:      b.Params.UsePrefs,
-			EdgeFront:     b.Params.EdgeFront,
-			EdgeBack:      b.Params.EdgeBack,
+			UsePrefs:      usePrefs,
+			EdgeFront:     edgeFront,
+			EdgeBack:      edgeBack,
 		})
 		if err != nil {
 			if firstErr == nil {

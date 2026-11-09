@@ -82,6 +82,15 @@ type Authorizer interface {
 	Authorize(ctx context.Context, user coreauth.User) (corescope.Scope, appaudit.Actor, error)
 }
 
+// ScheduleOverrides 是可写回部署键的每请求解析端口（settings 写回，批 sett2）。
+// nil 时全部回 Config 静态值：装配未接写回层时行为与既有完全一致。
+type ScheduleOverrides interface {
+	// UsePrefs 解析自选偏好总开关（schedule.allow_time_pref，DB 覆盖 env）。
+	UsePrefs(ctx context.Context) (bool, error)
+	// Edges 解析窗口两端裁剪秒（schedule.edge_front_sec / edge_back_sec）。
+	Edges(ctx context.Context) (front, back time.Duration, err error)
+}
+
 // Config 是计划参数的装配值。Clock 为空时用系统墙钟。
 // SlotsPerSlice 由调用方按"一个 5 分钟片的原始吞吐"算好，
 // 与容量公式同源（capacity.Capacity(SlotSpan, ..., util=1)）。
@@ -97,6 +106,8 @@ type Config struct {
 	UsePrefs      bool
 	EdgeFront     time.Duration
 	EdgeBack      time.Duration
+	// Overrides 每请求解析可写回键（sett2）。nil 时用静态值。
+	Overrides ScheduleOverrides
 	// Logger 为空时用 slog.Default；用户自选读面的降级路径要留痕。
 	Logger *slog.Logger
 }
@@ -167,7 +178,11 @@ func (h *Handler) Preview(c *gin.Context, params oapi.SchedulePreviewParams) {
 	if !ok {
 		return
 	}
-	in := h.input(params.Day, string(params.SchoolId), string(params.TaskId))
+	in, err := h.input(c.Request.Context(), params.Day, string(params.SchoolId), string(params.TaskId))
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	p, err := h.planner.Preview(c.Request.Context(), in)
 	if err != nil {
 		fail(c, err)
@@ -198,7 +213,11 @@ func (h *Handler) Plan(c *gin.Context, _ oapi.SchedulePlanParams) {
 		fail(c, errs.New(errs.CodeValidation, "plan day must be the current business day"))
 		return
 	}
-	in := h.input(body.Day, body.SchoolId, body.TaskId)
+	in, err := h.input(c.Request.Context(), body.Day, body.SchoolId, body.TaskId)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	p, err := h.planner.Build(c.Request.Context(), in)
 	if err != nil {
 		fail(c, err)
@@ -218,7 +237,11 @@ func (h *Handler) Override(c *gin.Context, _ oapi.ScheduleOverrideParams) {
 	if !ok {
 		return
 	}
-	in := h.input(body.Day, body.SchoolId, body.TaskId)
+	in, err := h.input(c.Request.Context(), body.Day, body.SchoolId, body.TaskId)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	p, err := h.planner.Override(c.Request.Context(), scope, in,
 		body.Start, body.End, body.Reason, user.ID)
 	if err != nil {
@@ -246,7 +269,11 @@ func (h *Handler) CapacityReport(c *gin.Context, params oapi.CapacityGetParams) 
 	if day == "" {
 		day = h.today()
 	}
-	in := h.input(day, string(params.SchoolId), string(params.TaskId))
+	in, err := h.input(c.Request.Context(), day, string(params.SchoolId), string(params.TaskId))
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	in.Refresh = refreshFlag(params.Refresh)
 	p, err := h.planner.Report(c.Request.Context(), in)
 	if err != nil {
@@ -351,7 +378,12 @@ func (h *Handler) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams)
 	if params.Day != nil && *params.Day != "" {
 		day = *params.Day
 	}
-	window, err := h.planner.Report(c.Request.Context(), h.input(day, schoolID, taskID))
+	in, err := h.input(c.Request.Context(), day, schoolID, taskID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	window, err := h.planner.Report(c.Request.Context(), in)
 	if err != nil {
 		fail(c, err)
 		return
@@ -516,7 +548,12 @@ func (h *Handler) timePrefResponse(c *gin.Context, view apptimepref.View, userID
 	if !self.HasTask {
 		return out, self, nil
 	}
-	window, err := h.planner.CachedWindow(c.Request.Context(), h.input(h.today(), self.SchoolID, self.TaskID))
+	usePrefs, edgeFront, edgeBack, err := h.resolveOverrides(c.Request.Context())
+	if err != nil {
+		return out, self, err
+	}
+	window, err := h.planner.CachedWindow(c.Request.Context(),
+		h.inputWith(usePrefs, edgeFront, edgeBack, h.today(), self.SchoolID, self.TaskID))
 	if err != nil {
 		return out, self, err
 	}
@@ -528,7 +565,7 @@ func (h *Handler) timePrefResponse(c *gin.Context, view apptimepref.View, userID
 		Start: window.Start.In(h.cfg.Location).Format("15:04"),
 		End:   window.End.In(h.cfg.Location).Format("15:04"),
 	}
-	slots := h.crowdedSlots(window.Start, window.End, counts, view.Allowed)
+	slots := h.crowdedSlots(window.Start, window.End, counts, view.Allowed, edgeFront, edgeBack)
 	out.Slots = &slots
 	return out, self, nil
 }
@@ -537,7 +574,8 @@ func (h *Handler) timePrefResponse(c *gin.Context, view apptimepref.View, userID
 // 与 admin time-prefs/stats 的 count/cap 同源。
 // 用户面不限两小时：按计划实际片数，长窗口后段同样可见。
 // disabled 只随部署开关；edge_note 只在首/尾片且部署保留边距时出现。
-func (h *Handler) crowdedSlots(start, end time.Time, counts map[int]int, allowed bool) []oapi.TimePrefSlot {
+func (h *Handler) crowdedSlots(start, end time.Time, counts map[int]int, allowed bool,
+	edgeFront, edgeBack time.Duration) []oapi.TimePrefSlot {
 	frames := h.slotFrames(start, end, counts, 0)
 	slots := make([]oapi.TimePrefSlot, len(frames))
 	for i, frame := range frames {
@@ -556,10 +594,10 @@ func (h *Handler) crowdedSlots(start, end time.Time, counts map[int]int, allowed
 			continue
 		}
 		switch {
-		case i == 0 && h.cfg.EdgeFront > 0:
-			slot.EdgeNote = "开头 " + durationMinutes(h.cfg.EdgeFront) + " 分钟保留"
-		case i == len(frames)-1 && i != 0 && h.cfg.EdgeBack > 0:
-			slot.EdgeNote = "结尾 " + durationMinutes(h.cfg.EdgeBack) + " 分钟保留"
+		case i == 0 && edgeFront > 0:
+			slot.EdgeNote = "开头 " + durationMinutes(edgeFront) + " 分钟保留"
+		case i == len(frames)-1 && i != 0 && edgeBack > 0:
+			slot.EdgeNote = "结尾 " + durationMinutes(edgeBack) + " 分钟保留"
 		}
 		slots[i] = slot
 	}
@@ -617,8 +655,34 @@ func refreshFlag(v *bool) bool {
 	return v != nil && *v
 }
 
+// resolveOverrides 是一次请求解析后的可写回参数。
+// 未接写回层时返回 Config 静态值；解析失败原样上抛（故障不是配置状态）。
+func (h *Handler) resolveOverrides(ctx context.Context) (usePrefs bool, front, back time.Duration, err error) {
+	usePrefs, front, back = h.cfg.UsePrefs, h.cfg.EdgeFront, h.cfg.EdgeBack
+	if h.cfg.Overrides == nil {
+		return usePrefs, front, back, nil
+	}
+	if usePrefs, err = h.cfg.Overrides.UsePrefs(ctx); err != nil {
+		return false, 0, 0, err
+	}
+	if front, back, err = h.cfg.Overrides.Edges(ctx); err != nil {
+		return false, 0, 0, err
+	}
+	return usePrefs, front, back, nil
+}
+
 // input 组装计划输入。day 为空由调用方决定是否补今天。
-func (h *Handler) input(day, schoolID, taskID string) appschedule.Input {
+// 可写回键每请求解析：DB 覆盖 env（sett2）。
+func (h *Handler) input(ctx context.Context, day, schoolID, taskID string) (appschedule.Input, error) {
+	usePrefs, front, back, err := h.resolveOverrides(ctx)
+	if err != nil {
+		return appschedule.Input{}, err
+	}
+	return h.inputWith(usePrefs, front, back, day, schoolID, taskID), nil
+}
+
+// inputWith 用已解析的覆盖值组装计划输入。
+func (h *Handler) inputWith(usePrefs bool, front, back time.Duration, day, schoolID, taskID string) appschedule.Input {
 	return appschedule.Input{
 		SchoolID:      schoolID,
 		SchoolTaskID:  taskID,
@@ -630,9 +694,9 @@ func (h *Handler) input(day, schoolID, taskID string) appschedule.Input {
 		Util:          h.cfg.Util,
 		SlotsPerSlice: h.cfg.SlotsPerSlice,
 		Front:         h.cfg.Front,
-		UsePrefs:      h.cfg.UsePrefs,
-		EdgeFront:     h.cfg.EdgeFront,
-		EdgeBack:      h.cfg.EdgeBack,
+		UsePrefs:      usePrefs,
+		EdgeFront:     front,
+		EdgeBack:      back,
 	}
 }
 
