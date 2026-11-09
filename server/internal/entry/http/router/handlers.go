@@ -704,6 +704,15 @@ func (s *server) AdminMailTest(c *gin.Context, params oapi.AdminMailTestParams) 
 	s.system.AdminMailTest(c, params)
 }
 
+// AdminWebhookTest 委托测试推送端点。未装配时仍是 501。
+func (s *server) AdminWebhookTest(c *gin.Context, params oapi.AdminWebhookTestParams) {
+	if s.system == nil {
+		notImplemented(c)
+		return
+	}
+	s.system.AdminWebhookTest(c, params)
+}
+
 // AnnouncementGet 委托公告读取。未装配时仍是 501。
 func (s *server) AnnouncementGet(c *gin.Context) {
 	if s.system == nil {

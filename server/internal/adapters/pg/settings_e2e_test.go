@@ -58,8 +58,8 @@ func TestNotificationPrefsServiceE2E(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	got := notifyPrefs(page)
-	if len(got) != 8 {
-		t.Fatalf("defaults = %d pairs, want 8", len(got))
+	if len(got) != 12 {
+		t.Fatalf("defaults = %d pairs, want 12", len(got))
 	}
 	if !got[corenotify.Pair{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}] {
 		t.Fatal("review_pending/email must default to true")

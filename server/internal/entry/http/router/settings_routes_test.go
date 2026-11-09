@@ -83,6 +83,11 @@ type stubMailTest struct{}
 
 func (stubMailTest) SendTestMail(context.Context, auth.User) error { return nil }
 
+// stubWebhookTest 是测试推送用例的内存替身。
+type stubWebhookTest struct{}
+
+func (stubWebhookTest) SendTestWebhook(context.Context, auth.User) error { return nil }
+
 // stubAutoApprove 是自动审批开关的内存替身。
 type stubAutoApprove struct{ enabled bool }
 
@@ -100,7 +105,8 @@ func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 	return newSettingsEngineWith(t,
 		notifyhttp.NewHandler(stubNotify{}).WithInbox(stubInbox{}),
 		systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}).
-			WithAutoApprove(&stubAutoApprove{}))
+			WithAutoApprove(&stubAutoApprove{}).
+			WithWebhookTest(stubWebhookTest{}))
 }
 
 func newSettingsEngineWith(t *testing.T, notify *notifyhttp.Handler, system *systemhttp.Handler) (*gin.Engine, *stubIssuer) {
@@ -209,6 +215,10 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 		{"mail test admin", http.MethodPost, "/api/admin/mail/test", "", admin, true, http.StatusForbidden},
 		{"mail test master without csrf", http.MethodPost, "/api/admin/mail/test", "", master, false, http.StatusForbidden},
 		{"mail test master", http.MethodPost, "/api/admin/mail/test", "", master, true, http.StatusOK},
+		{"webhook test user", http.MethodPost, "/api/admin/webhook/test", "", user, true, http.StatusForbidden},
+		{"webhook test admin", http.MethodPost, "/api/admin/webhook/test", "", admin, true, http.StatusForbidden},
+		{"webhook test master without csrf", http.MethodPost, "/api/admin/webhook/test", "", master, false, http.StatusForbidden},
+		{"webhook test master", http.MethodPost, "/api/admin/webhook/test", "", master, true, http.StatusOK},
 		{"announcement user", http.MethodGet, "/api/announcement", "", user, false, http.StatusOK},
 		{"announcement admin", http.MethodGet, "/api/announcement", "", admin, false, http.StatusOK},
 		{"announcement write admin", http.MethodPut, "/api/admin/announcement", `{"text":"公告"}`, admin, true, http.StatusForbidden},
@@ -258,6 +268,7 @@ func TestSettingsRoutesNilHandlersReturn501(t *testing.T) {
 		{http.MethodGet, "/api/admin/auto-approve", "", false},
 		{http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, true},
 		{http.MethodPost, "/api/admin/mail/test", "", true},
+		{http.MethodPost, "/api/admin/webhook/test", "", true},
 		{http.MethodGet, "/api/announcement", "", false},
 		{http.MethodPut, "/api/admin/announcement", `{"text":"x"}`, true},
 	}
@@ -298,6 +309,7 @@ func TestSettingsRoutesSingleSideWiring(t *testing.T) {
 	systemCases := []settingsEndpoint{
 		{http.MethodGet, "/api/admin/settings", "", false, http.StatusOK},
 		{http.MethodPost, "/api/admin/mail/test", "", true, http.StatusOK},
+		{http.MethodPost, "/api/admin/webhook/test", "", true, http.StatusOK},
 		{http.MethodGet, "/api/announcement", "", false, http.StatusOK},
 		{http.MethodPut, "/api/admin/announcement", `{"text":"公告"}`, true, http.StatusOK},
 	}
@@ -328,7 +340,8 @@ func TestSettingsRoutesSingleSideWiring(t *testing.T) {
 	})
 
 	t.Run("system only", func(t *testing.T) {
-		systemHandler := systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{})
+		systemHandler := systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}).
+			WithWebhookTest(stubWebhookTest{})
 		engine, issuer := newSettingsEngineWith(t, nil, systemHandler)
 		master := issueUser(t, issuer, auth.RoleMaster)
 		for _, tc := range notifyCases {

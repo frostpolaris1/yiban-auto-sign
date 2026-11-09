@@ -1,7 +1,7 @@
 package notify
 
 // 本文件实现每日签到失败摘要的生成：按业务日读失败明细，按账号聚合，
-// 再按收件人 scope 生成站内信与邮件账本。
+// 再按收件人 scope 生成站内信与投递账本（email 与 webhook）。
 //
 // # 归属
 // app 层用例。端口 DigestSource、DigestAudience 由 adapters/pg 实现；
@@ -15,8 +15,10 @@ package notify
 // scope 内 0 条时该收件人不写行。
 // 订阅只看 notification_prefs(sign_failed_daily,*)；缺行按默认表，
 // **不看** users.mail_notify（两条订阅面分别判定，永不 OR）。
-// in_app 与 email 都关时整条跳过；email 开启时通知行与账本行同事务写入，
-// 复用 B 的 insertWithDelivery（in_app 关闭时通知行仍是账本锚）。
+// 三渠道都关时整条跳过；email/webhook 开启时通知行与账本行同事务写入，
+// 复用 B 的 insertWithChannel（in_app 关闭时通知行仍是账本锚）。
+// webhook 订阅启用时按订阅者逐行记账：摘要正文即既有摘要正文，
+// 同题节流保证多订阅者全局至多一条真发，其余 skipped(cooldown_hit)。
 // 去重键 sign_failed_daily/{day}：同一收件人同一业务日至多一行通知、
 // 一条账本、一封邮件。
 // 正文按账号聚合：掩码手机号、结论词（空串为 unknown）、尝试次数；
@@ -69,8 +71,8 @@ type digestAccount struct {
 
 // DispatchDigest 给管理员订阅者发某业务日的签到失败摘要。
 //
-// 每收件人一行站内信；email 订阅启用时同事务再入一条账本行。
-// 重复触发由 (user_id, dedupe_key) 与账本唯一键吸收，不重复投递。
+// 每收件人一行站内信；email 与 webhook 订阅启用时各自同事务再入一条
+// 账本行。重复触发由 (user_id, dedupe_key) 与账本唯一键吸收，不重复投递。
 // 同日重复触发或重启补发只保留**首份正文**：唯一键吸收的是行与账本，
 // 不是「整轮跳过」；09:00 之后才出现的 failed 不会进入当天已发摘要，
 // 次日摘要也不回补前一日（同日幂等是唯一键语义，属已登记取舍）。
@@ -113,7 +115,10 @@ func (d *Dispatcher) DispatchDigest(ctx context.Context, day string) error {
 		email := enabled(recipient.Overrides, corenotify.Pair{
 			Category: corenotify.CategorySignFailedDaily, Channel: corenotify.ChannelEmail,
 		})
-		if !inApp && !email {
+		webhook := enabled(recipient.Overrides, corenotify.Pair{
+			Category: corenotify.CategorySignFailedDaily, Channel: corenotify.ChannelWebhook,
+		})
+		if !inApp && !email && !webhook {
 			continue
 		}
 		title, body := digestCopy(day, scoped)
@@ -125,24 +130,38 @@ func (d *Dispatcher) DispatchDigest(ctx context.Context, day string) error {
 			Body:      body,
 			CreatedAt: now,
 		}
-		if !email {
+		if !email && !webhook {
 			if _, err := d.notes.Insert(ctx, insert); err != nil {
 				recordError(&firstErr, err)
 			}
 			continue
 		}
-		// email 开启时通知与账本同事务写入。in_app 关闭时这一行仍是
-		// 事件档案/账本锚，会出现在管理员站内信列表（同 B 的实施单裁决）。
-		wasSkipped, err := d.insertWithDelivery(ctx, insert, now)
-		if err != nil {
-			recordError(&firstErr, err)
-			continue
+		if email {
+			// email 开启时通知与账本同事务写入。in_app 关闭时这一行仍是
+			// 事件档案/账本锚，会出现在管理员站内信列表（同 B 的实施单裁决）。
+			wasSkipped, err := d.insertWithChannel(ctx, insert, now, corenotify.ChannelEmail)
+			if err != nil {
+				recordError(&firstErr, err)
+				continue
+			}
+			if wasSkipped {
+				skipped++
+			}
 		}
-		if wasSkipped {
-			skipped++
+		if webhook {
+			// webhook 行按订阅者逐行记账，正文即摘要正文；
+			// 发送期同题节流保证多订阅者全局至多一条真发。
+			wasSkipped, err := d.insertWithChannel(ctx, insert, now, corenotify.ChannelWebhook)
+			if err != nil {
+				recordError(&firstErr, err)
+				continue
+			}
+			if wasSkipped {
+				skipped++
+			}
 		}
 	}
-	d.warnIfMailDisabled(skipped)
+	d.warnIfDisabled(skipped)
 	return firstErr
 }
 

@@ -343,10 +343,20 @@ class EntryScriptTest(unittest.TestCase):
                 if "spectral" in ln.lower() and "--fail-severity warn" in ln]
         self.assertTrue(hits, "入口脚本没有非注释的 spectral 调用（--fail-severity warn）")
 
-    def test_runs_oasdiff_breaking_with_err_gate(self):
-        hits = [ln for ln in self._code_lines()
-                if "breaking" in ln and "--fail-on ERR" in ln and "oasdiff" in ln.lower()]
-        self.assertTrue(hits, "入口脚本没有非注释的 oasdiff breaking 调用（--fail-on ERR）")
+    def test_runs_oasdiff_breaking_through_allowlist_filter(self):
+        # 测试改动理由（规则 10；kqa 收口 2026-11-10 独立复审同步）：门禁 oasdiff
+        # 半边从 `--fail-on ERR` 改为 `--format json`＋仓内 filter（allowlist 逐条
+        # 豁免、只 ERR 级判红、缺解释器 exit 2）。断言随新语义改钉：非注释调用行、
+        # 默认名册路径、fail-closed 解释器判据。
+        code = self._code_lines()
+        hits = [ln for ln in code
+                if "breaking" in ln and "--format json" in ln and "oasdiff" in ln.lower()]
+        self.assertTrue(hits, "入口脚本没有非注释的 oasdiff breaking --format json 调用")
+        joined = "\n".join(code)
+        self.assertIn(".breaking-allowlist.tsv", joined,
+                      "豁免名册默认路径没进脚本非注释行")
+        self.assertIn("python3 not found", joined,
+                      "缺 python 解释器的 fail-closed（exit 2）路径没被钉住")
 
     def test_missing_tool_exits_2(self):
         self.assertIn("exit 2", self.script,
@@ -428,8 +438,13 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         self.spectral = tmp + "/spectral"
         self.oasdiff = tmp + "/oasdiff"
         _write_stub(self.spectral, "#!/usr/bin/env bash\necho spectral-stub\n")
+        # stub 输出合法 JSON 的一条 level=1（非 ERR）finding：门机制改走
+        # --format json＋仓内 filter 后，stub 必须产可解析结构（kqa 收口 2026-11-10）。
         _write_stub(self.oasdiff,
-                    "#!/usr/bin/env bash\necho oasdiff-stub\nexit \"${STUB_OASDIFF_RC:-0}\"\n")
+                    "#!/usr/bin/env bash\n"
+                    "echo '[{\"id\":\"stub-check\",\"operation\":\"GET\",\"path\":\"/stub\","
+                    "\"level\":1,\"text\":\"oasdiff-stub-note\"}]'\n"
+                    "exit \"${STUB_OASDIFF_RC:-0}\"\n")
 
     def _run(self, *args, **env):
         run_env = dict(os.environ)
@@ -440,7 +455,8 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         run_env.update(env)
         proc = subprocess.run(["bash", ENTRY, *args], cwd=BASE, env=run_env,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              text=True, timeout=120)
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=120)
         return proc.returncode, proc.stdout
 
     def test_no_base_skips_visibly_and_passes(self):
@@ -459,7 +475,10 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         rc, out = self._run("--base", "HEAD")
         self.assertEqual(rc, 0, out)
         self.assertIn("== oasdiff breaking", out)
-        self.assertIn("oasdiff-stub", out)
+        # stub 的 level=1 finding 必须被 filter 解析并展示（NOTE 行含 text），
+        # 非 ERR 不判红——同时证明 stub 真被调用、JSON 半边真在链上。
+        self.assertIn("oasdiff-stub-note", out)
+        self.assertIn("oasdiff breaking: ok", out)
 
     def test_breaking_exit_is_propagated(self):
         rc, out = self._run("--base", "HEAD", STUB_OASDIFF_RC="1")

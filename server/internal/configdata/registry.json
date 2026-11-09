@@ -272,6 +272,49 @@
     "sensitive": false,
     "scope": "server"
   },
+  "YIBAN_WEBHOOK_COOLDOWN_SEC": {
+    "type": "int",
+    "domain": [0, 86400],
+    "default": 60,
+    "group": ["通知"],
+    "doc": "webhook 同题推送节流窗口秒数（0=不节流）。进程内状态，重启清零",
+    "sensitive": false,
+    "scope": "server"
+  },
+  "YIBAN_WEBHOOK_DAILY_MAX": {
+    "type": "int",
+    "domain": [0, 1000],
+    "default": 5,
+    "group": ["通知"],
+    "doc": "webhook 推送日额度（0=不限额）。只有真发成功才占用，失败不计数",
+    "sensitive": false,
+    "scope": "server"
+  },
+  "YIBAN_WEBHOOK_ENABLE": {
+    "type": "bool",
+    "default": false,
+    "group": ["通知"],
+    "doc": "webhook 推送渠道总开关（serverchan/custom 出口）。关闭时通知的 webhook 账本行落 skipped(webhook_not_configured)",
+    "sensitive": false,
+    "scope": "server"
+  },
+  "YIBAN_WEBHOOK_SECRET": {
+    "type": "string",
+    "default": "",
+    "group": ["通知"],
+    "doc": "webhook 出口凭据（serverchan=SendKey；custom=完整 webhook URL）。不进日志、审计与错误文本",
+    "sensitive": true,
+    "scope": "server"
+  },
+  "YIBAN_WEBHOOK_TYPE": {
+    "type": "enum",
+    "domain": ["serverchan", "custom"],
+    "default": "serverchan",
+    "group": ["通知"],
+    "doc": "webhook 出口类型闭集。serverchan 走 Server酱 Turbo；custom 走自建 webhook（仅 https 且经 SSRF 白名单复核）",
+    "sensitive": false,
+    "scope": "server"
+  },
   "YIBAN_TZ": {
     "type": "string",
     "default": "Asia/Shanghai",
