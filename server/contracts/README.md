@@ -189,6 +189,9 @@ either side drifts.
 | GET | `/api/admin/tasks` | master/admin | UX-3 swh |
 | GET | `/api/admin/tasks/export` | master/admin | UX-3 swh |
 | GET | `/api/admin/engine` | master/admin | UX-5 aqn |
+|  |  |  | 单进程执行监视快照；响应含 `paused`（全局暂停开关，settings 行 engine.paused，缺行=false，DB 持久跨重启）。 |
+| PUT | `/api/admin/engine/pause` | master/admin | 3a 28l |
+|  |  |  | 写全局暂停开关（settings 行 engine.paused，DB 持久、热生效、跨重启）：按请求目标值分闸——`paused=true`（暂停）master/admin 皆可，`paused=false`（恢复）仅 master（旧线急停先例）；两字段（paused、current_password）必填，缺 400、口令错 403，均零写入零审计；连错沿用全局再认证节流 429；settings 查询故障上抛不静默放行；写入与恰一行 `settings.engine_paused` 审计同事务，detail 只含目标态（操作者在审计行主体列）；幂等重放允许且每次恰一行；恢复写 false 不删行（缺行也读 false，本端点无删行语义）；200 回显 `{"paused": bool}`。 |
 | GET | `/api/admin/notify` | master/admin | 2ws A |
 |  |  |  | 各自管理自己的订阅：返回全部类别×三渠道（in_app/email/webhook）共 12 项的有效状态；缺行按默认（review=in_app+email+webhook；credential_invalid=in_app+webhook；sign_failed_daily=email；capacity_rejected=in_app）。投递已接线：站内信＋邮件账本＋webhook 出口（kqa）。 |
 | PUT | `/api/admin/notify` | master/admin | 2ws A |
