@@ -92,3 +92,33 @@ scripts/contract-gate.sh	uncovered=门禁脚本：本批以 BREAKS_ALLOWLIST=/de
 server/contracts/.breaking-allowlist.tsv	uncovered=豁免名册数据：消费方为 contract-gate.sh 过滤步骤，同上突变自证
 server/tools/structure/structure_test.go	uncovered=Go 包门 go test ./tools/structure 真跑钉住哈希自证（哈希即本文件常量）
 tests/test_contract_gate_wiring.py	covered_by=python -I tests/test_contract_gate_wiring.py -q（自跑 30 项；kqa 收口随门禁 filter 新语义同步断言并修 UTF-8 解码）
+# sett2（2026-11-10）调度设置写回：机制文件全部由 Go 包内守卫钉住（门咬接线），
+# Python 侧无对应门，按「Go 测试文件自身即门」形显式登记。
+server/internal/core/audit/chain.go	uncovered=Go 测试文件自身即门：settings.schedule_writeback 动作与 changes 白名单由 internal/core/audit 的 EncodeDetail 用例（TestEncodeDetailAcceptsScheduleWritebackChanges）钉住
+server/internal/core/audit/chain_test.go	uncovered=Go 测试文件自身即门（go test ./internal/core/audit），不需要 Python 侧覆盖
+server/internal/adapters/pg/settings.go	uncovered=Go 测试文件自身即门：getSetting 底座与 Int/Bool Override/SetInt/ClearSetting 由真库用例 TestSettingsWritebackAccessorE2E 钉住（需 YIBAN_TEST_DATABASE_URL）
+server/internal/adapters/pg/settings_e2e_test.go	uncovered=Go 测试文件自身即门（go test ./internal/adapters/pg 带真库 DSN），不需要 Python 侧覆盖
+server/internal/app/settings/resolve.go	uncovered=Go 测试文件自身即门：DB>env 覆盖链、坏行 Warn 一次、域校验、名册别名由 resolve_test.go 钉住
+server/internal/app/settings/resolve_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/settings），不需要 Python 侧覆盖
+server/internal/app/settings/schedule.go	uncovered=Go 测试文件自身即门：部分补丁写回、master 门、同事务审计、域负例由 schedule_test.go 钉住；真库回滚另有 pg e2e
+server/internal/app/settings/schedule_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/settings），不需要 Python 侧覆盖
+server/internal/app/settings/settings.go	uncovered=Go 测试文件自身即门：SourceDB 与名册覆盖读数（Report(ctx)）由 settings_test.go 钉住；入口回环另有 system/router 用例
+server/internal/app/settings/settings_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/settings），不需要 Python 侧覆盖
+server/internal/app/timepref/service.go	uncovered=Go 测试文件自身即门：Allow 每请求解析（函数端口）由 service_test.go 钉住；热生效回环另有 router e2e
+server/internal/app/timepref/service_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/timepref），不需要 Python 侧覆盖
+server/internal/app/schedule/daily.go	uncovered=Go 测试文件自身即门：BuildToday Overrides 每次构建重读与解析失败即停由 daily_test.go 三用例钉住
+server/internal/app/schedule/daily_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/schedule），不需要 Python 侧覆盖
+server/internal/entry/http/schedule/handlers.go	uncovered=Go 测试文件自身即门：Overrides 每请求解析（nil 回静态值）由 handlers_test.go 既有 Config 用例与 fakePlanner 断言钉住
+server/internal/entry/http/system/handlers.go	uncovered=Go 测试文件自身即门：PUT 端点角色门/域负例/部分补丁/source=db 回环由 schedule_settings_test.go 钉住；真路由与 CSRF 另有 router e2e
+server/internal/entry/http/system/schedule_settings_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/system），不需要 Python 侧覆盖
+server/internal/entry/http/router/handlers.go	uncovered=Go 测试文件自身即门：AdminScheduleSettingsSet 委托与 501/单侧装配由 settings_routes_test.go 路由表钉住
+server/internal/entry/http/router/settings_routes_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/router），不需要 Python 侧覆盖
+server/internal/entry/http/router/schedule_settings_e2e_test.go	uncovered=Go 测试文件自身即门：热生效真路由 e2e（PUT 闸→GET/PUT /api/me/time-pref→null 删行→403）
+server/internal/entry/http/oapi/contract_gates_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/oapi），不需要 Python 侧覆盖
+server/internal/entry/http/oapi/oapi.gen.go	uncovered=生成物：由 scripts/generate.sh --check 与 ui generate-api.mjs --check 字节级钉住，不承载手写行为
+ui/src/lib/api/schema.d.ts	uncovered=生成物：由 ui generate-api.mjs --check 钉住
+server/internal/adapters/config/registry.go	uncovered=Go 测试文件自身即门：RegistryEntry.Domain 解析由 TestEmbeddedRegistryLoads 与 registry parity 门钉住
+server/internal/assembly/assembly.go	uncovered=组合根：resolver 缺域即启动失败与消费点接线由 go build＋internal/assembly 包用例钉住；行为面归各消费包守卫
+cmd/server/w2c_e2e_test.go	uncovered=Go 测试文件自身即门（go test ./cmd/server 带真库 DSN），不需要 Python 侧覆盖
+server/contracts/README.md	uncovered=契约名册：端点行与角色表逐行对齐由 internal/entry/http/oapi 的 TestContractRoleTablesAgree 钉住
+server/contracts/.breaking-allowlist.tsv	uncovered=豁免名册：由 scripts/contract-gate.sh 的 oasdiff 实跑消费；突变自证（BREAKS_ALLOWLIST=/dev/null 转红）随批存证
