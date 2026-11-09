@@ -96,7 +96,9 @@ func TestNotificationCountSentOnDayWindows(t *testing.T) {
 	user := e.createUser("wh-budget@example.com")
 	notes := pg.NewNotificationRepo(e.db)
 	ledger := pg.NewNotificationDeliveryRepo(e.db)
-	now := time.Now().UTC()
+	// 窗口从库时钟派生：MarkSent 的 updated_at=now() 写的是 pg 时钟，
+	// 测试窗口必须与它同源（测试进程时钟在容器里可能漂移）。
+	now := mustTimestamptz(t, e.scalarString(`SELECT now()`))
 
 	seed := func(dedupe string, channel corenotify.Channel) string {
 		t.Helper()
@@ -117,7 +119,7 @@ func TestNotificationCountSentOnDayWindows(t *testing.T) {
 		return row.ID
 	}
 
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayStart := mustTimestamptz(t, e.scalarString(`SELECT date_trunc('day', now())`))
 	dayEnd := dayStart.AddDate(0, 0, 1)
 	count := func() int {
 		t.Helper()
@@ -174,4 +176,15 @@ func TestNotificationCountSentOnDayWindows(t *testing.T) {
 	if _, err := ledger.CountSentOnDay(e.ctx, corenotify.ChannelWebhook, dayEnd, dayStart); err == nil {
 		t.Fatal("空窗口不应可计数")
 	}
+}
+
+// mustTimestamptz 解析 pg 返回的时间戳文本。
+func mustTimestamptz(t *testing.T, raw string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", raw)
+	if err != nil {
+		// pgx 的 text 形态可能是空格分隔（保持上面的布局）；失败给出原文定位。
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return parsed
 }
