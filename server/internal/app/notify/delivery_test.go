@@ -50,6 +50,7 @@ func (c *manualClock) Advance(d time.Duration) {
 
 // fakeStore 是站内信与账本的内存实现，语义与 pg 一致：
 // (user_id, dedupe_key) 与 (notification_id, channel, user_id) 各一道唯一键。
+// clock 可为 nil；非 nil 时 MarkSent 用它记 UpdatedAt（额度计数口径）。
 type fakeStore struct {
 	mu            sync.Mutex
 	notifications map[string]*corenotify.Notification
@@ -58,6 +59,7 @@ type fakeStore struct {
 	deliveryOrder []string
 	emails        map[string]string
 	seq           int
+	clock         *manualClock
 }
 
 func newFakeStore() *fakeStore {
@@ -70,8 +72,8 @@ func newFakeStore() *fakeStore {
 
 func notificationKey(userID, dedupe string) string { return userID + "\x00" + dedupe }
 
-func deliveryKey(notificationID, userID string) string {
-	return notificationID + "\x00" + string(corenotify.ChannelEmail) + "\x00" + userID
+func deliveryKey(notificationID string, channel corenotify.Channel, userID string) string {
+	return notificationID + "\x00" + string(channel) + "\x00" + userID
 }
 
 func (s *fakeStore) Insert(_ context.Context, in corenotify.NotificationInsert) (corenotify.Notification, error) {
@@ -121,7 +123,7 @@ func (s *fakeStore) InsertPending(_ context.Context, in corenotify.DeliveryInser
 
 // insertPendingLocked 写一条账本行。调用方已持锁。
 func (s *fakeStore) insertPendingLocked(in corenotify.DeliveryInsert) corenotify.Delivery {
-	key := deliveryKey(in.NotificationID, in.UserID)
+	key := deliveryKey(in.NotificationID, in.Channel, in.UserID)
 	if existing, ok := s.deliveries[key]; ok {
 		return existing.Delivery
 	}
@@ -179,6 +181,9 @@ func (s *fakeStore) MarkSent(_ context.Context, id string) error {
 		item.Attempts++
 		item.SkipReason = ""
 		item.NextRetryAt = nil
+		if s.clock != nil {
+			item.UpdatedAt = s.clock.Now()
+		}
 	})
 }
 
@@ -206,6 +211,24 @@ func (s *fakeStore) MarkSkipped(_ context.Context, id, reason string) error {
 		item.LastErrorKind = ""
 		item.NextRetryAt = nil
 	})
+}
+
+// CountSentOnDay 与 pg 同口径：数某渠道 [from, to) 内 updated_at 命中
+// 且 status='sent' 的行。
+func (s *fakeStore) CountSentOnDay(_ context.Context, channel corenotify.Channel,
+	from, to time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, item := range s.deliveries {
+		if item.Channel != channel || item.Status != corenotify.DeliveryStatusSent {
+			continue
+		}
+		if !item.UpdatedAt.Before(from) && item.UpdatedAt.Before(to) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (s *fakeStore) mutate(id string, fn func(*corenotify.DueDelivery)) error {
@@ -367,10 +390,21 @@ func TestDispatchDefaultsAndExplicitEmailOverride(t *testing.T) {
 		t.Fatalf("通知文本 = %+v", notes[0])
 	}
 	if got := len(store.deliveryList()); got != 0 {
-		t.Fatalf("默认态不应有邮件账本行，得到 %d", got)
+		// 契约扩到三渠道后 credential_invalid 的 webhook 默认开启：
+		// 默认态的账本行只允许 webhook 渠道，email 渠道必须为 0。
+		for _, row := range store.deliveryList() {
+			if row.Channel == corenotify.ChannelEmail {
+				t.Fatalf("默认态不应有 email 账本行，得到 %+v", row)
+			}
+		}
+		if got != 1 {
+			t.Fatalf("默认态账本行 = %d, want 1（webhook 默认开）", got)
+		}
 	}
 
 	// 同一收件人显式打开 email：下一次 Dispatch 追加账本行。
+	// 契约扩到三渠道后 credential_invalid 的 webhook 默认开启，
+	// 故账本按渠道过滤：这里只断言 email 渠道恰一行。
 	audience.subscribers[0].Overrides = map[corenotify.Pair]bool{
 		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}: true,
 	}
@@ -378,23 +412,30 @@ func TestDispatchDefaultsAndExplicitEmailOverride(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	deliveries := store.deliveryList()
-	if len(deliveries) != 1 {
-		t.Fatalf("账本行 = %d, want 1", len(deliveries))
+	emailRows := 0
+	for _, row := range deliveries {
+		if row.Channel == corenotify.ChannelEmail {
+			emailRows++
+		}
+		if row.Channel == corenotify.ChannelEmail &&
+			(row.Status != corenotify.DeliveryStatusPending ||
+				row.Attempts != 0 || row.Email != "master-1@example.com") {
+			t.Fatalf("email 账本行 = %+v", row)
+		}
 	}
-	if deliveries[0].Status != corenotify.DeliveryStatusPending ||
-		deliveries[0].Attempts != 0 || deliveries[0].Email != "master-1@example.com" {
-		t.Fatalf("账本行 = %+v", deliveries[0])
+	if emailRows != 1 {
+		t.Fatalf("email 账本行 = %d, want 1", emailRows)
 	}
 
-	// 重复事件不重复投递。
+	// 重复事件不重复投递：账本按渠道各一道唯一键，重放后行数不变。
 	if err := dispatcher.Dispatch(context.Background(), credentialEvent("acct-1")); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if got := len(store.notificationList()); got != 1 {
 		t.Fatalf("重复事件通知 = %d, want 1", got)
 	}
-	if got := len(store.deliveryList()); got != 1 {
-		t.Fatalf("重复事件账本 = %d, want 1", got)
+	if got := len(store.deliveryList()); got != 2 {
+		t.Fatalf("重复事件账本 = %d, want 2（email + webhook 各一行）", got)
 	}
 }
 
@@ -494,7 +535,8 @@ func TestSendDueRetriesThenFails(t *testing.T) {
 	audience := &fakeAudience{
 		subscribers: []corenotify.Subscriber{
 			overriding("master-1", "master-1@example.com", map[corenotify.Pair]bool{
-				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}: true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}:   true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelWebhook}: false,
 			}),
 		},
 		phones: map[string]string{"acct-1": "13800000001"},
@@ -607,7 +649,8 @@ func TestDispatchWithoutSMTPMarksSkipped(t *testing.T) {
 	audience := &fakeAudience{
 		subscribers: []corenotify.Subscriber{
 			overriding("master-1", "master-1@example.com", map[corenotify.Pair]bool{
-				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}: true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}:   true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelWebhook}: false,
 			}),
 		},
 		phones: map[string]string{"acct-1": "13800000001"},
@@ -641,7 +684,8 @@ func TestSendDueSkipsInactiveRecipient(t *testing.T) {
 	audience := &fakeAudience{
 		subscribers: []corenotify.Subscriber{
 			overriding("master-1", "master-1@example.com", map[corenotify.Pair]bool{
-				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}: true,
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}:   true,
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelWebhook}: false,
 			}),
 		},
 		phones:   map[string]string{"acct-1": "13800000001"},
@@ -688,8 +732,9 @@ func TestEmailOnlyStillWritesAnchorNotification(t *testing.T) {
 	audience := &fakeAudience{
 		subscribers: []corenotify.Subscriber{
 			overriding("master-1", "master-1@example.com", map[corenotify.Pair]bool{
-				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelInApp}: false,
-				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}: true,
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelInApp}:   false,
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}:   true,
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelWebhook}: false,
 			}),
 		},
 		phones: map[string]string{"acct-1": "13800000001"},
@@ -713,8 +758,9 @@ func TestEmailOnlyStillWritesAnchorNotification(t *testing.T) {
 	}
 	// 两个开关都关才整条跳过。
 	audience.subscribers[0].Overrides = map[corenotify.Pair]bool{
-		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelInApp}: false,
-		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}: false,
+		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelInApp}:   false,
+		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}:   false,
+		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelWebhook}: false,
 	}
 	other := credentialEvent("acct-1")
 	other.DedupeKey = "credential_invalid/acct-1/other"
@@ -735,7 +781,8 @@ func TestDeliveryTextsAndLogsCarryNoFullIdentifiers(t *testing.T) {
 	audience := &fakeAudience{
 		subscribers: []corenotify.Subscriber{
 			overriding("master-1", email, map[corenotify.Pair]bool{
-				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}: true,
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}:   true,
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelWebhook}: false,
 			}),
 		},
 		phones: map[string]string{"acct-1": phone},
@@ -788,7 +835,8 @@ func TestStartDeliversPendingAndStops(t *testing.T) {
 	audience := &fakeAudience{
 		subscribers: []corenotify.Subscriber{
 			overriding("master-1", "master-1@example.com", map[corenotify.Pair]bool{
-				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}: true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}:   true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelWebhook}: false,
 			}),
 		},
 		phones: map[string]string{"acct-1": "13800000001"},
@@ -879,7 +927,8 @@ func TestSendDueUnknownErrorIsTerminal(t *testing.T) {
 	audience := &fakeAudience{
 		subscribers: []corenotify.Subscriber{
 			overriding("master-1", "master-1@example.com", map[corenotify.Pair]bool{
-				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}: true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}:   true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelWebhook}: false,
 			}),
 		},
 		phones: map[string]string{"acct-1": "13800000001"},

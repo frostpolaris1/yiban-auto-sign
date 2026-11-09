@@ -41,6 +41,7 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	mailadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/mail"
+	webhookadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/webhook"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
@@ -71,6 +72,7 @@ import (
 	coreimage "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/image"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
+	corewebhook "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/webhook"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -412,7 +414,34 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			logger.Warn("mail: SMTP delivery is disabled; password reset links, test mail and notification mail are not delivered",
 				logfield.KeyReason, "YIBAN_RESET_MAIL_ENABLE is false")
 		}
-		notifyLib, systemLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle, settingsRepo)
+		// webhook 推送出口先于设置面构造：测试推送与通知投递共用同一实现。
+		// 开关关闭或密钥为空都按未配置：通知账本行落
+		// skipped(webhook_not_configured)，测试推送回 409。
+		// 日志只记出口类型：Secret 是 SendKey 或完整 URL，不得出现。
+		var webhookSender corewebhook.Sender
+		if cfg.WebhookEnable && cfg.WebhookSecret != "" {
+			sender, err := webhookadapter.New(webhookadapter.Config{
+				Type:   cfg.WebhookType,
+				Secret: cfg.WebhookSecret,
+			})
+			if err != nil {
+				closeFn()
+				return nil, fmt.Errorf("assembly: webhook sender: %w", err)
+			}
+			webhookSender = sender
+			logger.Info("webhook: push delivery enabled",
+				logfield.KeyReason, cfg.WebhookType)
+		} else {
+			logger.Warn("webhook: push delivery is disabled; webhook deliveries are not sent",
+				logfield.KeyReason, "YIBAN_WEBHOOK_ENABLE is false or YIBAN_WEBHOOK_SECRET is empty")
+		}
+		// 测试推送与测试邮件同值 60s：独立实例不占邮件冷却额度。
+		webhookTestThrottle, err := buildWebhookTestThrottle()
+		if err != nil {
+			closeFn()
+			return nil, err
+		}
+		notifyLib, systemLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle, webhookSender, webhookTestThrottle, settingsRepo)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -496,19 +525,31 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 通知投递：三个管理员事件与用户本人失败邮件。SMTP 与忘记口令
 		// 共用同一端口，也共用 YIBAN_RESET_MAIL_ENABLE 开关；未配置时
 		// 通知账本行落 skipped(smtp_not_configured)，不静默丢弃。
+		// webhook 端口独立开关（YIBAN_WEBHOOK_ENABLE），未配置时账本行
+		// 落 skipped(webhook_not_configured)。同题节流与日额度参数来自
+		// 同一组环境键；额度单源在账本本身。业务日时区与摘要同源。
 		// 投递端口先于账号服务构造：ReviewAlerts 在 account 构造时注入。
 		// 摘要端口是同一仓储的可选面：每日摘要与事件投递共用同一
 		// dispatcher 与邮件账本，但收件人与去重键各自判定。
+		loc, err := clock.LoadLocation(cfg.Timezone)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: load timezone %q: %w", cfg.Timezone, err)
+		}
 		digestRepo := pg.NewNotificationDigestRepo(db)
 		notificationDispatcher, err := appnotify.NewDispatcher(appnotify.DispatcherDeps{
-			Notes:          pg.NewNotificationRepo(db),
-			Ledger:         pg.NewNotificationDeliveryRepo(db),
-			Audience:       pg.NewNotificationAudienceRepo(db),
-			Mail:           mailer,
-			Clock:          clk,
-			Logger:         logger,
-			DigestSource:   digestRepo,
-			DigestAudience: digestRepo,
+			Notes:           pg.NewNotificationRepo(db),
+			Ledger:          pg.NewNotificationDeliveryRepo(db),
+			Audience:        pg.NewNotificationAudienceRepo(db),
+			Mail:            mailer,
+			Webhook:         webhookSender,
+			WebhookCooldown: time.Duration(cfg.WebhookCooldownSec) * time.Second,
+			WebhookDailyMax: cfg.WebhookDailyMax,
+			Location:        loc,
+			Clock:           clk,
+			Logger:          logger,
+			DigestSource:    digestRepo,
+			DigestAudience:  digestRepo,
 		})
 		if err != nil {
 			closeFn()
@@ -580,12 +621,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: egress service: %w", err)
 		}
-		loc, err := clock.LoadLocation(cfg.Timezone)
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("assembly: load timezone %q: %w", cfg.Timezone, err)
-		}
 		// 图片库先于执行循环装配：worker 的选图端口引用同一实例。
+		// loc 已在通知投递装配处加载（首个使用者），此处直接复用。
 		blobs, err := storage.NewFS(cfg.PhotoDir)
 		if err != nil {
 			closeFn()
@@ -873,6 +910,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 // 展示成配置事实。
 func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown,
+	webhook corewebhook.Sender, webhookCooldown appsettings.Cooldown,
 	autoApprove appsettings.AutoApproveStore) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
@@ -886,14 +924,16 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		return nil, nil, nil, fmt.Errorf("assembly: notification inbox: %w", err)
 	}
 	announcementSvc, err := appsettings.NewService(appsettings.Deps{
-		Store:       pg.NewAnnouncementRepo(db),
-		Audit:       audits,
-		Tx:          db,
-		Clock:       clk,
-		Mail:        mailer,
-		Cooldown:    cooldown,
-		AutoApprove: autoApprove,
-		Logger:      logger,
+		Store:           pg.NewAnnouncementRepo(db),
+		Audit:           audits,
+		Tx:              db,
+		Clock:           clk,
+		Mail:            mailer,
+		Webhook:         webhook,
+		Cooldown:        cooldown,
+		WebhookCooldown: webhookCooldown,
+		AutoApprove:     autoApprove,
+		Logger:          logger,
 	})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("assembly: announcement service: %w", err)
@@ -918,8 +958,22 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	}
 	notifyHandler := notifyhttp.NewHandler(notifySvc).WithInbox(inboxSvc)
 	systemHandler := systemhttp.NewHandler(roster, announcementSvc, announcementSvc).
-		WithAutoApprove(announcementSvc)
+		WithAutoApprove(announcementSvc).
+		WithWebhookTest(announcementSvc)
 	return notifyHandler, systemHandler, audithttp.NewHandler(reader).WithStatus(inspector), nil
+}
+
+// buildWebhookTestThrottle 构造测试推送的每管理员冷却。
+// 与测试邮件同值 60s、同形态：60s = 1/min + burst 1，独立实例不占邮件额度。
+func buildWebhookTestThrottle() (*ratelimit.Throttle, error) {
+	throttle, err := ratelimit.NewThrottle(ratelimit.Quota{
+		PerMinute: int(time.Minute / appsettings.WebhookTestCooldown),
+		Burst:     1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("assembly: webhook test throttle: %w", err)
+	}
+	return throttle, nil
 }
 
 // rosterEntries 把适配器的名册条目转成用例视图。

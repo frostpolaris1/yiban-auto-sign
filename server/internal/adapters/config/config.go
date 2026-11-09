@@ -156,6 +156,19 @@ type Config struct {
 	// MailTLSConfig 仅测试注入：非 nil 时替代系统根证书校验 SMTP 服务器。
 	// 生产恒为 nil。它**不**来自环境变量：部署面不提供"关闭证书校验"的开关。
 	MailTLSConfig *tls.Config
+
+	// WebhookEnable 是 webhook 推送渠道总开关（YIBAN_WEBHOOK_ENABLE）。
+	// 关闭时通知的 webhook 账本行落 skipped(webhook_not_configured)。
+	WebhookEnable bool
+	// WebhookType 是出口类型（serverchan/custom）。
+	WebhookType string
+	// WebhookSecret 是出口凭据：serverchan 传 SendKey，custom 传完整
+	// webhook URL。敏感值：不得出现在日志、审计与错误文本里。
+	WebhookSecret string
+	// WebhookCooldownSec 是同题节流窗口秒数（0=不节流）。
+	WebhookCooldownSec int
+	// WebhookDailyMax 是推送日额度（0=不限额）。
+	WebhookDailyMax int
 }
 
 // knownEnvs 是闭集。
@@ -189,6 +202,10 @@ const DefaultPublicBaseURL = "http://127.0.0.1:47183"
 // mailTLSModes 是 YIBAN_MAIL_TLS_MODE 的闭集。
 // 唯一定义点在 core/mail：适配器的解析与名册的域读同一组常量。
 var mailTLSModes = coremail.TLSModes()
+
+// webhookTypes 是 YIBAN_WEBHOOK_TYPE 的闭集：serverchan 与 custom
+// 是 webhook 渠道的两条出口，与 adapters/webhook 的出口词表同源。
+var webhookTypes = []string{"serverchan", "custom"}
 
 // keySpec 是名册对照测试看到的读取规格视图。
 // domain 为 nil 表示名册不登记数值域；enum 非空表示名册登记字符串闭集。
@@ -317,6 +334,13 @@ var (
 	keyMailTLSMode      = enumKey{"YIBAN_MAIL_TLS_MODE", "auto", mailTLSModes}
 	keyPublicBaseURL    = stringKey{"YIBAN_PUBLIC_BASE_URL", DefaultPublicBaseURL}
 
+	// webhook 推送（serverchan/custom）五键：旧线 YIBAN_NOTIFY_* 不迁移。
+	keyWebhookEnable      = boolKey{"YIBAN_WEBHOOK_ENABLE", false}
+	keyWebhookType        = enumKey{"YIBAN_WEBHOOK_TYPE", "serverchan", webhookTypes}
+	keyWebhookSecret      = stringKey{"YIBAN_WEBHOOK_SECRET", ""}
+	keyWebhookCooldownSec = intKey{"YIBAN_WEBHOOK_COOLDOWN_SEC", 60, 0, 86400}
+	keyWebhookDailyMax    = intKey{"YIBAN_WEBHOOK_DAILY_MAX", 5, 0, 1000}
+
 	keyRateLimitEnabled  = boolKey{"YIBAN_RATE_LIMIT_ENABLE", true}
 	keyRateIPPerMin      = intKey{"YIBAN_RATE_IP_PER_MIN", 60, 1, 6000}
 	keyRateIPBurst       = intKey{"YIBAN_RATE_IP_BURST", 20, 1, 6000}
@@ -354,6 +378,11 @@ func configSpecs() []keySpec {
 		keyMailFrom.spec(),
 		keyMailTLSMode.spec(),
 		keyPublicBaseURL.spec(),
+		keyWebhookEnable.spec(),
+		keyWebhookType.spec(),
+		keyWebhookSecret.spec(),
+		keyWebhookCooldownSec.spec(),
+		keyWebhookDailyMax.spec(),
 		keyRateLimitEnabled.spec(),
 		keyRateIPPerMin.spec(),
 		keyRateIPBurst.spec(),
@@ -377,6 +406,7 @@ var sensitiveKeys = []string{
 	"YIBAN_MAIL_USER",
 	"YIBAN_MAIL_PASS",
 	"YIBAN_MAIL_FROM",
+	"YIBAN_WEBHOOK_SECRET",
 }
 
 // Load 读取进程环境。
@@ -517,6 +547,22 @@ func LoadFrom(src Source) (*Config, error) {
 	cfg.MailPass = keyMailPass.read(src)
 	cfg.MailFrom = strings.TrimSpace(keyMailFrom.read(src))
 	if cfg.MailTLSMode, err = keyMailTLSMode.read(src); err != nil {
+		return nil, err
+	}
+	// webhook 推送五键。Secret 不 Trim 到只去首尾：custom 的 URL 理论上
+	// 可能以编码空格结尾，但首尾空白几乎总是编辑残留，与 mail 凭据
+	// 不同（授权码空格敏感），这里归一到无空白形态。
+	if cfg.WebhookEnable, err = keyWebhookEnable.read(src); err != nil {
+		return nil, err
+	}
+	if cfg.WebhookType, err = keyWebhookType.read(src); err != nil {
+		return nil, err
+	}
+	cfg.WebhookSecret = strings.TrimSpace(keyWebhookSecret.read(src))
+	if cfg.WebhookCooldownSec, err = keyWebhookCooldownSec.read(src); err != nil {
+		return nil, err
+	}
+	if cfg.WebhookDailyMax, err = keyWebhookDailyMax.read(src); err != nil {
 		return nil, err
 	}
 	if cfg.ResetMailEnabled {

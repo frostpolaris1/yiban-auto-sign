@@ -56,6 +56,8 @@
 - `YIBAN_CREDENTIAL_KEY`（32 字节；轮换会让既有凭据密文无法解密）
 - `YIBAN_MAIL_USER`、`YIBAN_MAIL_PASS`、`YIBAN_MAIL_FROM`
   （`YIBAN_RESET_MAIL_ENABLE` 打开时；发件账号、授权码与发件地址）
+- `YIBAN_WEBHOOK_SECRET`（`YIBAN_WEBHOOK_ENABLE` 打开时；
+  serverchan 的 SendKey 或 custom 的完整 webhook URL）
 - `POSTGRES_PASSWORD`（容器编排层；db 初始化与 DSN 派生）
 
 **非秘密（可写模板/文档）**
@@ -73,6 +75,18 @@
 `YIBAN_MAIL_SMTP_HOST`、`YIBAN_MAIL_SMTP_PORT`、`YIBAN_MAIL_TLS_MODE`、
 `YIBAN_MAIL_USER`、`YIBAN_MAIL_PASS`、`YIBAN_MAIL_FROM`；旧线的
 `YIBAN_MAIL_ENABLE` Go 侧不读。
+
+**webhook 推送开关**
+
+`YIBAN_WEBHOOK_ENABLE` 是 webhook 推送渠道总开关，
+`YIBAN_WEBHOOK_TYPE` 选出口（serverchan=Server酱 Turbo / custom=自建
+webhook，custom 仅 https 且经 SSRF 白名单与解析复核），
+`YIBAN_WEBHOOK_SECRET` 是出口凭据（SendKey 或完整 URL，不进日志、
+审计与错误文本），`YIBAN_WEBHOOK_COOLDOWN_SEC`（0=不节流）与
+`YIBAN_WEBHOOK_DAILY_MAX`（0=不限额）控制同题节流与日额度；额度单源
+在通知账本（只有真发成功才占用）。关闭或密钥为空时通知的 webhook
+账本行记 `skipped(webhook_not_configured)`，测试推送回 409。
+旧线的 `YIBAN_NOTIFY_*` 键 Go 侧不读，不迁移。
 
 **操作约束**
 

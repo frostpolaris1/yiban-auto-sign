@@ -7,24 +7,29 @@
 // 写入与 settings.announcement 审计同事务。
 // Service 还向当前管理员自己的邮箱发一封测试信：复用 core/mail 端口，
 // 同步投递，成功与失败各写一条 settings.mail_test 审计，并按管理员冷却限频。
-// 本包**不**读环境变量、**不**读名册文件、**不**写 SQL、**不**实现 SMTP。
+// Service 还向配置的 webhook 出口发一条测试推送：复用 core/webhook 端口，
+// 同步投递，成功与失败各写一条 settings.webhook_test 审计，按管理员冷却限频。
+// 本包**不**读环境变量、**不**读名册文件、**不**写 SQL、**不**实现 SMTP 或 HTTP 出口。
 //
 // # 归属
 // app 层用例。名册由 adapters/config 解析后注入；公告端口见本文件，
-// adapters/pg 实现；邮件端口由 core/mail 声明，adapters/mail 实现。
+// adapters/pg 实现；邮件端口由 core/mail 声明，adapters/mail 实现；
+// webhook 端口由 core/webhook 声明，adapters/webhook 实现。
 // 入口层只做角色门与传输映射。
 //
 // # 复用
 // Roster、Entry、Report、Group、Item；Service、Announcement、Store、Deps；
-// Cooldown、TestMailCooldown；MaxAnnouncementChars、Source 常量。
+// Cooldown、TestMailCooldown、WebhookTestCooldown；MaxAnnouncementChars、Source 常量。
 //
 // # 口径
 // source 只报告能跟踪到的事实：环境提供即 env，名册登记缺省即 default，
 // 两者都没有即 unknown。file 保留给文件层，本服务永不产出。
 // 敏感键的 masked 是固定 "****"，不含原值任何字符。
 // 测试邮件收件人只取会话用户邮箱，**不接受**请求体指定；
+// 测试推送的目标只取配置的出口，**不接受**请求体指定；
 // 审计 detail 只含 result 与投递粗分类；
-// SMTP 应答、邮箱原文与口令不进响应、审计和日志。
+// SMTP 应答、邮箱原文与口令不进响应、审计和日志；
+// webhook 的对端应答、状态码、URL 与 SendKey 同样不进响应、审计和日志。
 package settings
 
 import (
@@ -46,6 +51,7 @@ import (
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	corewebhook "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/webhook"
 )
 
 // Source 是配置值的来源分类。
@@ -229,9 +235,15 @@ type Deps struct {
 	// Mail 投递测试邮件。为 nil 表示 SMTP 关闭：
 	// 测试邮件端点回 409，**不**静默成功。
 	Mail coremail.Sender
+	// Webhook 投递测试推送。为 nil 表示 webhook 出口未配置
+	//（渠道总开关关闭或密钥为空）：测试推送端点回 409，**不**静默成功。
+	Webhook corewebhook.Sender
 	// Cooldown 给测试邮件加每管理员冷却。为 nil 表示不限流：
 	// 只用于测试与降级进程。实现是 entry/http/ratelimit.Throttle。
 	Cooldown Cooldown
+	// WebhookCooldown 给测试推送加每管理员冷却，语义同 Cooldown，
+	// 但与测试邮件的窗口互不占用。
+	WebhookCooldown Cooldown
 	// Logger 可选。缺省用 slog.Default。
 	Logger *slog.Logger
 }

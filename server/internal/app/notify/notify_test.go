@@ -48,25 +48,29 @@ func newService(t *testing.T, repo appnotify.Repo) *appnotify.Service {
 	return svc
 }
 
-// 缺行必须按默认解释，且覆盖全部八对、顺序稳定。
+// 缺行必须按默认解释，且覆盖全部十二对、顺序稳定。
 func TestGetAppliesDefaults(t *testing.T) {
 	svc := newService(t, &fakeRepo{})
 	page, err := svc.Get(context.Background(), "user-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if len(page.Items) != 8 {
-		t.Fatalf("items = %d, want 8 (4 categories x 2 channels)", len(page.Items))
+	if len(page.Items) != 12 {
+		t.Fatalf("items = %d, want 12 (4 categories x 3 channels)", len(page.Items))
 	}
 	want := map[appnotify.Pair]bool{
-		{Category: "review_pending", Channel: "in_app"}:     true,
-		{Category: "review_pending", Channel: "email"}:      true,
-		{Category: "credential_invalid", Channel: "in_app"}: true,
-		{Category: "credential_invalid", Channel: "email"}:  false,
-		{Category: "sign_failed_daily", Channel: "in_app"}:  false,
-		{Category: "sign_failed_daily", Channel: "email"}:   true,
-		{Category: "capacity_rejected", Channel: "in_app"}:  true,
-		{Category: "capacity_rejected", Channel: "email"}:   false,
+		{Category: "review_pending", Channel: "in_app"}:      true,
+		{Category: "review_pending", Channel: "email"}:       true,
+		{Category: "review_pending", Channel: "webhook"}:     true,
+		{Category: "credential_invalid", Channel: "in_app"}:  true,
+		{Category: "credential_invalid", Channel: "email"}:   false,
+		{Category: "credential_invalid", Channel: "webhook"}: true,
+		{Category: "sign_failed_daily", Channel: "in_app"}:   false,
+		{Category: "sign_failed_daily", Channel: "email"}:    true,
+		{Category: "sign_failed_daily", Channel: "webhook"}:  false,
+		{Category: "capacity_rejected", Channel: "in_app"}:   true,
+		{Category: "capacity_rejected", Channel: "email"}:    false,
+		{Category: "capacity_rejected", Channel: "webhook"}:  false,
 	}
 	for _, item := range page.Items {
 		pair := appnotify.Pair{Category: item.Category, Channel: item.Channel}
