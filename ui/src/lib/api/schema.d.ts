@@ -1341,10 +1341,12 @@ export interface paths {
          *     covers every category and channel with the effective state. A user
          *     has no subscription surface and answers 403. A pair with no stored
          *     row reads as the default:
-         *     review_pending is in_app and email; credential_invalid is in_app;
-         *     sign_failed_daily is email; capacity_rejected is in_app.
+         *     review_pending is in_app, email and webhook; credential_invalid is
+         *     in_app and webhook; sign_failed_daily is email; capacity_rejected
+         *     is in_app.
          *     These effective subscriptions decide delivery: enabled in_app pairs
-         *     land in the inbox, enabled email pairs are queued for mail delivery.
+         *     land in the inbox, enabled email pairs are queued for mail delivery,
+         *     enabled webhook pairs are queued for webhook push delivery.
          *     notification_prefs.sign_failed_daily is the administrator
          *     subscription channel for the daily digest. It does not gate a user's
          *     own sign-failure mail, which the user's mail_notify switch controls.
@@ -1425,6 +1427,42 @@ export interface paths {
          *     relay host or credential.
          */
         post: operations["AdminMailTest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/webhook/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send one test webhook push through the configured outlet.
+         * @description Master only. Sends one push through the configured webhook outlet
+         *     (the ServerChan endpoint or the custom webhook URL, per
+         *     YIBAN_WEBHOOK_TYPE). The request body is empty and ignored. Delivery
+         *     is synchronous: a 200 means the outlet accepted the push (the
+         *     ServerChan answer reported code 0, or the custom endpoint answered
+         *     2xx without a non-zero business code), not that a phone was touched.
+         *     The test bypasses the per-title cooldown and the daily budget that
+         *     govern ordinary webhook deliveries. Webhook delivery disabled
+         *     (the channel is off or no secret is set) answers 409. A delivery
+         *     failure answers 502 with only a coarse failure class; the answer
+         *     never carries the endpoint reply, the status code, the URL or the
+         *     secret. At most one test-push attempt per master per 60 seconds; a
+         *     request inside that window answers 429 with Retry-After. The
+         *     cooldown is process-local and resets when the server restarts.
+         *     Every attempt, success or failure, appends one settings.webhook_test
+         *     audit row whose detail holds only the result and the coarse failure
+         *     class; it never holds the endpoint reply, the URL or the secret.
+         */
+        post: operations["AdminWebhookTest"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2266,10 +2304,12 @@ export interface components {
          */
         NotifyCategory: "credential_invalid" | "review_pending" | "sign_failed_daily" | "capacity_rejected";
         /**
-         * @description Closed set of delivery channels; in_app and email are the only values.
+         * @description Closed set of delivery channels; in_app, email and webhook are the
+         *     only values. The serverchan and custom push endpoints are outlet
+         *     types inside the webhook channel, not channels of their own.
          * @enum {string}
          */
-        NotifyChannel: "in_app" | "email";
+        NotifyChannel: "in_app" | "email" | "webhook";
         NotifyPref: {
             category: components["schemas"]["NotifyCategory"];
             channel: components["schemas"]["NotifyChannel"];
@@ -2280,9 +2320,9 @@ export interface components {
             enabled: boolean;
         };
         /**
-         * @description All four categories across both channels, so the client renders the
-         *     full matrix without merging defaults itself. Exactly eight items in
-         *     a stable order.
+         * @description All four categories across all three channels, so the client renders
+         *     the full matrix without merging defaults itself. Exactly twelve
+         *     items in a stable order.
          */
         NotifyPrefPage: {
             items: components["schemas"]["NotifyPref"][];
@@ -2373,6 +2413,13 @@ export interface components {
             /**
              * @description User-safe confirmation. It never carries the SMTP reply, the
              *     recipient address, the relay host or any credential.
+             */
+            message: string;
+        };
+        WebhookTestResult: {
+            /**
+             * @description User-safe confirmation. It never carries the endpoint reply,
+             *     the status code, the webhook URL or the secret.
              */
             message: string;
         };
@@ -5825,6 +5872,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MailTestResult"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            409: components["responses"]["ConflictError"];
+            429: components["responses"]["TooManyRequestsError"];
+            502: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminWebhookTest: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The webhook outlet accepted the test push. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookTestResult"];
                 };
             };
             401: components["responses"]["UnauthorizedError"];

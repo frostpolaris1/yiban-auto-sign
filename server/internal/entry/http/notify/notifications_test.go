@@ -112,8 +112,8 @@ func TestNotifyRoleGate(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
 			t.Fatalf("decode page: %v", err)
 		}
-		if len(page.Items) != 8 {
-			t.Fatalf("%s items = %d, want 8", role, len(page.Items))
+		if len(page.Items) != 12 {
+			t.Fatalf("%s items = %d, want 12", role, len(page.Items))
 		}
 	}
 }

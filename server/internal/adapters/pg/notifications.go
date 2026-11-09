@@ -280,8 +280,9 @@ func insertPending(ctx context.Context, q queryer, in corenotify.DeliveryInsert)
 	if in.UserID == "" {
 		return corenotify.Delivery{}, validationError("user id is required")
 	}
-	if in.Channel != corenotify.ChannelEmail {
-		return corenotify.Delivery{}, validationError("delivery channel must be email")
+	// 站内信渠道不建账本行；email 与 webhook 是建账本的两个投递渠道。
+	if in.Channel != corenotify.ChannelEmail && in.Channel != corenotify.ChannelWebhook {
+		return corenotify.Delivery{}, validationError("delivery channel must be email or webhook")
 	}
 	var (
 		item corenotify.Delivery
@@ -382,13 +383,38 @@ func (r *NotificationDeliveryRepo) MarkFailed(ctx context.Context, id, errorKind
 
 // MarkSkipped 把一条待投递行记为跳过。
 // 跳过不是发送尝试，故 attempts 不递增；原因写 skip_reason，
-// last_error_kind 清空——后者只存 core/mail.Kind 词表。
+// last_error_kind 清空——后者按渠道存 core/mail.Kind 或 core/webhook.Kind。
 func (r *NotificationDeliveryRepo) MarkSkipped(ctx context.Context, id, reason string) error {
 	return r.markTerminal(ctx, id, `
 		UPDATE notification_deliveries
 		   SET status = 'skipped', skip_reason = $2, last_error_kind = '',
 		       next_retry_at = NULL, updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`, reason)
+}
+
+// CountSentOnDay 统计某渠道在 [from, to) 时间窗内真发成功的行数。
+//
+// webhook 当日额度的单源就是账本本身：只有 sent 行占用额度，
+// failed/skipped 不计数、无需退还。时间口径用 updated_at
+//（MarkSent 写入的真发成功时刻），不是 created_at（入队时刻）：
+// 跨日重试成功的行归它真发的那一天。
+func (r *NotificationDeliveryRepo) CountSentOnDay(ctx context.Context,
+	channel corenotify.Channel, from, to time.Time) (int, error) {
+	if channel != corenotify.ChannelEmail && channel != corenotify.ChannelWebhook {
+		return 0, validationError("delivery channel must be email or webhook")
+	}
+	if from.IsZero() || to.IsZero() || !from.Before(to) {
+		return 0, validationError("day window must be a non-empty [from, to)")
+	}
+	var count int
+	if err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT count(*) FROM notification_deliveries
+		 WHERE channel = $1 AND status = 'sent'
+		   AND updated_at >= $2 AND updated_at < $3`,
+		string(channel), from, to).Scan(&count); err != nil {
+		return 0, mapError(err)
+	}
+	return count, nil
 }
 
 // markTerminal 执行一条只改 pending 行的终态语句。0 行不是错误：幂等重放。

@@ -3,14 +3,17 @@
 // 功能：
 // GET /api/admin/settings（master/admin 只读名册）、
 // POST /api/admin/mail/test（master 向自己的邮箱发测试信）、
+// POST /api/admin/webhook/test（master 经配置的 webhook 出口发测试推送）、
 // PUT /api/admin/announcement（master）、GET /api/announcement（所有已登录角色）。
 // 本包**不**写 SQL、**不**回显敏感值。
 //
 // 归属：entry/http 入口层。用例来自 app/settings；
-// 角色是运行时门：设置名册限 master/admin，公告写与测试邮件限 master。
+// 角色是运行时门：设置名册限 master/admin，公告写与测试邮件、
+// 测试推送限 master。
 //
 // 口径：敏感配置只回 {set, masked, source}；公告正文不经审计 detail。
-// 测试邮件收件人只取会话用户邮箱，响应只给固定文案。
+// 测试邮件收件人只取会话用户邮箱，测试推送目标只取配置的出口；
+// 响应只给固定文案，不含对端细节。
 package system
 
 import (
@@ -47,17 +50,23 @@ type MailTest interface {
 	SendTestMail(ctx context.Context, user coreauth.User) error
 }
 
+// WebhookTest 是测试推送用例端口。
+type WebhookTest interface {
+	SendTestWebhook(ctx context.Context, user coreauth.User) error
+}
+
 // AutoApprove 是全局自动审批开关端口。
 type AutoApprove interface {
 	AutoApprove(ctx context.Context, scope corescope.Scope) (bool, error)
 	SetAutoApprove(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, enabled bool) (bool, error)
 }
 
-// Handler 处理设置名册、公告、测试邮件与自动审批开关端点。
+// Handler 处理设置名册、公告、测试邮件、测试推送与自动审批开关端点。
 type Handler struct {
 	roster       Roster
 	announcement Announcement
 	mailTest     MailTest
+	webhookTest  WebhookTest
 	autoApprove  AutoApprove
 }
 
@@ -70,6 +79,13 @@ func NewHandler(roster Roster, announcement Announcement, mailTest MailTest) *Ha
 // 未注入时两个端点回 501：开关面缺失必须显性，不得读成关闭。
 func (h *Handler) WithAutoApprove(auto AutoApprove) *Handler {
 	h.autoApprove = auto
+	return h
+}
+
+// WithWebhookTest 注入测试推送用例。
+// 未注入时端点回 501：生产装配必须注入，缺失必须显性。
+func (h *Handler) WithWebhookTest(test WebhookTest) *Handler {
+	h.webhookTest = test
 	return h
 }
 
@@ -120,6 +136,31 @@ func (h *Handler) AdminMailTest(c *gin.Context, _ oapi.AdminMailTestParams) {
 	}
 	respond.JSON(c.Writer, http.StatusOK, oapi.MailTestResult{
 		Message: "test email accepted by the SMTP server",
+	})
+}
+
+// AdminWebhookTest 实现 POST /api/admin/webhook/test。仅 master。
+// 请求体为空且被忽略：目标只取配置的 webhook 出口，客户端无法指定。
+func (h *Handler) AdminWebhookTest(c *gin.Context, _ oapi.AdminWebhookTestParams) {
+	session, ok := requester(c)
+	if !ok {
+		return
+	}
+	if session.User.Role != coreauth.RoleMaster {
+		fail(c, errs.New(errs.CodeForbidden, "master role is required"))
+		return
+	}
+	if h.webhookTest == nil {
+		respond.NotImplemented(c.Writer, c.Request)
+		return
+	}
+	if err := h.webhookTest.SendTestWebhook(c.Request.Context(), session.User); err != nil {
+		retryAfter(c, err)
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.WebhookTestResult{
+		Message: "test webhook accepted by the outlet",
 	})
 }
 

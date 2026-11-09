@@ -361,8 +361,9 @@ func (e NotifyCategory) Valid() bool {
 
 // Defines values for NotifyChannel.
 const (
-	Email NotifyChannel = "email"
-	InApp NotifyChannel = "in_app"
+	Email   NotifyChannel = "email"
+	InApp   NotifyChannel = "in_app"
+	Webhook NotifyChannel = "webhook"
 )
 
 // Valid indicates whether the value is a known member of the NotifyChannel enum.
@@ -371,6 +372,8 @@ func (e NotifyChannel) Valid() bool {
 	case Email:
 		return true
 	case InApp:
+		return true
+	case Webhook:
 		return true
 	default:
 		return false
@@ -1635,7 +1638,9 @@ type NotificationRead struct {
 // NotifyCategory Closed set of notification subjects for this phase.
 type NotifyCategory string
 
-// NotifyChannel Closed set of delivery channels; in_app and email are the only values.
+// NotifyChannel Closed set of delivery channels; in_app, email and webhook are the
+// only values. The serverchan and custom push endpoints are outlet
+// types inside the webhook channel, not channels of their own.
 type NotifyChannel string
 
 // NotifyPref defines model for NotifyPref.
@@ -1643,7 +1648,9 @@ type NotifyPref struct {
 	// Category Closed set of notification subjects for this phase.
 	Category NotifyCategory `json:"category"`
 
-	// Channel Closed set of delivery channels; in_app and email are the only values.
+	// Channel Closed set of delivery channels; in_app, email and webhook are the
+	// only values. The serverchan and custom push endpoints are outlet
+	// types inside the webhook channel, not channels of their own.
 	Channel NotifyChannel `json:"channel"`
 
 	// Enabled Effective state: the stored override when present, the category
@@ -1651,9 +1658,9 @@ type NotifyPref struct {
 	Enabled bool `json:"enabled"`
 }
 
-// NotifyPrefPage All four categories across both channels, so the client renders the
-// full matrix without merging defaults itself. Exactly eight items in
-// a stable order.
+// NotifyPrefPage All four categories across all three channels, so the client renders
+// the full matrix without merging defaults itself. Exactly twelve
+// items in a stable order.
 type NotifyPrefPage struct {
 	Items []NotifyPref `json:"items"`
 }
@@ -2497,6 +2504,13 @@ type UserUpdate struct {
 	Status          *UserStatus      `json:"status,omitempty"`
 }
 
+// WebhookTestResult defines model for WebhookTestResult.
+type WebhookTestResult struct {
+	// Message User-safe confirmation. It never carries the endpoint reply,
+	// the status code, the webhook URL or the secret.
+	Message string `json:"message"`
+}
+
 // AccountID defines model for AccountID.
 type AccountID = string
 
@@ -2795,6 +2809,13 @@ type AdminTaskExportParams struct {
 
 // AdminTaskExportParamsState defines parameters for AdminTaskExport.
 type AdminTaskExportParamsState string
+
+// AdminWebhookTestParams defines parameters for AdminWebhookTest.
+type AdminWebhookTestParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
 
 // AuditLogListParams defines parameters for AuditLogList.
 type AuditLogListParams struct {
@@ -3483,6 +3504,9 @@ type ServerInterface interface {
 	// AdminTaskExport Download the task search as CSV.
 	// (GET /api/admin/tasks/export)
 	AdminTaskExport(c *gin.Context, params AdminTaskExportParams)
+	// AdminWebhookTest Send one test webhook push through the configured outlet.
+	// (POST /api/admin/webhook/test)
+	AdminWebhookTest(c *gin.Context, params AdminWebhookTestParams)
 	// AnnouncementGet Read the published site announcement.
 	// (GET /api/announcement)
 	AnnouncementGet(c *gin.Context)
@@ -5028,6 +5052,49 @@ func (siw *ServerInterfaceWrapper) AdminTaskExport(c *gin.Context) {
 	}
 
 	siw.Handler.AdminTaskExport(c, params)
+}
+
+// AdminWebhookTest operation middleware
+func (siw *ServerInterfaceWrapper) AdminWebhookTest(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminWebhookTestParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminWebhookTest(c, params)
 }
 
 // AnnouncementGet operation middleware
@@ -7285,6 +7352,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PUT(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifySet)
 	router.GET(options.BaseURL+"/api/admin/settings", wrapper.AdminSettings)
 	router.POST(options.BaseURL+"/api/admin/mail/test", wrapper.AdminMailTest)
+	router.POST(options.BaseURL+"/api/admin/webhook/test", wrapper.AdminWebhookTest)
 	router.PUT(options.BaseURL+"/api/admin/announcement", wrapper.AnnouncementSet)
 	router.GET(options.BaseURL+"/api/admin/auto-approve", wrapper.AdminAutoApprove)
 	router.PUT(options.BaseURL+"/api/admin/auto-approve", wrapper.AdminAutoApproveSet)

@@ -13,7 +13,8 @@ package notify
 
 import "time"
 
-// 投递账本的 status 取值。站内信渠道不建账本行，故此词表只服务邮件投递。
+// 投递账本的 status 取值。站内信渠道不建账本行，故此词表只服务
+// email 与 webhook 投递。
 // 存储与用例共用这些常量；数据库不加 CHECK（同一不变式只留一道守卫）。
 const (
 	DeliveryStatusPending = "pending"
@@ -57,7 +58,8 @@ type NotificationQuery struct {
 
 // Delivery 是投递账本的一行。
 // Status 与 LastErrorKind 是账本内部字符串，对客户端不可见。
-// LastErrorKind 只存 core/mail.Kind 词表；SkipReason 只存跳过原因。
+// LastErrorKind 按渠道取词表：email 行用 core/mail.Kind，webhook 行用
+// core/webhook.Kind；SkipReason 只存跳过原因。
 // Attempts 是**发送尝试数**：MarkSent 与 MarkFailed 都递增，
 // skipped 不是尝试、不递增。
 type Delivery struct {

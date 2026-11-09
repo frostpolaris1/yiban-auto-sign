@@ -97,8 +97,11 @@ const (
 	// 设置页测试邮件。每次外呼都记，成功与失败同动作；
 	// detail 只记结果与投递粗分类，**绝无** SMTP 应答、邮箱原文或口令。
 	ActionSettingsMailTest Action = "settings.mail_test"
-	ActionAccountCreate    Action = "account.create"
-	ActionAccountUpdate    Action = "account.update"
+	// 设置页测试推送（webhook）。每次外呼都记，成功与失败同动作；
+	// detail 只记结果与投递粗分类，**绝无**对端应答、状态码、URL 或密钥。
+	ActionSettingsWebhookTest Action = "settings.webhook_test"
+	ActionAccountCreate       Action = "account.create"
+	ActionAccountUpdate       Action = "account.update"
 	// 自动核验通过：pending→active，无人工审核者。detail 只记状态迁移。
 	ActionAccountAutoApprove Action = "account.auto_approve"
 	// 自动核验失败：账号留 pending。detail 只记结果词（如

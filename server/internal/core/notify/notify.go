@@ -12,8 +12,9 @@
 // Category、Channel、Pair、Pref；Category*、Channel* 常量；Default、Categories、Channels。
 //
 // # 口径
-// 默认表只有一份：review_pending=in_app+email；credential_invalid=in_app；
-// sign_failed_daily=email；capacity_rejected=in_app。
+// 默认表只有一份：review_pending=in_app+email+webhook；
+// credential_invalid=in_app+webhook；sign_failed_daily=email；
+// capacity_rejected=in_app。
 // 表只存覆盖值；缺行按本表解释。
 package notify
 
@@ -31,14 +32,17 @@ const (
 	CategoryCapacityRejected  Category = "capacity_rejected"
 )
 
-// Channel 是投递渠道的闭合词表。两个渠道都已接线：
-// in_app 落站内信行，email 走投递账本与重试。
+// Channel 是投递渠道的闭合词表。三个渠道都已接线：
+// in_app 落站内信行，email 走投递账本与重试，webhook 走
+// serverchan/custom 两条出口的投递账本与重试。
 type Channel string
 
-// 渠道词表。in_app 与 email 是仅有的两个值。
+// 渠道词表。in_app、email、webhook 是仅有的三个值；
+// serverchan/custom 是 webhook 渠道内部的出口类型，不是独立渠道。
 const (
-	ChannelInApp Channel = "in_app"
-	ChannelEmail Channel = "email"
+	ChannelInApp   Channel = "in_app"
+	ChannelEmail   Channel = "email"
+	ChannelWebhook Channel = "webhook"
 )
 
 // categories 是稳定的类别顺序。响应按它展开。
@@ -50,7 +54,7 @@ var categories = []Category{
 }
 
 // channels 是稳定的渠道顺序。
-var channels = []Channel{ChannelInApp, ChannelEmail}
+var channels = []Channel{ChannelInApp, ChannelEmail, ChannelWebhook}
 
 // Categories 返回类别词表的副本，顺序稳定。
 func Categories() []Category { return append([]Category(nil), categories...) }
@@ -92,15 +96,21 @@ type Pref struct {
 }
 
 // defaults 是缺行时的默认状态。
+// webhook 列默认只开 review_pending 与 credential_invalid：
+// 手机推送留给需要人立刻处理的告警，日额度有限，日常报表类不挤占。
 var defaults = map[Pair]bool{
 	{Category: CategoryReviewPending, Channel: ChannelInApp}:     true,
 	{Category: CategoryReviewPending, Channel: ChannelEmail}:     true,
+	{Category: CategoryReviewPending, Channel: ChannelWebhook}:   true,
 	{Category: CategoryCredentialInvalid, Channel: ChannelInApp}: true,
 	{Category: CategoryCredentialInvalid, Channel: ChannelEmail}: false,
+	{Category: CategoryCredentialInvalid, Channel: ChannelWebhook}: true,
 	{Category: CategorySignFailedDaily, Channel: ChannelInApp}:   false,
 	{Category: CategorySignFailedDaily, Channel: ChannelEmail}:   true,
+	{Category: CategorySignFailedDaily, Channel: ChannelWebhook}: false,
 	{Category: CategoryCapacityRejected, Channel: ChannelInApp}:  true,
 	{Category: CategoryCapacityRejected, Channel: ChannelEmail}:  false,
+	{Category: CategoryCapacityRejected, Channel: ChannelWebhook}: false,
 }
 
 // Default 返回一对的默认状态。未知对返回 false（零值）；
