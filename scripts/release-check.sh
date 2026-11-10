@@ -81,8 +81,17 @@ check_version() {
     local top
     top="$(grep -m1 -E '^## \[v[0-9]+\.[0-9]+\.[0-9]+\]' "$changelog" \
         | sed -E 's/^## \[(v[0-9.]+)\].*/\1/')"
-    if [ "$top" != "v$v" ]; then
-        REASON_version="__version__=$v but CHANGELOG top is '${top:-none}'"; return
+    # 双行共库（2026-11-10 定稿）：旧 Python 线的 __version__ 冻结在 0.6.4，
+    # Go 线的产品版本在仓库根 VERSION（1.0.0）。两条线共用一份 CHANGELOG，
+    # 顶部只能写一个条目，故「等于 __version__」或「等于根 VERSION」任一成立即放行；
+    # 两个都不是才红——那时顶部是第三个值，说明有人手改了版本或 CHANGELOG。
+    local go_v=""
+    if [ -f "$ROOT/VERSION" ]; then
+        go_v="$(head -n 1 "$ROOT/VERSION" | tr -d '\r')"
+        printf '%s' "$go_v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || go_v=""
+    fi
+    if [ "$top" != "v$v" ] && { [ -z "$go_v" ] || [ "$top" != "v$go_v" ]; }; then
+        REASON_version="__version__=$v, root VERSION=${go_v:-none}, but CHANGELOG top is '${top:-none}'"; return
     fi
     if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
         REASON_version="$ROOT is not a git checkout"; return
@@ -97,7 +106,7 @@ check_version() {
         REASON_version="tag $tag points at $tag_sha, HEAD is $head_sha"; return
     fi
     STATUS_version=PASS
-    echo "version: __version__=$v, CHANGELOG top=$top, tag $tag -> HEAD ok"
+    echo "version: __version__=$v, root VERSION=${go_v:-none}, CHANGELOG top=$top, tag $tag -> HEAD ok"
 }
 
 # 项 1b Go 线产品版本与发布 tag（2026-11-05 版本批）。
@@ -505,6 +514,16 @@ selftest() {
     printf '__version__ = "9.9.10"\n' > "$tmp/yiban/__init__.py"
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
     expect "version red after breaking __version__" 1 "$rc"
+    # 双行共库（2026-11-10 定稿）：顶部等于根 VERSION 也放行。
+    printf '__version__ = "9.9.9"\n' > "$tmp/yiban/__init__.py"
+    printf '9.9.10\n' > "$tmp/VERSION"
+    printf '# 更新日志\n\n## [v9.9.10] - 2026-01-02\n' > "$tmp/CHANGELOG.md"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
+    expect "version green when CHANGELOG top matches root VERSION" 0 "$rc"
+    # 突变：顶部写成两线之外的第三个值 → 红。
+    printf '# 更新日志\n\n## [v9.9.11] - 2026-01-03\n' > "$tmp/CHANGELOG.md"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
+    expect "version red when CHANGELOG top is a third version" 1 "$rc"
     rm -rf "$tmp"
 
     # 不变式 1g：go-version 项有牙（2026-11-05 版本批）。夹具用桩 builder
