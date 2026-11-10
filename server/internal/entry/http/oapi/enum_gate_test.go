@@ -48,6 +48,8 @@ var contractEnums = []contractEnum{
 	{".", "ScheduleSignDist", "../../../app/settings", "SignDist", "SignDist", 2},
 	// r4r：配额来源词表单源在 app/settings（db/default 两值）；契约同集。
 	{".", "QuotaSettingSource", "../../../app/settings", "QuotaSource", "QuotaSource", 2},
+	// smtp4：SMTP 设置来源词表单源在 app/settings（db/env/default 三值）；契约同集。
+	{".", "MailSettingSource", "../../../app/settings", "MailSource", "MailSource", 3},
 	{".", "SchoolStatus", "../../../core/school", "Status", "Status", 2},
 	{".", "UserListParamsGroup", "../../../core/user", "Group", "Group", 3},
 	{".", "UserRole", "../../../core/auth", "Role", "Role", 3},
@@ -74,6 +76,7 @@ var contractEnumExempt = []contractExempt{
 	{"AccountReviewRequestDecision", "无 pg ENUM"},
 	{"DiagnosticsItemSuggestion", "core 词表未标注类型，扫描器不覆盖（core/diagnostic.Suggest*）"},
 	{"HealthStatusStatus", "无 pg ENUM"},
+	{"MailTLSMode", "词表在 core/mail 未标注类型（TLSMode* 无显式类型），写面校验复用 core/mail.TLSModes()"},
 	{"PhotoMime", "core 无显式类型；库侧 CHECK 为同 2 值"},
 	{"SchoolCreateTimezone", "无 pg ENUM"},
 	{"SchoolUpdateTimezone", "无 pg ENUM"},

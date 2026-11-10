@@ -25,6 +25,8 @@ package system
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -32,6 +34,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -74,6 +77,12 @@ type ScheduleSettings interface {
 	SetSchedule(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, changes []appsettings.ScheduleChange) error
 }
 
+// Reauth 是危险操作的二次口令端口。实现是 app/auth.Service。
+// 缺失时写面 500 失败关闭：SMTP 凭据是出口配置，不得无复核落库。
+type Reauth interface {
+	Reauthenticate(ctx context.Context, userID, password string) error
+}
+
 // Handler 处理设置名册、公告、测试邮件、测试推送、自动审批开关与配额端点。
 type Handler struct {
 	roster           Roster
@@ -83,6 +92,8 @@ type Handler struct {
 	autoApprove      AutoApprove
 	scheduleSettings ScheduleSettings
 	quotaSettings    QuotaSettings
+	mailSettings     MailSettings
+	reauth           Reauth
 }
 
 // NewHandler 构造系统设置处理器。
@@ -108,6 +119,13 @@ func (h *Handler) WithWebhookTest(test WebhookTest) *Handler {
 // 未注入时端点回 501：生产装配必须注入，缺失必须显性。
 func (h *Handler) WithScheduleSettings(s ScheduleSettings) *Handler {
 	h.scheduleSettings = s
+	return h
+}
+
+// WithReauth 注入危险操作的二次口令用例。
+// 未注入时 mail 写面回 500：出口配置不得无复核落库。
+func (h *Handler) WithReauth(r Reauth) *Handler {
+	h.reauth = r
 	return h
 }
 
@@ -509,6 +527,42 @@ func settingValue(value any) oapi.SettingItem_Value {
 // announcementResponse 把公告转成传输形状。
 func announcementResponse(announcement appsettings.Announcement) oapi.Announcement {
 	return oapi.Announcement{Text: announcement.Text, UpdatedAt: announcement.UpdatedAt}
+}
+
+// reauthenticate 校验危险操作的二次口令并写出失败响应。
+// 缺值（空串）回 400；用例错误按码映射（403/429/500）；
+// 节流命中时先写 Retry-After 头再回 429。
+// 返回 false 表示已写响应，调用方直接返回。
+// 口径与 account/admin/schedule 三个既有 helper 一致。
+func (h *Handler) reauthenticate(c *gin.Context, userID, password string) bool {
+	if h.reauth == nil {
+		// 生产装配必须注入；缺失是接线错误，失败关闭。
+		fail(c, errs.New(errs.CodeInternal, "reauthentication is not wired"))
+		return false
+	}
+	if password == "" {
+		fail(c, errs.New(errs.CodeValidation, "current_password is required"))
+		return false
+	}
+	if err := h.reauth.Reauthenticate(c.Request.Context(), userID, password); err != nil {
+		writeReauthRetryAfter(c, err)
+		fail(c, err)
+		return false
+	}
+	return true
+}
+
+// writeReauthRetryAfter 在再认证节流错误上写 Retry-After 头（秒，向上取整，至少 1）。
+func writeReauthRetryAfter(c *gin.Context, err error) {
+	var throttled *appauth.ReauthThrottled
+	if !errors.As(err, &throttled) {
+		return
+	}
+	seconds := int(math.Ceil(throttled.RetryAfter.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
 }
 
 func fail(c *gin.Context, err error) {

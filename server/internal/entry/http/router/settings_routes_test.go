@@ -127,6 +127,34 @@ func (s *stubQuotaSettings) SetQuota(context.Context, corescope.Scope, appaudit.
 	return nil
 }
 
+// stubMailSettings 是 SMTP 设置读写端口的进程内替身（smtp4）。
+type stubMailSettings struct{ sets int }
+
+func (s *stubMailSettings) MailSettings(context.Context, corescope.Scope) (appsettings.MailReport, error) {
+	return appsettings.MailReport{
+		Host:    appsettings.MailValue{Value: "smtp.env.example", Source: appsettings.MailSourceEnv},
+		Port:    appsettings.MailPortValue{Value: 465, Source: appsettings.MailSourceEnv},
+		TLSMode: appsettings.MailValue{Value: "auto", Source: appsettings.MailSourceEnv},
+		From:    appsettings.MailSensitiveValue{Set: true, Masked: "****", Source: appsettings.MailSourceEnv},
+		User:    appsettings.MailSensitiveValue{Set: true, Masked: "****", Source: appsettings.MailSourceEnv},
+		Pass:    appsettings.MailSecretValue{Set: true, Source: appsettings.MailSourceEnv},
+	}, nil
+}
+
+func (s *stubMailSettings) SetMail(context.Context, corescope.Scope, appaudit.Actor,
+	[]appsettings.MailChange) error {
+	s.sets++
+	return nil
+}
+
+// stubReauth 是危险操作二次口令的进程内替身：总是通过。
+type stubReauth struct{ calls int }
+
+func (s *stubReauth) Reauthenticate(context.Context, string, string) error {
+	s.calls++
+	return nil
+}
+
 func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 	t.Helper()
 	return newSettingsEngineWith(t,
@@ -135,7 +163,9 @@ func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 			WithAutoApprove(&stubAutoApprove{}).
 			WithWebhookTest(stubWebhookTest{}).
 			WithScheduleSettings(&stubScheduleSettings{}).
-			WithQuotaSettings(&stubQuotaSettings{}))
+			WithQuotaSettings(&stubQuotaSettings{}).
+			WithMailSettings(&stubMailSettings{}).
+			WithReauth(&stubReauth{}))
 }
 
 func newSettingsEngineWith(t *testing.T, notify *notifyhttp.Handler, system *systemhttp.Handler) (*gin.Engine, *stubIssuer) {
@@ -251,6 +281,13 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 		{"quota settings write admin", http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, admin, true, http.StatusForbidden},
 		{"quota settings write without csrf", http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, master, false, http.StatusForbidden},
 		{"quota settings write master", http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, master, true, http.StatusOK},
+		{"mail settings user", http.MethodGet, "/api/admin/mail-settings", "", user, false, http.StatusForbidden},
+		{"mail settings admin", http.MethodGet, "/api/admin/mail-settings", "", admin, false, http.StatusOK},
+		{"mail settings master", http.MethodGet, "/api/admin/mail-settings", "", master, false, http.StatusOK},
+		{"mail settings write user", http.MethodPut, "/api/admin/mail-settings", `{"host":"smtp.new.example","current_password":"pw"}`, user, true, http.StatusForbidden},
+		{"mail settings write admin", http.MethodPut, "/api/admin/mail-settings", `{"host":"smtp.new.example","current_password":"pw"}`, admin, true, http.StatusForbidden},
+		{"mail settings write without csrf", http.MethodPut, "/api/admin/mail-settings", `{"host":"smtp.new.example","current_password":"pw"}`, master, false, http.StatusForbidden},
+		{"mail settings write master", http.MethodPut, "/api/admin/mail-settings", `{"host":"smtp.new.example","current_password":"pw"}`, master, true, http.StatusOK},
 		{"mail test user", http.MethodPost, "/api/admin/mail/test", "", user, true, http.StatusForbidden},
 		{"mail test admin", http.MethodPost, "/api/admin/mail/test", "", admin, true, http.StatusForbidden},
 		{"mail test master without csrf", http.MethodPost, "/api/admin/mail/test", "", master, false, http.StatusForbidden},
@@ -310,6 +347,8 @@ func TestSettingsRoutesNilHandlersReturn501(t *testing.T) {
 		{http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, true},
 		{http.MethodGet, "/api/admin/quota-settings", "", false},
 		{http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, true},
+		{http.MethodGet, "/api/admin/mail-settings", "", false},
+		{http.MethodPut, "/api/admin/mail-settings", `{"host":"smtp.new.example","current_password":"pw"}`, true},
 		{http.MethodPost, "/api/admin/mail/test", "", true},
 		{http.MethodPost, "/api/admin/webhook/test", "", true},
 		{http.MethodGet, "/api/announcement", "", false},
@@ -354,6 +393,8 @@ func TestSettingsRoutesSingleSideWiring(t *testing.T) {
 		{http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, true, http.StatusOK},
 		{http.MethodGet, "/api/admin/quota-settings", "", false, http.StatusOK},
 		{http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, true, http.StatusOK},
+		{http.MethodGet, "/api/admin/mail-settings", "", false, http.StatusOK},
+		{http.MethodPut, "/api/admin/mail-settings", `{"host":"smtp.new.example","current_password":"pw"}`, true, http.StatusOK},
 		{http.MethodPost, "/api/admin/mail/test", "", true, http.StatusOK},
 		{http.MethodPost, "/api/admin/webhook/test", "", true, http.StatusOK},
 		{http.MethodGet, "/api/announcement", "", false, http.StatusOK},
@@ -389,7 +430,9 @@ func TestSettingsRoutesSingleSideWiring(t *testing.T) {
 		systemHandler := systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}).
 			WithWebhookTest(stubWebhookTest{}).
 			WithScheduleSettings(&stubScheduleSettings{}).
-			WithQuotaSettings(&stubQuotaSettings{})
+			WithQuotaSettings(&stubQuotaSettings{}).
+			WithMailSettings(&stubMailSettings{}).
+			WithReauth(&stubReauth{})
 		engine, issuer := newSettingsEngineWith(t, nil, systemHandler)
 		master := issueUser(t, issuer, auth.RoleMaster)
 		for _, tc := range notifyCases {

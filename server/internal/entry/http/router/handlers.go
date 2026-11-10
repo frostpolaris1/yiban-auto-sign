@@ -713,6 +713,24 @@ func (s *server) AdminQuotaSettingsSet(c *gin.Context, params oapi.AdminQuotaSet
 	s.system.AdminQuotaSettingsSet(c, params)
 }
 
+// AdminMailSettings 委托 SMTP 设置读取。未装配时仍是 501。
+func (s *server) AdminMailSettings(c *gin.Context) {
+	if s.system == nil {
+		notImplemented(c)
+		return
+	}
+	s.system.AdminMailSettings(c)
+}
+
+// AdminMailSettingsSet 委托 SMTP 设置写回。未装配时仍是 501。
+func (s *server) AdminMailSettingsSet(c *gin.Context, params oapi.AdminMailSettingsSetParams) {
+	if s.system == nil {
+		notImplemented(c)
+		return
+	}
+	s.system.AdminMailSettingsSet(c, params)
+}
+
 // AdminAutoApprove 委托自动审批开关读取。未装配时仍是 501。
 func (s *server) AdminAutoApprove(c *gin.Context) {
 	if s.system == nil {

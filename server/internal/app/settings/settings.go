@@ -267,6 +267,12 @@ type Deps struct {
 	// Resolver 是覆盖链解析器（registry 域的单点持有者）。
 	// 为 nil 时同 Schedule：写回 500 失败关闭；名册覆盖读数用它装配（WithOverrides）。
 	Resolver *Resolver
+	// Cipher 加密 mail.pass 落库（复用 account cipher 的同一把钥）。
+	// 为 nil 时 mail 写面 500 失败关闭：口令不得以明文落库。
+	Cipher SecretCipher
+	// MailResolver 解析 mail 六键（GET 回显与每发送解析共用）。
+	// 为 nil 时 mail 读写都 500 失败关闭：缺失不得读成空配置。
+	MailResolver *MailResolver
 	// Mail 投递测试邮件。为 nil 表示 SMTP 关闭：
 	// 测试邮件端点回 409，**不**静默成功。
 	Mail coremail.Sender

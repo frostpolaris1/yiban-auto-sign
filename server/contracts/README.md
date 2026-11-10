@@ -208,6 +208,10 @@ either side drifts.
 |  |  |  | 读两枚 DB-only 配额键（quota.max_users/quota.max_accounts）的生效值与来源：缺行=1（master 自用紧档），0=不限哨兵；source=db（有效覆盖行）/default（缺行或坏行，坏行每键 Warn 一次）。配额键不进 GET /api/admin/settings 名册；存储故障 500，不报成缺省。 |
 | PUT | `/api/admin/quota-settings` | master | r4r |
 |  |  |  | 部分补丁写回配额两键：缺字段=不动该键、显式 null=删覆盖行回缺省、值=upsert；两键收 0–100000 整数（0=不限：计数检查整体跳过，一人一号规则独立不动）。越域、JSON 类型错、未知字段、空体 400 且零写入零审计；写入与恰一行 `settings.quota_writeback` 审计同事务，detail 只含变更键旧→新。写回热生效（下一次注册/建号/恢复即用新值，无需重启）；删行不回收存量行，只拒新写。200 回生效配额报告。 |
+| GET | `/api/admin/mail-settings` | master/admin | smtp4 |
+|  |  |  | 读六枚 DB-only SMTP 键（mail.smtp_host/mail.smtp_port/mail.tls_mode/mail.from/mail.user/mail.pass）的生效值与来源：缺行=env 值（source=env）或 registry 缺省（source=default）；host/port/tls_mode 回真实值，from/user 只回 `{set, masked:"****", source}`，pass 只回 `{set, source}`（无值、无掩码、无密文）。坏行（空主机/越域端口/词表外 TLS/无法解密的密文）回退 env 并每键 Warn 一次；存储故障 500，不报成缺省。六键不进 GET /api/admin/settings 名册。 |
+| PUT | `/api/admin/mail-settings` | master | smtp4 |
+|  |  |  | 部分补丁写回六键：缺字段=不动该键、显式 null=删覆盖行回 env、值=upsert；host 收合法主机名/IP，port 收 1–65535 整数，tls_mode 收小写 auto|implicit|starttls，from 收可投递地址，user/pass 收非空串。**任一字段变更都要求 current_password**：缺失/空 400、口令错 403，均零写入零审计；pass 写入前用部署凭据钥 AES-GCM 加密（复用 account cipher），密文 base64 落 settings 行，明文不进日志/审计/响应；加密失败 500 零写入。越域、JSON 类型错、未知字段、空体 400 且零写入零审计；写入与恰一行 `settings.mail_writeback` 审计同事务，detail 的 from/user/pass 只记 set/cleared，host/port/tls_mode 记字面旧→新。写回热生效（下一次 SMTP 外呼即用新值，无需重启）。200 回生效设置报告。 |
 | POST | `/api/admin/mail/test` | master | c3e |
 |  |  |  | 向当前会话邮箱同步发一封测试信；空请求体，收件人不可由客户端指定；邮件投递关闭（SMTP 未启用）与无邮箱均 409（文案不同）、发送失败 502（不含 SMTP 应答/主机/口令）；每次外呼（成功/失败）写 `settings.mail_test` 审计，detail 只含 result 与粗分类；每管理员 60s 冷却（进程内，重启清空）429＋Retry-After。 |
 | POST | `/api/admin/webhook/test` | master | kqa |

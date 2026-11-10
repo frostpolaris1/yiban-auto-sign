@@ -113,8 +113,13 @@ const (
 	// quota.max_accounts），值只允许 nil 或 [0,100000] 整数
 	// （0=不限哨兵），无自由文本容量。
 	ActionSettingsQuotaWriteback Action = "settings.quota_writeback"
-	ActionAccountCreate          Action = "account.create"
-	ActionAccountUpdate          Action = "account.update"
+	// SMTP 设置写回（smtp4）。一次 PUT 恰一行；detail 的 changes 是
+	// 键→[旧,新]对：非敏感键（mail.smtp_host/mail.smtp_port/
+	// mail.tls_mode）记字面值；敏感键（mail.from/mail.user/mail.pass）
+	// 只记 set/cleared 状态词，**绝无明文或密文口令**。
+	ActionSettingsMailWriteback Action = "settings.mail_writeback"
+	ActionAccountCreate         Action = "account.create"
+	ActionAccountUpdate         Action = "account.update"
 	// 自动核验通过：pending→active，无人工审核者。detail 只记状态迁移。
 	ActionAccountAutoApprove Action = "account.auto_approve"
 	// 自动核验失败：账号留 pending。detail 只记结果词（如
@@ -299,6 +304,10 @@ var (
 	// ck_settings_key_shape：^[a-z][a-z0-9_.]*$，另加上限 63 字符）。
 	// 只服务 settings.schedule_writeback / settings.quota_writeback 的 changes 键位。
 	settingsKeyShape = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,63}$`)
+	// hostShape 匹配 SMTP 主机名或 IP 字面量：字母、数字、点、冒号、连字符。
+	// 首字符允许冒号以容纳 IPv6 字面量（::1）；无空白、@、引号与路径分隔符，
+	// 故不是自由文本通道。只服务 settings.mail_writeback 的 mail.smtp_host 字面值。
+	hostShape = regexp.MustCompile(`^[A-Za-z0-9:][A-Za-z0-9.:-]{0,252}$`)
 )
 
 var detailKeys = map[string]bool{
@@ -333,10 +342,11 @@ var detailKeys = map[string]bool{
 	"retryable": true,
 	// 平台大学投影自动建校：值来自平台身份信封，是公开院校标识而非个人数据。
 	"university_id": true,
-	// 设置写回（sett2/3b/3c 调度、r4r 配额）：changes 是键→[旧,新]对。
-	// 键限 settings 键形状；值限 nil/布尔/整数标量或状态词形状字符串
-	// （调度域 [0,300]/[0,1439]/true-false/front-uniform，配额域 [0,100000]）。
-	// 无自由文本容量，不构成隐私面。
+	// 设置写回（sett2/3b/3c 调度、r4r 配额、smtp4 SMTP）：changes 是
+	// 键→[旧,新]对。键限 settings 键形状；值限 nil/布尔/整数标量、
+	// 状态词形状字符串（调度域 [0,300]/[0,1439]/true-false/front-uniform，
+	// 配额域 [0,100000]，mail 敏感键 set/cleared），或 settings.mail_writeback
+	// 的 mail.smtp_host 主机名形状。无自由文本容量，不构成隐私面。
 	"changes": true,
 }
 
@@ -460,7 +470,10 @@ func validateDetailValue(key string, value any) error {
 				switch value := item.(type) {
 				case nil, bool, int, int64:
 				case string:
-					if !wordShape.MatchString(value) {
+					// 主机名形状只放行 mail.smtp_host 一个键位：
+					// 其它 changes 键仍只收状态词，不因本批放宽。
+					if !wordShape.MatchString(value) &&
+						(name != "mail.smtp_host" || !hostShape.MatchString(value)) {
 						return fmt.Errorf("%w: changes %q value has the wrong value shape", ErrDetailShape, name)
 					}
 				default:

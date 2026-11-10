@@ -233,3 +233,15 @@ server/internal/app/user/quota_stub_test.go	uncovered=Go 测试文件自身即�
 server/internal/app/user/restore.go	uncovered=Go 包门 go test ./internal/app/user 真跑；恢复配额改经 app.QuotaLimits，0=不限语义由 pg quota e2e 真库钉住
 server/cmd/cli/backfill_time_prefs.go	uncovered=Go 包门 go test ./cmd/cli 真跑迁移 e2e；r4r 仅补部署顺序注释（缺省配额 1/1 与 legacy import 直插不占额），零行为变化
 server/internal/adapters/legacy/import.go	uncovered=上游 #346 文案改动（随 develop 合入）；迁移适配器行为由 cmd/cli migrate-legacy e2e 真库覆盖
+# ---- smtp4 SMTP 设置写回批次（2026-11-10）----
+server/internal/app/account/cipher.go	uncovered=Go 包门 go test ./internal/app/account 真跑：SealSecret/OpenSecret 复用同一把 AES-GCM 钥，base64 往返/跨域/篡改/随机源故障由 cipher_test 钉住
+server/internal/app/account/cipher_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），不需要 Python 侧覆盖
+server/internal/adapters/mail/smtp.go	uncovered=Go 包门 go test ./internal/adapters/mail 真跑：Config.Resolve 每发送解析，静态路径行为不变、动态 host/port 切换与失败分类由 smtp_test 钉住
+server/internal/adapters/mail/smtp_test.go	uncovered=Go 测试文件自身即门（go test ./internal/adapters/mail 真跑），不需要 Python 侧覆盖
+server/internal/app/settings/mail.go	uncovered=Go 包门 go test ./internal/app/settings 真跑：六键读链/写回/密文落库/审计三态/加密失败/回滚由 mail_test 钉住
+server/internal/app/settings/mail_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/settings 真跑），不需要 Python 侧覆盖
+server/internal/entry/http/system/mail_settings.go	uncovered=Go 包门 go test ./internal/entry/http/system 真跑：GET/PUT 角色门、current_password 缺失/错误、部分补丁、掩码响应由 mail_settings_test 钉住
+server/internal/entry/http/system/mail_settings_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/system 真跑），不需要 Python 侧覆盖
+server/internal/entry/http/system/handlers.go	uncovered=Go 包门 go test ./internal/entry/http/system 真跑：WithReauth/reauthenticate 与 mail 写面接线由 mail_settings_test 钉住
+server/internal/entry/http/router/handlers.go	uncovered=Go 包门 go test ./internal/entry/http/router 真跑：AdminMailSettings/AdminMailSettingsSet 委托与 501 由 settings_routes_test 路由表钉住
+server/cmd/server/mail_settings_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑真装配写回/密文/每发送/审计回滚 e2e）

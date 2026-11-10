@@ -1551,6 +1551,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/mail-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the effective SMTP settings.
+         * @description Master or admin. Returns the effective value and source of the six
+         *     SMTP keys. The keys are database-only: they never appear in
+         *     GET /api/admin/settings (they are not registry keys). A missing
+         *     override row reads the environment value (source=env) or the
+         *     registry default (source=default). host, port and tls_mode return
+         *     their real values. from and user are display-sensitive: the answer
+         *     carries only set, a fixed "****" mask and the source, never the
+         *     original text. pass is a secret: the answer carries only set and
+         *     the source, never the value, the mask or the stored ciphertext.
+         *     A storage failure answers 500; it is never reported as a default.
+         *     An invalid override row (empty host, out-of-range port, unknown
+         *     TLS mode, undecryptable password) falls back to the environment
+         *     value and is reported once in the process log by key name only.
+         */
+        get: operations["AdminMailSettings"];
+        /**
+         * Write runtime overrides for the SMTP settings.
+         * @description Master only. A partial patch of the six SMTP keys: a field absent
+         *     from the body leaves that key untouched; an explicit null deletes
+         *     the stored override row so the key reads the environment value
+         *     again; a value upserts the override row. host accepts a host name
+         *     or IP literal; port accepts integers between 1 and 65535;
+         *     tls_mode accepts the auto, implicit or starttls literals
+         *     (lowercase only); from accepts a deliverable address; user accepts
+         *     a non-empty AUTH login; pass accepts a non-empty password, which is
+         *     encrypted with the deployment credential key before it is stored
+         *     and is never echoed back. Every field change requires
+         *     current_password: a missing or empty value answers 400 and a wrong
+         *     password answers 403, both with zero writes and zero audit rows.
+         *     An out-of-domain value, a wrong JSON type, an unknown field or an
+         *     empty update answers 400 with zero writes and zero audit rows.
+         *     A password that cannot be encrypted answers 500 with zero writes.
+         *     The write and one settings.mail_writeback audit row commit in one
+         *     transaction; the audit detail holds the changed keys with their
+         *     previous and new values, but from, user and pass are recorded only
+         *     as set or cleared (never the plaintext or the ciphertext). The
+         *     write takes effect on the next SMTP send (no restart). The answer
+         *     is the effective settings report after the write.
+         */
+        put: operations["AdminMailSettingsSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/mail/test": {
         parameters: {
             query?: never;
@@ -2649,6 +2705,91 @@ export interface components {
              *     The one-account-per-owner rule is independent and unchanged.
              */
             max_accounts?: number | null;
+        };
+        /**
+         * @description Layer that provided the effective SMTP setting: db when a valid
+         *     override row exists, env when the process environment provides the
+         *     key, default when neither does.
+         * @enum {string}
+         */
+        MailSettingSource: "db" | "env" | "default";
+        /** @description One non-sensitive SMTP setting and its source. */
+        MailSettingValue: {
+            /** @description Effective host name or TLS mode. */
+            value: string;
+            source: components["schemas"]["MailSettingSource"];
+        };
+        /** @description The effective SMTP port and its source. */
+        MailPortSetting: {
+            /** @description Effective SMTP port. */
+            value: number;
+            source: components["schemas"]["MailSettingSource"];
+        };
+        /**
+         * @description A display-sensitive SMTP setting (from/user). The original text is
+         *     never returned: only whether it is set, a fixed mask and the source.
+         */
+        MailSensitiveSetting: {
+            /** @description Whether the effective value is non-empty. */
+            set: boolean;
+            /** @description Fixed "****" when set, empty otherwise. */
+            masked: string;
+            source: components["schemas"]["MailSettingSource"];
+        };
+        /**
+         * @description The SMTP password state. The value, the mask and the stored
+         *     ciphertext are never returned; only whether a password is set and
+         *     the source.
+         */
+        MailPasswordSetting: {
+            /** @description Whether an effective password is configured. */
+            set: boolean;
+            source: components["schemas"]["MailSettingSource"];
+        };
+        /** @description Effective SMTP settings. */
+        MailSettingsReport: {
+            host: components["schemas"]["MailSettingValue"];
+            port: components["schemas"]["MailPortSetting"];
+            tls_mode: components["schemas"]["MailSettingValue"];
+            from: components["schemas"]["MailSensitiveSetting"];
+            user: components["schemas"]["MailSensitiveSetting"];
+            pass: components["schemas"]["MailPasswordSetting"];
+        };
+        /**
+         * @description SMTP TLS mode. auto selects implicit TLS on port 465 and STARTTLS
+         *     otherwise; implicit requires TLS from the first byte; starttls
+         *     upgrades a plaintext connection. Lowercase literals only.
+         * @enum {string}
+         */
+        MailTLSMode: "auto" | "implicit" | "starttls";
+        /**
+         * @description Partial patch of the SMTP settings. Every setting field is optional:
+         *     absent leaves the key untouched, null deletes the override row, a
+         *     value upserts it. current_password is required on every write.
+         *     Unknown fields answer 400.
+         */
+        AdminMailSettingsUpdate: {
+            /** @description SMTP host name or IP literal. */
+            host?: string | null;
+            /** @description SMTP port. */
+            port?: number | null;
+            /** @description TLS mode literal. */
+            tls_mode?: components["schemas"]["MailTLSMode"] | null;
+            /** @description Sender address. */
+            from?: string | null;
+            /** @description AUTH PLAIN login. */
+            user?: string | null;
+            /**
+             * @description AUTH PLAIN password. Encrypted with the deployment credential
+             *     key before storage; never echoed back.
+             */
+            pass?: string | null;
+            /**
+             * @description The acting master's own login password, used to re-authenticate
+             *     this dangerous write. Missing or empty answers 400; a wrong
+             *     password answers 403; both leave zero writes and zero audit rows.
+             */
+            current_password: string;
         };
         MailTestResult: {
             /**
@@ -6231,6 +6372,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["QuotaReport"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminMailSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective SMTP settings and their sources. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailSettingsReport"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminMailSettingsSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminMailSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Effective SMTP settings after the write. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailSettingsReport"];
                 };
             };
             400: components["responses"]["ValidationError"];
