@@ -1,0 +1,49 @@
+# Dependabot：只做「发现 → 升级 PR」的闭环。
+#
+# 为什么还需要它：CI 的 `tooling-gate` 每个 PR 已跑 govulncheck 与 npm audit（high+），
+# `dependency-audit` 每个 PR 已跑 pip-audit（requirements.lock）。
+# 这些作业只负责**发现**；发现之后不会自己开升级 PR。
+# 本文件补上后半段：每周检查四个生态的更新，合并成一条 PR 交给 CI 复核。
+#
+# 纪律：
+# - 每个生态只开一个分组 PR（dev/prod 一组），避免周一刷屏。
+# - 上限 5 条在途 PR；CI 红或需要人工适配时先处理旧的，再让新的进来。
+# - action 固定到 commit SHA 的写法由 dependabot 连同版本注释一起更新；
+#   升级 PR 仍要过全部 CI 检查，不因为「只是依赖」跳过门禁。
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+    groups:
+      ui-dependencies:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "gomod"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+    open-pull-requests-limit: 5

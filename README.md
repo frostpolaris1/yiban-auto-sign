@@ -7,6 +7,9 @@
 ![Python](https://img.shields.io/badge/Python-3.13+-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)
 
+> 🔐 **安全政策**：[`SECURITY.md`](SECURITY.md)（漏洞走私密上报，个人项目无 SLA）
+> 🤝 **贡献指南**：[`CONTRIBUTING.md`](CONTRIBUTING.md)（可认领方向、CI 门禁与合并方式）
+
 ## 项目介绍
 
 > 易班（yiban）是部分高校使用的学生平台，一些学校要求每天早晨完成「早操签到」。
