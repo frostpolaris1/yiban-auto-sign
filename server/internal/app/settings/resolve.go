@@ -431,7 +431,7 @@ func (r *Resolver) ResolveSignWindow(ctx context.Context, fallbackStart, fallbac
 // 行存在且值在小写词表内→行值；行缺失→fallback（装配端传 SignDistFront，
 // 即现行默认档：既有 buildRows 的 Front=true）；
 // 坏行（词表外、大小写错、空白包裹）→回 fallback 并每进程 Warn 一次
-// （沿用 3b 坏行语义：fail-open 但留痕）；存储故障原样上抛——
+// （沿用 3b 坏行语义：坏值不生效、回退内置默认档并留痕）；存储故障原样上抛——
 // 故障不是配置状态，错档位比不铺更糟。
 func (r *Resolver) ResolveSignDist(ctx context.Context, fallback SignDist) (SignDist, error) {
 	raw, found, err := r.store.StringOverride(ctx, KeyScheduleSignDist)
@@ -453,7 +453,8 @@ func (r *Resolver) ResolveSignDist(ctx context.Context, fallback SignDist) (Sign
 // 行存在且在 [0,100000] 内→行值、source=db；
 // 行缺失→fallback、source=default（配额键无 env 对应位，故没有 env 源）；
 // 坏行（非整数、负数、越界）→fallback、source=default 并每进程 Warn 一次
-// （沿用 3b/3c 坏行语义：fail-open 但留痕）；存储故障原样上抛。
+// （沿用 3b/3c 坏行语义：回退缺省 1——fail-closed 收紧方向——并留痕）；
+// 存储故障原样上抛。
 func (r *Resolver) QuotaSetting(ctx context.Context, key string, fallback int) (int, QuotaSource, error) {
 	value, found, err := r.store.IntOverride(ctx, key)
 	if err != nil {

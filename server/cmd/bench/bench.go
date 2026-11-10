@@ -307,6 +307,7 @@ func seedAccounts(ctx context.Context, db *pg.DB, users *pg.UserRepo, accts *pg.
 		}
 		err := db.InTx(ctx, func(ctx context.Context) error {
 			for i := base; i < end; i++ {
+				// 直连 repo 造数，不实验配额（limit 显式传 n+100）。
 				u, err := users.Create(ctx, coreuser.New{
 					Email:        benchEmail(i),
 					PasswordHash: "argon2id$bench",
@@ -315,6 +316,7 @@ func seedAccounts(ctx context.Context, db *pg.DB, users *pg.UserRepo, accts *pg.
 				if err != nil {
 					return fmt.Errorf("create user %d: %w", i, err)
 				}
+				// 直连 repo 造数，不实验配额（limit 显式传 n+100）。
 				if _, err := accts.Create(ctx, coreaccount.New{
 					SchoolID:    schoolIDs[i%len(schoolIDs)],
 					OwnerUserID: u.ID,

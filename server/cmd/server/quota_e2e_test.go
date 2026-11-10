@@ -171,25 +171,38 @@ func TestQuotaAccountLineThroughAssembly(t *testing.T) {
 	csrf := u2LoginOn(e, e.client, master.Email, "master-pass").CSRFToken
 	school := u2SeedSchool(t, e, "quota-unlimited")
 
-	if resp, payload, report := putQuota(t, e, csrf, `{"max_accounts":0}`); resp.StatusCode != http.StatusOK {
-		t.Fatalf("PUT max_accounts=0 = %d; body=%q", resp.StatusCode, payload)
-	} else if report.MaxAccounts.Value != 0 || report.MaxAccounts.Source != "db" {
-		t.Fatalf("PUT max_accounts = %+v, want db 0", report.MaxAccounts)
-	}
-
 	create := func(ownerID, phone string) (*http.Response, []byte) {
 		return u2Do(e, e.client, http.MethodPost, "/api/accounts", u2CreateBody{
 			SchoolID: school, Phone: phone, Password: "secret", OwnerUserID: ownerID,
 		}, csrf)
 	}
-	for i, owner := range []string{master.ID, ownerA.ID, ownerB.ID} {
-		phone := "1350001000" + strconv.Itoa(i+1)
+
+	// 缺行=1/1：第 1 个账号恰好过，第 2 个账号（另一属主）429 capacity。
+	if resp, payload := create(master.ID, "13500010001"); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first account at default quota = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+	resp, payload := create(ownerA.ID, "13500010002")
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second account at default quota = %d, want 429; body=%q", resp.StatusCode, payload)
+	}
+	if code, _ := errorCode(t, payload); code != "capacity_exceeded" {
+		t.Fatalf("second account code = %q, want capacity_exceeded", code)
+	}
+
+	// PUT 0=不限：连续建号不再因全局配额拒。
+	if resp, payload, report := putQuota(t, e, csrf, `{"max_accounts":0}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT max_accounts=0 = %d; body=%q", resp.StatusCode, payload)
+	} else if report.MaxAccounts.Value != 0 || report.MaxAccounts.Source != "db" {
+		t.Fatalf("PUT max_accounts = %+v, want db 0", report.MaxAccounts)
+	}
+	for i, owner := range []string{ownerA.ID, ownerB.ID} {
+		phone := "1350001000" + strconv.Itoa(i+2)
 		if resp, payload := create(owner, phone); resp.StatusCode != http.StatusCreated {
 			t.Fatalf("account %d under unlimited = %d, want 201; body=%q", i, resp.StatusCode, payload)
 		}
 	}
 	// 一人一号判据独立：同一属主第二号仍 conflict。
-	resp, payload := create(master.ID, "13500010004")
+	resp, payload = create(master.ID, "13500010004")
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("same-owner second account = %d, want 409; body=%q", resp.StatusCode, payload)
 	}
