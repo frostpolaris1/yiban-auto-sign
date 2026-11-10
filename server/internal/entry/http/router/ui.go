@@ -11,7 +11,8 @@ package router
 //   - 设置了目录但缺 index.html 时启动失败：宁可起不来，也不带病上线。
 //   - /api 与 /api/* 的未知路径永远是 JSON 404，不落页面。
 //   - 无扩展名的未知路径回 index.html（前端深链）；带扩展名的不回。
-//   - assets/ 下的哈希资产长缓存；index.html 每次重验证。
+//   - assets/ 下的哈希资产长缓存；index.html 每次重验证；
+//     根级 png（站标）一小时短缓存。
 //   - 读面用 os.Root：符号链接也不能逃出根目录。
 
 import (
@@ -107,9 +108,14 @@ func isRegularFile(fsys fs.FS, name string) bool {
 
 // setCacheHeader 只给哈希资产长缓存。
 // index.html 必须每次重验证：它指向当次构建的资产名。
+// 所有根级 png（favicon、未来 og 图）取一小时短缓存：换图后不必等长缓存过期。
 func (u *uiHandler) setCacheHeader(h http.Header, name string) {
 	if strings.HasPrefix(name, "assets/") {
 		h.Set("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	if !strings.Contains(name, "/") && strings.HasSuffix(strings.ToLower(name), ".png") {
+		h.Set("Cache-Control", "public, max-age=3600")
 		return
 	}
 	h.Set("Cache-Control", "no-cache")

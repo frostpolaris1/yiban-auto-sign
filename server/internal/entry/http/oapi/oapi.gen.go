@@ -1529,6 +1529,13 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"new_password"`
 }
 
+// Changelog defines model for Changelog.
+type Changelog struct {
+	// Text Markdown source of CHANGELOG.md, or the fixed fallback line when
+	// the document directory is unset or the file is unreadable.
+	Text string `json:"text"`
+}
+
 // CurrentPassword The acting user's own login password, used to re-authenticate a
 // dangerous operation. It is never the signing account's platform
 // credential, and it is never stored, logged or audited. Optional in
@@ -3918,6 +3925,9 @@ type ServerInterface interface {
 	// CapacityGet Report capacity and demand for one school task.
 	// (GET /api/capacity)
 	CapacityGet(c *gin.Context, params CapacityGetParams)
+	// ChangelogGet Release notes as plain Markdown text.
+	// (GET /api/changelog)
+	ChangelogGet(c *gin.Context)
 	// MyAccountDelete Soft-delete one of the caller's own signing accounts.
 	// (POST /api/me/accounts/{id}/delete)
 	MyAccountDelete(c *gin.Context, id AccountID, params MyAccountDeleteParams)
@@ -6015,6 +6025,19 @@ func (siw *ServerInterfaceWrapper) CapacityGet(c *gin.Context) {
 	siw.Handler.CapacityGet(c, params)
 }
 
+// ChangelogGet operation middleware
+func (siw *ServerInterfaceWrapper) ChangelogGet(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ChangelogGet(c)
+}
+
 // MyAccountDelete operation middleware
 func (siw *ServerInterfaceWrapper) MyAccountDelete(c *gin.Context) {
 
@@ -7963,5 +7986,6 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/me/photos/:id", wrapper.PhotoGet)
 	router.GET(options.BaseURL+"/api/me/photo-retention", wrapper.PhotoRetentionGet)
 	router.PUT(options.BaseURL+"/api/me/photo-retention", wrapper.PhotoRetentionSet)
+	router.GET(options.BaseURL+"/api/changelog", wrapper.ChangelogGet)
 	router.GET(options.BaseURL+"/healthz", wrapper.HealthCheck)
 }

@@ -227,6 +227,8 @@ either side drifts.
 | GET | `/api/me/diagnostics` | master/admin/user | P6 |
 | GET | `/api/accounts/:id/diagnostics` | user/admin/master | UX-3 (was user/admin) |
 | GET | `/api/me/sign-status` | master/admin/user | P6 |
+| GET | `/api/changelog` | public | v1.0.0 |
+|  |  |  | `CHANGELOG.md` 全文，进程内首读缓存；`YIBAN_DOCS_DIR` 未设或读不到时 200＋`text="暂无更新日志"`。 |
 | GET | `/healthz` | public | P7 |
 
 ## Enforcement notes

@@ -43,6 +43,8 @@ func requestBodyLimit(c *gin.Context) int64 {
 }
 
 // publicPaths 永不要求会话。其余 /api 路径一律要求。
+// 文档页与爬虫协议也在表内：它们是注册在引擎上的路由，FullPath 非空，
+// 不登记就会被鉴权中间件拦成 401。
 var publicPaths = map[string]struct{}{
 	"/healthz":                  {},
 	"/api/auth/login":           {},
@@ -52,6 +54,10 @@ var publicPaths = map[string]struct{}{
 	"/api/auth/forgot-password": {},
 	"/api/auth/reset-password":  {},
 	"/api/me/restore":           {},
+	"/api/changelog":            {},
+	"/terms":                    {},
+	"/privacy":                  {},
+	"/robots.txt":               {},
 }
 
 // csrfExemptPaths 要么建立会话，要么不携带会话权限。

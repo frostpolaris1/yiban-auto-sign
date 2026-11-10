@@ -122,6 +122,9 @@ type Config struct {
 	// UIDir 是前端构建产物目录（含 index.html）。
 	// 空表示只提供 API；非空时服务端同时托管页面与深链。
 	UIDir string
+	// DocsDir 是合规文档目录（CHANGELOG.md、USER_AGREEMENT.md、PRIVACY_POLICY.md）。
+	// 空表示未提供文档：更新日志与协议页回退到内置文案，不报错。
+	DocsDir string
 
 	// 入站限流面。默认开启；阈值与域见嵌入名册。
 	RateLimitEnabled  bool
@@ -323,6 +326,7 @@ var (
 	keyPhotoDir         = stringKey{"YIBAN_PHOTO_DIR", DefaultPhotoDir}
 	keyPhotoCropEnabled = boolKey{"YIBAN_PHOTO_CROP_ENABLE", false}
 	keyUIDir            = stringKey{"YIBAN_UI_DIR", ""}
+	keyDocsDir          = stringKey{"YIBAN_DOCS_DIR", ""}
 	keyDatabaseURL      = stringKey{"YIBAN_DATABASE_URL", ""}
 
 	keyResetMailEnabled = boolKey{"YIBAN_RESET_MAIL_ENABLE", false}
@@ -369,6 +373,7 @@ func configSpecs() []keySpec {
 		keyPhotoDir.spec(),
 		keyPhotoCropEnabled.spec(),
 		keyUIDir.spec(),
+		keyDocsDir.spec(),
 		keyDatabaseURL.spec(),
 		keyResetMailEnabled.spec(),
 		keyMailHost.spec(),
@@ -532,6 +537,9 @@ func LoadFrom(src Source) (*Config, error) {
 	}
 	// 空表示只提供 API；非空目录的存在性由 router.New 在启动期校验。
 	cfg.UIDir = strings.TrimSpace(keyUIDir.read(src))
+	// 空表示未提供文档：更新日志与协议页回退内置文案。
+	// 目录不存在不是启动错误——文档是可选内容，缺了不该挡住服务。
+	cfg.DocsDir = strings.TrimSpace(keyDocsDir.read(src))
 
 	// 重置邮件面：缺省关闭；打开后必须给全发件账号与公网基址，否则启动即失败。
 	// 只看 YIBAN_RESET_MAIL_ENABLE：YIBAN_MAIL_ENABLE 属旧通知线，Go 侧不读。

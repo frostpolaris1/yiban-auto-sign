@@ -3,8 +3,8 @@
 
 标签：J · 运维：部署/备份/发布
 覆盖：版本字面量只在 `yiban/__init__.py` 出现（CHANGELOG 除外）、web 侧从包引用版本、
-    CHANGELOG 顶部条目与包版本一致、引擎轮次横幅与汇总行确实打了版本号、
-    用的是本项目版本而非易班 App 版本。
+    CHANGELOG 顶部条目等于两线之一（`__version__` 或根 VERSION）、引擎轮次横幅与
+    汇总行确实打了版本号、用的是本项目版本而非易班 App 版本。
 对应实现：`yiban/__init__.py`（唯一来源）、`web/app.py`、`yiban/app/runner.py`
     （横幅/汇总行，兼容壳 `scripts/signin.py` 只剩转发）。
 关键断言：版本号一旦分叉，"日志里写的版本"就不再等于"代码的版本"，台账失效且无人察觉
@@ -35,6 +35,50 @@ def _read(rel):
         return f.read()
 
 
+def _changelog_top_version(text):
+    """取 CHANGELOG 首个 `## [vX.Y.Z]` 条目的版本（不带 v）；没有则 None。
+
+    只认标题行形状，不数行号：顶部说明块变长不该让判据失效。
+    """
+    m = re.search(r"^## \[v(\d+\.\d+\.\d+)\]", text, re.M)
+    return m.group(1) if m else None
+
+
+def _read_root_version():
+    """读仓库根 VERSION（Go 线产品版本单一来源）；缺失或格式坏返回 None。
+
+    双行共库：旧 Python 线的 `__version__` 冻结，Go 线用根 VERSION。
+    本判据只做「顶部是两线之一」，VERSION 自身格式由
+    tests/test_build_version_wiring.py 与 release-check 的 go-version 项钉。
+    """
+    try:
+        with open(os.path.join(BASE, "VERSION"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    if len(lines) != 1:
+        return None
+    v = lines[0].strip()
+    return v if re.fullmatch(r"\d+\.\d+\.\d+", v) else None
+
+
+def _version_mismatch(changelog_text, allowed):
+    """返回不一致说明；一致返回 None。
+
+    allowed 收两线版本（`__version__` 与根 VERSION）：CHANGELOG 只有一份，
+    顶部只能写一个版本，故两线中较新的一行即可。
+    """
+    top = _changelog_top_version(changelog_text)
+    if top is None:
+        return "CHANGELOG 没有 ## [vX.Y.Z] 条目"
+    if top not in allowed:
+        return (
+            f"CHANGELOG 顶部 v{top} 既不是 yiban/__init__.py 的 __version__ "
+            f"也不是根 VERSION（允许：{sorted(allowed)}）"
+        )
+    return None
+
+
 class SingleVersionSourceTest(unittest.TestCase):
     def test_version_defined_once(self):
         from yiban import __version__ as v
@@ -63,8 +107,24 @@ class SingleVersionSourceTest(unittest.TestCase):
 
     def test_changelog_top_entry_matches(self):
         from yiban import __version__ as v
-        head = "\n".join(_read("CHANGELOG.md").splitlines()[:8])  #只看顶部 8 行：对的是最新条目，全文件搜会命中旧版本而恒成立
-        self.assertIn(f"v{v}", head, "CHANGELOG 顶部条目与本项目版本号不一致")
+        allowed = {v}
+        root = _read_root_version()
+        if root is not None:
+            allowed.add(root)
+        problem = _version_mismatch(_read("CHANGELOG.md"), allowed)
+        self.assertIsNone(problem, problem)
+
+    def test_changelog_top_entry_rejects_third_version(self):
+        """顶部写成两线之外的第三个版本即红（夹具文本，不动真实 CHANGELOG）。"""
+        from yiban import __version__ as v
+        allowed = {v}
+        root = _read_root_version()
+        if root is not None:
+            allowed.add(root)
+        problem = _version_mismatch(
+            "# 更新日志\n\n## [v9.9.9] - 2099-01-01 · 假条目\n", allowed)
+        self.assertIsNotNone(problem, "顶部写成第三个版本必须判红")
+        self.assertIn("9.9.9", problem)
 
 
 class EngineLogsReleaseVersionTest(unittest.TestCase):

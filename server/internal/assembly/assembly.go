@@ -953,6 +953,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		LoginOrigin:     publicOrigin(cfg.PublicBaseURL),
 		TrustedProxies:  trustedProxies,
 		UIDir:           cfg.UIDir,
+		DocsDir:         cfg.DocsDir,
 	})
 	if err != nil {
 		closeFn()

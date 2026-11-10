@@ -18,7 +18,7 @@
 // -X 的注入名是 **Go 标识符**（version、commit、buildTime），
 // 不是输出字段名（build_time）；改 identifier 前先改发布脚本：
 //
-//	go build -ldflags "-X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=0.7.0 \
+//	go build -ldflags "-X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=1.0.0 \
 //	  -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.commit=$(git rev-parse --short HEAD) \
 //	  -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 //

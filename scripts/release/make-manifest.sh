@@ -4,11 +4,11 @@
 #
 # 用法：
 #   bash scripts/release/make-manifest.sh <version> <file> [file...]
-#   bash scripts/release/make-manifest.sh 0.7.0 dist/yiban-server dist/yiban-cli \
+#   bash scripts/release/make-manifest.sh 1.0.0 dist/yiban-server dist/yiban-cli \
 #       > release/manifest.json
 #
 # 输出（单行 JSON + 结尾换行；键序固定，可复现字节）：
-#   {"version":"0.7.0","files":[{"name":"yiban-server","sha256":"<64hex>"},...]}
+#   {"version":"1.0.0","files":[{"name":"yiban-server","sha256":"<64hex>"},...]}
 #
 # 口径：
 #   - name 取文件基名。清单消费者（update.sh、verify.sh）按基名对账。

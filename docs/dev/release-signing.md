@@ -52,7 +52,7 @@
 ## 4. 发布与升级流程
 
 1. 构建 `yiban-server` 与 `yiban-cli`。
-2. `bash scripts/release/make-manifest.sh 0.7.0 yiban-server yiban-cli > manifest.json`
+2. `bash scripts/release/make-manifest.sh 1.0.0 yiban-server yiban-cli > manifest.json`
 3. `bash scripts/release/sign.sh --key yiban-release-key.pem --in manifest.json --out manifest.json.sig`
 4. 发布件目录（缺省 `release/`，`YIBAN_RELEASE_DIR` 可覆盖）放三件：
    `manifest.json`＋`manifest.json.sig`＋`release-pubkey.pem`。
@@ -62,7 +62,7 @@
    `--require-signing` 把缺件、缺锚与缺 openssl 从 SKIP 升为 FAIL。
    发布操作必须用它。
 6. 升级：
-   `sudo bash deploy/baremetal/update.sh --server-bin NEW [--cli-bin NEW] --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem --expect-version 0.7.0`
+   `sudo bash deploy/baremetal/update.sh --server-bin NEW [--cli-bin NEW] --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem --expect-version 1.0.0`
    未给三件 → 默认拒绝（exit 2，发生在停服务之前）。
    钥匙仪式未完成的部署显式给 `--allow-unsigned` 放行（显性 WARN，跳过≠绿）；
    逃生口与三件互斥，同给即 exit 2。
