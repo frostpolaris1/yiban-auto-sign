@@ -344,7 +344,7 @@
     "domain": [0, 300],
     "default": 60,
     "group": ["调度"],
-    "doc": "窗口后裁秒数（30 的倍数）",
+    "doc": "窗口后裁秒数",
     "sensitive": false,
     "scope": "server"
   },
@@ -353,7 +353,7 @@
     "domain": [0, 300],
     "default": 60,
     "group": ["调度"],
-    "doc": "窗口前裁秒数（30 的倍数）",
+    "doc": "窗口前裁秒数",
     "sensitive": false,
     "scope": "server"
   },

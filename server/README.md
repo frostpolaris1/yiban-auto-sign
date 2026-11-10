@@ -185,8 +185,9 @@ via ldflags. Release tags are `v$VERSION`.
 and the tag `v$VERSION` pointing at HEAD. Before the tag exists the item
 fails, which is expected while preparing a release. The contract's
 `info.version` is the API contract version and is never synchronized with
-it; the top section of `CHANGELOG.md` carries the released version, kept
-equal to `VERSION` by `tests/test_release_version_source.py`. See
+it. The top `CHANGELOG.md` entry must equal one of the two version lines —
+the legacy Python `__version__` or the root `VERSION` (a two-line,
+one-repository rule pinned by `tests/test_release_version_source.py`). See
 [`contracts/README.md`](contracts/README.md) for the versioning split.
 
 ## Status
@@ -196,10 +197,11 @@ methods, paths, roles and per-endpoint semantics — lives in
 [`contracts/README.md`](contracts/README.md) and is the single source; this
 section names capabilities, not routes.
 
-Covered: auth and password reset; self-service delete, restore and purge for
-users and accounts; users, schools and administrator bindings with batch
-actions; accounts and credentials (platform detect, verify, manual review,
-batch sign, person-name reveal); photos with retention and an optional
+Covered: auth and password reset; self-service delete and restore for users
+and accounts (physical purge is master/admin-only); users with batch
+actions; schools and administrator bindings; accounts with batch actions
+and credentials (platform detect, verify, manual review, batch sign,
+person-name reveal); photos with retention and an optional
 random safety crop; location policies; scheduling — windows, previews, the
 daily plan build with the weekend gate and the front/uniform sign
 distribution, time preferences with a switch cooldown; the signing worker
@@ -251,10 +253,13 @@ Effective values for the writable families resolve in the order database
 override, then environment, then registry default: the settings write-back
 endpoints and the engine pause switch persist rows in the `settings` table
 that shadow the environment, effective without a restart.
-`engine.paused`, the DB-only schedule rows (weekend gate, default window
-minutes, sign distribution), `quota.*` and `mail.*` have no environment
-counterpart and never appear in a run file. The three schedule keys that
-also exist as environment keys (`schedule.edge_front_sec`,
+
+The `mail.*` rows are writable through the mail-settings endpoint. Their
+six keys do have environment counterparts (`YIBAN_MAIL_*`) and registry
+defaults. Only `engine.paused`, the DB-only schedule rows (weekend gate,
+default window minutes, sign distribution) and `quota.*` have no
+environment counterpart, and they never appear in a run file. The three
+schedule keys that also exist as environment keys (`schedule.edge_front_sec`,
 `schedule.edge_back_sec`, `schedule.allow_time_pref`) report `source=db`
 with the row value when an override row is present.
 
@@ -276,11 +281,11 @@ Canonical runtime files:
 | `YIBAN_TZ` | no | `Asia/Shanghai` | business time zone |
 | `YIBAN_ALLOW_TIME_PREF` | no | `false` | user time-preference master switch; also writable back through the schedule-settings endpoint (the DB row wins when present) |
 | `YIBAN_TIME_PREF_COOLDOWN_SEC` | no | `30` | cooldown for switching the time preference, in seconds (0..3600); 0 disables |
-| `YIBAN_WINDOW_EDGE_FRONT_SEC` | no | `60` | seconds trimmed from the front of every window (0..300, multiples of 30); the `schedule.edge_front_sec` DB row overrides when present |
+| `YIBAN_WINDOW_EDGE_FRONT_SEC` | no | `60` | seconds trimmed from the front of every window (0..300); the `schedule.edge_front_sec` DB row overrides when present |
 | `YIBAN_WINDOW_EDGE_BACK_SEC` | no | `60` | the same for the back edge; the `schedule.edge_back_sec` DB row overrides when present |
 | `YIBAN_INSECURE_COOKIES` | no | `true` for development and test | use the unprefixed cookie name; production refuses a true value |
 | `YIBAN_HASH_PEPPER` | **yes** | — | at least 16 characters; keys the HMAC digests of IP addresses and user agents, and derives the audit chain key. Rotating it breaks verification of the existing audit chain. |
-| `YIBAN_CREDENTIAL_KEY` | **yes** | — | base64 of exactly 32 bytes; encrypts stored credentials with AES-256-GCM. Rotating it goes through kid re-encryption (P4/P8), so old rows stay decryptable. |
+| `YIBAN_CREDENTIAL_KEY` | **yes** | — | base64 of exactly 32 bytes; encrypts stored credentials with AES-256-GCM. Rotating it goes through kid re-encryption, so old rows stay decryptable. |
 | `YIBAN_PHOTO_DIR` | no | `data/photos` | photo blob root; a relative path is resolved against the process working directory |
 | `YIBAN_PHOTO_CROP_ENABLE` | no | `false` | opt-in random safety crop of user photos before upload: each edge independently loses 0–10%. When false the upload keeps the decoded, orientation-normalized image and the audit detail records 0 for all four crop sides |
 | `YIBAN_UI_DIR` | no | empty | frontend build directory containing `index.html`; empty serves the API only |
