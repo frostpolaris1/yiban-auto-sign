@@ -3553,6 +3553,29 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/changelog:
+    get:
+      tags: [health]
+      operationId: ChangelogGet
+      summary: Release notes as plain Markdown text.
+      description: |
+        Public. The body is the deployment's CHANGELOG.md verbatim, read once
+        per process and cached for the process lifetime: editing the file takes
+        effect on restart. When YIBAN_DOCS_DIR is unset or the file cannot be
+        read, text is the fixed fallback "暂无更新日志" and the status is still
+        200, so a client never has to treat an optional document as an error.
+        The document is deployment content, not user input: no session, no
+        CSRF token and no audit row.
+      security: []
+      x-roles: [public]
+      responses:
+        '200':
+          description: Release notes text, or the fallback line.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Changelog'
+        default: { $ref: '#/components/responses/DefaultError' }
   /healthz:
     get:
       tags: [health]
@@ -5710,6 +5733,15 @@ components:
         status:
           type: string
           const: ok
+    Changelog:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          description: |
+            Markdown source of CHANGELOG.md, or the fixed fallback line when
+            the document directory is unset or the file is unreadable.
     DiagnosticsReport:
       type: object
       required: [updated_at, items]

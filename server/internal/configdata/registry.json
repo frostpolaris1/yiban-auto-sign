@@ -53,6 +53,14 @@
     "sensitive": true,
     "scope": "server"
   },
+  "YIBAN_DOCS_DIR": {
+    "type": "string",
+    "default": "",
+    "group": ["部署"],
+    "doc": "合规文档目录（CHANGELOG.md、USER_AGREEMENT.md、PRIVACY_POLICY.md）。空表示未提供：更新日志与协议页回退内置文案，不报错",
+    "sensitive": false,
+    "scope": "server"
+  },
   "YIBAN_EGRESS_RATE": {
     "type": "float",
     "domain": [0.2, 4.0],

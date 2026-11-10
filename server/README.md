@@ -194,6 +194,7 @@ Canonical runtime files:
 | `YIBAN_PHOTO_DIR` | no | `data/photos` | photo blob root; a relative path is resolved against the process working directory |
 | `YIBAN_PHOTO_CROP_ENABLE` | no | `false` | opt-in random safety crop of user photos before upload: each edge independently loses 0–10%. When false the upload keeps the decoded, orientation-normalized image and the audit detail records 0 for all four crop sides |
 | `YIBAN_UI_DIR` | no | empty | frontend build directory containing `index.html`; empty serves the API only |
+| `YIBAN_DOCS_DIR` | no | empty | directory holding `CHANGELOG.md`, `USER_AGREEMENT.md` and `PRIVACY_POLICY.md`, served by `/api/changelog`, `/terms` and `/privacy`; empty (or a missing file) falls back to built-in placeholder text, never an error |
 | `YIBAN_RESET_MAIL_ENABLE` | no | `false` | Go-side SMTP master switch (legacy name): password reset links, test mail, notification mail and daily digest mail all depend on it. A true value requires `YIBAN_PUBLIC_BASE_URL` and sender credentials; a missing or loopback base URL stops startup with the key name in the error. |
 | `YIBAN_PUBLIC_BASE_URL` | no | `http://127.0.0.1:47183` | base of the reset links and an accepted login origin, as an absolute http(s) URL without a trailing slash and without credentials. Set it to the public https origin when TLS terminates in front of the app. See the paragraph below. |
 | `YIBAN_MAIL_SMTP_HOST` | no | `smtp.qq.com` | SMTP server host. The certificate is verified against this name. |

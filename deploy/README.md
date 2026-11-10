@@ -478,6 +478,7 @@ sudo systemctl restart yiban.service
 | `YIBAN_CREDENTIAL_KEY` | 凭据加密钥（32 字节） | 必填 |
 | `YIBAN_HTTP_ADDR` | 监听地址 | `127.0.0.1:47183` |
 | `YIBAN_UI_DIR` | 前端产物目录（含 `index.html`） | 空：只提供 API |
+| `YIBAN_DOCS_DIR` | 合规文档目录（`CHANGELOG.md`、`USER_AGREEMENT.md`、`PRIVACY_POLICY.md`） | 空或文件缺失：`/api/changelog` 回「暂无更新日志」，`/terms` 与 `/privacy` 回占位页 |
 | `YIBAN_TRUSTED_PROXIES` | 可信代理 IP/CIDR，逗号分隔 | 空：不信任转发头（compose 默认 `172.16.0.0/12,127.0.0.1`） |
 | `YIBAN_PHOTO_DIR` | 照片目录 | `data/photos` |
 

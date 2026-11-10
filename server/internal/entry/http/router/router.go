@@ -110,6 +110,9 @@ type Options struct {
 	// 空表示只提供 API；非空时未命中的路径交给页面路由。
 	// 目录无效或缺 index.html 时 New 失败：启动期暴露，不带病上线。
 	UIDir string
+	// DocsDir 是合规文档目录（CHANGELOG.md、USER_AGREEMENT.md、PRIVACY_POLICY.md）。
+	// 空表示未提供：更新日志与协议页回退内置文案，不报错。
+	DocsDir string
 }
 
 // Authorizer 把会话用户解析为作用域与审计主体。
@@ -143,6 +146,8 @@ type server struct {
 	rateLimit      *ratelimit.Guard
 	loginOrigin    string
 	trustedProxies []ratelimit.Prefix
+	// docs 服务更新日志与协议页。DocsDir 为空时它只回回落文案。
+	docs *docsHandler
 }
 
 // New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
@@ -187,6 +192,7 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.rateLimit = opts.RateLimit
 	srv.loginOrigin = opts.LoginOrigin
 	srv.trustedProxies = opts.TrustedProxies
+	srv.docs = newDocsHandler(opts.DocsDir)
 
 	engine := gin.New()
 	engine.Use(

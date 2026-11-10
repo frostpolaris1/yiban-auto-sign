@@ -44,6 +44,7 @@
 | 照片目录 | `YIBAN_PHOTO_DIR` | 裸机改 `server.env` 后**重跑 `install.sh`**：它按新值重写 `ReadWritePaths` 并 `restart`（目录必须在 `/var/lib/yiban/` 下且不是软链）；容器改 `compose.env` 后 `up -d`，并确认卷挂载点同步 |
 | 备份落点 | 容器 `YIBAN_BACKUP_HOST_DIR`（宿主绝对路径，缺省 `./backups`） | 下一次 `--profile backup run` 生效；不在 Go 名册 |
 | 前端产物 | 裸机 `YIBAN_UI_DIR`（安装器写；`--ui-dir` 升级会一并换页面） | 重跑 `install.sh` 或 `update.sh --ui-dir`；手改后重启 |
+| 合规文档 | `YIBAN_DOCS_DIR`（含 `CHANGELOG.md`、`USER_AGREEMENT.md`、`PRIVACY_POLICY.md`；容器镜像自带 `/srv/docs`） | 改 `server.env` / `compose.env` 后重启；更新日志在进程内首读缓存，换文件要重启 |
 | systemd 隔离面 | 不手改单元；改 `install.sh` 的生成模板并重装 | 重跑 `install.sh`（重写单元 + `daemon-reload` + `restart`） |
 | 版本 / 构建参数 | 仓库根 `VERSION`、`BUILD_VERSION/BUILD_COMMIT/BUILD_TIME` | **构建期**，不是运行配置；改后重新构建发布件 |
 
@@ -63,7 +64,7 @@
 **非秘密（可写模板/文档）**
 
 - 监听地址、时区、并发/节流/窗口、`YIBAN_TRUSTED_PROXIES`、
-  `YIBAN_UI_DIR`、`YIBAN_PHOTO_DIR`、SMTP 主机/端口/模式、`YIBAN_BACKUP_HOST_DIR`。
+  `YIBAN_UI_DIR`、`YIBAN_DOCS_DIR`、`YIBAN_PHOTO_DIR`、SMTP 主机/端口/模式、`YIBAN_BACKUP_HOST_DIR`。
 
 **邮件投递开关**
 
