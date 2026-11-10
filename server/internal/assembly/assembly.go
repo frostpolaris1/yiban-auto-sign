@@ -35,6 +35,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -393,6 +394,17 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, err
 		}
+		// 凭据钥独立于 pepper：轮换 pepper 只让摘要与审计链失效，
+		// 不能连带让凭据永久不可解密。mail.pass 复用同一把钥加密落库。
+		cipher, err := appaccount.NewCipher(cfg.CredentialKey)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: credential cipher: %w", err)
+		}
+		// mail 六键的覆盖链解析器：GET 回显与每次 SMTP 外呼共用同一实例，
+		// 坏行 Warn 一次的口径只有一份。env 兜底值来自 config.Load 的定型值。
+		mailResolver := appsettings.NewMailResolver(settingsRepo, cipher,
+			mailEnvFromConfig(cfg, config.Env{}), logger)
 		// 设置面：订阅、公告、名册、测试邮件与审计列表。
 		// 名册缺失只让 GET /api/admin/settings 回 501：其余端点不依赖它。
 		// 邮件端口先于设置面构造：测试邮件与忘记口令共用同一实现。
@@ -402,12 +414,22 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		var mailer coremail.Sender
 		if cfg.ResetMailEnabled {
 			sender, err := mailadapter.NewSMTP(mailadapter.Config{
-				Host:      cfg.MailHost,
-				Port:      cfg.MailPort,
-				Username:  cfg.MailUser,
-				Password:  cfg.MailPass,
-				From:      cfg.MailFrom,
-				TLSMode:   cfg.MailTLSMode,
+				// 每发送解析：设置页写回的下一次外呼即生效，无需重启。
+				// 信任根/超时/时基仍取静态配置，不随解析变化。
+				Resolve: func(ctx context.Context) (mailadapter.Settings, error) {
+					_, mailCfg, err := mailResolver.Resolve(ctx)
+					if err != nil {
+						return mailadapter.Settings{}, err
+					}
+					return mailadapter.Settings{
+						Host:     mailCfg.Host,
+						Port:     mailCfg.Port,
+						Username: mailCfg.User,
+						Password: mailCfg.Pass,
+						From:     mailCfg.From,
+						TLSMode:  mailCfg.TLSMode,
+					}, nil
+				},
 				TLSConfig: cfg.MailTLSConfig,
 				Clock:     clk,
 			})
@@ -452,7 +474,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			return nil, err
 		}
 		notifyLib, systemLib, auditLib, settingsSvc, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle,
-			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, settingsResolver)
+			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, settingsResolver, mailResolver, cipher)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -484,6 +506,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: auth service: %w", err)
 		}
+		// SMTP 设置写面要求二次口令：系统设置处理器与账号/用户/管理员
+		// 三个危险操作面共用同一个 authSvc 窄接口（只暴露 Reauthenticate）。
+		if systemLib != nil {
+			systemLib.WithReauth(authSvc)
+		}
 		// 关闭顺序：先等在途投递（有上界），再关池。
 		closeAuth := closeFn
 		closeFn = func() {
@@ -491,14 +518,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			_ = authSvc.Close(ctx)
 			cancel()
 			closeAuth()
-		}
-
-		// 凭据钥独立于 pepper：轮换 pepper 只让摘要与审计链失效，
-		// 不能连带让凭据永久不可解密。
-		cipher, err := appaccount.NewCipher(cfg.CredentialKey)
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("assembly: credential cipher: %w", err)
 		}
 
 		schoolRepo := pg.NewSchoolRepo(db)
@@ -954,7 +973,8 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown,
 	webhook corewebhook.Sender, webhookCooldown appsettings.Cooldown,
 	autoApprove appsettings.AutoApproveStore, settingsRepo *pg.SettingsRepo,
-	settingsResolver *appsettings.Resolver) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
+	settingsResolver *appsettings.Resolver, mailResolver *appsettings.MailResolver,
+	cipher *appaccount.Cipher) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
@@ -978,6 +998,8 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		AutoApprove:     autoApprove,
 		Schedule:        settingsRepo,
 		Resolver:        settingsResolver,
+		Cipher:          cipher,
+		MailResolver:    mailResolver,
 		Logger:          logger,
 	})
 	if err != nil {
@@ -1008,7 +1030,8 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		WithAutoApprove(announcementSvc).
 		WithWebhookTest(announcementSvc).
 		WithScheduleSettings(announcementSvc).
-		WithQuotaSettings(announcementSvc)
+		WithQuotaSettings(announcementSvc).
+		WithMailSettings(announcementSvc)
 	return notifyHandler, systemHandler, audithttp.NewHandler(reader).WithStatus(inspector), announcementSvc, nil
 }
 
@@ -1327,6 +1350,27 @@ func buildSettingsResolver(store appsettings.ScheduleStore,
 		return nil, fmt.Errorf("assembly: settings resolver: %w", err)
 	}
 	return resolver, nil
+}
+
+// mailEnvFromConfig 把 config.Load 的定型值转成 mail 六键的 env/registry 兜底视图。
+// 来源按「env 是否显式给非空值」判定，与名册口径一致：
+// 非空 env=env，否则 default（值仍取 cfg 的定型值，即 registry 缺省）。
+// 本函数不读进程环境以外的任何来源；src 由调用方注入（生产是 config.Env）。
+func mailEnvFromConfig(cfg *config.Config, src config.Source) appsettings.MailEnv {
+	value := func(key, effective string) appsettings.MailEnvValue {
+		if raw, ok := src.Lookup(key); ok && raw != "" {
+			return appsettings.MailEnvValue{Value: effective, Source: appsettings.MailSourceEnv}
+		}
+		return appsettings.MailEnvValue{Value: effective, Source: appsettings.MailSourceDefault}
+	}
+	return appsettings.MailEnv{
+		Host:    value("YIBAN_MAIL_SMTP_HOST", cfg.MailHost),
+		Port:    value("YIBAN_MAIL_SMTP_PORT", strconv.Itoa(cfg.MailPort)),
+		TLSMode: value("YIBAN_MAIL_TLS_MODE", cfg.MailTLSMode),
+		From:    value("YIBAN_MAIL_FROM", cfg.MailFrom),
+		User:    value("YIBAN_MAIL_USER", cfg.MailUser),
+		Pass:    value("YIBAN_MAIL_PASS", cfg.MailPass),
+	}
 }
 
 // NewSettingsResolver 构造覆盖链解析器，供 CLI 与装配共用同一构造路径。

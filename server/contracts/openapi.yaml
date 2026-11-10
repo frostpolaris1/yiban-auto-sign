@@ -2327,6 +2327,83 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/mail-settings:
+    get:
+      tags: [settings]
+      operationId: AdminMailSettings
+      summary: Read the effective SMTP settings.
+      description: |
+        Master or admin. Returns the effective value and source of the six
+        SMTP keys. The keys are database-only: they never appear in
+        GET /api/admin/settings (they are not registry keys). A missing
+        override row reads the environment value (source=env) or the
+        registry default (source=default). host, port and tls_mode return
+        their real values. from and user are display-sensitive: the answer
+        carries only set, a fixed "****" mask and the source, never the
+        original text. pass is a secret: the answer carries only set and
+        the source, never the value, the mask or the stored ciphertext.
+        A storage failure answers 500; it is never reported as a default.
+        An invalid override row (empty host, out-of-range port, unknown
+        TLS mode, undecryptable password) falls back to the environment
+        value and is reported once in the process log by key name only.
+      x-roles: [master, admin]
+      responses:
+        '200':
+          description: Effective SMTP settings and their sources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailSettingsReport'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    put:
+      tags: [settings]
+      operationId: AdminMailSettingsSet
+      summary: Write runtime overrides for the SMTP settings.
+      description: |
+        Master only. A partial patch of the six SMTP keys: a field absent
+        from the body leaves that key untouched; an explicit null deletes
+        the stored override row so the key reads the environment value
+        again; a value upserts the override row. host accepts a host name
+        or IP literal; port accepts integers between 1 and 65535;
+        tls_mode accepts the auto, implicit or starttls literals
+        (lowercase only); from accepts a deliverable address; user accepts
+        a non-empty AUTH login; pass accepts a non-empty password, which is
+        encrypted with the deployment credential key before it is stored
+        and is never echoed back. Every field change requires
+        current_password: a missing or empty value answers 400 and a wrong
+        password answers 403, both with zero writes and zero audit rows.
+        An out-of-domain value, a wrong JSON type, an unknown field or an
+        empty update answers 400 with zero writes and zero audit rows.
+        A password that cannot be encrypted answers 500 with zero writes.
+        The write and one settings.mail_writeback audit row commit in one
+        transaction; the audit detail holds the changed keys with their
+        previous and new values, but from, user and pass are recorded only
+        as set or cleared (never the plaintext or the ciphertext). The
+        write takes effect on the next SMTP send (no restart). The answer
+        is the effective settings report after the write.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminMailSettingsUpdate'
+      responses:
+        '200':
+          description: Effective SMTP settings after the write.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailSettingsReport'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/admin/mail/test:
     post:
       tags: [settings]
@@ -3902,6 +3979,133 @@ components:
           description: |
             Live-account cap across the deployment; 0 means unlimited.
             The one-account-per-owner rule is independent and unchanged.
+    MailSettingSource:
+      type: string
+      enum: [db, env, default]
+      description: |
+        Layer that provided the effective SMTP setting: db when a valid
+        override row exists, env when the process environment provides the
+        key, default when neither does.
+    MailSettingValue:
+      type: object
+      description: One non-sensitive SMTP setting and its source.
+      required: [value, source]
+      properties:
+        value:
+          type: string
+          description: Effective host name or TLS mode.
+        source:
+          $ref: '#/components/schemas/MailSettingSource'
+    MailPortSetting:
+      type: object
+      description: The effective SMTP port and its source.
+      required: [value, source]
+      properties:
+        value:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: Effective SMTP port.
+        source:
+          $ref: '#/components/schemas/MailSettingSource'
+    MailSensitiveSetting:
+      type: object
+      description: |
+        A display-sensitive SMTP setting (from/user). The original text is
+        never returned: only whether it is set, a fixed mask and the source.
+      required: [set, masked, source]
+      properties:
+        set:
+          type: boolean
+          description: Whether the effective value is non-empty.
+        masked:
+          type: string
+          description: Fixed "****" when set, empty otherwise.
+        source:
+          $ref: '#/components/schemas/MailSettingSource'
+    MailPasswordSetting:
+      type: object
+      description: |
+        The SMTP password state. The value, the mask and the stored
+        ciphertext are never returned; only whether a password is set and
+        the source.
+      required: [set, source]
+      properties:
+        set:
+          type: boolean
+          description: Whether an effective password is configured.
+        source:
+          $ref: '#/components/schemas/MailSettingSource'
+    MailSettingsReport:
+      type: object
+      description: Effective SMTP settings.
+      required: [host, port, tls_mode, from, user, pass]
+      properties:
+        host:
+          $ref: '#/components/schemas/MailSettingValue'
+        port:
+          $ref: '#/components/schemas/MailPortSetting'
+        tls_mode:
+          $ref: '#/components/schemas/MailSettingValue'
+        from:
+          $ref: '#/components/schemas/MailSensitiveSetting'
+        user:
+          $ref: '#/components/schemas/MailSensitiveSetting'
+        pass:
+          $ref: '#/components/schemas/MailPasswordSetting'
+    MailTLSMode:
+      type: string
+      enum: [auto, implicit, starttls]
+      description: |
+        SMTP TLS mode. auto selects implicit TLS on port 465 and STARTTLS
+        otherwise; implicit requires TLS from the first byte; starttls
+        upgrades a plaintext connection. Lowercase literals only.
+    AdminMailSettingsUpdate:
+      type: object
+      description: |
+        Partial patch of the SMTP settings. Every setting field is optional:
+        absent leaves the key untouched, null deletes the override row, a
+        value upserts it. current_password is required on every write.
+        Unknown fields answer 400.
+      additionalProperties: false
+      required: [current_password]
+      properties:
+        host:
+          type: [string, "null"]
+          minLength: 1
+          description: SMTP host name or IP literal.
+        port:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 65535
+          description: SMTP port.
+        tls_mode:
+          oneOf:
+            - $ref: '#/components/schemas/MailTLSMode'
+            - type: "null"
+          description: TLS mode literal.
+        from:
+          type: [string, "null"]
+          minLength: 1
+          description: Sender address.
+        user:
+          type: [string, "null"]
+          minLength: 1
+          description: AUTH PLAIN login.
+        pass:
+          type: [string, "null"]
+          minLength: 1
+          writeOnly: true
+          description: |
+            AUTH PLAIN password. Encrypted with the deployment credential
+            key before storage; never echoed back.
+        current_password:
+          type: string
+          minLength: 1
+          description: |
+            The acting master's own login password, used to re-authenticate
+            this dangerous write. Missing or empty answers 400; a wrong
+            password answers 403; both leave zero writes and zero audit rows.
     MailTestResult:
       type: object
       required: [message]

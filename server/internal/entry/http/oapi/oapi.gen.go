@@ -335,6 +335,48 @@ func (e HealthStatusStatus) Valid() bool {
 	}
 }
 
+// Defines values for MailSettingSource.
+const (
+	MailSettingSourceDb      MailSettingSource = "db"
+	MailSettingSourceDefault MailSettingSource = "default"
+	MailSettingSourceEnv     MailSettingSource = "env"
+)
+
+// Valid indicates whether the value is a known member of the MailSettingSource enum.
+func (e MailSettingSource) Valid() bool {
+	switch e {
+	case MailSettingSourceDb:
+		return true
+	case MailSettingSourceDefault:
+		return true
+	case MailSettingSourceEnv:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MailTLSMode.
+const (
+	MailTLSModeAuto     MailTLSMode = "auto"
+	MailTLSModeImplicit MailTLSMode = "implicit"
+	MailTLSModeStarttls MailTLSMode = "starttls"
+)
+
+// Valid indicates whether the value is a known member of the MailTLSMode enum.
+func (e MailTLSMode) Valid() bool {
+	switch e {
+	case MailTLSModeAuto:
+		return true
+	case MailTLSModeImplicit:
+		return true
+	case MailTLSModeStarttls:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for NotifyCategory.
 const (
 	CapacityRejected  NotifyCategory = "capacity_rejected"
@@ -1255,6 +1297,36 @@ type AccountVerifyResult struct {
 	Ok      bool    `json:"ok"`
 }
 
+// AdminMailSettingsUpdate Partial patch of the SMTP settings. Every setting field is optional:
+// absent leaves the key untouched, null deletes the override row, a
+// value upserts it. current_password is required on every write.
+// Unknown fields answer 400.
+type AdminMailSettingsUpdate struct {
+	// CurrentPassword The acting master's own login password, used to re-authenticate
+	// this dangerous write. Missing or empty answers 400; a wrong
+	// password answers 403; both leave zero writes and zero audit rows.
+	CurrentPassword string `json:"current_password"`
+
+	// From Sender address.
+	From *string `json:"from,omitempty"`
+
+	// Host SMTP host name or IP literal.
+	Host *string `json:"host,omitempty"`
+
+	// Pass AUTH PLAIN password. Encrypted with the deployment credential
+	// key before storage; never echoed back.
+	Pass *string `json:"pass,omitempty"`
+
+	// Port SMTP port.
+	Port *int `json:"port,omitempty"`
+
+	// TlsMode TLS mode literal.
+	TlsMode *MailTLSMode `json:"tls_mode,omitempty"`
+
+	// User AUTH PLAIN login.
+	User *string `json:"user,omitempty"`
+}
+
 // AdminQuotaSettingsUpdate Partial patch of the quota keys. Every field is optional: absent
 // leaves the key untouched, null deletes the override row, a value
 // upserts it. Unknown fields answer 400.
@@ -1674,6 +1746,91 @@ type MailNotifyUpdate struct {
 	// Enabled New state of the sign-failure mail switch.
 	Enabled bool `json:"enabled"`
 }
+
+// MailPasswordSetting The SMTP password state. The value, the mask and the stored
+// ciphertext are never returned; only whether a password is set and
+// the source.
+type MailPasswordSetting struct {
+	// Set Whether an effective password is configured.
+	Set bool `json:"set"`
+
+	// Source Layer that provided the effective SMTP setting: db when a valid
+	// override row exists, env when the process environment provides the
+	// key, default when neither does.
+	Source MailSettingSource `json:"source"`
+}
+
+// MailPortSetting The effective SMTP port and its source.
+type MailPortSetting struct {
+	// Source Layer that provided the effective SMTP setting: db when a valid
+	// override row exists, env when the process environment provides the
+	// key, default when neither does.
+	Source MailSettingSource `json:"source"`
+
+	// Value Effective SMTP port.
+	Value int `json:"value"`
+}
+
+// MailSensitiveSetting A display-sensitive SMTP setting (from/user). The original text is
+// never returned: only whether it is set, a fixed mask and the source.
+type MailSensitiveSetting struct {
+	// Masked Fixed "****" when set, empty otherwise.
+	Masked string `json:"masked"`
+
+	// Set Whether the effective value is non-empty.
+	Set bool `json:"set"`
+
+	// Source Layer that provided the effective SMTP setting: db when a valid
+	// override row exists, env when the process environment provides the
+	// key, default when neither does.
+	Source MailSettingSource `json:"source"`
+}
+
+// MailSettingSource Layer that provided the effective SMTP setting: db when a valid
+// override row exists, env when the process environment provides the
+// key, default when neither does.
+type MailSettingSource string
+
+// MailSettingValue One non-sensitive SMTP setting and its source.
+type MailSettingValue struct {
+	// Source Layer that provided the effective SMTP setting: db when a valid
+	// override row exists, env when the process environment provides the
+	// key, default when neither does.
+	Source MailSettingSource `json:"source"`
+
+	// Value Effective host name or TLS mode.
+	Value string `json:"value"`
+}
+
+// MailSettingsReport Effective SMTP settings.
+type MailSettingsReport struct {
+	// From A display-sensitive SMTP setting (from/user). The original text is
+	// never returned: only whether it is set, a fixed mask and the source.
+	From MailSensitiveSetting `json:"from"`
+
+	// Host One non-sensitive SMTP setting and its source.
+	Host MailSettingValue `json:"host"`
+
+	// Pass The SMTP password state. The value, the mask and the stored
+	// ciphertext are never returned; only whether a password is set and
+	// the source.
+	Pass MailPasswordSetting `json:"pass"`
+
+	// Port The effective SMTP port and its source.
+	Port MailPortSetting `json:"port"`
+
+	// TlsMode One non-sensitive SMTP setting and its source.
+	TlsMode MailSettingValue `json:"tls_mode"`
+
+	// User A display-sensitive SMTP setting (from/user). The original text is
+	// never returned: only whether it is set, a fixed mask and the source.
+	User MailSensitiveSetting `json:"user"`
+}
+
+// MailTLSMode SMTP TLS mode. auto selects implicit TLS on port 465 and STARTTLS
+// otherwise; implicit requires TLS from the first byte; starttls
+// upgrades a plaintext connection. Lowercase literals only.
+type MailTLSMode string
 
 // MailTestResult defines model for MailTestResult.
 type MailTestResult struct {
@@ -2910,6 +3067,13 @@ type AdminEventsParams struct {
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
+// AdminMailSettingsSetParams defines parameters for AdminMailSettingsSet.
+type AdminMailSettingsSetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AdminMailTestParams defines parameters for AdminMailTest.
 type AdminMailTestParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -3406,6 +3570,9 @@ type AdminAutoApproveSetJSONRequestBody = AutoApproveUpdate
 // AdminEnginePauseJSONRequestBody defines body for AdminEnginePause for application/json ContentType.
 type AdminEnginePauseJSONRequestBody = EnginePauseUpdate
 
+// AdminMailSettingsSetJSONRequestBody defines body for AdminMailSettingsSet for application/json ContentType.
+type AdminMailSettingsSetJSONRequestBody = AdminMailSettingsUpdate
+
 // AdminNotifySetJSONRequestBody defines body for AdminNotifySet for application/json ContentType.
 type AdminNotifySetJSONRequestBody = NotifyPrefsUpdate
 
@@ -3676,6 +3843,12 @@ type ServerInterface interface {
 	// AdminEvents Subscribe to the admin event stream (SSE).
 	// (GET /api/admin/events)
 	AdminEvents(c *gin.Context, params AdminEventsParams)
+	// AdminMailSettings Read the effective SMTP settings.
+	// (GET /api/admin/mail-settings)
+	AdminMailSettings(c *gin.Context)
+	// AdminMailSettingsSet Write runtime overrides for the SMTP settings.
+	// (PUT /api/admin/mail-settings)
+	AdminMailSettingsSet(c *gin.Context, params AdminMailSettingsSetParams)
 	// AdminMailTest Send a test email to the signed-in master.
 	// (POST /api/admin/mail/test)
 	AdminMailTest(c *gin.Context, params AdminMailTestParams)
@@ -5064,6 +5237,62 @@ func (siw *ServerInterfaceWrapper) AdminEvents(c *gin.Context) {
 	}
 
 	siw.Handler.AdminEvents(c, params)
+}
+
+// AdminMailSettings operation middleware
+func (siw *ServerInterfaceWrapper) AdminMailSettings(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminMailSettings(c)
+}
+
+// AdminMailSettingsSet operation middleware
+func (siw *ServerInterfaceWrapper) AdminMailSettingsSet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminMailSettingsSetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminMailSettingsSet(c, params)
 }
 
 // AdminMailTest operation middleware
@@ -7696,6 +7925,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PUT(options.BaseURL+"/api/admin/schedule-settings", wrapper.AdminScheduleSettingsSet)
 	router.GET(options.BaseURL+"/api/admin/quota-settings", wrapper.AdminQuotaSettings)
 	router.PUT(options.BaseURL+"/api/admin/quota-settings", wrapper.AdminQuotaSettingsSet)
+	router.GET(options.BaseURL+"/api/admin/mail-settings", wrapper.AdminMailSettings)
+	router.PUT(options.BaseURL+"/api/admin/mail-settings", wrapper.AdminMailSettingsSet)
 	router.POST(options.BaseURL+"/api/admin/mail/test", wrapper.AdminMailTest)
 	router.POST(options.BaseURL+"/api/admin/webhook/test", wrapper.AdminWebhookTest)
 	router.PUT(options.BaseURL+"/api/admin/announcement", wrapper.AnnouncementSet)
