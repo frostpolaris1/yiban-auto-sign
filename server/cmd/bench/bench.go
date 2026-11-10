@@ -233,7 +233,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		_, err := svc.Build(ctx, appschedule.Input{
 			SchoolID: schoolIDs[k], SchoolTaskID: taskID, Day: day, Location: time.UTC,
 			Workers: 8, Avg: 500 * time.Millisecond, Rate: 50, Util: 0.8,
-			SlotsPerSlice: 100, Front: true, UsePrefs: false,
+			SlotsPerSlice: 100, SignDist: appschedule.SignDistFront, UsePrefs: false,
 		})
 		if err != nil {
 			return res, fmt.Errorf("bench: build plan for task %s: %w", taskID, err)

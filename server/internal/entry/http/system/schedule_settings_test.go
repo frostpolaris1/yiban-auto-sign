@@ -27,13 +27,17 @@ import (
 type memScheduleStore struct {
 	intRows    map[string]string
 	boolRows   map[string]string
+	strRows    map[string]string
 	intWrites  int
 	boolWrites int
+	strWrites  int
 	clears     int
 }
 
 func newMemScheduleStore() *memScheduleStore {
-	return &memScheduleStore{intRows: map[string]string{}, boolRows: map[string]string{}}
+	return &memScheduleStore{
+		intRows: map[string]string{}, boolRows: map[string]string{}, strRows: map[string]string{},
+	}
 }
 
 func (m *memScheduleStore) IntOverride(_ context.Context, key string) (int, bool, error) {
@@ -75,10 +79,22 @@ func (m *memScheduleStore) SetBool(_ context.Context, key string, value bool, _ 
 	return nil
 }
 
+func (m *memScheduleStore) StringOverride(_ context.Context, key string) (string, bool, error) {
+	raw, ok := m.strRows[key]
+	return raw, ok, nil
+}
+
+func (m *memScheduleStore) SetString(_ context.Context, key, value, _ string) error {
+	m.strWrites++
+	m.strRows[key] = value
+	return nil
+}
+
 func (m *memScheduleStore) ClearSetting(_ context.Context, key string) error {
 	m.clears++
 	delete(m.intRows, key)
 	delete(m.boolRows, key)
+	delete(m.strRows, key)
 	return nil
 }
 
@@ -321,5 +337,69 @@ func TestScheduleSettingsPutRejectsWeekendAndWindowBodies(t *testing.T) {
 	if f.store.intRows[appsettings.KeyScheduleDefaultSignStartMin] != "600" ||
 		f.store.intRows[appsettings.KeyScheduleDefaultSignEndMin] != "650" {
 		t.Fatalf("pair rows = %v", f.store.intRows)
+	}
+}
+
+// ===== 批 3c：铺点分布档（schedule.sign_dist）的传输映射 =====
+
+// sign_dist 往返：小写词表落行、audit 恰一行含旧→新；null 删行回默认档；
+// 该键不进名册响应（DB-only 机制键，3b 同口径）。
+func TestScheduleSettingsPutSignDistField(t *testing.T) {
+	f := newScheduleSettingsFixture(t)
+
+	if rec := f.putScheduleSettings(t, `{"sign_dist":"uniform"}`, coreauth.RoleMaster); rec.Code != http.StatusOK {
+		t.Fatalf("uniform put = %d: %s", rec.Code, rec.Body.String())
+	}
+	if f.store.strRows[appsettings.KeyScheduleSignDist] != "uniform" || f.store.strWrites != 1 {
+		t.Fatalf("sign_dist row = %q writes = %d, want uniform/1",
+			f.store.strRows[appsettings.KeyScheduleSignDist], f.store.strWrites)
+	}
+	if len(f.audits.entries) != 1 {
+		t.Fatalf("audit rows = %d, want 1", len(f.audits.entries))
+	}
+	pair := f.audits.entries[0].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSignDist]
+	if pair[0] != nil || pair[1] != "uniform" {
+		t.Fatalf("audit pair = %#v, want [nil uniform]", pair)
+	}
+
+	// 覆盖写：detail 记 uniform→front。
+	if rec := f.putScheduleSettings(t, `{"sign_dist":"front"}`, coreauth.RoleMaster); rec.Code != http.StatusOK {
+		t.Fatalf("front put = %d: %s", rec.Code, rec.Body.String())
+	}
+	pair = f.audits.entries[1].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSignDist]
+	if pair[0] != "uniform" || pair[1] != "front" {
+		t.Fatalf("audit pair = %#v, want [uniform front]", pair)
+	}
+
+	// null 删行：回默认档 front（缺行语义）。
+	if rec := f.putScheduleSettings(t, `{"sign_dist":null}`, coreauth.RoleMaster); rec.Code != http.StatusOK {
+		t.Fatalf("null put = %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := f.store.strRows[appsettings.KeyScheduleSignDist]; ok {
+		t.Fatalf("after null row = %q, want deleted", f.store.strRows[appsettings.KeyScheduleSignDist])
+	}
+}
+
+// sign_dist 负例：大小写/未知词/空串/错 JSON 类型都 400 零写零审计。
+func TestScheduleSettingsPutRejectsInvalidSignDist(t *testing.T) {
+	for _, body := range []string{
+		`{"sign_dist":"FRONT"}`,
+		`{"sign_dist":"Uniform"}`,
+		`{"sign_dist":"spread"}`,
+		`{"sign_dist":""}`,
+		`{"sign_dist":1}`,
+		`{"sign_dist":true}`,
+	} {
+		f := newScheduleSettingsFixture(t)
+		rec := f.putScheduleSettings(t, body, coreauth.RoleMaster)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, want 400: %s", body, rec.Code, rec.Body.String())
+		}
+		if f.store.strWrites != 0 || f.store.intWrites != 0 || f.store.boolWrites != 0 || f.store.clears != 0 {
+			t.Fatalf("body %s 写了存储: %v", body, f.store.strRows)
+		}
+		if len(f.audits.entries) != 0 {
+			t.Fatalf("body %s 写了审计: %d rows", body, len(f.audits.entries))
+		}
 	}
 }

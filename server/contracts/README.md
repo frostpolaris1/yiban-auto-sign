@@ -203,7 +203,7 @@ either side drifts.
 | GET | `/api/admin/settings` | master/admin | 2ws A |
 |  |  |  | 只读配置名册，按组返回；敏感键只给 `{set, masked, source}`，永不回显原文；source=env/default/unknown（file 保留，本服务不产出）。可写回的调度三键（schedule.edge_front_sec、schedule.edge_back_sec、schedule.allow_time_pref）额外读 settings 覆盖行：有效行存在时报 source=db 与行值，DB 覆盖 env（sett2）。键全集来自编译期嵌入的 `internal/configdata/registry.json`。 |
 | PUT | `/api/admin/schedule-settings` | master | sett2 |
-|  |  |  | 部分补丁写回调度键：缺字段=不动该键、显式 null=删覆盖行回缺省、值=upsert；sett2 三键（edge 两键收 0–300 整数秒、allow_time_pref 收 true/false 字面）＋批 3b 四枚 DB-only 键（sunday_sign/saturday_sign 周末门布尔，缺行=false=当日不铺行，行为对齐旧线周末缺省不签；default_sign_start_min/end_min 收 0–1439 分钟，成对生效：单侧写入与生效值组合后仍需 start<end 否则 400，读面半对/非法整对回退内置 06:30/07:50）。越域、JSON 类型错、未知字段 400 且零写入零审计；写入与 `settings.schedule_writeback` 审计同事务，detail 只含变更键旧→新。edge 与窗口改值次日构建生效（当日已铺行不回改）；allow_time_pref 次请求生效；四枚机制键不出现在名册响应。200 回全量名册（同 GET 形态）。 |
+|  |  |  | 部分补丁写回调度键：缺字段=不动该键、显式 null=删覆盖行回缺省、值=upsert；sett2 三键（edge 两键收 0–300 整数秒、allow_time_pref 收 true/false 字面）＋批 3b 四枚 DB-only 键（sunday_sign/saturday_sign 周末门布尔，缺行=false=当日不铺行，行为对齐旧线周末缺省不签；default_sign_start_min/end_min 收 0–1439 分钟，成对生效：单侧写入与生效值组合后仍需 start<end 否则 400，读面半对/非法整对回退内置 06:30/07:50）＋批 3c 的 sign_dist（收小写 front|uniform：front 顺序装满前段且为缺行默认档（既有行为），uniform 全窗分层；大写/未知词 400）。越域、JSON 类型错、未知字段 400 且零写入零审计；写入与 `settings.schedule_writeback` 审计同事务，detail 只含变更键旧→新。edge、窗口与分布档改值次日构建生效（当日已铺行不回改）；allow_time_pref 次请求生效；五枚机制键不出现在名册响应。200 回全量名册（同 GET 形态）。 |
 | POST | `/api/admin/mail/test` | master | c3e |
 |  |  |  | 向当前会话邮箱同步发一封测试信；空请求体，收件人不可由客户端指定；邮件投递关闭（SMTP 未启用）与无邮箱均 409（文案不同）、发送失败 502（不含 SMTP 应答/主机/口令）；每次外呼（成功/失败）写 `settings.mail_test` 审计，detail 只含 result 与粗分类；每管理员 60s 冷却（进程内，重启清空）429＋Retry-After。 |
 | POST | `/api/admin/webhook/test` | master | kqa |

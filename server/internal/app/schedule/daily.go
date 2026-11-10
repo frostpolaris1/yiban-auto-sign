@@ -48,13 +48,14 @@ type BuildParams struct {
 	Rate          float64
 	Util          float64
 	SlotsPerSlice int
-	Front         bool
+	SignDist      SignDist
 	UsePrefs      bool
 	EdgeFront     time.Duration
 	EdgeBack      time.Duration
 }
 
-// BuildOverrides 是一次构建解析出的可写回键读数（sett2；批 3b 扩周末门）。
+// BuildOverrides 是一次构建解析出的可写回键读数（sett2；批 3b 扩周末门；
+// 批 3c 扩铺点分布档）。
 type BuildOverrides struct {
 	UsePrefs  bool
 	EdgeFront time.Duration
@@ -63,6 +64,10 @@ type BuildOverrides struct {
 	// false=当日不铺任何计划行。缺行=false 由解析端（assembly）保证。
 	SundaySign   bool
 	SaturdaySign bool
+	// SignDist 是铺点分布档生效值（批 3c DB-only 枚举）：
+	// 缺行=SignDistFront（现行默认档，与既有 Front=true 铺点同形），
+	// 由解析端（assembly）按缺行语义传入。
+	SignDist SignDist
 }
 
 // Overrides 解析构建参数里的可写回键（settings 写回，DB>env）。
@@ -96,6 +101,7 @@ type DailyBuilder struct {
 // 批 3b 周末门：当日 weekday 对应键为 false（缺行=false=不签，
 // 对齐旧线 SUNDAY/SATURDAY_SIGN 缺省 0）时整日不铺行——
 // 返回 0 行并如实记一行「周末门关闭」；键读取失败上抛不铺（保守方向）。
+// 批 3c：SignDist 覆盖值一路传入铺点（缺行=front 默认档）。
 func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 	if b == nil || b.Service == nil || b.Tasks == nil || b.Clock == nil || b.Location == nil {
 		return 0, fmt.Errorf("schedule: incomplete daily builder")
@@ -103,6 +109,7 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 	day := coreclock.BusinessDay(b.Clock.Now(), b.Location)
 	usePrefs, edgeFront, edgeBack := b.Params.UsePrefs, b.Params.EdgeFront, b.Params.EdgeBack
 	sundaySign, saturdaySign := false, false
+	signDist := b.Params.SignDist
 	if b.Overrides != nil {
 		overrides, err := b.Overrides(ctx)
 		if err != nil {
@@ -111,6 +118,8 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 		}
 		usePrefs, edgeFront, edgeBack = overrides.UsePrefs, overrides.EdgeFront, overrides.EdgeBack
 		sundaySign, saturdaySign = overrides.SundaySign, overrides.SaturdaySign
+		// 3c：缺行时解析端传 SignDistFront（现行默认档）。
+		signDist = overrides.SignDist
 	}
 	// 周末门：先于任务列表判定——不铺行即零负载，也不必查任务名册。
 	// weekday 从业务日串解析，与铺行日严格一致。
@@ -150,7 +159,7 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 			Rate:          b.Params.Rate,
 			Util:          b.Params.Util,
 			SlotsPerSlice: b.Params.SlotsPerSlice,
-			Front:         b.Params.Front,
+			SignDist:      signDist,
 			UsePrefs:      usePrefs,
 			EdgeFront:     edgeFront,
 			EdgeBack:      edgeBack,

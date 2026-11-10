@@ -14,7 +14,8 @@ package pg
 // 行缺失返回 found=false，调用方决定缺省语义。
 // 布尔开关（registration.enabled、auto_approve）在 found 之上保留
 // 「缺行/非 true 一律 false」的既有对外行为：关闭是安全默认。
-// 调度三键（sett2 写回）走存在性感知的 IntOverride/BoolOverride：
+// 调度三键（sett2 写回）走存在性感知的 IntOverride/BoolOverride；
+// 批 3c 的字符串枚举键走 StringOverride/SetString（词表校验在用例层）：
 // 行缺失由用例层回退 env，值不符合类型口径报校验错（不是缺行）。
 // 写入单语句 upsert（ON CONFLICT、updated_by、触发器维护 updated_at）；
 // 删行走 ClearSetting；审计由用例层在同一事务内追加。
@@ -110,6 +111,23 @@ func (r *SettingsRepo) BoolOverride(ctx context.Context, key string) (bool, bool
 // 调用方必须在事务内调用，使本次写入与审计同存亡。
 func (r *SettingsRepo) SetBool(ctx context.Context, key string, value bool, by string) error {
 	return r.setSetting(ctx, key, strconv.FormatBool(value), by)
+}
+
+// StringOverride 读字符串覆盖行（批 3c 分布档）。found=false 表示行缺失。
+// 返回裁剪两侧空白后的原始字符串（与 Int/Bool 的读口径一致）；
+// 词表校验在用例层：adapter 不知道 front/uniform 的语义。
+func (r *SettingsRepo) StringOverride(ctx context.Context, key string) (string, bool, error) {
+	raw, found, err := r.getSetting(ctx, key)
+	if err != nil || !found {
+		return "", found, err
+	}
+	return strings.TrimSpace(raw), true, nil
+}
+
+// SetString 写字符串覆盖行并记录操作者。
+// 值必须已过用例层词表校验；调用方必须在事务内调用。
+func (r *SettingsRepo) SetString(ctx context.Context, key, value, by string) error {
+	return r.setSetting(ctx, key, value, by)
 }
 
 // ClearSetting 删除覆盖行（PUT 显式 null 的语义：回退 env）。

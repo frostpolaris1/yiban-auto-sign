@@ -1463,14 +1463,19 @@ export interface paths {
         /**
          * Write runtime overrides for the schedule settings.
          * @description Master only. A partial patch of the three writable schedule keys
-         *     plus four database-only mechanism keys (weekend gate and global
-         *     default sign window): a field absent from the body leaves that key
-         *     untouched; an explicit null deletes the stored override row so the
-         *     key reads its default again; a value upserts the override row. The
-         *     edge fields accept integers between 0 and 300 (seconds);
-         *     allow_time_pref and the weekend gate fields accept the true/false
-         *     literals; the default window fields accept minutes between 0 and
-         *     1439. A weekend gate row is absent or false, no plan rows are built
+         *     plus five database-only mechanism keys (weekend gate, global
+         *     default sign window and plan row distribution): a field absent
+         *     from the body leaves that key untouched; an explicit null deletes
+         *     the stored override row so the key reads its default again; a
+         *     value upserts the override row. The edge fields accept integers
+         *     between 0 and 300 (seconds); allow_time_pref and the weekend gate
+         *     fields accept the true/false literals; the default window fields
+         *     accept minutes between 0 and 1439; sign_dist accepts the front or
+         *     uniform literals (lowercase only) and selects how plan rows spread
+         *     inside the window - front fills the early slices in order and is
+         *     the built-in default when the row is absent (the historical
+         *     behavior); uniform spreads rows across the whole window. A weekend
+         *     gate row is absent or false, no plan rows are built
          *     for that weekday at all (the new default aligns with the legacy
          *     off-by-default weekend gate); true restores plan builds for that
          *     weekday. The default window pair must satisfy start < end after
@@ -1482,11 +1487,12 @@ export interface paths {
          *     field answers 400 with zero writes and zero audit rows. The write
          *     and one settings.schedule_writeback audit row commit in one
          *     transaction; the audit detail holds only the changed keys with
-         *     their previous and new values. Edge and window changes take effect
-         *     at the next daily plan build (rows already built for today are not
-         *     rebuilt); allow_time_pref takes effect on the next request. The
-         *     four mechanism keys never appear in the roster answer. The answer
-         *     is the full roster in the same shape as GET /api/admin/settings.
+         *     their previous and new values. Edge, window and distribution
+         *     changes take effect at the next daily plan build (rows already
+         *     built for today are not rebuilt); allow_time_pref takes effect on
+         *     the next request. The mechanism keys never appear in the roster
+         *     answer. The answer is the full roster in the same shape as
+         *     GET /api/admin/settings.
          */
         put: operations["AdminScheduleSettingsSet"];
         post?: never;
@@ -2551,6 +2557,15 @@ export interface components {
              *     rules.
              */
             default_sign_end_min?: number | null;
+            /**
+             * @description Distribution mode of plan rows inside the window. front fills
+             *     the early slices in order and is the built-in default when the
+             *     row is absent (the historical behavior); uniform spreads rows
+             *     across the whole window. Lowercase literals only: any other
+             *     value, including case variants, answers 400. Takes effect at
+             *     the next daily plan build.
+             */
+            sign_dist?: components["schemas"]["ScheduleSignDist"] | null;
         };
         MailTestResult: {
             /**
@@ -3220,6 +3235,11 @@ export interface components {
             lat?: number;
             reason?: string;
         };
+        /**
+         * @description Plan row distribution mode; lowercase front or uniform.
+         * @enum {string}
+         */
+        ScheduleSignDist: "front" | "uniform";
         /**
          * @description platform and cache come from discovery; fallback is the local
          *     default window; override is a master or admin replacement.

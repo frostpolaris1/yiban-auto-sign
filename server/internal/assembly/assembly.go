@@ -821,7 +821,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		planning = schedulehttp.NewHandler(scheduleSvc, prefSvc, adminSvc, schedulehttp.Config{
 			Location: loc, Clock: clk, Workers: cfg.Workers, Avg: cfg.AvgAttempt,
 			Rate: cfg.EgressRate, Util: corecapacity.UtilDefault,
-			SlotsPerSlice: slots, Front: true, UsePrefs: cfg.AllowTimePref,
+			SlotsPerSlice: slots, SignDist: appschedule.SignDistFront, UsePrefs: cfg.AllowTimePref,
 			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
 			// sett2：可写回键每请求解析（DB 覆盖 env）；静态值仍是 env 兜底。
 			Overrides: settingsOverrides{resolver: scheduleResolver, cfg: cfg},
@@ -843,7 +843,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Service: scheduleSvc, Tasks: scheduleRepo, Clock: clk, Location: loc,
 			Params: appschedule.BuildParams{
 				Workers: cfg.Workers, Avg: cfg.AvgAttempt, Rate: cfg.EgressRate,
-				Util: corecapacity.UtilDefault, SlotsPerSlice: slots, Front: true,
+				Util: corecapacity.UtilDefault, SlotsPerSlice: slots, SignDist: appschedule.SignDistFront,
 				UsePrefs: cfg.AllowTimePref, EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
 			},
 			// sett2：日切构建每次重读覆盖行；当日已铺行不回改，改值次日生效。
@@ -1361,6 +1361,7 @@ func (o settingsOverrides) Edges(ctx context.Context) (time.Duration, time.Durat
 // 口径：当日已铺行不回改——改值自下一次构建（次日凌晨 00:10）生效。
 // 批 3b 扩周末门两键：DB-only 键无 env 对应位，缺行=false=不签
 // （ResolveBool 的 envValue 固定传 false，即键的缺行语义）。
+// 批 3c 扩分布档：缺行=SignDistFront（现行默认档，既有 Front=true 同形）。
 func buildScheduleOverrides(ctx context.Context, resolver *appsettings.Resolver, cfg *config.Config) (appschedule.BuildOverrides, error) {
 	usePrefs, err := resolver.ResolveBool(ctx, appsettings.KeyScheduleAllowTimePref, cfg.AllowTimePref)
 	if err != nil {
@@ -1382,11 +1383,27 @@ func buildScheduleOverrides(ctx context.Context, resolver *appsettings.Resolver,
 	if err != nil {
 		return appschedule.BuildOverrides{}, err
 	}
+	signDist, err := resolver.ResolveSignDist(ctx, appsettings.SignDistFront)
+	if err != nil {
+		return appschedule.BuildOverrides{}, err
+	}
 	return appschedule.BuildOverrides{
 		UsePrefs:     usePrefs,
 		EdgeFront:    time.Duration(front) * time.Second,
 		EdgeBack:     time.Duration(back) * time.Second,
 		SundaySign:   sundaySign,
 		SaturdaySign: saturdaySign,
+		SignDist:     scheduleSignDistOf(signDist),
 	}, nil
+}
+
+// scheduleSignDistOf 把 settings 的字符串枚举映射成计划用例的档位枚举。
+// 映射只此一处（app 目录之间不互相 import）：词表单源在 app/settings，
+// 计划用例只认自己的枚举。未知值按默认档 front 处理（读面已保证词表内，
+// 这里 fail-safe）。
+func scheduleSignDistOf(value appsettings.SignDist) appschedule.SignDist {
+	if value == appsettings.SignDistUniform {
+		return appschedule.SignDistUniform
+	}
+	return appschedule.SignDistFront
 }

@@ -3,7 +3,7 @@
 // 功能：
 // GET /api/admin/settings（master/admin 只读名册，写回键报 source=db）、
 // PUT /api/admin/schedule-settings（master 部分补丁写回调度键：sett2 三键
-// ＋批 3b 四枚 DB-only 键——周末门两布尔与默认窗口两分钟）、
+// ＋批 3b 四枚 DB-only 键——周末门两布尔与默认窗口两分钟＋批 3c 分布档一枚）、
 // POST /api/admin/mail/test（master 向自己的邮箱发测试信）、
 // POST /api/admin/webhook/test（master 经配置的 webhook 出口发测试推送）、
 // PUT /api/admin/announcement（master）、GET /api/announcement（所有已登录角色）。
@@ -186,17 +186,19 @@ func (h *Handler) AdminScheduleSettingsSet(c *gin.Context, _ oapi.AdminScheduleS
 	respond.JSON(c.Writer, http.StatusOK, settingsReportResponse(report))
 }
 
-// scheduleFieldKind 是 PUT 字段的值类型（解码分派用）：布尔字面或整数分钟。
+// scheduleFieldKind 是 PUT 字段的值类型（解码分派用）：布尔字面、整数分钟
+// 或分布档字符串枚举。
 type scheduleFieldKind int
 
 const (
 	scheduleFieldInt scheduleFieldKind = iota
 	scheduleFieldBool
+	scheduleFieldSignDist
 )
 
 // scheduleBodyKeys 把 PUT 请求体字段名（对齐旧线设置页字段）映射到
 // settings 表键名与值类型。批 3b 扩四枚 DB-only 键：周末门两布尔
-// 与默认窗口两分钟。表外字段一律未知（400）。
+// 与默认窗口两分钟；批 3c 扩分布档字符串枚举。表外字段一律未知（400）。
 var scheduleBodyKeys = map[string]struct {
 	key  string
 	kind scheduleFieldKind
@@ -208,6 +210,7 @@ var scheduleBodyKeys = map[string]struct {
 	"saturday_sign":          {key: appsettings.KeyScheduleSaturdaySign, kind: scheduleFieldBool},
 	"default_sign_start_min": {key: appsettings.KeyScheduleDefaultSignStartMin, kind: scheduleFieldInt},
 	"default_sign_end_min":   {key: appsettings.KeyScheduleDefaultSignEndMin, kind: scheduleFieldInt},
+	"sign_dist":              {key: appsettings.KeyScheduleSignDist, kind: scheduleFieldSignDist},
 }
 
 // scheduleChangesFromJSON 把原始 JSON 体折成写意图。
@@ -222,6 +225,19 @@ func scheduleChangesFromJSON(body map[string]json.RawMessage) ([]appsettings.Sch
 		}
 		if string(raw) == "null" {
 			changes = append(changes, appsettings.ScheduleChange{Key: spec.key, Op: appsettings.ScheduleOpClear})
+			continue
+		}
+		if spec.kind == scheduleFieldSignDist {
+			// 分布档（批 3c）：JSON 字符串先过词表；大小写错或未知词 400。
+			var text string
+			if err := json.Unmarshal(raw, &text); err != nil {
+				return nil, errs.New(errs.CodeValidation, field+" requires a string literal")
+			}
+			value, ok := appsettings.ParseSignDist(text)
+			if !ok {
+				return nil, errs.New(errs.CodeValidation, field+" must be front or uniform")
+			}
+			changes = append(changes, appsettings.ScheduleChange{Key: spec.key, Op: appsettings.ScheduleOpSet, Value: value})
 			continue
 		}
 		if spec.kind == scheduleFieldBool {

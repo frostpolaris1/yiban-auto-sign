@@ -24,10 +24,19 @@ import (
 // readErr/writeErr 注入存储故障。行值由测试直接写成合法或非法字面。
 type fakeOverrideStore struct {
 	rows    map[string]string
+	strRows map[string]string
 	readErr error
 	// badInt/badBool 让读路径返回校验错（模拟 pg 对坏行的判定）。
 	badInt  bool
 	badBool bool
+}
+
+func (f *fakeOverrideStore) StringOverride(_ context.Context, key string) (string, bool, error) {
+	if f.readErr != nil {
+		return "", false, f.readErr
+	}
+	raw, ok := f.strRows[key]
+	return raw, ok, nil
 }
 
 func (f *fakeOverrideStore) IntOverride(context.Context, string) (int, bool, error) {
@@ -243,6 +252,7 @@ func TestLookupForRoster(t *testing.T) {
 type keyedOverrideStore struct {
 	intRows  map[string]string
 	boolRows map[string]string
+	strRows  map[string]string
 	readErr  error
 }
 
@@ -295,9 +305,26 @@ func (f *keyedOverrideStore) SetBool(_ context.Context, key string, value bool, 
 	return nil
 }
 
+func (f *keyedOverrideStore) StringOverride(_ context.Context, key string) (string, bool, error) {
+	if f.readErr != nil {
+		return "", false, f.readErr
+	}
+	raw, ok := f.strRows[key]
+	return raw, ok, nil
+}
+
+func (f *keyedOverrideStore) SetString(_ context.Context, key, value, _ string) error {
+	if f.strRows == nil {
+		f.strRows = map[string]string{}
+	}
+	f.strRows[key] = value
+	return nil
+}
+
 func (f *keyedOverrideStore) ClearSetting(_ context.Context, key string) error {
 	delete(f.intRows, key)
 	delete(f.boolRows, key)
+	delete(f.strRows, key)
 	return nil
 }
 
@@ -430,6 +457,78 @@ func TestResolveSignWindowWarnsOnce(t *testing.T) {
 	}
 	if warnLines(&buf) != 1 {
 		t.Fatalf("warn count = %d, want 1: %q", warnLines(&buf), buf.String())
+	}
+}
+
+// ===== 批 3c：铺点分布档解析（schedule.sign_dist）=====
+//
+// 判据：缺行=现行默认档 front（调用方传 SignDistFront）；行值只认小写
+// front/uniform；词表外行值（手工写坏）回默认档并每进程 Warn 一次，
+// 值原文不进日志；存储故障原样上抛。
+
+// 缺行是常态：返回调用方传入的默认档（front），零告警。
+func TestResolveSignDistMissingRowReturnsDefault(t *testing.T) {
+	var buf bytes.Buffer
+	resolver := newKeyedResolver(t, &keyedOverrideStore{strRows: map[string]string{}},
+		slog.New(slog.NewTextHandler(&buf, nil)))
+	got, err := resolver.ResolveSignDist(context.Background(), appsettings.SignDistFront)
+	if err != nil || got != appsettings.SignDistFront {
+		t.Fatalf("ResolveSignDist = (%q, %v), want front", got, err)
+	}
+	if warnLines(&buf) != 0 {
+		t.Fatalf("缺行不得告警: %q", buf.String())
+	}
+}
+
+// 行值 front/uniform 原样返回（小写词表精确匹配）。
+func TestResolveSignDistUsesStoredValue(t *testing.T) {
+	for _, want := range []appsettings.SignDist{appsettings.SignDistFront, appsettings.SignDistUniform} {
+		resolver := newKeyedResolver(t, &keyedOverrideStore{strRows: map[string]string{
+			appsettings.KeyScheduleSignDist: string(want),
+		}}, nil)
+		got, err := resolver.ResolveSignDist(context.Background(), appsettings.SignDistFront)
+		if err != nil || got != want {
+			t.Fatalf("ResolveSignDist(%q) = (%q, %v), want stored value", want, got, err)
+		}
+	}
+}
+
+// 坏行（大小写错、未知词、空白包裹）：回默认档且每进程只 Warn 一次，
+// 不把坏值原文带进日志。
+func TestResolveSignDistBadRowFallsBackWithWarnOnce(t *testing.T) {
+	for name, raw := range map[string]string{
+		"uppercase": "FRONT",
+		"unknown":   "spread",
+		"padded":    " front ",
+		"empty":     "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			resolver := newKeyedResolver(t, &keyedOverrideStore{strRows: map[string]string{
+				appsettings.KeyScheduleSignDist: raw,
+			}}, slog.New(slog.NewTextHandler(&buf, nil)))
+			ctx := context.Background()
+			for i := 0; i < 2; i++ {
+				got, err := resolver.ResolveSignDist(ctx, appsettings.SignDistFront)
+				if err != nil || got != appsettings.SignDistFront {
+					t.Fatalf("call %d: ResolveSignDist = (%q, %v), want front fallback", i, got, err)
+				}
+			}
+			if warnLines(&buf) != 1 {
+				t.Fatalf("坏行必须告警恰一次: %q", buf.String())
+			}
+			if raw != "" && strings.Contains(buf.String(), raw) {
+				t.Fatalf("坏值原文不得进日志: %q", buf.String())
+			}
+		})
+	}
+}
+
+// 存储故障原样上抛：故障不是配置状态，不得当缺行回退。
+func TestResolveSignDistPropagatesStoreFailure(t *testing.T) {
+	resolver := newKeyedResolver(t, &keyedOverrideStore{readErr: errors.New("db down")}, nil)
+	if _, err := resolver.ResolveSignDist(context.Background(), appsettings.SignDistFront); err == nil {
+		t.Fatal("store failure must propagate")
 	}
 }
 

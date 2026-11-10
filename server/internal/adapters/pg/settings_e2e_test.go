@@ -353,6 +353,7 @@ func TestSettingsWritebackAccessorE2E(t *testing.T) {
 	repo := pg.NewSettingsRepo(e.db)
 	const edgeKey = "schedule.edge_front_sec"
 	const boolKey = "schedule.allow_time_pref"
+	const distKey = "schedule.sign_dist"
 
 	// 缺行：found=false，零错误。
 	if value, found, err := repo.IntOverride(e.ctx, edgeKey); err != nil || found || value != 0 {
@@ -360,6 +361,9 @@ func TestSettingsWritebackAccessorE2E(t *testing.T) {
 	}
 	if value, found, err := repo.BoolOverride(e.ctx, boolKey); err != nil || found || value {
 		t.Fatalf("missing bool row = (%v, %v, %v)", value, found, err)
+	}
+	if value, found, err := repo.StringOverride(e.ctx, distKey); err != nil || found || value != "" {
+		t.Fatalf("missing string row = (%q, %v, %v)", value, found, err)
 	}
 
 	// upsert 写读回环：updated_by 记录操作者，updated_at 由触发器维护。
@@ -394,6 +398,30 @@ func TestSettingsWritebackAccessorE2E(t *testing.T) {
 	}
 	if value, _, _ := repo.IntOverride(e.ctx, edgeKey); value != 90 {
 		t.Fatalf("int after rewrite = %d, want 90", value)
+	}
+
+	// 字符串枚举行（3c）：写读回环、二次写仍一行、两侧空白裁掉。
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return repo.SetString(ctx, distKey, "uniform", user.ID)
+	}); err != nil {
+		t.Fatalf("SetString: %v", err)
+	}
+	if value, found, err := repo.StringOverride(e.ctx, distKey); err != nil || !found || value != "uniform" {
+		t.Fatalf("string roundtrip = (%q, %v, %v)", value, found, err)
+	}
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return repo.SetString(ctx, distKey, "front", user.ID)
+	}); err != nil {
+		t.Fatalf("SetString again: %v", err)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM settings WHERE key = $1", distKey); rows != 1 {
+		t.Fatalf("string rows after rewrite = %d, want 1", rows)
+	}
+	if _, err := e.db.Exec(e.ctx, `UPDATE settings SET value = ' uniform ' WHERE key = $1`, distKey); err != nil {
+		t.Fatalf("pad string row: %v", err)
+	}
+	if value, _, _ := repo.StringOverride(e.ctx, distKey); value != "uniform" {
+		t.Fatalf("string after trim = %q, want uniform", value)
 	}
 
 	// 手工坏行：int 位塞非整数、bool 位塞非字面，都报校验错。
@@ -701,5 +729,85 @@ func TestWeekendAndWindowKeysServiceE2E(t *testing.T) {
 		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
 	if err != nil || start != coreschedule.DefaultSignWindowStartMinute || end != coreschedule.DefaultSignWindowEndMinute {
 		t.Fatalf("ResolveSignWindow after clear = (%d, %d, %v), want builtin constants", start, end, err)
+	}
+}
+
+// 批 3c：分布档的真库链（schedule.sign_dist）。
+// 判据：set 落行且恰一行审计（detail 含旧→新）；解析端读回行值；
+// 非法词表 400 零写零审计（用例层词表）；null 删行回缺行默认档 front。
+func TestSignDistServiceE2E(t *testing.T) {
+	e := newEnv(t)
+	master := e.createUser("sign-dist-master@example.com")
+	repo := pg.NewSettingsRepo(e.db)
+	resolver, err := appsettings.NewResolver(repo, map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store:    pg.NewAnnouncementRepo(e.db),
+		Audit:    e.audits,
+		Tx:       e.db,
+		Clock:    coreclock.Fixed{T: time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)},
+		Schedule: repo,
+		Resolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	actor := appaudit.Actor{UserID: master.ID, Role: coreauth.RoleMaster, Label: "m***@example.com"}
+
+	// set uniform：行落库、恰一行审计、detail 含键与旧→新。
+	if err := svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpSet, Value: appsettings.SignDistUniform},
+	}); err != nil {
+		t.Fatalf("SetSchedule(uniform): %v", err)
+	}
+	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyScheduleSignDist); value != "uniform" {
+		t.Fatalf("settings value = %q, want uniform", value)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'settings.schedule_writeback'"); rows != 1 {
+		t.Fatalf("audit rows = %d, want 1", rows)
+	}
+	detail := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'settings.schedule_writeback' ORDER BY id DESC LIMIT 1")
+	if !strings.Contains(detail, appsettings.KeyScheduleSignDist) || !strings.Contains(detail, "uniform") {
+		t.Fatalf("audit detail = %q", detail)
+	}
+
+	// 解析端读回行值。
+	if got, err := resolver.ResolveSignDist(e.ctx, appsettings.SignDistFront); err != nil || got != appsettings.SignDistUniform {
+		t.Fatalf("ResolveSignDist = (%q, %v), want uniform", got, err)
+	}
+
+	// 非法词表：用例层 400，零写零审计。
+	auditRowsBefore := e.scalarInt("SELECT count(*) FROM audit_logs")
+	err = svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpSet, Value: appsettings.SignDist("FRONT")},
+	})
+	if err == nil {
+		t.Fatal("uppercase literal must be rejected")
+	}
+	requireValidation(t, err)
+	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyScheduleSignDist); value != "uniform" {
+		t.Fatalf("settings value after rejected put = %q, want untouched uniform", value)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs"); rows != auditRowsBefore {
+		t.Fatalf("rejected put wrote audit rows: %d -> %d", auditRowsBefore, rows)
+	}
+
+	// null 删行：行消失，解析端回缺行默认档 front。
+	if err := svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpClear},
+	}); err != nil {
+		t.Fatalf("SetSchedule(clear): %v", err)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM settings WHERE key = $1", appsettings.KeyScheduleSignDist); rows != 0 {
+		t.Fatalf("rows after clear = %d, want 0", rows)
+	}
+	if got, err := resolver.ResolveSignDist(e.ctx, appsettings.SignDistFront); err != nil || got != appsettings.SignDistFront {
+		t.Fatalf("ResolveSignDist after clear = (%q, %v), want front fallback", got, err)
 	}
 }
