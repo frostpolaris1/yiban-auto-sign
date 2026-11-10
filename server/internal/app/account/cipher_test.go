@@ -167,6 +167,17 @@ func TestCipherSecretRoundTrip(t *testing.T) {
 	}
 }
 
+// shortThenErrorReader 首次短读、随后报错：io.ReadFull 必须失败关闭。
+type shortThenErrorReader struct{ calls int }
+
+func (r *shortThenErrorReader) Read(p []byte) (int, error) {
+	if r.calls == 0 {
+		r.calls++
+		return len(p) / 2, nil
+	}
+	return 0, errors.New("short read")
+}
+
 // 随机源故障与零值 cipher 都显性报错：加密失败不得静默落库。
 func TestCipherSecretFailsClosed(t *testing.T) {
 	cipher, err := NewCipher([]byte("0123456789abcdef0123456789abcdef"))
@@ -176,6 +187,11 @@ func TestCipherSecretFailsClosed(t *testing.T) {
 	cipher.random = failingReader{}
 	if _, err := cipher.SealSecret(SecretDomainMailPass, "x"); err == nil {
 		t.Fatal("SealSecret succeeded with a failing random source")
+	}
+	// 短读不得当完整 nonce：io.ReadFull 报错，SealSecret 失败关闭。
+	cipher.random = &shortThenErrorReader{}
+	if _, err := cipher.SealSecret(SecretDomainMailPass, "x"); err == nil {
+		t.Fatal("SealSecret succeeded with a short random read")
 	}
 	var zero Cipher
 	if _, err := zero.SealSecret(SecretDomainMailPass, "x"); err == nil {

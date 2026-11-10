@@ -151,7 +151,7 @@ func (c *Cipher) SealSecret(domain, plaintext string) (string, error) {
 		return "", errors.New("account: secret domain is required")
 	}
 	nonce := make([]byte, c.aead.NonceSize())
-	if _, err := c.random.Read(nonce); err != nil {
+	if _, err := io.ReadFull(c.random, nonce); err != nil {
 		return "", fmt.Errorf("account: read nonce: %w", err)
 	}
 	ciphertext := c.aead.Seal(nil, nonce, []byte(plaintext), []byte(domain))

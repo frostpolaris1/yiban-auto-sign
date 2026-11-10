@@ -368,6 +368,17 @@ func TestEncodeDetailAcceptsScheduleWritebackChanges(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("IPv6 host 被拒绝: %v", err)
 	}
+	// 253 字符主机（归一后的上限）必须放行：写面不再把 raw 254 送进审计。
+	longHost := strings.Repeat("a", 63) + "." + strings.Repeat("a", 63) + "." +
+		strings.Repeat("a", 63) + "." + strings.Repeat("b", 61)
+	if len(longHost) != 253 {
+		t.Fatalf("fixture host length = %d, want 253", len(longHost))
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{
+		"changes": map[string][2]any{"mail.smtp_host": {nil, longHost}},
+	}); err != nil {
+		t.Fatalf("253 字符 host 被拒绝: %v", err)
+	}
 	// 主机名形状只放行 mail.smtp_host：其它键带主机名仍拒绝。
 	if _, err := coreaudit.EncodeDetail(map[string]any{
 		"changes": map[string][2]any{"schedule.edge_back_sec": {nil, "smtp.example.com"}},

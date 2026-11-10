@@ -431,3 +431,56 @@ func TestSetMailAcceptsIPv6Host(t *testing.T) {
 		t.Fatalf("host row = %q", f.store.strRows[appsettings.KeyMailSMTPHost])
 	}
 }
+
+// 253 主机＋尾点（raw 254）不得在审计形状处 500：
+// 写面存归一形态（去尾点），settings 行与审计新态都是 253 形态。
+func TestSetMailNormalizesTrailingDotHost(t *testing.T) {
+	label := strings.Repeat("a", 63)
+	host := label + "." + label + "." + label + "." + strings.Repeat("b", 61)
+	if len(host) != 253 {
+		t.Fatalf("fixture host length = %d, want 253", len(host))
+	}
+	f := newMailFixture(t, mailEnv(), newMailCipher())
+	err := f.svc.SetMail(context.Background(), corescope.Master(), scheduleActor,
+		[]appsettings.MailChange{
+			{Key: appsettings.KeyMailSMTPHost, Op: appsettings.OpSet, Value: host + "."},
+		})
+	if err != nil {
+		t.Fatalf("SetMail(253+dot): %v", err)
+	}
+	if got := f.store.strRows[appsettings.KeyMailSMTPHost]; got != host {
+		t.Fatalf("stored host length = %d, want normalized 253", len(got))
+	}
+	pair := f.audits.entries[0].Detail["changes"].(map[string][2]any)[appsettings.KeyMailSMTPHost]
+	if pair[1] != host {
+		t.Fatalf("audit new host length = %d, want normalized 253", len(pair[1].(string)))
+	}
+}
+
+// 存储读故障原样上抛：SetMail 不把它读成缺行，零写入零审计。
+func TestSetMailPropagatesStoreReadFailure(t *testing.T) {
+	f := newMailFixture(t, mailEnv(), newMailCipher())
+	storeErr := errors.New("db down")
+	f.store.readErr = storeErr
+	err := f.svc.SetMail(context.Background(), corescope.Master(), scheduleActor,
+		[]appsettings.MailChange{
+			{Key: appsettings.KeyMailSMTPHost, Op: appsettings.OpSet, Value: "smtp.new.example"},
+		})
+	if !errors.Is(err, storeErr) {
+		t.Fatalf("SetMail err = %v, want the raw store error", err)
+	}
+	if len(f.store.strWrites) != 0 || len(f.store.clears) != 0 || len(f.audits.entries) != 0 {
+		t.Fatalf("读故障仍有副作用: writes=%v clears=%v audit=%d",
+			f.store.strWrites, f.store.clears, len(f.audits.entries))
+	}
+}
+
+// 存储读故障原样上抛：MailSettings 不把它读成 env/default。
+func TestMailSettingsPropagatesStoreReadFailure(t *testing.T) {
+	f := newMailFixture(t, mailEnv(), newMailCipher())
+	storeErr := errors.New("db down")
+	f.store.readErr = storeErr
+	if _, err := f.svc.MailSettings(context.Background(), corescope.Master()); !errors.Is(err, storeErr) {
+		t.Fatalf("MailSettings err = %v, want the raw store error", err)
+	}
+}

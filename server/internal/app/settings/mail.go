@@ -326,10 +326,11 @@ func readMailDBValue(ctx context.Context, store OverrideReader, cipher SecretCip
 	}
 	switch kind := mailKeyKind(key); kind {
 	case "host":
-		if !validSMTPHost(stored) {
+		host, ok := normalizeSMTPHost(stored)
+		if !ok {
 			return "", true, false, nil
 		}
-		return strings.TrimSpace(stored), true, true, nil
+		return host, true, true, nil
 	case "port":
 		if _, ok := parseMailPort(stored); !ok {
 			return "", true, false, nil
@@ -509,11 +510,12 @@ func prepareMailSet(key, kind string, value any, cipher SecretCipher) (string, a
 		if !ok {
 			return "", nil, coreerrs.New(coreerrs.CodeValidation, "mail host requires a string")
 		}
-		host = strings.TrimSpace(host)
-		if !validSMTPHost(host) {
+		normalized, ok := normalizeSMTPHost(host)
+		if !ok {
 			return "", nil, coreerrs.New(coreerrs.CodeValidation, "mail host is not a valid host name")
 		}
-		return host, host, nil
+		// 落库与审计都用归一形态：raw 254 的尾点主机不得在审计形状处 500。
+		return normalized, normalized, nil
 	case "port":
 		port, ok := value.(int)
 		if !ok {
@@ -623,32 +625,34 @@ func (s *Service) readMailOld(ctx context.Context, change preparedMailChange) (a
 	return raw, nil
 }
 
-// validSMTPHost 报告主机名是否是合法 SMTP 主机（主机名或 IP 字面量）。
+// normalizeSMTPHost 归一主机名并校验合法性。
+// 去首尾空白与单个尾点后校验；返回的归一形态用于落库与审计，
+// 避免「raw 254 过校验、归一 253 超审计形状」的 500 地雷。
 // 拒绝空串、空白、scheme、路径与端口后缀：这些会让拨号目标与证书校验漂移。
-func validSMTPHost(raw string) bool {
+func normalizeSMTPHost(raw string) (string, bool) {
 	host := strings.TrimSuffix(strings.TrimSpace(raw), ".")
 	if host == "" || len(host) > 253 {
-		return false
+		return "", false
 	}
 	if net.ParseIP(host) != nil {
-		return true
+		return host, true
 	}
 	for _, label := range strings.Split(host, ".") {
 		if label == "" || len(label) > 63 {
-			return false
+			return "", false
 		}
 		if label[0] == '-' || label[len(label)-1] == '-' {
-			return false
+			return "", false
 		}
 		for _, r := range label {
 			switch {
 			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
 			default:
-				return false
+				return "", false
 			}
 		}
 	}
-	return true
+	return host, true
 }
 
 // parseMailPort 解析端口十进制串并校验 [1,65535]。
