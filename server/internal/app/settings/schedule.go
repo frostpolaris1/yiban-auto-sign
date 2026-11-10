@@ -30,14 +30,24 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
-// ScheduleOp 是一个键的写意图。
-type ScheduleOp string
+// WriteOp 是一个设置键的写意图（调度与配额写面共用同一对语义）。
+type WriteOp string
+
+const (
+	// OpSet 用给定值 upsert 覆盖行。
+	OpSet WriteOp = "set"
+	// OpClear 删除覆盖行，读面回退缺省。
+	OpClear WriteOp = "clear"
+)
+
+// ScheduleOp 是调度写面的既有名字，保留为别名（语义单源在 WriteOp）。
+type ScheduleOp = WriteOp
 
 const (
 	// ScheduleOpSet 用给定值 upsert 覆盖行。
-	ScheduleOpSet ScheduleOp = "set"
+	ScheduleOpSet = OpSet
 	// ScheduleOpClear 删除覆盖行，读面回退 env。
-	ScheduleOpClear ScheduleOp = "clear"
+	ScheduleOpClear = OpClear
 )
 
 // ScheduleChange 是一个调度设置键的写意图。

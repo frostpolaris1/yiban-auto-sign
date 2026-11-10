@@ -95,7 +95,7 @@ func newAutoService(t *testing.T, repo Repo, schools SchoolReader, settings Auto
 		Device:   &fakeDeviceReader{},
 		Settings: settings,
 		Identity: identity,
-		Limit:    10,
+		Quota:    fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

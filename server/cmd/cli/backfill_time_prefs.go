@@ -10,6 +10,8 @@
 // 一次性迁移件。逻辑在 internal/adapters/legacy（backfill.go）；
 // 本文件只做旗解析、依赖装配与退出码映射。
 // 部署顺序：migrate → migrate-legacy → backfill-time-prefs。
+// 缺省配额 1/1：批量迁移前 master 先抬配额（legacy import 直插不占额，
+// 导入后写面才拒——runbook 已见 legacy-import.md 冲突处置节）。
 //
 // # 口径
 // 退出码：0 成功（含 dry-run 与全部跳过）；1 读库或写库失败；

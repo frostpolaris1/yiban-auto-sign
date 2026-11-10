@@ -1502,6 +1502,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/quota-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the effective active-user and active-account quotas.
+         * @description Master or admin. Returns the effective value and source of the two
+         *     database-only quota keys. quota.max_users caps the number of live
+         *     users across the deployment; quota.max_accounts caps the number of
+         *     live signing accounts. A value of 0 means unlimited: the capacity
+         *     count check is skipped entirely, not "zero allowed". The default
+         *     when no override row exists is 1 for both keys (the master-only
+         *     tight default: a fresh deployment can create exactly one master and
+         *     one account, and raising the quota is the master's first settings
+         *     action). The source is db when a valid override row exists and
+         *     default when the row is absent or invalid. These keys never appear
+         *     in GET /api/admin/settings (they are not registry keys). A storage
+         *     failure answers 500; it is never reported as the default.
+         */
+        get: operations["AdminQuotaSettings"];
+        /**
+         * Write runtime overrides for the active-user and active-account quotas.
+         * @description Master only. A partial patch of the two quota keys: a field absent
+         *     from the body leaves that key untouched; an explicit null deletes
+         *     the stored override row so the key reads its default again; a value
+         *     upserts the override row. Both fields accept integers between 0 and
+         *     100000; 0 means unlimited (the capacity count check is skipped,
+         *     while the one-account-per-owner rule is independent and unchanged).
+         *     An out-of-domain value, a wrong JSON type, an unknown field or an
+         *     empty body answers 400 with zero writes and zero audit rows. The
+         *     write and one settings.quota_writeback audit row commit in one
+         *     transaction; the audit detail holds only the changed keys with
+         *     their previous and new values. The write takes effect on the next
+         *     registration, user creation, account creation or restore request
+         *     (no restart). Deleting a row while the live count exceeds the
+         *     default does not remove existing rows: only new writes are
+         *     rejected. The answer is the effective quota report after the write.
+         */
+        put: operations["AdminQuotaSettingsSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/mail/test": {
         parameters: {
             query?: never;
@@ -2566,6 +2615,40 @@ export interface components {
              *     the next daily plan build.
              */
             sign_dist?: components["schemas"]["ScheduleSignDist"] | null;
+        };
+        /**
+         * @description One effective quota value and the layer that provided it. The two
+         *     quota keys are database-only: there is no environment counterpart,
+         *     so the source is db when a valid override row exists and default
+         *     otherwise.
+         */
+        QuotaSetting: {
+            /** @description Effective limit; 0 means unlimited. */
+            value: number;
+            /**
+             * @description db when a valid override row exists, default otherwise.
+             * @enum {string}
+             */
+            source: "db" | "default";
+        };
+        /** @description Effective values of the two quota keys. */
+        QuotaReport: {
+            max_users: components["schemas"]["QuotaSetting"];
+            max_accounts: components["schemas"]["QuotaSetting"];
+        };
+        /**
+         * @description Partial patch of the quota keys. Every field is optional: absent
+         *     leaves the key untouched, null deletes the override row, a value
+         *     upserts it. Unknown fields answer 400.
+         */
+        AdminQuotaSettingsUpdate: {
+            /** @description Live-user cap across the deployment; 0 means unlimited. */
+            max_users?: number | null;
+            /**
+             * @description Live-account cap across the deployment; 0 means unlimited.
+             *     The one-account-per-owner rule is independent and unchanged.
+             */
+            max_accounts?: number | null;
         };
         MailTestResult: {
             /**
@@ -6090,6 +6173,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SettingsReport"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminQuotaSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective quota values and their sources. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotaReport"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminQuotaSettingsSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminQuotaSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Effective quota values after the write. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotaReport"];
                 };
             };
             400: components["responses"]["ValidationError"];

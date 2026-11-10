@@ -229,7 +229,7 @@ func newTestService(repo *fakeUserRepo, audits *fakeAudit) (*Service, error) {
 		Tx:            fakeTx{},
 		Clock:         clock.System{},
 		KDF:           coreauth.PlainHasher{},
-		Limit:         10000,
+		Quota:         fixedQuota(10000),
 		Sessions:      fakeIssuer{},
 		OwnerAccounts: fakeCounter{},
 	})

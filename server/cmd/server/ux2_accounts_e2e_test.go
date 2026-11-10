@@ -447,7 +447,7 @@ func u2NewEnv(t *testing.T) *u2Env {
 		Tx:       db,
 		Clock:    clk,
 		Cipher:   e.cipher,
-		Limit:    10000,
+		Quota:    fixedQuota(10000),
 		Owner:    e.users,
 		Device:   e.reader,
 	})

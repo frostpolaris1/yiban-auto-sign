@@ -51,7 +51,7 @@ func newRevealService(t *testing.T, audit appaudit.Repo) *Service {
 		Clock:    clock.Fixed{T: time.Date(2026, 11, 8, 7, 0, 0, 0, time.UTC)},
 		Owner:    fakeOwnerReader{},
 		Device:   &fakeDeviceReader{},
-		Limit:    10,
+		Quota:    fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

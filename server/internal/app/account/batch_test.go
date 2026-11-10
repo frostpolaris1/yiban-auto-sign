@@ -107,7 +107,7 @@ func newBatchService(t *testing.T, repo *batchRepo, audit *recordingAuditRepo) *
 		Clock:    clock.Fixed{T: time.Date(2026, 11, 7, 6, 0, 0, 0, time.UTC)},
 		Owner:    fakeOwnerReader{},
 		Device:   &fakeDeviceReader{},
-		Limit:    10,
+		Quota:    fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

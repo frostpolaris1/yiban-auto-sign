@@ -49,13 +49,9 @@ type Deps struct {
 	Audits        appaudit.Repo
 	Tx            app.TxManager
 	Clock         clock.Clock
-	// UserLimit 是活跃用户上限。注册建号在锁下执行。
-	UserLimit int
-	// AccountLimit 是活跃签到账号上限。自助恢复登录账号时连带恢复
-	// 注销时刻生效的那一行账号，必须与账号用例同容量口径。
-	// 未显式配置（<=0）时回落到 UserLimit：两条线当前同为 10000，
-	// 回落只服务既有测试装配，生产由 assembly 显式注入。
-	AccountLimit int
+	// Quota 提供生效的活跃用户/账号上限（0=不限）。必填：
+	// 注册建号与自助恢复在锁下读同一份生效值，缺失即构造失败。
+	Quota app.QuotaLimits
 	// KDF 是口令哈希端口。生产必须传限并发实现（coreauth.Bounded）；
 	// 测试可传 PlainHasher 或计数器替身。nil 即构造失败。
 	KDF coreauth.Hasher
@@ -79,8 +75,7 @@ type Service struct {
 	audits        appaudit.Repo
 	tx            app.TxManager
 	clock         clock.Clock
-	userLimit     int
-	accountLimit  int
+	quota         app.QuotaLimits
 	kdf           coreauth.Hasher
 	mail          coremail.Sender
 	mailBase      string
@@ -116,8 +111,8 @@ func NewService(d Deps) (*Service, error) {
 		return nil, errors.New("appauth: nil clock")
 	case d.KDF == nil:
 		return nil, errors.New("appauth: nil KDF")
-	case d.UserLimit <= 0:
-		return nil, errors.New("appauth: user limit must be positive")
+	case d.Quota == nil:
+		return nil, errors.New("appauth: nil quota limits")
 	}
 	mailBase := strings.TrimRight(strings.TrimSpace(d.MailBaseURL), "/")
 	if d.Mail != nil && mailBase == "" {
@@ -126,10 +121,6 @@ func NewService(d Deps) (*Service, error) {
 	log := d.Logger
 	if log == nil {
 		log = slog.Default()
-	}
-	accountLimit := d.AccountLimit
-	if accountLimit <= 0 {
-		accountLimit = d.UserLimit
 	}
 	return &Service{
 		users:         d.Users,
@@ -140,8 +131,7 @@ func NewService(d Deps) (*Service, error) {
 		audits:        d.Audits,
 		tx:            d.Tx,
 		clock:         d.Clock,
-		userLimit:     d.UserLimit,
-		accountLimit:  accountLimit,
+		quota:         d.Quota,
 		kdf:           d.KDF,
 		mail:          d.Mail,
 		mailBase:      mailBase,

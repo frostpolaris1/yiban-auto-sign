@@ -111,6 +111,13 @@ func runUser(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	userRepo := pg.NewUserRepo(db)
+	// 配额与 web 完全同口径：读同一条覆盖链（quota.max_users，缺行=1）。
+	// 首装 0 用户建 master 恰好通过；已有配额时第二用户拒，与注册面同判。
+	quotaResolver, err := assembly.NewSettingsResolver(pg.NewSettingsRepo(db), nil)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "user create-master: %v\n", err)
+		return 1
+	}
 	svc, err := user.NewService(user.Deps{
 		Users: userRepo,
 		Audit: audits,
@@ -118,7 +125,7 @@ func runUser(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Clock: coreclock.System{},
 		// 一次性 CLI：没有并发面，不引入进程级闸。
 		KDF:           coreauth.PlainHasher{},
-		Limit:         assembly.UserCapacityLimit,
+		Quota:         quotaResolver,
 		Sessions:      cliSessions{},
 		OwnerAccounts: userRepo,
 	})

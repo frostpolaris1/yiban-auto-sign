@@ -159,7 +159,7 @@ func newBatchService(t *testing.T, repo *batchUserRepo, audits *fakeAudit, issue
 		Tx:            fakeTx{},
 		Clock:         clock.System{},
 		KDF:           coreauth.PlainHasher{},
-		Limit:         10000,
+		Quota:         fixedQuota(10000),
 		Sessions:      issuer,
 		OwnerAccounts: fakeCounter{},
 	})

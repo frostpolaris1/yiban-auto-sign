@@ -48,7 +48,8 @@ const credentialColumns = `c.account_id::text, c.school_id::text, c.alg, c.kid,
 //
 // 一人一号是结构不变量：属主名下已有一个 live 行（含并发刚提交的）
 // 即拒绝，报 conflict；全局容量满仍报 capacity_exceeded。
-// 宽限期内的软删行不计入两个口径。
+// limit=0 是「不限」哨兵：全局计数判据整体跳过（一人一号判据不动）；
+// 负数不是合法上限，直接拒绝。宽限期内的软删行不计入两个口径。
 //
 // **必须在事务内运行**：advisory lock、条件插入与凭据/审计行
 // 同属一个工作单元。条件 INSERT 返回零行时按原因分类。
@@ -56,8 +57,8 @@ func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit int)
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
 	}
-	if limit <= 0 {
-		return coreaccount.Record{}, validationError("limit must be positive")
+	if limit < 0 {
+		return coreaccount.Record{}, validationError("limit must not be negative")
 	}
 	if strings.TrimSpace(in.SchoolID) == "" || strings.TrimSpace(in.OwnerUserID) == "" || strings.TrimSpace(in.Phone) == "" {
 		return coreaccount.Record{}, validationError("school, owner and phone are required")
@@ -82,7 +83,7 @@ func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit int)
 		INSERT INTO accounts (id, school_id, owner_user_id, phone, name)
 		SELECT $1::uuid, $2::uuid, $3::uuid, $4, $5
 		  FROM live, mine
-		 WHERE live.n < $6 AND mine.n = 0
+		 WHERE ($6 = 0 OR live.n < $6) AND mine.n = 0
 		RETURNING `+accountColumns,
 		id, in.SchoolID, in.OwnerUserID, in.Phone, in.Name, limit)
 	record, err := scanAccount(row)
@@ -454,6 +455,7 @@ func (r *AccountRepo) Purge(ctx context.Context, id string) error {
 }
 
 // Restore 在有空余容量且属主名下没有其他 live 账号时清除软删标记。
+// limit=0 是「不限」哨兵：全局容量判据跳过（一人一号判据不动）。
 //
 // **必须在事务内运行**。软删行不计入上限，
 // 故恢复必须在锁下重新计数；
@@ -462,8 +464,8 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
 	}
-	if limit <= 0 {
-		return coreaccount.Record{}, validationError("limit must be positive")
+	if limit < 0 {
+		return coreaccount.Record{}, validationError("limit must not be negative")
 	}
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
 		return coreaccount.Record{}, mapError(err)
@@ -478,7 +480,7 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
 		 WHERE id = $1::uuid
 		   AND deleted_at IS NOT NULL
-		   AND (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2
+		   AND ($2 = 0 OR (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2)
 		   AND NOT EXISTS (SELECT 1 FROM accounts live
 		                    WHERE live.owner_user_id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)
 		                      AND live.deleted_at IS NULL)`+scopeSQL+`
@@ -494,6 +496,7 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 }
 
 // RestoreSelf 恢复本人自删的账号。
+// limit=0 是「不限」哨兵：全局容量判据跳过（一人一号判据不动）。
 //
 // **必须在事务内运行**。条件 UPDATE 一次判完全部自助判据：
 // 只恢复 deleted_by=by 的行、deleted_at 不早于 notBefore（宽限窗口）、
@@ -513,8 +516,8 @@ func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by
 	if notBefore.IsZero() {
 		return coreaccount.Record{}, validationError("grace cutoff is required")
 	}
-	if limit <= 0 {
-		return coreaccount.Record{}, validationError("limit must be positive")
+	if limit < 0 {
+		return coreaccount.Record{}, validationError("limit must not be negative")
 	}
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
 		return coreaccount.Record{}, mapError(err)
@@ -534,7 +537,7 @@ func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by
 		   AND NOT EXISTS (SELECT 1 FROM accounts live
 		                    WHERE live.owner_user_id = accounts.owner_user_id
 		                      AND live.deleted_at IS NULL)
-		   AND (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2`+scopeSQL+`
+		   AND ($2 = 0 OR (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2)`+scopeSQL+`
 		RETURNING `+accountColumns, args...)
 	record, err := scanAccount(row)
 	if err == nil {

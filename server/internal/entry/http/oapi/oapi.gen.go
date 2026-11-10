@@ -446,6 +446,24 @@ func (e PhotoRetentionUpdateDays) Valid() bool {
 	}
 }
 
+// Defines values for QuotaSettingSource.
+const (
+	QuotaSettingSourceDb      QuotaSettingSource = "db"
+	QuotaSettingSourceDefault QuotaSettingSource = "default"
+)
+
+// Valid indicates whether the value is a known member of the QuotaSettingSource enum.
+func (e QuotaSettingSource) Valid() bool {
+	switch e {
+	case QuotaSettingSourceDb:
+		return true
+	case QuotaSettingSourceDefault:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScheduleSignDist.
 const (
 	Front   ScheduleSignDist = "front"
@@ -1237,6 +1255,18 @@ type AccountVerifyResult struct {
 	Ok      bool    `json:"ok"`
 }
 
+// AdminQuotaSettingsUpdate Partial patch of the quota keys. Every field is optional: absent
+// leaves the key untouched, null deletes the override row, a value
+// upserts it. Unknown fields answer 400.
+type AdminQuotaSettingsUpdate struct {
+	// MaxAccounts Live-account cap across the deployment; 0 means unlimited.
+	// The one-account-per-owner rule is independent and unchanged.
+	MaxAccounts *int `json:"max_accounts,omitempty"`
+
+	// MaxUsers Live-user cap across the deployment; 0 means unlimited.
+	MaxUsers *int `json:"max_users,omitempty"`
+}
+
 // AdminScheduleSettingsUpdate Partial patch of the writable schedule keys. Every field is
 // optional: absent leaves the key untouched, null deletes the
 // override row, a value upserts it. Unknown fields answer 400.
@@ -1842,6 +1872,36 @@ type PrefStatsSlot struct {
 	// OffsetMin Minutes from the effective window start; multiple of five.
 	OffsetMin int `json:"offset_min"`
 }
+
+// QuotaReport Effective values of the two quota keys.
+type QuotaReport struct {
+	// MaxAccounts One effective quota value and the layer that provided it. The two
+	// quota keys are database-only: there is no environment counterpart,
+	// so the source is db when a valid override row exists and default
+	// otherwise.
+	MaxAccounts QuotaSetting `json:"max_accounts"`
+
+	// MaxUsers One effective quota value and the layer that provided it. The two
+	// quota keys are database-only: there is no environment counterpart,
+	// so the source is db when a valid override row exists and default
+	// otherwise.
+	MaxUsers QuotaSetting `json:"max_users"`
+}
+
+// QuotaSetting One effective quota value and the layer that provided it. The two
+// quota keys are database-only: there is no environment counterpart,
+// so the source is db when a valid override row exists and default
+// otherwise.
+type QuotaSetting struct {
+	// Source db when a valid override row exists, default otherwise.
+	Source QuotaSettingSource `json:"source"`
+
+	// Value Effective limit; 0 means unlimited.
+	Value int `json:"value"`
+}
+
+// QuotaSettingSource db when a valid override row exists, default otherwise.
+type QuotaSettingSource string
 
 // RegisterRequest defines model for RegisterRequest.
 type RegisterRequest struct {
@@ -2864,6 +2924,13 @@ type AdminNotifySetParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AdminQuotaSettingsSetParams defines parameters for AdminQuotaSettingsSet.
+type AdminQuotaSettingsSetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AdminScheduleSettingsSetParams defines parameters for AdminScheduleSettingsSet.
 type AdminScheduleSettingsSetParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -3342,6 +3409,9 @@ type AdminEnginePauseJSONRequestBody = EnginePauseUpdate
 // AdminNotifySetJSONRequestBody defines body for AdminNotifySet for application/json ContentType.
 type AdminNotifySetJSONRequestBody = NotifyPrefsUpdate
 
+// AdminQuotaSettingsSetJSONRequestBody defines body for AdminQuotaSettingsSet for application/json ContentType.
+type AdminQuotaSettingsSetJSONRequestBody = AdminQuotaSettingsUpdate
+
 // AdminScheduleSettingsSetJSONRequestBody defines body for AdminScheduleSettingsSet for application/json ContentType.
 type AdminScheduleSettingsSetJSONRequestBody = AdminScheduleSettingsUpdate
 
@@ -3615,6 +3685,12 @@ type ServerInterface interface {
 	// AdminNotifySet Replace the caller's subscription overrides.
 	// (PUT /api/admin/notify)
 	AdminNotifySet(c *gin.Context, params AdminNotifySetParams)
+	// AdminQuotaSettings Read the effective active-user and active-account quotas.
+	// (GET /api/admin/quota-settings)
+	AdminQuotaSettings(c *gin.Context)
+	// AdminQuotaSettingsSet Write runtime overrides for the active-user and active-account quotas.
+	// (PUT /api/admin/quota-settings)
+	AdminQuotaSettingsSet(c *gin.Context, params AdminQuotaSettingsSetParams)
 	// AdminScheduleSettingsSet Write runtime overrides for the schedule settings.
 	// (PUT /api/admin/schedule-settings)
 	AdminScheduleSettingsSet(c *gin.Context, params AdminScheduleSettingsSetParams)
@@ -5087,6 +5163,62 @@ func (siw *ServerInterfaceWrapper) AdminNotifySet(c *gin.Context) {
 	}
 
 	siw.Handler.AdminNotifySet(c, params)
+}
+
+// AdminQuotaSettings operation middleware
+func (siw *ServerInterfaceWrapper) AdminQuotaSettings(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminQuotaSettings(c)
+}
+
+// AdminQuotaSettingsSet operation middleware
+func (siw *ServerInterfaceWrapper) AdminQuotaSettingsSet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminQuotaSettingsSetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminQuotaSettingsSet(c, params)
 }
 
 // AdminScheduleSettingsSet operation middleware
@@ -7562,6 +7694,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PUT(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifySet)
 	router.GET(options.BaseURL+"/api/admin/settings", wrapper.AdminSettings)
 	router.PUT(options.BaseURL+"/api/admin/schedule-settings", wrapper.AdminScheduleSettingsSet)
+	router.GET(options.BaseURL+"/api/admin/quota-settings", wrapper.AdminQuotaSettings)
+	router.PUT(options.BaseURL+"/api/admin/quota-settings", wrapper.AdminQuotaSettingsSet)
 	router.POST(options.BaseURL+"/api/admin/mail/test", wrapper.AdminMailTest)
 	router.POST(options.BaseURL+"/api/admin/webhook/test", wrapper.AdminWebhookTest)
 	router.PUT(options.BaseURL+"/api/admin/announcement", wrapper.AnnouncementSet)

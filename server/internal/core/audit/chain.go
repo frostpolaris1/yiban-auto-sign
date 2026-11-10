@@ -108,8 +108,13 @@ const (
 	// detail 只含字段与目标状态（paused/resumed），**绝无口令**；
 	// 操作者在审计行主体列，不进 detail。
 	ActionSettingsEnginePaused Action = "settings.engine_paused"
-	ActionAccountCreate        Action = "account.create"
-	ActionAccountUpdate        Action = "account.update"
+	// 配额写回（r4r）。一次 PUT 恰一行；detail 的 changes 是
+	// 键→[旧,新]对：键是 settings 表键名（quota.max_users/
+	// quota.max_accounts），值只允许 nil 或 [0,100000] 整数
+	// （0=不限哨兵），无自由文本容量。
+	ActionSettingsQuotaWriteback Action = "settings.quota_writeback"
+	ActionAccountCreate          Action = "account.create"
+	ActionAccountUpdate          Action = "account.update"
 	// 自动核验通过：pending→active，无人工审核者。detail 只记状态迁移。
 	ActionAccountAutoApprove Action = "account.auto_approve"
 	// 自动核验失败：账号留 pending。detail 只记结果词（如
@@ -292,7 +297,7 @@ var (
 	uuidShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	// settingsKeyShape 匹配 settings 表键名（对齐迁移 00021 的
 	// ck_settings_key_shape：^[a-z][a-z0-9_.]*$，另加上限 63 字符）。
-	// 只服务 settings.schedule_writeback 的 changes 键位。
+	// 只服务 settings.schedule_writeback / settings.quota_writeback 的 changes 键位。
 	settingsKeyShape = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,63}$`)
 )
 
@@ -328,8 +333,9 @@ var detailKeys = map[string]bool{
 	"retryable": true,
 	// 平台大学投影自动建校：值来自平台身份信封，是公开院校标识而非个人数据。
 	"university_id": true,
-	// 调度设置写回（sett2）：changes 是键→[旧,新]对。键限 settings 键形状，
-	// 值限 nil/布尔/整数标量（三键域是 [0,300] 整数与 true/false 字面）。
+	// 设置写回（sett2/3b/3c 调度、r4r 配额）：changes 是键→[旧,新]对。
+	// 键限 settings 键形状；值限 nil/布尔/整数标量或状态词形状字符串
+	// （调度域 [0,300]/[0,1439]/true-false/front-uniform，配额域 [0,100000]）。
 	// 无自由文本容量，不构成隐私面。
 	"changes": true,
 }
@@ -357,7 +363,7 @@ func ZeroHash() []byte { return make([]byte, sha256.Size) }
 // 键白名单闭合：未知键即错误。值递归校验。
 // 允许的类型只有 nil、string、bool、有符号与无符号整数、浮点数，
 // 仅限 "rows" 键下的 []int，以及仅限 "changes" 键下的 map[string][2]any
-// （键限 settings 键形状、元素限 nil/布尔/整数；sett2 写回审计）。
+// （键限 settings 键形状、元素限 nil/布尔/整数/状态词；sett2/3c/r4r 写回审计）。
 // 其余 map、切片、结构体与非 nil 指针一律拒绝。
 // encoding/json 对 map 键排序，同一 map 永远得到同一字节。
 //
@@ -439,7 +445,7 @@ func validateDetailValue(key string, value any) error {
 	case float64:
 		return validateDetailNumberWithLimits(key, typed)
 	case map[string][2]any:
-		// changes（sett2）是唯一允许的键→[旧,新]对形态：
+		// changes（sett2/3c/r4r）是唯一允许的键→[旧,新]对形态：
 		// 键限 settings 键形状，元素限 nil/布尔/整数标量，无自由文本。
 		// 3c：字符串枚举（schedule.sign_dist）只收状态词形状（wordShape）——
 		// 数字串、大写、空白与邮箱/手机号形状都不通过，仍无自由文本容量。

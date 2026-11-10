@@ -47,6 +47,8 @@ const userListColumns = `u.id::text, u.email, u.password_hash, u.role::text, u.s
 	coalesce(c.account_count, 0), coalesce(c.pending_count, 0), coalesce(c.review_count, 0)`
 
 // Create 在活跃用户数低于 limit 时插入用户。
+// limit=0 是「不限」哨兵：计数判据整体跳过（不是数到 0 就全拒）；
+// 负数不是合法上限，直接拒绝。
 //
 // **必须在事务内运行**。它按序取 UserCapacityLock、统计活跃行、插入，
 // 三者同属一个事务且处于 READ COMMITTED。
@@ -55,8 +57,8 @@ func (r *UserRepo) Create(ctx context.Context, in coreuser.New, limit int) (core
 	if !r.db.hasTx(ctx) {
 		return coreuser.Record{}, ErrNoTransaction
 	}
-	if limit <= 0 {
-		return coreuser.Record{}, validationError("limit must be positive")
+	if limit < 0 {
+		return coreuser.Record{}, validationError("limit must not be negative")
 	}
 	// 归一口径的唯一实现在 core/user；适配器只调用，不自己再写一遍。
 	email := coreuser.NormalizeEmail(in.Email)
@@ -91,7 +93,7 @@ func (r *UserRepo) Create(ctx context.Context, in coreuser.New, limit int) (core
 		INSERT INTO users (id, email, password_hash, role, must_change_password)
 		SELECT $1::uuid, $2, $3, $4::user_role, $5
 		  FROM live
-		 WHERE live.n < $6
+		 WHERE ($6 = 0 OR live.n < $6)
 		RETURNING `+userColumns,
 		id, email, in.PasswordHash, string(role), in.MustChangePassword, limit)
 	record, err := scanUser(row)
@@ -458,14 +460,15 @@ func (r *UserRepo) SoftDeleteSelf(ctx context.Context, id string, at time.Time) 
 }
 
 // RestoreSelfUser 在宽限期与活跃用户容量判据下恢复一条软删用户行。
+// limit=0 是「不限」哨兵：容量判据整体跳过。
 // **必须在事务内运行**，且调用方先用 GetDeleted 锁行并复核 deleted_at。
 // 零行分类：行已恢复/不存在/超出 notBefore 报 not_found；否则容量满报 capacity。
 func (r *UserRepo) RestoreSelfUser(ctx context.Context, id string, notBefore time.Time, limit int) (coreuser.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreuser.Record{}, ErrNoTransaction
 	}
-	if limit <= 0 {
-		return coreuser.Record{}, validationError("limit must be positive")
+	if limit < 0 {
+		return coreuser.Record{}, validationError("limit must not be negative")
 	}
 	// 与 Create/Restore 同锁族：先取用户容量锁再计数，
 	// 串行化并发建号/恢复，防两者一起把活跃用户数推过上限。
@@ -478,7 +481,7 @@ func (r *UserRepo) RestoreSelfUser(ctx context.Context, id string, notBefore tim
 		 WHERE id = $1::uuid
 		   AND deleted_at IS NOT NULL
 		   AND deleted_at >= $2
-		   AND (SELECT count(*) FROM users WHERE deleted_at IS NULL) < $3
+		   AND ($3 = 0 OR (SELECT count(*) FROM users WHERE deleted_at IS NULL) < $3)
 		RETURNING `+userColumns,
 		id, notBefore, limit)
 	record, err := scanUser(row)
@@ -507,13 +510,14 @@ func (r *UserRepo) RestoreSelfUser(ctx context.Context, id string, notBefore tim
 // RestoreSelfAccount 恢复该用户注销时刻仍生效的那一行账号。
 // 只认 deleted_by=ownerID（管理员删除的行不复活）且 deleted_at 与用户行
 // 同一时刻（注销连带软删的唯一时间戳）；无候选返回 (false, nil)，
-// 候选存在但容量满返回 capacity。**必须在事务内运行**。
+// 候选存在但容量满返回 capacity。limit=0 是「不限」哨兵：容量判据跳过。
+// **必须在事务内运行**。
 func (r *UserRepo) RestoreSelfAccount(ctx context.Context, ownerID string, deletedAt time.Time, limit int) (bool, error) {
 	if !r.db.hasTx(ctx) {
 		return false, ErrNoTransaction
 	}
-	if limit <= 0 {
-		return false, validationError("limit must be positive")
+	if limit < 0 {
+		return false, validationError("limit must not be negative")
 	}
 	// 与账号 Create/Restore 同锁族：容量判断与写行串行化。
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
@@ -541,7 +545,7 @@ func (r *UserRepo) RestoreSelfAccount(ctx context.Context, ownerID string, delet
 		`SELECT count(*) FROM accounts WHERE deleted_at IS NULL`).Scan(&live); err != nil {
 		return false, mapError(err)
 	}
-	if live >= limit {
+	if limit > 0 && live >= limit {
 		return false, capacityError()
 	}
 	tag, err := r.db.q(ctx).Exec(ctx, `
@@ -623,6 +627,7 @@ func (r *UserRepo) Purge(ctx context.Context, id string) error {
 }
 
 // Restore 在有空余容量时清除软删标记。
+// limit=0 是「不限」哨兵：容量判据整体跳过。
 //
 // **必须在事务内运行**。软删行不计入上限，
 // 故恢复必须在锁下重新计数；
@@ -633,8 +638,8 @@ func (r *UserRepo) Restore(ctx context.Context, id string, limit int) (coreuser.
 	if !r.db.hasTx(ctx) {
 		return coreuser.Record{}, ErrNoTransaction
 	}
-	if limit <= 0 {
-		return coreuser.Record{}, validationError("limit must be positive")
+	if limit < 0 {
+		return coreuser.Record{}, validationError("limit must not be negative")
 	}
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", UserCapacityLock); err != nil {
 		return coreuser.Record{}, mapError(err)
@@ -644,7 +649,7 @@ func (r *UserRepo) Restore(ctx context.Context, id string, limit int) (coreuser.
 		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
 		 WHERE id = $1::uuid
 		   AND deleted_at IS NOT NULL
-		   AND (SELECT count(*) FROM users WHERE deleted_at IS NULL) < $2
+		   AND ($2 = 0 OR (SELECT count(*) FROM users WHERE deleted_at IS NULL) < $2)
 		RETURNING `+userColumns,
 		id, limit)
 	record, err := scanUser(row)

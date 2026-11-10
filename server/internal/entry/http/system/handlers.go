@@ -4,6 +4,8 @@
 // GET /api/admin/settings（master/admin 只读名册，写回键报 source=db）、
 // PUT /api/admin/schedule-settings（master 部分补丁写回调度键：sett2 三键
 // ＋批 3b 四枚 DB-only 键——周末门两布尔与默认窗口两分钟＋批 3c 分布档一枚）、
+// GET /api/admin/quota-settings（master/admin 只读配额两键生效值与来源）、
+// PUT /api/admin/quota-settings（master 部分补丁写回配额两键：r4r）、
 // POST /api/admin/mail/test（master 向自己的邮箱发测试信）、
 // POST /api/admin/webhook/test（master 经配置的 webhook 出口发测试推送）、
 // PUT /api/admin/announcement（master）、GET /api/announcement（所有已登录角色）。
@@ -72,7 +74,7 @@ type ScheduleSettings interface {
 	SetSchedule(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, changes []appsettings.ScheduleChange) error
 }
 
-// Handler 处理设置名册、公告、测试邮件、测试推送与自动审批开关端点。
+// Handler 处理设置名册、公告、测试邮件、测试推送、自动审批开关与配额端点。
 type Handler struct {
 	roster           Roster
 	announcement     Announcement
@@ -80,6 +82,7 @@ type Handler struct {
 	webhookTest      WebhookTest
 	autoApprove      AutoApprove
 	scheduleSettings ScheduleSettings
+	quotaSettings    QuotaSettings
 }
 
 // NewHandler 构造系统设置处理器。

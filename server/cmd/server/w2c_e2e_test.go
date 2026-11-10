@@ -248,7 +248,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Identity:         e.provider,
 		SchoolProjection: schoolSvc,
 		ReviewAlerts:     capacityAlerts,
-		Limit:            10000,
+		Quota:            fixedQuota(10000),
 	})
 	if err != nil {
 		t.Fatalf("new account service: %v", err)
@@ -366,7 +366,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Logger: logger,
 	}).WithStats(statsSvc)
 	userSvc, err := appuser.NewService(appuser.Deps{
-		Users: e.users, Audit: e.audits, Tx: db, Clock: clk, KDF: coreauth.PlainHasher{}, Limit: 10000,
+		Users: e.users, Audit: e.audits, Tx: db, Clock: clk, KDF: coreauth.PlainHasher{}, Quota: fixedQuota(10000),
 		Sessions: e.sessions, OwnerAccounts: e.users,
 	})
 	if err != nil {

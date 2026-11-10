@@ -96,14 +96,9 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/providers/yiban"
 )
 
-// accountCapacityLimit 是 P1 的活跃账号上限。
-// P1 不提供配置项；改上限只改本常量。
-const accountCapacityLimit = 10000
-
-// UserCapacityLimit 是 P1 的活跃用户上限；
-// CLI 的 create-master 与装配共用同一口径。
-// 与账号上限同值，两道约束各自在插入事务内判定。
-const UserCapacityLimit = 10000
+// 配额上限不再有编译期常量（批 r4r）：两枚 DB-only 键
+// quota.max_users / quota.max_accounts 经覆盖链解析，缺行=1（master 自用紧档），
+// 0=不限。装配与 CLI 共用 appsettings.Resolver 这一条读链。
 
 // 图片预处理上限：4000 万像素、单边 8192。
 // 覆盖主流手机原图；超限在解码前拒绝，避免解压炸弹。
@@ -393,7 +388,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: configuration registry: %w", err)
 		}
-		scheduleResolver, err := buildScheduleResolver(settingsRepo, registryEntries, logger)
+		settingsResolver, err := buildSettingsResolver(settingsRepo, registryEntries, logger)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -457,7 +452,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			return nil, err
 		}
 		notifyLib, systemLib, auditLib, settingsSvc, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle,
-			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, scheduleResolver)
+			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, settingsResolver)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -479,8 +474,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Audits:        audits,
 			Tx:            db,
 			Clock:         clk,
-			UserLimit:     UserCapacityLimit,
-			AccountLimit:  accountCapacityLimit,
+			Quota:         settingsResolver,
 			KDF:           kdf,
 			Mail:          mailer,
 			MailBaseURL:   cfg.PublicBaseURL,
@@ -586,7 +580,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Settings:         settingsRepo,
 			Identity:         provider,
 			SchoolProjection: schoolSvc,
-			Limit:            accountCapacityLimit,
+			Quota:            settingsResolver,
 			ReviewAlerts:     notificationDispatcher,
 			Logger:           logger,
 		})
@@ -608,7 +602,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Tx:            db,
 			Clock:         clk,
 			KDF:           kdf,
-			Limit:         UserCapacityLimit,
+			Quota:         settingsResolver,
 			Sessions:      issuer,
 			OwnerAccounts: userRepo,
 		})
@@ -738,7 +732,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			// 3a 全局暂停门：每轮 Step 前查 settings 行 engine.paused 的
 			// 覆盖链生效值（DB>缺行 false）。故障上抛不认领，见 worker.Step。
 			paused: func(ctx context.Context) (bool, error) {
-				return scheduleResolver.ResolveBool(ctx, appsettings.KeyEnginePaused, false)
+				return settingsResolver.ResolveBool(ctx, appsettings.KeyEnginePaused, false)
 			},
 		}))
 		if err != nil {
@@ -767,7 +761,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// **单一闭包**同时喂计划 fallback 与自选展示窗（3b 复审 F1：
 		// 默认窗可写回后，两处必须同源，不得各持一份常量）。
 		defaultWindowPair := func(ctx context.Context) (int, int, error) {
-			return scheduleResolver.ResolveSignWindow(ctx,
+			return settingsResolver.ResolveSignWindow(ctx,
 				coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
 		}
 		scheduleSvc, err := appschedule.NewService(appschedule.Deps{
@@ -797,7 +791,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Store: prefRepo, Clock: clk,
 			Allow: func(ctx context.Context) (bool, error) {
 				// sett2：自选开关每请求读 DB 覆盖行，行缺失回 env 值。
-				return scheduleResolver.ResolveBool(ctx, appsettings.KeyScheduleAllowTimePref, cfg.AllowTimePref)
+				return settingsResolver.ResolveBool(ctx, appsettings.KeyScheduleAllowTimePref, cfg.AllowTimePref)
 			},
 			// 3b F1：展示窗与计划 fallback 窗共用同一解析闭包（同源防漂移）。
 			Window:   defaultWindowPair,
@@ -824,7 +818,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			SlotsPerSlice: slots, SignDist: appschedule.SignDistFront, UsePrefs: cfg.AllowTimePref,
 			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
 			// sett2：可写回键每请求解析（DB 覆盖 env）；静态值仍是 env 兜底。
-			Overrides: settingsOverrides{resolver: scheduleResolver, cfg: cfg},
+			Overrides: settingsOverrides{resolver: settingsResolver, cfg: cfg},
 			Logger:    logger,
 		}).WithStats(statsSvc)
 		// 运行页任务检索：只读，与计划用例共用排期仓储。
@@ -848,7 +842,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			},
 			// sett2：日切构建每次重读覆盖行；当日已铺行不回改，改值次日生效。
 			Overrides: func(ctx context.Context) (appschedule.BuildOverrides, error) {
-				return buildScheduleOverrides(ctx, scheduleResolver, cfg)
+				return buildScheduleOverrides(ctx, settingsResolver, cfg)
 			},
 			// 3b：周末门关闭时如实记一行（不铺行不留日志就没有任何痕迹）。
 			Logger: logger,
@@ -960,7 +954,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown,
 	webhook corewebhook.Sender, webhookCooldown appsettings.Cooldown,
 	autoApprove appsettings.AutoApproveStore, settingsRepo *pg.SettingsRepo,
-	scheduleResolver *appsettings.Resolver) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
+	settingsResolver *appsettings.Resolver) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
@@ -983,7 +977,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		WebhookCooldown: webhookCooldown,
 		AutoApprove:     autoApprove,
 		Schedule:        settingsRepo,
-		Resolver:        scheduleResolver,
+		Resolver:        settingsResolver,
 		Logger:          logger,
 	})
 	if err != nil {
@@ -1008,12 +1002,13 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		return nil, nil, nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
 	}
 	// sett2：名册接覆盖链，写回键在 DB 行存在时报 source=db。
-	roster.WithOverrides(scheduleResolver)
+	roster.WithOverrides(settingsResolver)
 	notifyHandler := notifyhttp.NewHandler(notifySvc).WithInbox(inboxSvc)
 	systemHandler := systemhttp.NewHandler(roster, announcementSvc, announcementSvc).
 		WithAutoApprove(announcementSvc).
 		WithWebhookTest(announcementSvc).
-		WithScheduleSettings(announcementSvc)
+		WithScheduleSettings(announcementSvc).
+		WithQuotaSettings(announcementSvc)
 	return notifyHandler, systemHandler, audithttp.NewHandler(reader).WithStatus(inspector), announcementSvc, nil
 }
 
@@ -1298,10 +1293,11 @@ func (n ScheduleNotifier) PlanEvent(_ context.Context, schoolID, taskID, day, ki
 	})
 }
 
-// buildScheduleResolver 构造 sett2 覆盖链解析器。
+// buildSettingsResolver 构造覆盖链解析器（sett2 起、r4r 扩配额两键）。
 // 整型域取自嵌入名册 domain（唯一源）：两枚 edge 键缺域即启动失败，
 // 写面不得猜域。布尔键无域，只认真小写 true/false 字面。
-func buildScheduleResolver(store appsettings.ScheduleStore,
+// 配额两键是 DB-only：不经名册，域由 app/settings 的 QuotaMin/QuotaMax 单源持有。
+func buildSettingsResolver(store appsettings.ScheduleStore,
 	entries []config.RegistryEntry, logger *slog.Logger) (*appsettings.Resolver, error) {
 	// 名册键→行键的映射单源在 app/settings（RegistryKeyAliases）；
 	// 这里只把名册 domain 注入到正确的行键上。
@@ -1328,9 +1324,20 @@ func buildScheduleResolver(store appsettings.ScheduleStore,
 	}
 	resolver, err := appsettings.NewResolver(store, domains, logger)
 	if err != nil {
-		return nil, fmt.Errorf("assembly: schedule settings resolver: %w", err)
+		return nil, fmt.Errorf("assembly: settings resolver: %w", err)
 	}
 	return resolver, nil
+}
+
+// NewSettingsResolver 构造覆盖链解析器，供 CLI 与装配共用同一构造路径。
+// create-master 用它读 quota.max_users（缺行=1）：CLI 与 web 同口径，
+// 首装 0 用户建 master 恰好通过，有配额后第二用户拒。
+func NewSettingsResolver(store appsettings.ScheduleStore, logger *slog.Logger) (*appsettings.Resolver, error) {
+	entries, err := config.Registry()
+	if err != nil {
+		return nil, fmt.Errorf("assembly: configuration registry: %w", err)
+	}
+	return buildSettingsResolver(store, entries, logger)
 }
 
 // settingsOverrides 把覆盖链解析接到排期消费面（schedulehttp 每请求读）。

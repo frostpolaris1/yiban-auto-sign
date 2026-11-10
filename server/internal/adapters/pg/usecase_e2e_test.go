@@ -62,7 +62,7 @@ func newUsecaseEnv(t *testing.T) *usecaseEnv {
 		Accounts: e.accts, Schools: e.schools, Audit: e.audits,
 		Tx: e.db, Clock: clk, Cipher: cipher,
 		Owner: e.users, Device: stubDeviceReader{},
-		Limit: 10000,
+		Quota: fixedQuota(10000),
 	})
 	if err != nil {
 		t.Fatalf("account service: %v", err)
@@ -81,7 +81,7 @@ func newUsecaseEnv(t *testing.T) *usecaseEnv {
 		t.Fatalf("admin service: %v", err)
 	}
 	users, err := appuser.NewService(appuser.Deps{
-		Users: e.users, Audit: e.audits, Tx: e.db, Clock: clk, KDF: coreauth.PlainHasher{}, Limit: 10000,
+		Users: e.users, Audit: e.audits, Tx: e.db, Clock: clk, KDF: coreauth.PlainHasher{}, Quota: fixedQuota(10000),
 		Sessions: stubIssuer{}, OwnerAccounts: e.users,
 	})
 	if err != nil {

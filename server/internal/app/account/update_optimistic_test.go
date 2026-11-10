@@ -38,7 +38,7 @@ func newOptimisticService(t *testing.T, repo Repo) (*Service, *reviewFakeAudit) 
 		Cipher:   mustCipher(t),
 		Owner:    reviewFakeOwners{},
 		Device:   &fakeDeviceReader{},
-		Limit:    10,
+		Quota:    fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

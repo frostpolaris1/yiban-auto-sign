@@ -78,12 +78,17 @@ func (s *Service) SelfRestore(ctx context.Context, scope corescope.Scope, id str
 	if err := requireSelfScope(scope, actor); err != nil {
 		return Record{}, err
 	}
+	// 配额在开事务前解析：读故障直接上抛，不当作不限。
+	limit, err := s.deps.Quota.AccountLimit(ctx)
+	if err != nil {
+		return Record{}, err
+	}
 	var record Record
-	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		now := s.deps.Clock.Now().UTC()
 		var err error
 		record, err = s.deps.Accounts.RestoreSelf(ctx, scope, id, actor.UserID,
-			now.Add(-coreaccount.SelfRestoreGrace), s.deps.Limit)
+			now.Add(-coreaccount.SelfRestoreGrace), limit)
 		if err != nil {
 			return err
 		}

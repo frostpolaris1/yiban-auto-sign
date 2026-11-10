@@ -38,11 +38,16 @@ func (s *Service) Restore(ctx context.Context, scope corescope.Scope, id string,
 	if err != nil {
 		return Record{}, err
 	}
+	// 配额在开事务前解析：读故障直接上抛，不当作不限。
+	limit, err := s.deps.Quota.UserLimit(ctx)
+	if err != nil {
+		return Record{}, err
+	}
 	var record Record
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		now := s.deps.Clock.Now().UTC()
 		var err error
-		record, err = s.deps.Users.Restore(ctx, normalized, s.deps.Limit)
+		record, err = s.deps.Users.Restore(ctx, normalized, limit)
 		if err != nil {
 			return err
 		}
