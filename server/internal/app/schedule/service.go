@@ -270,23 +270,16 @@ func (s *Service) CachedWindow(ctx context.Context, in Input) (coreschedule.Wind
 	if err != nil {
 		return coreschedule.WindowRecord{}, validation("day must be YYYY-MM-DD")
 	}
-	startMin, endMin, err := s.defaultWindow(ctx)
-	if err != nil {
-		return coreschedule.WindowRecord{}, err
-	}
-	raw := coreschedule.WindowRecord{
-		SchoolTaskID: in.SchoolTaskID,
-		Day:          in.Day,
-		Start:        fallbackAt(dayDate, loc, startMin),
-		End:          fallbackAt(dayDate, loc, endMin),
-		Source:       string(contract.WindowFallback),
-	}
+	// 惰性解析默认窗（3b 复审 F2）：override 或缓存命中时根本不用 fallback 值，
+	// settings 读故障不得把可用的读面变红——与 resolveWindow 的 default 分支同形。
+	var raw coreschedule.WindowRecord
+	hit := false
 	cached, cacheErr := s.deps.Windows.GetWindow(ctx, in.SchoolTaskID, in.Day)
 	if cacheErr != nil && !isNotFound(cacheErr) {
 		return coreschedule.WindowRecord{}, cacheErr
 	}
 	if cacheErr == nil && corewindow.Validate(corewindow.Window{Start: cached.Start, End: cached.End}) == nil {
-		raw = cached
+		raw, hit = cached, true
 	}
 	override, ovErr := s.deps.Windows.GetOverride(ctx, in.SchoolTaskID, in.Day)
 	if ovErr != nil && !isNotFound(ovErr) {
@@ -299,6 +292,20 @@ func (s *Service) CachedWindow(ctx context.Context, in Input) (coreschedule.Wind
 			Start:        override.Start,
 			End:          override.End,
 			Source:       string(contract.WindowOverride),
+		}
+		hit = true
+	}
+	if !hit {
+		startMin, endMin, err := s.defaultWindow(ctx)
+		if err != nil {
+			return coreschedule.WindowRecord{}, err
+		}
+		raw = coreschedule.WindowRecord{
+			SchoolTaskID: in.SchoolTaskID,
+			Day:          in.Day,
+			Start:        fallbackAt(dayDate, loc, startMin),
+			End:          fallbackAt(dayDate, loc, endMin),
+			Source:       string(contract.WindowFallback),
 		}
 	}
 	eff, _ := corewindow.Window{Start: raw.Start, End: raw.End}.

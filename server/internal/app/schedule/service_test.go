@@ -450,6 +450,43 @@ func TestFallbackWindowDefaultsFailurePropagates(t *testing.T) {
 	}
 }
 
+// 3b 复审 F2：CachedWindow 的默认窗解析必须是惰性的——
+// 缓存/覆盖命中时 settings 故障不得把可用的用户读面变红；
+// 无任何命中时故障照旧上抛（对侧不放松）。
+func TestCachedWindowHitIgnoresDefaultsFailure(t *testing.T) {
+	start := time.Date(2026, 10, 29, 7, 0, 0, 0, shanghai)
+	failing := func(context.Context) (int, int, error) {
+		return 0, 0, errors.New("settings down")
+	}
+	hit := &fakeWindowStore{ok: true, record: coreschedule.WindowRecord{
+		Start: start, End: start.Add(80 * time.Minute), Source: "platform",
+	}}
+	svc, err := appschedule.NewService(appschedule.Deps{
+		Windows: hit, Plans: &fakePlanStore{}, Accounts: fakeAccounts{ids: []string{"a1"}},
+		Discover: &fakeDiscover{}, Tx: &fakeTx{}, Defaults: failing,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	got, err := svc.CachedWindow(context.Background(), baseInput())
+	if err != nil {
+		t.Fatalf("缓存命中时 Defaults 故障不得上抛: %v", err)
+	}
+	if got.Source != "platform" {
+		t.Fatalf("source = %q, want platform", got.Source)
+	}
+	svcMiss, err := appschedule.NewService(appschedule.Deps{
+		Windows: &fakeWindowStore{}, Plans: &fakePlanStore{}, Accounts: fakeAccounts{ids: []string{"a1"}},
+		Discover: &fakeDiscover{}, Tx: &fakeTx{}, Defaults: failing,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svcMiss.CachedWindow(context.Background(), baseInput()); err == nil {
+		t.Fatal("无命中时 Defaults 故障必须上抛（对侧不放松）")
+	}
+}
+
 // 写入→删除→常量恢复（验收谓词 7 的单元链）：真 Resolver＋keyed store
 // 组装 Defaults 端口，DB 写入后新窗口生效，删行后回常量对。
 func TestFallbackWindowWriteThenClearRestoresConstants(t *testing.T) {

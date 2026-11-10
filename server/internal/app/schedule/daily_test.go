@@ -236,6 +236,22 @@ var weekendTasks = fakeTasks{tasks: []coreschedule.TaskInfo{
 	{ID: "t2", SchoolID: "s2", Enabled: true},
 }}
 
+// 3b 复审 F3：Overrides 未接线（nil）时周末门仍按「缺行=false」判关——
+// 装配缺失不得静默反转成「周末全签」。
+func TestBuildTodayWeekendGateNilOverridesStillCloses(t *testing.T) {
+	planner := &fakePlanner{}
+	b := testBuilder(weekendTasks, planner)
+	b.Clock = coreclock.Fixed{T: weekendSaturday}
+	// 刻意不注入 b.Overrides。
+	built, err := b.BuildToday(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if built != 0 || planner.calls != 0 {
+		t.Fatalf("built=%d calls=%d, want 0/0（nil=按缺行 false，不得放行）", built, planner.calls)
+	}
+}
+
 // 周六键缺行（false）：当日不铺任何计划行——行为反转钉住。
 func TestBuildTodayWeekendGateClosesSaturday(t *testing.T) {
 	planner := &fakePlanner{}

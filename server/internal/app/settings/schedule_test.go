@@ -456,6 +456,21 @@ func TestScheduleSettingsWeekendKeysWriteAndClear(t *testing.T) {
 	if _, ok := audits2.entries[0].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSaturdaySign]; ok {
 		t.Fatal("未列出的周末键不得进 detail")
 	}
+
+	// 3b 复审 F4：存量窗口**半对行**不得卡死其它键的写回——
+	// 组合校验仅在本 PUT 触碰窗口键时执行（读面半对整对回退常量兜住）。
+	store3 := newKeyedWriteStore()
+	store3.intRows[appsettings.KeyScheduleDefaultSignStartMin] = "360" // 只有 start，end 缺行
+	audits3 := &fakeAudit{}
+	svc3, _ := newScheduleService(t, store3, audits3)
+	if err := svc3.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: true},
+	}); err != nil {
+		t.Fatalf("SetSchedule(sunday) 被存量半对窗口行卡住: %v", err)
+	}
+	if store3.boolRows[appsettings.KeyScheduleSundaySign] != "true" {
+		t.Fatalf("sunday 未落行: %v", store3.boolRows)
+	}
 }
 
 // 默认窗口对：成对写入成功；单独改一侧与另一侧生效值组合后
