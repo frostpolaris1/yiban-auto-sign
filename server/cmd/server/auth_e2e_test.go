@@ -128,6 +128,10 @@ func newAuthEnvWith(t *testing.T, mutate func(*config.Config), logger *slog.Logg
 		admin.Close()
 		t.Fatalf("build stack: %v", err)
 	}
+	// 配额批 r4r：生产缺省是 1/1（master 自用紧档）。既有 e2e 的多用户/
+	// 多账号场景在夹具里先把两键抬到 10000/10000（store 注入，与写面同源：
+	// settings 覆盖行）；验证缺省 1/1 的用例自行删行，见 quota_e2e_test.go。
+	seedQuota(t, ctx, stack.DB, 10000, 10000)
 
 	jar, err := cookiejar.New(nil)
 	if err != nil {

@@ -340,7 +340,7 @@ func TestUX2G13DeviceRefreshLockOrderNoDeadlock(t *testing.T) {
 		Cipher:   e.cipher,
 		Owner:    e.users,
 		Device:   e.reader,
-		Limit:    10000,
+		Quota:    fixedQuota(10000),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

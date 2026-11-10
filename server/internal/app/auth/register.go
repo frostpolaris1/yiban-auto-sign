@@ -144,6 +144,12 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (coreauth.Issu
 	if err != nil {
 		return coreauth.Issued{}, err
 	}
+	// 配额在开事务前解析：读故障直接上抛，不当作不限；
+	// 设置页写回后下一次注册即用新值。
+	userLimit, err := s.quota.UserLimit(ctx)
+	if err != nil {
+		return coreauth.Issued{}, err
+	}
 
 	var issued coreauth.Issued
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
@@ -168,7 +174,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (coreauth.Issu
 			Email:        email,
 			PasswordHash: hash,
 			Role:         coreauth.RoleUser,
-		}, s.userLimit)
+		}, userLimit)
 		if err != nil {
 			if errs.From(err).Code == errs.CodeConflict {
 				return errs.New(errs.CodeConflict, "email is already registered")

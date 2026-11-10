@@ -253,3 +253,47 @@ func TestResolvePasswordSourcesAreExclusive(t *testing.T) {
 		t.Fatal("stdin 为空时必须报错")
 	}
 }
+
+// TestCreateMasterRespectsQuotaE2E 钉住 CLI 与 web 的配额同口径（r4r）：
+// 缺行=1 时第 1 个 master 恰好通过、第 2 个报 capacity；抬额后第 2 个通过；
+// 0=不限时第 3 个也通过。写面与 web 同源（settings 覆盖行）。
+func TestCreateMasterRespectsQuotaE2E(t *testing.T) {
+	dsn := userTestSchema(t)
+	create := func(email string) (string, int) {
+		return runCLI(t, []string{"user", "create-master", "--email", email,
+			"--password", "MasterPass123!", "--dsn", dsn, "--pepper", cliTestPepper})
+	}
+
+	if out, code := create("quota-first@example.com"); code != 0 {
+		t.Fatalf("first master code = %d, out=%s", code, out)
+	}
+	out, code := create("quota-second@example.com")
+	if code != 1 {
+		t.Fatalf("second master code = %d, want 1; out=%s", code, out)
+	}
+	if !strings.Contains(out, "capacity exceeded") {
+		t.Fatalf("second master error = %s, want capacity exceeded", out)
+	}
+
+	db, err := pg.Open(context.Background(), pg.Options{DSN: dsn, MaxConns: 2, StatementTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("open schema db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(context.Background(), `
+		INSERT INTO settings (key, value) VALUES ('quota.max_users', '5')
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`); err != nil {
+		t.Fatalf("raise quota: %v", err)
+	}
+	if out, code := create("quota-second@example.com"); code != 0 {
+		t.Fatalf("second master after raise code = %d, out=%s", code, out)
+	}
+
+	if _, err := db.Exec(context.Background(),
+		`UPDATE settings SET value = '0' WHERE key = 'quota.max_users'`); err != nil {
+		t.Fatalf("set unlimited: %v", err)
+	}
+	if out, code := create("quota-third@example.com"); code != 0 {
+		t.Fatalf("third master under unlimited code = %d, out=%s", code, out)
+	}
+}

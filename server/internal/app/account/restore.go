@@ -35,10 +35,15 @@ func (s *Service) Restore(ctx context.Context, scope corescope.Scope, id string,
 	if scope.Kind() != corescope.KindMaster && scope.Kind() != corescope.KindAdmin {
 		return Record{}, errs.New(errs.CodeForbidden, "role cannot restore accounts")
 	}
+	// 配额在开事务前解析：读故障直接上抛，不当作不限。
+	limit, err := s.deps.Quota.AccountLimit(ctx)
+	if err != nil {
+		return Record{}, err
+	}
 	var record Record
-	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		var err error
-		record, err = s.deps.Accounts.Restore(ctx, scope, id, s.deps.Limit)
+		record, err = s.deps.Accounts.Restore(ctx, scope, id, limit)
 		if err != nil {
 			return err
 		}

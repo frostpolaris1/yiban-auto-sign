@@ -43,15 +43,18 @@ type CreateInput struct {
 }
 
 // Deps 是用户用例的依赖。全部必填，缺一即构造失败。
-// Limit 是活跃用户上限。
+// Quota 提供生效的活跃用户上限（0=不限）：每请求解析一次，
+// 设置页写回后下一次建号即生效。
 type Deps struct {
 	Users Repo
 	Audit appaudit.Repo
 	Tx    app.TxManager
 	Clock clock.Clock
 	// KDF 是口令哈希端口。生产必须传限并发实现（coreauth.Bounded）。
-	KDF   coreauth.Hasher
-	Limit int
+	KDF coreauth.Hasher
+	// Quota 提供全站活跃用户上限；0=不限。必填：缺失即构造失败，
+	// 不得静默读成不限。
+	Quota app.QuotaLimits
 	// Sessions 是会话撤销原语：重置口令与软删后立即失效全部会话。
 	// 只消费，不签发。
 	Sessions coreauth.SessionIssuer
@@ -77,8 +80,8 @@ func NewService(deps Deps) (*Service, error) {
 		return nil, errors.New("user: nil clock")
 	case deps.KDF == nil:
 		return nil, errors.New("user: nil KDF")
-	case deps.Limit <= 0:
-		return nil, errors.New("user: limit must be positive")
+	case deps.Quota == nil:
+		return nil, errors.New("user: nil quota limits")
 	case deps.Sessions == nil:
 		return nil, errors.New("user: nil session issuer")
 	case deps.OwnerAccounts == nil:
@@ -119,6 +122,12 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	if err != nil {
 		return Record{}, err
 	}
+	// 配额在开事务前解析：读故障直接上抛，不当作不限；
+	// 设置页写回后下一次建号即用新值。
+	limit, err := s.deps.Quota.UserLimit(ctx)
+	if err != nil {
+		return Record{}, err
+	}
 
 	var record Record
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
@@ -127,7 +136,7 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 			Email:        email,
 			PasswordHash: hash,
 			Role:         in.Role,
-		}, s.deps.Limit)
+		}, limit)
 		if err != nil {
 			return err
 		}

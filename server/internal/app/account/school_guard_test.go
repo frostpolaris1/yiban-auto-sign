@@ -36,7 +36,7 @@ func newSchoolGuardService(t *testing.T, reader SchoolReader) *Service {
 		Cipher:   nil,
 		Owner:    fakeOwnerReader{},
 		Device:   &fakeDeviceReader{},
-		Limit:    10,
+		Quota:    fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

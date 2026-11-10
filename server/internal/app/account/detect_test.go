@@ -59,7 +59,7 @@ func newDetectService(t *testing.T, identity *fakeIdentity, projector *fakeProje
 		Device:           device,
 		Identity:         identity,
 		SchoolProjection: projector,
-		Limit:            10,
+		Quota:            fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

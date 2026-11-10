@@ -157,7 +157,7 @@ func newReviewAlertServiceWith(t *testing.T, repo Repo, alerts ReviewAlerts,
 		Cipher:       cipher,
 		Owner:        reviewFakeOwners{},
 		Device:       &fakeDeviceReader{},
-		Limit:        10,
+		Quota:        fixedQuota(10),
 		ReviewAlerts: alerts,
 		Logger:       logger,
 	})

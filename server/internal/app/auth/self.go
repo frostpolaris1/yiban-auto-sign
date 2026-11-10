@@ -111,6 +111,15 @@ func (s *Service) RestoreSelf(ctx context.Context, email, password string) error
 	if !check.Valid {
 		return ErrRestoreFailed
 	}
+	// 配额在开事务前解析：读故障直接上抛，不当作不限。
+	userLimit, err := s.quota.UserLimit(ctx)
+	if err != nil {
+		return err
+	}
+	accountLimit, err := s.quota.AccountLimit(ctx)
+	if err != nil {
+		return err
+	}
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
 		now := s.clock.Now().UTC()
 		// GetDeleted 持 FOR UPDATE 到事务结束，与物理清除互斥；
@@ -132,13 +141,13 @@ func (s *Service) RestoreSelf(ctx context.Context, email, password string) error
 		if locked.DeletedBy != locked.ID {
 			return ErrRestoreFailed
 		}
-		restored, err := s.users.RestoreSelfUser(ctx, locked.ID, now.Add(-coreuser.SelfRestoreGrace), s.userLimit)
+		restored, err := s.users.RestoreSelfUser(ctx, locked.ID, now.Add(-coreuser.SelfRestoreGrace), userLimit)
 		if err != nil {
 			return err
 		}
 		// 注销时刻生效的那一行账号与用户行同一时间戳；管理员删除的行
 		// deleted_by 不是本人，不会被本方法复活。
-		if _, err := s.users.RestoreSelfAccount(ctx, restored.ID, *locked.DeletedAt, s.accountLimit); err != nil {
+		if _, err := s.users.RestoreSelfAccount(ctx, restored.ID, *locked.DeletedAt, accountLimit); err != nil {
 			return err
 		}
 		actor := appaudit.NewActor(coreauth.User{

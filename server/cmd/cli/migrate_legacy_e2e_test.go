@@ -885,7 +885,7 @@ func TestMigrateLegacyLoginOldPasswordE2E(t *testing.T) {
 		Audits:        audits,
 		Tx:            db,
 		Clock:         coreclock.System{},
-		UserLimit:     10000,
+		Quota:         fixedQuota(10000),
 		KDF:           coreauth.PlainHasher{},
 	})
 	if err != nil {

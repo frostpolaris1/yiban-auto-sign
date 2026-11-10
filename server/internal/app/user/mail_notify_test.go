@@ -57,7 +57,7 @@ func newMailService(t *testing.T, repo *mailRepo, audits *fakeAudit) *Service {
 		Tx:            fakeTx{},
 		Clock:         clock.Fixed{T: time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC)},
 		KDF:           coreauth.PlainHasher{},
-		Limit:         10000,
+		Quota:         fixedQuota(10000),
 		Sessions:      fakeIssuer{},
 		OwnerAccounts: fakeCounter{},
 	})

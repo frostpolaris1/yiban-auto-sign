@@ -121,7 +121,7 @@ func newMailHarness(t *testing.T, sender coremail.Sender) *mailHarness {
 		Audits:        h.audits,
 		Tx:            fakeTx{},
 		Clock:         testClock,
-		UserLimit:     10000,
+		Quota:         fixedQuota(10000),
 		KDF:           coreauth.PlainHasher{},
 		Mail:          sender,
 		MailBaseURL:   resetBaseURL,

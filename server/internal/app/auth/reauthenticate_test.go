@@ -72,7 +72,7 @@ func newHarnessWithClock(t *testing.T, clk *mutableClock) *harness {
 		Audits:        h.audits,
 		Tx:            fakeTx{},
 		Clock:         clk,
-		UserLimit:     10000,
+		Quota:         fixedQuota(10000),
 		KDF:           h.kdf,
 		Logger:        discardLogger(),
 	})

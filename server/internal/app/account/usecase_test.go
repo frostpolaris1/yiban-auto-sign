@@ -54,7 +54,7 @@ func newListService(t *testing.T, repo Repo, cipher *Cipher) *Service {
 		Cipher:   cipher,
 		Owner:    fakeOwnerReader{},
 		Device:   &fakeDeviceReader{},
-		Limit:    10,
+		Quota:    fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -81,7 +81,7 @@ func TestCreateOwnerReaderFailurePassesThrough(t *testing.T) {
 		Clock:    clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
 		Owner:    failingOwnerReader{},
 		Device:   &fakeDeviceReader{},
-		Limit:    10,
+		Quota:    fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -116,7 +116,7 @@ func TestListRejectsZeroValueScope(t *testing.T) {
 		Clock:    clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
 		Owner:    fakeOwnerReader{},
 		Device:   &fakeDeviceReader{},
-		Limit:    10,
+		Quota:    fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

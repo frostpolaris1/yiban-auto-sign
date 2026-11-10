@@ -94,8 +94,9 @@ type Deps struct {
 	Owner OwnerReader
 	// Device 从平台读回设备登记状态；实现见 assembly（8v8⑧）。
 	Device DeviceReader
-	// Limit 是活跃账号上限。
-	Limit int
+	// Quota 提供全站活跃账号上限；0=不限。必填：缺失即构造失败，
+	// 不得静默读成不限。每请求解析一次，设置页写回后下一次建号即生效。
+	Quota app.QuotaLimits
 	// ReviewAlerts 是待审核通知端口。
 	ReviewAlerts ReviewAlerts
 	// Settings 读全局自动审批开关；nil 表示不自动核验。
@@ -188,8 +189,8 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.Clock == nil {
 		return nil, errors.New("account: nil clock")
 	}
-	if deps.Limit <= 0 {
-		return nil, errors.New("account: capacity limit must be positive")
+	if deps.Quota == nil {
+		return nil, errors.New("account: nil quota limits")
 	}
 	if deps.Owner == nil {
 		return nil, errors.New("account: nil owner reader")
@@ -378,6 +379,11 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	if s.deps.Cipher == nil {
 		return Record{}, errs.New(errs.CodeInternal, "credential cipher is not configured")
 	}
+	// 配额在开事务前解析：读故障直接上抛，不当作不限。
+	limit, err := s.deps.Quota.AccountLimit(ctx)
+	if err != nil {
+		return Record{}, err
+	}
 
 	var record Record
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
@@ -387,7 +393,7 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 			OwnerUserID: owner,
 			Phone:       in.Phone,
 			Name:        name,
-		}, s.deps.Limit)
+		}, limit)
 		if err != nil {
 			return err
 		}

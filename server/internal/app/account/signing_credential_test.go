@@ -71,7 +71,7 @@ func newCredentialService(t *testing.T, repo *fakeAccountRepo, cipher *Cipher) *
 		Cipher:   cipher,
 		Owner:    fakeOwnerReader{},
 		Device:   &fakeDeviceReader{},
-		Limit:    10,
+		Quota:    fixedQuota(10),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
