@@ -3,9 +3,10 @@ package router_test
 // 文档只读面与静态页路由的门。
 //
 // # 功能
-// 钉住四条用户可见不变式：
-//   - /api/changelog 无会话可读，读不到时回固定回落文案；
-//   - /terms 与 /privacy 的 Markdown 注释不进正文，白名单外链接不落 href；
+// 钉住这些用户可见不变式：
+//   - /api/changelog 无会话可读，读不到时回固定回落文案（回落同样被首读缓存钉住）；
+//   - /terms 与 /privacy 的 Markdown 注释不进正文，白名单外链接与自动链接不落 href，
+//     只剩注释/空标签的模板走「文档暂缺」回落，Content-Type 按页面类型回；
 //   - /robots.txt 的禁抓集合；
 //   - 站标缺失 404、存在一小时短缓存。
 //
@@ -244,17 +245,21 @@ func TestDocPagesFallBackWithoutDocsDir(t *testing.T) {
 func TestDocPagesFallBackWhenOnlyComments(t *testing.T) {
 	h := newDocsEngine(t, writeDocsDir(t, map[string]string{
 		"USER_AGREEMENT.md": "<!-- 编辑者说明：正文待补 -->\n",
+		// 注释包在标题/加粗/列表里渲染成空标签（<h1></h1> 等）：判空须剥标签取可见文本。
+		"PRIVACY_POLICY.md": "# <!-- c -->\n**<!-- d -->**\n- <!-- e -->\n",
 	}))
-	rec := get(t, h, "/terms")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /terms = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "文档暂缺，请联系运营者") {
-		t.Fatalf("全注释模板未回落: %q", body)
-	}
-	if strings.Contains(body, "raw HTML omitted") {
-		t.Fatalf("占位注释被当成正文输出: %q", body)
+	for path, name := range map[string]string{"/terms": "全注释模板", "/privacy": "空标签模板"} {
+		rec := get(t, h, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", path, rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "文档暂缺，请联系运营者") {
+			t.Fatalf("%s未回落: %q", name, body)
+		}
+		if strings.Contains(body, "raw HTML omitted") {
+			t.Fatalf("%s把占位注释当成正文输出: %q", name, body)
+		}
 	}
 }
 

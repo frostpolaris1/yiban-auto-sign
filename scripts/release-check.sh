@@ -66,7 +66,9 @@ usage() {
 #   openapi info.version = "1.0.0"，是 API 契约版本，不随发布走；2026-11-05 口径落定：
 #   契约版本只在破坏性契约变更时升，发布 tag 用 v$VERSION（根 VERSION），两者独立，
 #   见 server/contracts/README.md 与 deploy/release.md 项 1b。
-#   本项钉存在的两处：发布 tag v$V 存在且指向 HEAD；__version__ 与 CHANGELOG 顶部一致。
+#   本项钉存在的两处：发布 tag v$V 存在且指向 HEAD；CHANGELOG 顶部条目等于
+#   __version__（旧线最新发布）或根 VERSION（Go 线最新发布）——两线共库一份
+#   changelog，顶部只容一个「较新行」，见 :84-87 的双行语义注释。
 check_version() {
     local init="$ROOT/yiban/__init__.py" changelog="$ROOT/CHANGELOG.md"
     STATUS_version=FAIL; REASON_version=""

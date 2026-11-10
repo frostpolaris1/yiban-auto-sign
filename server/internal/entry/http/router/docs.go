@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -171,6 +172,9 @@ func (d *docsHandler) robots(c *gin.Context) {
 // 判空与输出都要先剥掉它：只剩注释的模板不该把占位当正文。
 const rawHTMLPlaceholder = "<!-- raw HTML omitted -->"
 
+// docTagsRe 匹配渲染产物里的成对标签，仅用于判空前剥标签取可见文本。
+var docTagsRe = regexp.MustCompile(`<[^>]+>`)
+
 // renderDocMarkdown 把一份 Markdown 渲染成 HTML 片段。
 // 渲染失败或正文为空时回退占位文案：空模板只剩注释，回显编辑者注释没有意义。
 func renderDocMarkdown(source []byte) string {
@@ -180,7 +184,9 @@ func renderDocMarkdown(source []byte) string {
 	}
 	// 原始 HTML 一律不输出，占位注释也不留：正文只剩空白即视为未发布。
 	body := strings.ReplaceAll(out.String(), rawHTMLPlaceholder, "")
-	if strings.TrimSpace(body) == "" {
+	// 注释包在标题/加粗/列表里会渲染成空标签（如 `<h1></h1>`）：
+	// 判空前剥掉全部标签再核可见文本（旧线同款是剥标签后判空，此处同形）。
+	if strings.TrimSpace(docTagsRe.ReplaceAllString(body, "")) == "" {
 		return docMissingFallback
 	}
 	return body
