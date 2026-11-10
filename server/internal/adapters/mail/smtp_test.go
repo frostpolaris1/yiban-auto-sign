@@ -17,6 +17,7 @@ package mail_test
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"strings"
@@ -750,5 +751,128 @@ func TestSendSuppressesSMTPUTF8EvenWhenAdvertised(t *testing.T) {
 	}
 	if got.From != testUser {
 		t.Fatalf("信封发件人 = %q, want %q（扩展参数不得破坏信封解析）", got.From, testUser)
+	}
+}
+
+// settingsFor 构造一次解析结果，指向给定假服务器。
+func settingsFor(srv *mailtest.Server) mailadapter.Settings {
+	return mailadapter.Settings{
+		Host:     "127.0.0.1",
+		Port:     srv.Port(),
+		Username: testUser,
+		Password: testPass,
+		From:     testUser,
+		TLSMode:  "starttls",
+	}
+}
+
+// 每发送解析：Resolve 返回的 host/port 在下一次 Send 生效，无需重建发送器。
+// 两个进程内服务器各收到一封；第一封不会落到第二台。
+func TestSMTPResolvePerSendUsesNextSettings(t *testing.T) {
+	first, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start first fake smtp: %v", err)
+	}
+	t.Cleanup(first.Close)
+	second, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start second fake smtp: %v", err)
+	}
+	t.Cleanup(second.Close)
+	first.SetCredentials(testUser, testPass)
+	second.SetCredentials(testUser, testPass)
+
+	current := settingsFor(first)
+	sender, err := mailadapter.NewSMTP(mailadapter.Config{
+		Resolve: func(context.Context) (mailadapter.Settings, error) {
+			return current, nil
+		},
+		// 两台进程内服务器各自自签，测试用跳过校验共享信任；
+		// 生产 TLSConfig 恒为 nil，不提供该开关。
+		TLSConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // 进程内自签测试服务器
+		Timeout:   3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	msg := coremail.Message{To: "user@example.test", Subject: "per-send", Text: "body"}
+	if err := sender.Send(context.Background(), msg); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if !first.WaitMessages(1, 3*time.Second) {
+		t.Fatal("first server did not receive the first message")
+	}
+	if second.MessageCount() != 0 {
+		t.Fatalf("second server received %d messages before the switch", second.MessageCount())
+	}
+
+	current = settingsFor(second)
+	if err := sender.Send(context.Background(), msg); err != nil {
+		t.Fatalf("second send: %v", err)
+	}
+	if !second.WaitMessages(1, 3*time.Second) {
+		t.Fatal("second server did not receive the message after the switch")
+	}
+	if first.MessageCount() != 1 {
+		t.Fatalf("first server received %d messages, want 1", first.MessageCount())
+	}
+}
+
+// Resolve 失败按配置类错误返回，且不拨号；错误文本不含口令。
+func TestSMTPResolveFailureIsConfigWithoutDial(t *testing.T) {
+	sender, err := mailadapter.NewSMTP(mailadapter.Config{
+		Resolve: func(context.Context) (mailadapter.Settings, error) {
+			return mailadapter.Settings{}, errors.New("settings unavailable")
+		},
+		Timeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	err = sender.Send(context.Background(), coremail.Message{
+		To: "user@example.test", Subject: "x", Text: "y",
+	})
+	if err == nil {
+		t.Fatal("Send succeeded with a failing resolver")
+	}
+	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+		t.Fatalf("classify = (%v, %v), want config/non-retryable", kind, retryable)
+	}
+	if strings.Contains(err.Error(), testPass) {
+		t.Fatal("error text contains the SMTP password")
+	}
+}
+
+// 动态配置非法（空主机/缺口令对）同样在发送前拒绝，不拨号。
+func TestSMTPResolveInvalidSettingsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		settings mailadapter.Settings
+	}{
+		{"empty host", mailadapter.Settings{Port: 587, Username: testUser, Password: testPass, From: testUser}},
+		{"port out of range", mailadapter.Settings{Host: "127.0.0.1", Port: 0, Username: testUser, Password: testPass, From: testUser}},
+		{"user without pass", mailadapter.Settings{Host: "127.0.0.1", Port: 587, Username: testUser, From: testUser}},
+		{"unknown tls mode", mailadapter.Settings{Host: "127.0.0.1", Port: 587, Username: testUser, Password: testPass, From: testUser, TLSMode: "ssl"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sender, err := mailadapter.NewSMTP(mailadapter.Config{
+				Resolve: func(context.Context) (mailadapter.Settings, error) {
+					return tc.settings, nil
+				},
+				Timeout: 3 * time.Second,
+			})
+			if err != nil {
+				t.Fatalf("NewSMTP: %v", err)
+			}
+			err = sender.Send(context.Background(), coremail.Message{
+				To: "user@example.test", Subject: "x", Text: "y",
+			})
+			if err == nil {
+				t.Fatal("Send succeeded with invalid dynamic settings")
+			}
+			if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+				t.Fatalf("classify = (%v, %v), want config/non-retryable", kind, retryable)
+			}
+		})
 	}
 }

@@ -11,9 +11,12 @@
 // # 归属
 // adapters 层设施包。装配代码把 config 的值注入 Config；
 // 用例层只依赖 core/mail.Sender。
+// 注入 Config.Resolve 后，Host/Port/凭据/发件地址在**每次 Send 前**
+// 重新解析：设置页写回的下一次外呼即生效，无需重启。
+// 信任根、超时与时基仍由构造期注入，不随解析变化。
 //
 // # 复用
-// Config、SMTP、NewSMTP、DefaultTimeout；错误分类词表在 core/mail。
+// Config、Settings、SMTP、NewSMTP、DefaultTimeout；错误分类词表在 core/mail。
 //
 // # 口径
 // 两种 TLS 都**校验证书**；没有"跳过校验"开关。隐式 TLS 在本包的
@@ -91,6 +94,13 @@ type Config struct {
 	From string
 	// TLSMode 取 core/mail 的模式常量。auto 按端口选择。
 	TLSMode string
+	// Resolve 非 nil 时，每次 Send 前调用它取当前配置：
+	// 上面的 Host/Port/Username/Password/From/TLSMode 被忽略，
+	// 下一次外呼即用解析结果（设置页写回热生效）。
+	// TLSConfig/Timeout/Clock 仍取本结构，**不**随解析变化：
+	// 部署面不提供按发送切换信任根或超时的开关。
+	// Resolve 为 nil 时行为与旧版逐位一致（构造期定型）。
+	Resolve func(ctx context.Context) (Settings, error)
 	// Timeout 是一次投递的总预算。零值用 DefaultTimeout。
 	Timeout time.Duration
 	// TLSConfig 覆盖默认 TLS 参数。生产为 nil；测试注入信任根证书。
@@ -100,46 +110,45 @@ type Config struct {
 	Clock clock.Clock
 }
 
-// SMTP 实现 core/mail.Sender。
-type SMTP struct {
+// Settings 是每次发送前解析的动态配置子集。
+// 它只含会随设置页写回变化的字段；信任根、超时与时基不在此列。
+type Settings struct {
+	// Host 是 SMTP 服务器主机名。
+	Host string
+	// Port 是 SMTP 端口。
+	Port int
+	// Username 与 Password 是 AUTH PLAIN 凭据。两者同时为空表示不做认证。
+	Username string
+	Password string
+	// From 是信封与头部发件地址。空时用 Username。
+	From string
+	// TLSMode 取 core/mail 的模式常量。
+	TLSMode string
+}
+
+// resolvedSettings 是校验后的发送参数。
+type resolvedSettings struct {
 	host     string
 	port     int
 	user     string
 	pass     string
 	from     *mail.Address
 	implicit bool
-	timeout  time.Duration
-	tlsConf  *tls.Config
-	clock    clock.Clock
 }
 
-// NewSMTP 校验配置并构造发送器。非法配置在启动期失败。
+// SMTP 实现 core/mail.Sender。
+type SMTP struct {
+	static  resolvedSettings
+	resolve func(ctx context.Context) (Settings, error)
+	timeout time.Duration
+	tlsConf *tls.Config
+	clock   clock.Clock
+}
+
+// NewSMTP 校验配置并构造发送器。非法静态配置在启动期失败；
+// 注入 Resolve 时动态配置在每次 Send 前校验，失败按配置类错误返回，
+// 不拨号、不外呼。
 func NewSMTP(cfg Config) (*SMTP, error) {
-	host := strings.TrimSpace(cfg.Host)
-	if host == "" {
-		return nil, errors.New("mail: SMTP host is required")
-	}
-	if cfg.Port < 1 || cfg.Port > 65535 {
-		return nil, fmt.Errorf("mail: SMTP port %d is out of range 1..65535", cfg.Port)
-	}
-	if (cfg.Username == "") != (cfg.Password == "") {
-		return nil, errors.New("mail: SMTP username and password must be set together")
-	}
-	fromRaw := strings.TrimSpace(cfg.From)
-	if fromRaw == "" {
-		fromRaw = strings.TrimSpace(cfg.Username)
-	}
-	if fromRaw == "" {
-		return nil, errors.New("mail: sender address is required (YIBAN_MAIL_FROM or YIBAN_MAIL_USER)")
-	}
-	from, err := parseAddress(fromRaw)
-	if err != nil {
-		return nil, fmt.Errorf("mail: invalid sender address: %w", err)
-	}
-	implicit, err := resolveTLSMode(cfg.TLSMode, cfg.Port)
-	if err != nil {
-		return nil, err
-	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -148,17 +157,85 @@ func NewSMTP(cfg Config) (*SMTP, error) {
 	if clk == nil {
 		clk = clock.System{}
 	}
-	return &SMTP{
+	sender := &SMTP{
+		resolve: cfg.Resolve,
+		timeout: timeout,
+		tlsConf: cfg.TLSConfig,
+		clock:   clk,
+	}
+	if cfg.Resolve == nil {
+		resolved, err := resolveSettings(Settings{
+			Host:     cfg.Host,
+			Port:     cfg.Port,
+			Username: cfg.Username,
+			Password: cfg.Password,
+			From:     cfg.From,
+			TLSMode:  cfg.TLSMode,
+		})
+		if err != nil {
+			return nil, err
+		}
+		sender.static = resolved
+	}
+	return sender, nil
+}
+
+// resolveSettings 校验一组发送参数并定型。
+// 判据与旧 NewSMTP 逐条一致：主机非空、端口 1..65535、
+// 用户名与口令同时给或同时空、发件地址可表达、TLS 档在词表内。
+func resolveSettings(cfg Settings) (resolvedSettings, error) {
+	host := strings.TrimSpace(cfg.Host)
+	if host == "" {
+		return resolvedSettings{}, errors.New("mail: SMTP host is required")
+	}
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return resolvedSettings{}, fmt.Errorf("mail: SMTP port %d is out of range 1..65535", cfg.Port)
+	}
+	if (cfg.Username == "") != (cfg.Password == "") {
+		return resolvedSettings{}, errors.New("mail: SMTP username and password must be set together")
+	}
+	fromRaw := strings.TrimSpace(cfg.From)
+	if fromRaw == "" {
+		fromRaw = strings.TrimSpace(cfg.Username)
+	}
+	if fromRaw == "" {
+		return resolvedSettings{}, errors.New("mail: sender address is required (YIBAN_MAIL_FROM or YIBAN_MAIL_USER)")
+	}
+	from, err := parseAddress(fromRaw)
+	if err != nil {
+		return resolvedSettings{}, fmt.Errorf("mail: invalid sender address: %w", err)
+	}
+	implicit, err := resolveTLSMode(cfg.TLSMode, cfg.Port)
+	if err != nil {
+		return resolvedSettings{}, err
+	}
+	return resolvedSettings{
 		host:     host,
 		port:     cfg.Port,
 		user:     cfg.Username,
 		pass:     cfg.Password,
 		from:     from,
 		implicit: implicit,
-		timeout:  timeout,
-		tlsConf:  cfg.TLSConfig,
-		clock:    clk,
 	}, nil
+}
+
+// settings 返回本次发送使用的参数。
+// Resolve 为 nil 时返回构造期定型的静态值（行为不变）；
+// 非 nil 时每次调用解析并校验，错误按配置类包装，不拨号。
+func (s *SMTP) settings(ctx context.Context) (resolvedSettings, error) {
+	if s.resolve == nil {
+		return s.static, nil
+	}
+	cfg, err := s.resolve(ctx)
+	if err != nil {
+		return resolvedSettings{}, deliveryError(coremail.KindConfig, false,
+			fmt.Errorf("mail: resolve SMTP settings: %w", err))
+	}
+	resolved, err := resolveSettings(cfg)
+	if err != nil {
+		return resolvedSettings{}, deliveryError(coremail.KindConfig, false, err)
+	}
+	return resolved, nil
 }
 
 // resolveTLSMode 把模式词解析成两档。
@@ -188,7 +265,11 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 	if err := ctx.Err(); err != nil {
 		return deliveryError(coremail.KindTimeout, true, err)
 	}
-	m, err := s.encode(msg)
+	settings, err := s.settings(ctx)
+	if err != nil {
+		return err
+	}
+	m, err := s.encode(msg, settings)
 	if err != nil {
 		return err
 	}
@@ -199,7 +280,7 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 		deadline = d
 	}
 
-	c, err := gomail.NewClient(s.host,
+	c, err := gomail.NewClient(settings.host,
 		gomail.WithTimeout(s.timeout),
 		gomail.WithoutNoop(),
 		gomail.WithoutRset(),
@@ -208,7 +289,7 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 		return wrapConnect(err)
 	}
 
-	conn, err := s.dial(ctx, deadline)
+	conn, err := s.dial(ctx, deadline, settings)
 	if err != nil {
 		return wrapConnect(err)
 	}
@@ -216,7 +297,7 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 	// 幂等收尾。长期运行的后台投递不得靠 GC 回收 fd。
 	defer func() { _ = conn.Close() }()
 
-	client, err := gmsmtp.NewClient(conn, s.host)
+	client, err := gmsmtp.NewClient(conn, settings.host)
 	if err != nil {
 		return wrapConnect(err)
 	}
@@ -228,22 +309,22 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 	if err := client.Hello("localhost"); err != nil {
 		return wrapConnect(err)
 	}
-	if !s.implicit {
+	if !settings.implicit {
 		// 先显式问候（上方），再查 STARTTLS：问候失败按连接类分类，
 		// 而不是误报"服务器不支持 STARTTLS"。
 		if ok, _ := client.Extension("STARTTLS"); !ok {
 			return deliveryError(coremail.KindConfig, false,
 				errors.New("mail: server does not advertise STARTTLS"))
 		}
-		if err := client.StartTLS(s.clientTLSConfig()); err != nil {
+		if err := client.StartTLS(s.clientTLSConfig(settings.host)); err != nil {
 			return wrapStartTLS(err)
 		}
 	}
-	if s.user != "" {
+	if settings.user != "" {
 		// 两档 TLS 都在此之前建立：隐式档由本包 dial 握手，STARTTLS 档
 		// 由上一步升级成功。allowUnenc=false 与旧手写 plainAuth 同口径：
 		// 凭据只走 TLS 连接，是否真的 TLS 由 vendored 客户端自行判定。
-		if err := client.Auth(gmsmtp.PlainAuth("", s.user, s.pass, s.host, false)); err != nil {
+		if err := client.Auth(gmsmtp.PlainAuth("", settings.user, settings.pass, settings.host, false)); err != nil {
 			return wrapAuth(err)
 		}
 	}
@@ -270,8 +351,8 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 // 非豁免服务器名用例钉住此事）。因此隐式档返回裸 *tls.Conn，
 // 但它在内部包着 deadlineCapConn，截止时间封顶仍然生效。
 // STARTTLS 档先明文拨号，升级交给调用方的 StartTLS。
-func (s *SMTP) dial(ctx context.Context, deadline time.Time) (net.Conn, error) {
-	addr := net.JoinHostPort(s.host, strconv.Itoa(s.port))
+func (s *SMTP) dial(ctx context.Context, deadline time.Time, settings resolvedSettings) (net.Conn, error) {
+	addr := net.JoinHostPort(settings.host, strconv.Itoa(settings.port))
 	dialCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	raw, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", addr)
@@ -283,10 +364,10 @@ func (s *SMTP) dial(ctx context.Context, deadline time.Time) (net.Conn, error) {
 		_ = raw.Close()
 		return nil, err
 	}
-	if !s.implicit {
+	if !settings.implicit {
 		return capped, nil
 	}
-	tlsConn := tls.Client(capped, s.clientTLSConfig())
+	tlsConn := tls.Client(capped, s.clientTLSConfig(settings.host))
 	if err := tlsConn.HandshakeContext(dialCtx); err != nil {
 		_ = raw.Close()
 		return nil, err
@@ -327,13 +408,13 @@ func (c deadlineCapConn) cap(t time.Time) time.Time {
 }
 
 // clientTLSConfig 返回本次连接使用的 TLS 配置。默认校验证书。
-func (s *SMTP) clientTLSConfig() *tls.Config {
+func (s *SMTP) clientTLSConfig(host string) *tls.Config {
 	cfg := &tls.Config{}
 	if s.tlsConf != nil {
 		cfg = s.tlsConf.Clone()
 	}
 	if cfg.ServerName == "" {
-		cfg.ServerName = s.host
+		cfg.ServerName = host
 	}
 	if cfg.MinVersion == 0 {
 		cfg.MinVersion = tls.VersionTLS12
@@ -347,7 +428,7 @@ func (s *SMTP) clientTLSConfig() *tls.Config {
 // 主题 Q 编码（go-mail 对非 ASCII 头自动做）、正文 8bit 原样 UTF-8
 // （NoEncoding；QP 会把链接里的 `=` 转义成 =3D，破坏"正文含完整链接"
 // 的判据）。日期取注入时钟的 UTC 值。失败只来自本地形状检查。
-func (s *SMTP) encode(msg coremail.Message) (*gomail.Msg, error) {
+func (s *SMTP) encode(msg coremail.Message, settings resolvedSettings) (*gomail.Msg, error) {
 	to, err := parseAddress(msg.To)
 	if err != nil {
 		return nil, err
@@ -358,7 +439,7 @@ func (s *SMTP) encode(msg coremail.Message) (*gomail.Msg, error) {
 	}
 	m := gomail.NewMsg(gomail.WithEncoding(gomail.NoEncoding))
 	m.SetDateWithValue(s.clock.Now().UTC())
-	m.FromMailAddress(s.from)
+	m.FromMailAddress(settings.from)
 	m.ToMailAddress(to)
 	m.Subject(msg.Subject)
 	m.SetBodyString(gomail.TypeTextPlain, normalizeNewlines(msg.Text))
