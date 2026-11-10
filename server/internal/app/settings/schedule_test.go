@@ -96,9 +96,11 @@ func (f *fakeScheduleStore) ClearSetting(_ context.Context, key string) error {
 type rollbackTx struct {
 	rolledBack bool
 	committed  int
+	calls      int
 }
 
 func (f *rollbackTx) InTx(ctx context.Context, fn func(context.Context) error) error {
+	f.calls++
 	if err := fn(ctx); err != nil {
 		f.rolledBack = true
 		return err

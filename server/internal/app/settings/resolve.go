@@ -74,6 +74,31 @@ const (
 	signWindowMinuteMax = 1439
 )
 
+// 批 r4r 的两枚配额键（DB-only 机制键）。
+// 与 engine.paused 同口径：不经名册（registry 无对应键，Known 恒 false，
+// 覆盖行不进 GET /api/admin/settings）、无 env 对应位、无迁移缺省行。
+// 语义：全站活跃数上限；0=不限哨兵；缺行=1（master 自用紧档）。
+const (
+	// KeyQuotaMaxUsers 是全站活跃用户上限键。
+	KeyQuotaMaxUsers = "quota.max_users"
+	// KeyQuotaMaxAccounts 是全站活跃账号上限键。
+	KeyQuotaMaxAccounts = "quota.max_accounts"
+)
+
+// 配额域与缺省。缺行取 master 自用紧档：新库先 create-master 占 1 额可用，
+// 要加 admin/加账号必须 master 先在设置页抬配额——闭环自洽（用户 2026-11-10 拍板）。
+// 0 是「不限」哨兵，不是零额度；上界 100000 与旧线 YIBAN_MAX_USERS 域一致。
+const (
+	// DefaultQuotaMaxUsers 是用户键缺行时的生效值。
+	DefaultQuotaMaxUsers = 1
+	// DefaultQuotaMaxAccounts 是账号键缺行时的生效值。
+	DefaultQuotaMaxAccounts = 1
+	// QuotaMin 是配额下界：0=不限。
+	QuotaMin = 0
+	// QuotaMax 是配额上界（含）。
+	QuotaMax = 100000
+)
+
 // KeyScheduleSignDist 是铺点分布档（批 3c DB-only 字符串枚举）。
 // 与 engine.paused 同口径：不经名册（registry 无对应键，Known 恒 false，
 // 覆盖行不进 GET /api/admin/settings）、无 env 对应位。
@@ -422,4 +447,46 @@ func (r *Resolver) ResolveSignDist(ctx context.Context, fallback SignDist) (Sign
 		return fallback, nil
 	}
 	return value, nil
+}
+
+// QuotaSetting 解析配额键并报告来源（批 r4r，消费点＝GET 配额回显）。
+// 行存在且在 [0,100000] 内→行值、source=db；
+// 行缺失→fallback、source=default（配额键无 env 对应位，故没有 env 源）；
+// 坏行（非整数、负数、越界）→fallback、source=default 并每进程 Warn 一次
+// （沿用 3b/3c 坏行语义：fail-open 但留痕）；存储故障原样上抛。
+func (r *Resolver) QuotaSetting(ctx context.Context, key string, fallback int) (int, QuotaSource, error) {
+	value, found, err := r.store.IntOverride(ctx, key)
+	if err != nil {
+		if isSettingValueInvalid(err) {
+			r.warnOnce(key, "int")
+			return fallback, QuotaSourceDefault, nil
+		}
+		return 0, "", err
+	}
+	if !found {
+		return fallback, QuotaSourceDefault, nil
+	}
+	if value < QuotaMin || value > QuotaMax {
+		r.warnOnce(key, "int")
+		return fallback, QuotaSourceDefault, nil
+	}
+	return value, QuotaSourceDB, nil
+}
+
+// ResolveQuota 返回生效的配额值：0=不限，正数=上限。
+// 缺行/坏行回 fallback（缺省 1），存储故障上抛（故障不是不限）。
+func (r *Resolver) ResolveQuota(ctx context.Context, key string, fallback int) (int, error) {
+	value, _, err := r.QuotaSetting(ctx, key, fallback)
+	return value, err
+}
+
+// UserLimit 实现 app.QuotaLimits：全站活跃用户上限（0=不限）。
+// 每请求解析一次：设置页写回后下一次注册/建号即生效。
+func (r *Resolver) UserLimit(ctx context.Context) (int, error) {
+	return r.ResolveQuota(ctx, KeyQuotaMaxUsers, DefaultQuotaMaxUsers)
+}
+
+// AccountLimit 实现 app.QuotaLimits：全站活跃账号上限（0=不限）。
+func (r *Resolver) AccountLimit(ctx context.Context) (int, error) {
+	return r.ResolveQuota(ctx, KeyQuotaMaxAccounts, DefaultQuotaMaxAccounts)
 }

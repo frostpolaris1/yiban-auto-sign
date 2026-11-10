@@ -108,8 +108,13 @@ const (
 	// detail 只含字段与目标状态（paused/resumed），**绝无口令**；
 	// 操作者在审计行主体列，不进 detail。
 	ActionSettingsEnginePaused Action = "settings.engine_paused"
-	ActionAccountCreate        Action = "account.create"
-	ActionAccountUpdate        Action = "account.update"
+	// 配额写回（r4r）。一次 PUT 恰一行；detail 的 changes 是
+	// 键→[旧,新]对：键是 settings 表键名（quota.max_users/
+	// quota.max_accounts），值只允许 nil 或 [0,100000] 整数
+	// （0=不限哨兵），无自由文本容量。
+	ActionSettingsQuotaWriteback Action = "settings.quota_writeback"
+	ActionAccountCreate          Action = "account.create"
+	ActionAccountUpdate          Action = "account.update"
 	// 自动核验通过：pending→active，无人工审核者。detail 只记状态迁移。
 	ActionAccountAutoApprove Action = "account.auto_approve"
 	// 自动核验失败：账号留 pending。detail 只记结果词（如
