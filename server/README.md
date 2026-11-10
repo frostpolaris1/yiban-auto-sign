@@ -13,15 +13,22 @@ not the whole tree.
 ```text
 server/
 ├── canonical.tsv              single-source rules (concept, owner, pattern)
-├── contracts/                 host API contract v1 (OpenAPI 3.1 YAML)
+├── contracts/                 host API contract v1 (OpenAPI 3.1 YAML); the endpoint
+│                             roster lives in contracts/README.md
 ├── oapi-codegen.yaml          generator config (pinned v2.8.1)
+├── cmd/                       process entrypoints: server, cli, bench, probe-login
+├── migrations/postgres        goose migrations, embedded in the binary
 ├── internal/buildinfo         release identity (version/commit/build_time via ldflags)
+├── internal/configdata        registry.json embedded at build time: the config key
+│                             roster read by the server, the CLI and doctor
+├── internal/assembly          the only wiring point; imported by cmd only
 ├── internal/core/fsperm       the only POSIX permission-bit judgment
 ├── internal/core/clock        the only wall-clock reader
 ├── internal/core/status       the only task-state definition
 ├── internal/core/errs         stable error codes
-├── internal/core/auth        session contract (roles, users, SessionIssuer)
+├── internal/core/auth         session contract (roles, users, SessionIssuer)
 ├── internal/core/mask         the only masking implementation
+├── internal/core/logfield     the only structured-log field key table
 ├── internal/core/retry        the only retry policy
 ├── internal/core/egress       the only egress identity
 ├── internal/core/plan         the only slot geometry
@@ -33,20 +40,40 @@ server/
 ├── internal/core/scope        master / admin / user authorization scope
 ├── internal/core/school       school and binding types
 ├── internal/core/user         user record types
-├── internal/app/<domain>      use cases and repository ports
+├── internal/core/image        the only image preprocessing
+├── internal/core/photo        photo value types and retention predicates
+├── internal/core/location     geofence geometry predicates
+├── internal/core/schedule     calendar, engine and stats read models
+├── internal/core/mail         mail sender port and failure classes
+├── internal/core/webhook      webhook push port and failure classes
+├── internal/core/notify       in-app notification and daily digest models
+├── internal/core/diagnostic   diagnostic read-model values and suggestion words
+├── internal/app/<domain>      use cases and repository ports: auth, user, school,
+│                             schooladmin, account, schedule, timepref, calendar,
+│                             stats, photos, location, audit, diagnostic, egress,
+│                             worker, events, retention, notify, settings
 ├── internal/app/selfcheck     one-click update self-check (read-only)
 ├── internal/adapters/pg       PostgreSQL repositories, pool, transactions, migrations
-├── internal/core/image        the only image preprocessing
 ├── internal/adapters/config   the only environment reader
 ├── internal/adapters/session  in-memory SessionIssuer (development only)
-├── internal/assembly          the only wiring point; imported by cmd only
-├── migrations/postgres        goose migrations, embedded in the binary
-├── internal/signing/contract  provider v1
+├── internal/adapters/mail     the core/mail.Sender SMTP implementation
+├── internal/adapters/webhook  ServerChan and custom webhook push outlets
+├── internal/adapters/storage  content-addressed local blob store for photos
+├── internal/adapters/legacy   one-time old-stack import (CLI only, not wired)
+├── internal/entry/http/<domain>  Gin handlers by domain: user, school, account,
+│                             admin, schedule, signing, photos, location, events,
+│                             calendar, ratelimit, notify, system, audit
 ├── internal/entry/http/oapi     generated contract types and Gin handlers
 ├── internal/entry/http/router   Gin assembly, middleware, auth and cookies
 ├── internal/entry/http/respond  the only error envelope
+├── internal/signing/contract  provider v1
+├── internal/signing/protocol  provider wire protocol and crypto
+├── internal/signing/providers  platform provider implementations
+├── internal/signing/conformance  provider conformance suite
+├── internal/signing/fake      scripted provider for tests
 ├── tools/gate                 single-source scanner
 ├── tools/structure            repository layout and naming gate
+├── tools/logfield             structured-log key gate
 ├── structure.tsv              registered directories for the structure gate
 ├── THIRD_PARTY_LICENSES.md    generated dependency license manifest
 └── scripts/verify.sh          gofmt + vet + test + gate + drift + structure + license
@@ -60,6 +87,13 @@ The service is one Go binary. It serves `/api/*` and, when `YIBAN_UI_DIR`
 points at a built frontend directory, the pages and SPA deep links as well.
 Full install and upgrade steps: [`../deploy/README.md`](../deploy/README.md).
 Deployment assertions: [`../docs/dev/deploy-e2e.md`](../docs/dev/deploy-e2e.md).
+What to change where, which keys are secret and how a change takes effect:
+[`../docs/ops/config-map.md`](../docs/ops/config-map.md).
+
+There is no web onboarding page. The first master account is created from the
+CLI (`yiban-cli user create-master`, password over stdin); the commands for
+both deploy shapes are in `deploy/README.md`, and the RC-to-production
+cutover checklist is [`../docs/ops/cutover.md`](../docs/ops/cutover.md).
 
 ## Commands
 
@@ -72,6 +106,12 @@ go run ./tools/structure -root .. -rules structure.tsv
 ./scripts/generate.sh --check
 ./scripts/license.sh --write
 ```
+
+Repository-root entries: `bash scripts/verify-stacks.sh` runs the server
+gates above and the ui gates in one command; `bash scripts/dev-verify.sh
+--ci` is the CI key subset (it runs on the Linux runner in place and is not
+supported from Windows). In `ui`, `npm run test:e2e:fast` runs the fast
+behavior and screenshot suites.
 
 ## License gate
 
@@ -133,23 +173,58 @@ The query covers all BMP Cf ranges. Astral Cf code points (U+110BD, U+E0001,
 U+E0020–U+E007F) are not covered. The application check uses the full Unicode
 category and remains the authoritative gate.
 
+### Product version
+
+The repository root `VERSION` file is the single source of the Go-line
+product version; it holds one `X.Y.Z` line and only moves forward (v1.0.0
+was the first release). `server/scripts/build-release.sh` refuses to build a
+release without it and injects version/commit/build_time into both binaries
+via ldflags. Release tags are `v$VERSION`.
+`scripts/release-check.sh --only go-version` asserts the product side only:
+`VERSION` present and well-formed, both built binaries self-reporting it,
+and the tag `v$VERSION` pointing at HEAD. Before the tag exists the item
+fails, which is expected while preparing a release. The contract's
+`info.version` is the API contract version and is never synchronized with
+it; the top section of `CHANGELOG.md` carries the released version, kept
+equal to `VERSION` by `tests/test_release_version_source.py`. See
+[`contracts/README.md`](contracts/README.md) for the versioning split.
+
 ## Status
 
-The service implements the contract end to end: auth and password reset,
-users, schools and administrator bindings, accounts and credentials, photos,
-location policies, scheduling and the daily plan build, the signing worker
-with leases and retries, audit, events and diagnostics, retention, and the
-admin engine snapshot. The production assembly wires every contract endpoint;
-a handler that is not wired answers 501.
+The service implements the contract end to end. The endpoint roster —
+methods, paths, roles and per-endpoint semantics — lives in
+[`contracts/README.md`](contracts/README.md) and is the single source; this
+section names capabilities, not routes.
+
+Covered: auth and password reset; self-service delete, restore and purge for
+users and accounts; users, schools and administrator bindings with batch
+actions; accounts and credentials (platform detect, verify, manual review,
+batch sign, person-name reveal); photos with retention and an optional
+random safety crop; location policies; scheduling — windows, previews, the
+daily plan build with the weekend gate and the front/uniform sign
+distribution, time preferences with a switch cooldown; the signing worker
+with leases, retries and a global pause switch; audit with an on-demand
+chain status check; events, diagnostics and retention; announcements;
+in-app notifications with email and webhook delivery (ServerChan Turbo or a
+custom https outlet behind an SSRF allowlist) and a daily failure digest;
+runtime settings write-back — schedule margins and the time-preference
+switch, the weekend gate and default window minutes, the sign distribution,
+quotas (default one user and one account, `0` = unlimited), the SMTP
+transport and the engine pause — persisted in the settings table with a
+same-transaction audit row and effective without a restart; SMTP config
+edited online with the password sealed at rest and masked on read; and the
+public pages `/api/changelog`, `/terms`, `/privacy` and `/robots.txt`. The
+production assembly wires every contract endpoint; a handler that is not
+wired answers 501.
 
 The Python line is frozen. Its behavior is reference material only.
 
 `scripts/generate.sh --check` fails when `contracts/openapi.yaml` and the
 generated code drift apart.
 
-Database tests need a real PostgreSQL 18. Set `YIBAN_TEST_DATABASE_URL`; when
-it is unset they skip and print a warning. CI starts a `postgres:18` service
-for the `stacks` job.
+Database tests need a real PostgreSQL 18 and the DSN in
+`YIBAN_TEST_DATABASE_URL` (see Environment). CI starts a `postgres:18`
+service for the `stacks` job.
 
 ## Boundary
 
@@ -172,6 +247,17 @@ installation path, working directory or image layer holds a registry file. A
 bidirectional gate keeps the registry exactly equal to the key literals the
 server reads.
 
+Effective values for the writable families resolve in the order database
+override, then environment, then registry default: the settings write-back
+endpoints and the engine pause switch persist rows in the `settings` table
+that shadow the environment, effective without a restart.
+`engine.paused`, the DB-only schedule rows (weekend gate, default window
+minutes, sign distribution), `quota.*` and `mail.*` have no environment
+counterpart and never appear in a run file. The three schedule keys that
+also exist as environment keys (`schedule.edge_front_sec`,
+`schedule.edge_back_sec`, `schedule.allow_time_pref`) report `source=db`
+with the row value when an override row is present.
+
 Canonical runtime files:
 
 - bare metal: `/etc/yiban/server.env` (0600 root:root), installed by
@@ -188,6 +274,10 @@ Canonical runtime files:
 | `YIBAN_DATABASE_URL` | **yes** in production; otherwise required unless `YIBAN_ALLOW_NO_DB=1` | empty | PostgreSQL 18 DSN. An empty value under `production` stops startup and names the key. The value carries a password: it never appears in logs, errors or the settings page. |
 | `YIBAN_ALLOW_NO_DB` | no | `false` | explicit opt-in to start without a database in `development`, `test` and `staging`. `production` rejects a true value: the deployment must give a DSN. |
 | `YIBAN_TZ` | no | `Asia/Shanghai` | business time zone |
+| `YIBAN_ALLOW_TIME_PREF` | no | `false` | user time-preference master switch; also writable back through the schedule-settings endpoint (the DB row wins when present) |
+| `YIBAN_TIME_PREF_COOLDOWN_SEC` | no | `30` | cooldown for switching the time preference, in seconds (0..3600); 0 disables |
+| `YIBAN_WINDOW_EDGE_FRONT_SEC` | no | `60` | seconds trimmed from the front of every window (0..300, multiples of 30); the `schedule.edge_front_sec` DB row overrides when present |
+| `YIBAN_WINDOW_EDGE_BACK_SEC` | no | `60` | the same for the back edge; the `schedule.edge_back_sec` DB row overrides when present |
 | `YIBAN_INSECURE_COOKIES` | no | `true` for development and test | use the unprefixed cookie name; production refuses a true value |
 | `YIBAN_HASH_PEPPER` | **yes** | — | at least 16 characters; keys the HMAC digests of IP addresses and user agents, and derives the audit chain key. Rotating it breaks verification of the existing audit chain. |
 | `YIBAN_CREDENTIAL_KEY` | **yes** | — | base64 of exactly 32 bytes; encrypts stored credentials with AES-256-GCM. Rotating it goes through kid re-encryption (P4/P8), so old rows stay decryptable. |
@@ -203,6 +293,11 @@ Canonical runtime files:
 | `YIBAN_MAIL_PASS` | no | empty | AUTH PLAIN password or app key. Required together with the user when SMTP delivery is on. It never appears in logs or errors. |
 | `YIBAN_MAIL_FROM` | no | empty | envelope and header sender. Empty means `YIBAN_MAIL_USER`. A form like `Name <user@example.com>` is accepted; only the address part is used. |
 | `YIBAN_MAIL_TLS_MODE` | no | `auto` | `auto`, `implicit` or `starttls`. No switch disables certificate checks. |
+| `YIBAN_WEBHOOK_ENABLE` | no | `false` | webhook push channel master switch; when off, notification webhook ledger rows record `skipped(webhook_not_configured)` |
+| `YIBAN_WEBHOOK_TYPE` | no | `serverchan` | `serverchan` (Server酱 Turbo) or `custom` (https only, re-checked against the SSRF allowlist) |
+| `YIBAN_WEBHOOK_SECRET` | no | empty | outlet credential: the ServerChan SendKey or the full webhook URL; never logged, audited or echoed in an error |
+| `YIBAN_WEBHOOK_COOLDOWN_SEC` | no | `60` | per-topic push throttle window in seconds (0 = no throttle); process-local, cleared on restart |
+| `YIBAN_WEBHOOK_DAILY_MAX` | no | `5` | daily push quota (0 = unlimited); only truly delivered pushes occupy it, tracked in the notification ledger |
 | `YIBAN_RATE_LIMIT_ENABLE` | no | `true` | inbound rate limiting for login, forgot/reset password, change password, verify and sign |
 | `YIBAN_RATE_IP_PER_MIN` | no | `60` | requests per minute per client IP on those routes |
 | `YIBAN_RATE_IP_BURST` | no | `20` | burst bucket per client IP |
@@ -214,6 +309,13 @@ Canonical runtime files:
 | `YIBAN_WORKERS` | no | `1` | execution concurrency (1..64). The same number is the claim batch size, the capacity channel count and the in-batch parallelism. |
 | `YIBAN_AVG_ATTEMPT_SEC` | no | `3` | average duration of one account attempt in seconds (1..300); a capacity input. |
 | `YIBAN_EGRESS_RATE` | no | `1.0` | target attempts per second per egress (0.2..4.0). It caps the capacity formula and sets the execution rate gate: both read this one field. |
+
+Three registry keys are CLI-scoped and never belong in a run file:
+`YIBAN_BACKUP_PASSPHRASE` (GPG passphrase for `yiban-cli backup` and
+`restore`; `--passphrase-file` wins), `YIBAN_LEGACY_ACCOUNTS_KEY` (64-hex
+old-line account key for `migrate-legacy`, read from the environment only,
+never argv) and `YIBAN_TEST_DATABASE_URL` (DSN for the PostgreSQL test suite
+and `cmd/bench`; when it is unset those tests skip and print a warning).
 
 Production always uses `__Host-yiban_session` with `Secure`. A true
 `YIBAN_INSECURE_COOKIES` under `YIBAN_ENV=production` is a startup error.
@@ -255,6 +357,18 @@ not loopback or unspecified. A missing value means the default
 own machine. Startup therefore fails and names the key and the current value.
 Private addresses such as `http://192.168.1.10:47183` pass: they work for
 users on the same network.
+
+The transport environment keys are only defaults. The same six values are
+editable at runtime through `GET/PUT /api/admin/mail-settings`: host, port,
+TLS mode,
+sender, user and password become `mail.*` rows in the settings table that
+override the environment on the next send, without a restart. The password
+is sealed with the deployment credential key (AES-256-GCM) before it is
+stored; reads return real values for host, port and TLS mode, `set` plus a
+mask for sender and user, and only `set` for the password — never the
+value, a mask of it or the ciphertext. Every change requires the current
+password. Deleting a row falls back to the environment value, then to the
+registry default.
 
 Recipient addresses: registration is looser than delivery. Within ASCII,
 delivery guarantees acceptance when the domain contains hostname characters
