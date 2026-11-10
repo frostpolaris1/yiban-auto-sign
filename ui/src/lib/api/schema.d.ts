@@ -2482,6 +2482,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/changelog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Release notes as plain Markdown text.
+         * @description Public. The body is the deployment's CHANGELOG.md verbatim, read once
+         *     per process and cached for the process lifetime: editing the file takes
+         *     effect on restart. When YIBAN_DOCS_DIR is unset or the file cannot be
+         *     read, text is the fixed fallback "暂无更新日志" and the status is still
+         *     200, so a client never has to treat an optional document as an error.
+         *     The document is deployment content, not user input: no session, no
+         *     CSRF token and no audit row.
+         */
+        get: operations["ChangelogGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -3917,6 +3943,13 @@ export interface components {
         HealthStatus: {
             /** @constant */
             status: "ok";
+        };
+        Changelog: {
+            /**
+             * @description Markdown source of CHANGELOG.md, or the fixed fallback line when
+             *     the document directory is unset or the file is unreadable.
+             */
+            text: string;
         };
         DiagnosticsReport: {
             /** Format: date-time */
@@ -7546,6 +7579,27 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    ChangelogGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Release notes text, or the fallback line. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Changelog"];
+                };
+            };
             default: components["responses"]["DefaultError"];
         };
     };
