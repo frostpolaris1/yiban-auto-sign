@@ -763,6 +763,13 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		locLib = locationhttp.NewHandler(locationSvc, adminSvc)
 
 		prefRepo := pg.NewTimePrefRepo(db)
+		// 标准窗口对的每请求解析（DB 覆盖行>core 常量；半对整对回退）。
+		// **单一闭包**同时喂计划 fallback 与自选展示窗（3b 复审 F1：
+		// 默认窗可写回后，两处必须同源，不得各持一份常量）。
+		defaultWindowPair := func(ctx context.Context) (int, int, error) {
+			return scheduleResolver.ResolveSignWindow(ctx,
+				coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+		}
 		scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 			Windows:  scheduleRepo,
 			Plans:    scheduleRepo,
@@ -778,10 +785,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			CapacityAlerts: notificationDispatcher,
 			// 3b 注入面：fallback 窗口的全局默认值每请求解析
 			//（DB 覆盖行>core 常量；半对整对回退）。缺端口时行为与常量一致。
-			Defaults: func(ctx context.Context) (int, int, error) {
-				return scheduleResolver.ResolveSignWindow(ctx,
-					coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
-			},
+			Defaults: defaultWindowPair,
 			// 窗口发现失败的原因进日志（OCR M1）。
 			Logger: logger,
 		})
@@ -795,6 +799,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 				// sett2：自选开关每请求读 DB 覆盖行，行缺失回 env 值。
 				return scheduleResolver.ResolveBool(ctx, appsettings.KeyScheduleAllowTimePref, cfg.AllowTimePref)
 			},
+			// 3b F1：展示窗与计划 fallback 窗共用同一解析闭包（同源防漂移）。
+			Window:   defaultWindowPair,
 			Cooldown: cfg.TimePrefCooldown,
 		})
 		if err != nil {

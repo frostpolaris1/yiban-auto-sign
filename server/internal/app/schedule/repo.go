@@ -92,6 +92,9 @@ type CapacityAlerts interface {
 // ResolveSignWindow（DB 行>缺省常量，半对整对回退）。
 // 为 nil 时直接用 core/schedule 常量对，行为与既有完全一致。
 // 返回错误时本次窗口解析失败上抛：故障不是配置状态。
+// 装配注入的是**同一闭包**，同时喂计划 fallback 与 timepref 自选展示窗
+// （3b 复审 F1：默认窗可写回后两处必须同源，
+// 否则 GET /api/me/time-pref 显示窗与铺行窗漂移成第二事实源）。
 type DefaultSignWindow func(ctx context.Context) (startMin, endMin int, err error)
 
 // Deps 是计划用例的依赖。
