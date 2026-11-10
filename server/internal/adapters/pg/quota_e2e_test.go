@@ -110,7 +110,9 @@ func TestQuotaRepoZeroSentinelRestoreE2E(t *testing.T) {
 		`UPDATE users SET deleted_at = now(), deleted_by = id WHERE id = $1::uuid`, gone.ID); err != nil {
 		t.Fatalf("self soft delete user: %v", err)
 	}
-	notBefore := time.Now().Add(-time.Hour)
+	// 固定远早时刻：宽限窗口判据是 deleted_at >= notBefore，行删于「刚刚」，
+	// 任何早于开测的固定值都满足——不用墙钟（clock.now 门＋pg 包先例同形）。
+	notBefore := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 		_, err := e.users.RestoreSelfUser(ctx, gone.ID, notBefore, 0)
 		return err
