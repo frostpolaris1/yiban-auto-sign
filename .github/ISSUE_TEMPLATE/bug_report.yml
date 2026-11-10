@@ -1,0 +1,107 @@
+# 缺陷报告（结构化表单）
+# 口径：每节只写事实与可复现步骤；日志与截图必须先脱敏。
+# 维护者纪律见 CONTRIBUTING.md §5 数据红线；labels 只绑仓库已存在的标签。
+name: 缺陷报告
+description: 报告可复现的缺陷（提交前请先脱敏）
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告。请先确认：
+
+        - 已搜索过现有 issue，不是重复报告。
+        - 内容已脱敏：**不得**出现真实手机号、邮箱、口令、URL token、设备码、学校与人员标识。
+        - 安全漏洞（凭据、越权、SSRF、脱敏失效类）**不要**开公开 issue，见仓库根目录 `SECURITY.md`。
+
+  - type: input
+    id: summary
+    attributes:
+      label: 一句话概述
+      description: 哪个功能在半路坏了。
+      placeholder: 例如：账号列表在筛选后翻页回到第一页
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: 涉及端
+      description: 只选一个最接近的；跨端问题在补充里说明。
+      options:
+        - Go 线 server（server/ 后端）
+        - Go 线 ui（ui/ 前端）
+        - 旧栈（yiban/、web/、frontend/、tests/，已冻结）
+        - 部署与 CI（deploy/、scripts/、.github/）
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 从干净状态开始写；能给出的命令、路由、点击路径都写上。
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+      description: 你期望看到的用户可见结果。
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 实际看到的结果；有报错就贴脱敏后的原文。
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境与版本
+      description: 版本或提交、部署形态、操作系统与运行时版本。
+      placeholder: |
+        版本 / 提交：
+        部署形态：裸机 / Docker / GitHub Actions
+        操作系统：
+        Go / Node / Python 版本：
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: CI 或日志摘录（必须已脱敏）
+      description: 贴最小片段即可；手机号、邮箱、口令、URL token 必须打码或换成合成值。
+      render: shell
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: 脱敏确认
+      options:
+        - label: 我确认以上内容已脱敏，不含真实手机号、邮箱、口令、URL token、设备码、学校与人员标识。
+          required: true
+        - label: 我确认这不是安全漏洞；安全漏洞按 `SECURITY.md` 走私密上报。
+          required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图（已脱敏）、相关 issue、你已排除的可能原因。
+    validations:
+      required: false
