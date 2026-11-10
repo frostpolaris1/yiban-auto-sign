@@ -818,8 +818,8 @@ func TestSMTPResolvePerSendUsesNextSettings(t *testing.T) {
 	}
 }
 
-// Resolve 失败按配置类错误返回，且不拨号；错误文本不含口令。
-func TestSMTPResolveFailureIsConfigWithoutDial(t *testing.T) {
+// Resolve 失败按连接类可重试返回，且不拨号；错误文本不含口令。
+func TestSMTPResolveFailureIsRetryableWithoutDial(t *testing.T) {
 	sender, err := mailadapter.NewSMTP(mailadapter.Config{
 		Resolve: func(context.Context) (mailadapter.Settings, error) {
 			return mailadapter.Settings{}, errors.New("settings unavailable")
@@ -835,8 +835,8 @@ func TestSMTPResolveFailureIsConfigWithoutDial(t *testing.T) {
 	if err == nil {
 		t.Fatal("Send succeeded with a failing resolver")
 	}
-	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
-		t.Fatalf("classify = (%v, %v), want config/non-retryable", kind, retryable)
+	if kind, retryable := coremail.Classify(err); kind != coremail.KindConnect || !retryable {
+		t.Fatalf("classify = (%v, %v), want connect/retryable", kind, retryable)
 	}
 	if strings.Contains(err.Error(), testPass) {
 		t.Fatal("error text contains the SMTP password")

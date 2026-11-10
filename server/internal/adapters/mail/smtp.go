@@ -228,7 +228,9 @@ func (s *SMTP) settings(ctx context.Context) (resolvedSettings, error) {
 	}
 	cfg, err := s.resolve(ctx)
 	if err != nil {
-		return resolvedSettings{}, deliveryError(coremail.KindConfig, false,
+		// 解析失败是基础设施/存储面故障（设置行读不到），按连接类可重试：
+		// 与「配置值本身非法」区分，后者由 resolveSettings 判 config 不可重试。
+		return resolvedSettings{}, deliveryError(coremail.KindConnect, true,
 			fmt.Errorf("mail: resolve SMTP settings: %w", err))
 	}
 	resolved, err := resolveSettings(cfg)
