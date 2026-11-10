@@ -55,18 +55,18 @@ func TestQuotaRepoZeroSentinelE2E(t *testing.T) {
 			return err
 		})
 	}
-	if err := create(ownerA.ID, "13800003001"); err != nil {
+	if err := create(ownerA.ID, "13800000011"); err != nil {
 		t.Fatalf("owner A under unlimited: %v", err)
 	}
-	if err := create(ownerB.ID, "13800003002"); err != nil {
+	if err := create(ownerB.ID, "13800000012"); err != nil {
 		t.Fatalf("owner B under unlimited: %v", err)
 	}
-	if err := create(ownerA.ID, "13800003003"); err == nil || errs.From(err).Code != errs.CodeConflict {
+	if err := create(ownerA.ID, "13800000013"); err == nil || errs.From(err).Code != errs.CodeConflict {
 		t.Fatalf("same-owner second account err = %v, want conflict", err)
 	}
 	if err := e.db.InTx(context.Background(), func(ctx context.Context) error {
 		_, err := e.accts.Create(ctx, coreaccount.New{
-			SchoolID: school.ID, OwnerUserID: ownerB.ID, Phone: "13800003004",
+			SchoolID: school.ID, OwnerUserID: ownerB.ID, Phone: "13800000014",
 		}, -1)
 		return err
 	}); err == nil || errs.From(err).Code != errs.CodeValidation {
@@ -119,8 +119,8 @@ func TestQuotaRepoZeroSentinelRestoreE2E(t *testing.T) {
 	}
 
 	// 账号线：keeper 的账号占一个 live 名额；gone 的账号软删后管理员恢复。
-	keeperAccount := e.createAccount(school.ID, keeper.ID, "13500020001")
-	goneAccount := e.createAccount(school.ID, gone.ID, "13500020002")
+	keeperAccount := e.createAccount(school.ID, keeper.ID, "13500010005")
+	goneAccount := e.createAccount(school.ID, gone.ID, "13500010006")
 	if _, err := e.db.Exec(e.ctx,
 		`UPDATE accounts SET deleted_at = now() WHERE id = $1::uuid`, goneAccount.ID); err != nil {
 		t.Fatalf("soft delete account: %v", err)
