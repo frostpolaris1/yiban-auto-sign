@@ -351,9 +351,30 @@ func TestEncodeDetailAcceptsScheduleWritebackChanges(t *testing.T) {
 		"schedule.allow_time_pref": {false, true},
 		// 3c：分布档旧→新是小写状态词。
 		"schedule.sign_dist": {"front", "uniform"},
+		// smtp4：非敏感键记字面值，敏感键只记 set/cleared。
+		"mail.smtp_host": {"smtp.old.example", "smtp.new.example"},
+		"mail.smtp_port": {nil, 587},
+		"mail.tls_mode":  {"auto", "starttls"},
+		"mail.from":      {"cleared", "set"},
+		"mail.user":      {"set", "set"},
+		"mail.pass":      {"cleared", "set"},
 	}}
 	if _, err := coreaudit.EncodeDetail(detail); err != nil {
 		t.Fatalf("合法 changes 被拒绝: %v", err)
+	}
+	// 主机名形状只放行 mail.smtp_host：其它键带主机名仍拒绝。
+	if _, err := coreaudit.EncodeDetail(map[string]any{
+		"changes": map[string][2]any{"schedule.edge_back_sec": {nil, "smtp.example.com"}},
+	}); err == nil {
+		t.Fatal("非 mail.smtp_host 键接受了主机名形状")
+	}
+	// 主机名形状本身仍拒绝空白、@ 与路径分隔符。
+	for _, bad := range []string{"a b", "a@b", "smtp/example", "smtp.example.com "} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{
+			"changes": map[string][2]any{"mail.smtp_host": {nil, bad}},
+		}); err == nil {
+			t.Fatalf("mail.smtp_host 接受了非法字面值 %q", bad)
+		}
 	}
 	// 键形状越界（大写/空/超长/非法字符）不得通过。
 	for _, bad := range []string{"Schedule.edge", "", "a.b/c", "k" + strings.Repeat("e", 64)} {

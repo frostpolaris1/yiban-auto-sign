@@ -18,10 +18,12 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 )
@@ -48,8 +50,9 @@ type CredentialPayload struct {
 // Cipher 是单钥的凭据加解密器。
 // 零值不可用，请用 NewCipher 构造。
 type Cipher struct {
-	aead cipher.AEAD
-	kid  string
+	aead   cipher.AEAD
+	kid    string
+	random io.Reader
 }
 
 // NewCipher 校验密钥长度并派生 kid。
@@ -68,7 +71,7 @@ func NewCipher(key []byte) (*Cipher, error) {
 	}
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(credentialKIDDomain))
-	return &Cipher{aead: aead, kid: hex.EncodeToString(mac.Sum(nil)[:8])}, nil
+	return &Cipher{aead: aead, kid: hex.EncodeToString(mac.Sum(nil)[:8]), random: rand.Reader}, nil
 }
 
 // KID 返回本钥的标识。
@@ -127,4 +130,68 @@ func (c *Cipher) Open(cred coreaccount.Credential) (CredentialPayload, error) {
 // aad 固定 AAD 的逐字节口径。
 func aad(schoolID, accountID string) []byte {
 	return []byte(schoolID + "|" + accountID)
+}
+
+// SecretDomainMailPass 是 mail.pass 秘密串的 AAD 域标签。
+// 同一把钥、不同域：凭据 AAD 是 school|account，秘密串 AAD 是固定标签，
+// 两类密文互不可解。域标签是常量，调用方不得拼接用户输入。
+const SecretDomainMailPass = "yiban.mail.pass.v1"
+
+// SealSecret 用同一把钥加密任意敏感字符串，返回 base64(nonce||ciphertext)。
+//
+// 这是 account cipher 的通用秘密串扩展（SMTP 口令落库），
+// **不引入第二套加密实现**：AEAD、nonce 长度与密钥来源全部复用本类型。
+// 明文负载是裸字符串，不走凭据的三键 JSON；AAD 用调用方给的固定域标签。
+// 返回的 base64 是 settings 行的存储形态，不是枚举词，读面不得按词表解析。
+func (c *Cipher) SealSecret(domain, plaintext string) (string, error) {
+	if err := c.ready(); err != nil {
+		return "", err
+	}
+	if domain == "" {
+		return "", errors.New("account: secret domain is required")
+	}
+	nonce := make([]byte, c.aead.NonceSize())
+	if _, err := c.random.Read(nonce); err != nil {
+		return "", fmt.Errorf("account: read nonce: %w", err)
+	}
+	ciphertext := c.aead.Seal(nil, nonce, []byte(plaintext), []byte(domain))
+	blob := make([]byte, 0, len(nonce)+len(ciphertext))
+	blob = append(blob, nonce...)
+	blob = append(blob, ciphertext...)
+	return base64.StdEncoding.EncodeToString(blob), nil
+}
+
+// OpenSecret 解密 SealSecret 的输出。
+// 坏 base64、截断、域标签不符与密文篡改一律报错：
+// **绝不静默返回空串**，否则坏行会被读成「未设置」。
+func (c *Cipher) OpenSecret(domain, blob string) (string, error) {
+	if err := c.ready(); err != nil {
+		return "", err
+	}
+	if domain == "" {
+		return "", errors.New("account: secret domain is required")
+	}
+	raw, err := base64.StdEncoding.DecodeString(blob)
+	if err != nil {
+		return "", errors.New("account: secret blob is not base64")
+	}
+	if len(raw) < c.aead.NonceSize()+c.aead.Overhead() {
+		return "", errors.New("account: secret blob is truncated")
+	}
+	nonce := raw[:c.aead.NonceSize()]
+	ciphertext := raw[c.aead.NonceSize():]
+	plain, err := c.aead.Open(nil, nonce, ciphertext, []byte(domain))
+	if err != nil {
+		return "", errors.New("account: secret cannot be decrypted")
+	}
+	return string(plain), nil
+}
+
+// ready 报告 cipher 是否可用。零值或半构造的 cipher 返回错误而不是 panic：
+// 装配缺失必须显性失败，不得崩进程。
+func (c *Cipher) ready() error {
+	if c == nil || c.aead == nil || c.random == nil {
+		return errors.New("account: cipher is not initialized")
+	}
+	return nil
 }
