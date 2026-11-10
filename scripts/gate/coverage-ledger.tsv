@@ -195,3 +195,39 @@ server/internal/core/audit/chain.go	covered_by=server/internal/core/audit/chain_
 server/internal/core/audit/chain_test.go	uncovered=Go 测试文件自身即门（go test ./internal/core/audit 真跑），不需要 Python 侧覆盖
 server/internal/adapters/pg/settings_e2e_test.go	uncovered=Go 测试文件自身即门（真库 e2e：YIBAN_TEST_DATABASE_URL 下 go test ./internal/adapters/pg 跑分布档写回/审计/删行链），不需要 Python 侧覆盖
 server/internal/entry/http/oapi/enum_gate_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/oapi 真跑；3c 登记 ScheduleSignDist 对照 app/settings 词表），不需要 Python 侧覆盖
+server/cmd/cli/migrate_legacy_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/cli 跑迁移旧库 e2e），本批仅把 UserLimit 换成 Quota 替身
+server/cmd/cli/quota_stub_test.go	uncovered=Go 测试文件自身即门（go test ./cmd/cli 真跑），固定配额替身无独立行为
+server/cmd/cli/user.go	uncovered=Go 包门 go test ./cmd/cli（真 PG）：create-master 走 assembly.NewSettingsResolver 同一覆盖链，缺省 1/抬额/0=不限由 TestCreateMasterRespectsQuotaE2E 钉住
+server/cmd/cli/user_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/cli 跑 create-master e2e），本批新增 TestCreateMasterRespectsQuotaE2E
+server/cmd/server/auth_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑全部 HTTP e2e），本批夹具在 stack 构建后把配额抬到 10000/10000
+server/cmd/server/device_touch_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑设备刷新 e2e），本批仅把 Limit 换成 Quota 替身
+server/cmd/server/quota_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑真装配配额 e2e：缺省 1/1、PUT 热生效、审计旧→新）
+server/cmd/server/quota_stub_test.go	uncovered=Go 测试文件自身即门（go test ./cmd/server 真跑），固定配额替身无独立行为
+server/cmd/server/ux2_accounts_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑账号 e2e），本批仅把 Limit 换成 Quota 替身
+server/internal/adapters/pg/account.go	uncovered=Go 包门 go test ./internal/adapters/pg 真跑；0=不限哨兵（limit=0 跳过全局计数、一人一号不动、负数拒绝）由 quota_e2e_test.go 真库钉住
+server/internal/adapters/pg/quota_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./internal/adapters/pg 跑配额 0=不限仓储哨兵与一人一号双判据 e2e）
+server/internal/adapters/pg/quota_stub_test.go	uncovered=Go 测试文件自身即门（go test ./internal/adapters/pg 真跑），固定配额替身无独立行为
+server/internal/adapters/pg/usecase_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./internal/adapters/pg 跑用例回滚 e2e），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/auto_approve_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/batch_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/detect_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/person_name_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/quota_stub_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），固定配额替身无独立行为
+server/internal/app/account/restore.go	uncovered=Go 包门 go test ./internal/app/account 真跑；配额改经 app.QuotaLimits 每请求解析，0=不限语义由 pg quota e2e 真库钉住
+server/internal/app/account/review_alert_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/school_guard_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/self.go	uncovered=Go 包门 go test ./internal/app/account 真跑；自助恢复配额改经 app.QuotaLimits，0=不限语义由 pg quota e2e 真库钉住
+server/internal/app/account/self_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/signing_credential_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/update_optimistic_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/account/usecase.go	uncovered=Go 包门 go test ./internal/app/account 真跑；建号配额改经 app.QuotaLimits 每请求解析，0=不限语义由 pg quota e2e 真库钉住
+server/internal/app/account/usecase_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/account 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/auth/forgot_password_mail_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/auth 真跑），本批仅把 UserLimit 换成 Quota 替身
+server/internal/app/auth/quota_stub_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/auth 真跑），固定配额替身无独立行为
+server/internal/app/auth/reauthenticate_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/auth 真跑），本批仅把 UserLimit 换成 Quota 替身
+server/internal/app/quota.go	uncovered=跨领域端口定义（QuotaLimits），编译门即咬接线；实现与消费由 app/settings、app/user、app/account、app/auth 与 pg quota e2e 真跑
+server/internal/app/user/batch_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/user 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/user/create.go	uncovered=Go 包门 go test ./internal/app/user 真跑；建号配额改经 app.QuotaLimits 每请求解析，0=不限语义由 pg quota e2e 与 CLI e2e 真库钉住
+server/internal/app/user/mail_notify_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/user 真跑），本批仅把 Limit 换成 Quota 替身
+server/internal/app/user/quota_stub_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/user 真跑），固定配额替身无独立行为
+server/internal/app/user/restore.go	uncovered=Go 包门 go test ./internal/app/user 真跑；恢复配额改经 app.QuotaLimits，0=不限语义由 pg quota e2e 真库钉住
