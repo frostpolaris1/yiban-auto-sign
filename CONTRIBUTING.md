@@ -103,11 +103,84 @@
 5. **一个模块一个 PR**。不要混装机制替换、缺陷修复、新门与文档改写。
 6. **提交信息**用 Conventional Commits。
 7. **PR 指向 `develop`**。填写 `.github/pull_request_template.md`；UI 改动附截图。
-8. **提交身份**：外部贡献者使用自己的 `git user.name` 与 `git user.email`。
-   仓库自带的 pre-commit 身份白名单只约束维护者的自动化流程。
-   如果你启用了 `core.hooksPath=scripts/git-hooks`，用 `git commit --no-verify` 跳过该钩子。
+8. **提交身份**：用你自己的 `git user.name` 与 `git user.email`；本地钩子与白名单细则见 §7.1。
 
-## 7. 本地命令
+## 7. 外部贡献者
+
+本节只写外部贡献者与维护者不同、或最容易踩空的地方。流程仍以 §6 为准。
+
+### 7.1 提交身份
+
+用自己的 `git user.name` 与 `git user.email`，不要冒用维护者身份。
+
+仓库自带的 `scripts/git-hooks/`（`pre-commit` 与 `commit-msg`）是维护者本地的卫生阀：
+
+- 它**不会**自动启用。只有本地执行过 `git config core.hooksPath scripts/git-hooks` 才会生效；
+  外部克隆不做这一步，钩子不触发。
+- 它的白名单只允许维护者身份。你若复制了维护者的本地配置而被拒，
+  用 `git commit --no-verify` 跳过本次校验——跳过只影响你本地，不影响 CI。
+
+### 7.2 PR 必须过全部 CI 门禁
+
+PR 上的全部检查绿，才进入人工审查。活跃线 `develop` 上共 12 个检查，
+来自 11 个作业（`ui-e2e` 一个作业按 behavior / shots 两片各报一个检查）：
+
+| 检查名 | 来源 | 管什么 |
+|---|---|---|
+| `verify` | `.github/workflows/ci.yml` | 主验证：Python 门、旧线测试子集、新栈门（按改动面分流） |
+| `slow-lane` | 同上 | 慢集与串行轨 |
+| `dependency-audit` | 同上 | `pip-audit`（`requirements.lock`） |
+| `tooling-gate` | 同上 | actionlint、shellcheck、golangci-lint、govulncheck、npm audit |
+| `contract-gate` | 同上 | spectral lint ＋ oasdiff 破坏性变更（只审契约面） |
+| `frontend` | 同上 | Vitest、构建可复现、Playwright（旧 Vue 线） |
+| `stacks` | 同上 | `scripts/verify-stacks.sh`（Go＋React 新栈门） |
+| `ui-e2e (behavior)` | 同上 | 新栈 Playwright 行为分片 |
+| `ui-e2e (shots)` | 同上 | 新栈 Playwright 截图分片 |
+| `deploy-gate` | `.github/workflows/deploy-gate.yml` | 干净环境按 README 从零装成 |
+| `container-deploy-e2e` | 同上 | 容器部署 e2e |
+| `update-rollback-e2e` | 同上 | 一键更新的失败矩阵与回滚 |
+
+任一检查红都会阻塞合并。修完推送后等 CI 重跑；不要靠反复重试掩盖抖动。
+（`main` 上另有定时 workflow，不在 PR 检查里。）
+
+### 7.3 合并方式
+
+维护者人工审查通过后，由维护者 **squash 合并**到 `develop`。
+外部贡献者不直接 push `develop`，也不自行合并 PR。
+合并后的提交信息由维护者按 Conventional Commits 整理。
+
+### 7.4 提交前本地门
+
+不必等 CI 才发现低级问题。提交前在仓库根跑这几条：
+
+```bash
+# Go 线：格式、静态检查、全量验证（含 go vet、测试、生成物 --check、许可证门）
+(cd server && gofmt -l .)                  # 必须无输出
+(cd server && golangci-lint run ./...)
+bash server/scripts/verify.sh              # 无 DSN 时 pg/auth/cli e2e 会显性 SKIP；SKIP 不等于绿
+
+# Python 四门（对已提交树跑）
+python -I tests/test_repo_structure_gate.py -q
+python -I tests/test_gate_lane_roster.py -q
+python -I tests/test_doc_reference_gate.py -q
+python -I tests/test_public_exposure_gate.py -q
+
+# 生成物一致性：手改生成物会在这里变红
+(cd server && bash scripts/generate.sh --check) && (cd ui && node scripts/generate-api.mjs --check)
+```
+
+`golangci-lint` 的版本与规则以 CI 的 `tooling-gate` 为准（`server/.golangci.yml`）。
+
+### 7.5 契约改动
+
+- 契约的唯一事实源是 `server/contracts/openapi.yaml`；先改源，再重新生成。
+- 生成物 **不得手改**：`server/internal/entry/http/oapi/oapi.gen.go` 与
+  `ui/src/lib/api/schema.d.ts` 只由脚本产出。
+- 两个 `--check` 必须在本地绿（命令见 §7.4）。
+- 破坏性变更由 `contract-gate` 的 oasdiff 拦截；确属有意的破坏性变更，
+  先在 issue 里说明理由，再由维护者走登记的豁免通道。
+
+## 8. 本地命令
 
 后端：
 
@@ -155,7 +228,7 @@ spectral 6.17.0 由 `server/contracts/tools/package-lock.json` 钉住，规则�
 - 迭代只跑受影响的包或 spec。收口再跑全量。
 - 不要用固定 sleep 等异步结果；用状态或条件等待。
 
-## 8. 完成判据
+## 9. 完成判据
 
 - 有测试或等价门钉住用户可见结果。
 - 相关门全绿，命令与退出码写进 PR 描述。
@@ -164,7 +237,7 @@ spectral 6.17.0 由 `server/contracts/tools/package-lock.json` 钉住，规则�
 - 不含真实数据。
 - 维护者完成审查后合并。
 
-## 9. 许可证
+## 10. 许可证
 
 本仓使用 GNU Affero General Public License v3.0。
 全文见 `LICENSE`。
