@@ -498,7 +498,9 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 		return nil
 	})
 	if txErr != nil {
-		s.addRowError("accounts", "insert", fmt.Errorf("account %d (%s): %v", oldID, coremask.MaskPhone(phone), txErr))
+		s.addRowError("accounts", "insert", fmt.Errorf(
+			"account %d (%s): insert failed (remark name ≤50 chars, reject_reason ≤200 chars, phone shape): %v",
+			oldID, coremask.MaskPhone(phone), txErr))
 		return
 	}
 	s.bump("rows_imported", "accounts")

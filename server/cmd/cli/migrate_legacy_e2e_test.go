@@ -1272,6 +1272,47 @@ func TestMigrateLegacyInvalidTimestampRowErrorE2E(t *testing.T) {
 	}
 }
 
+// TestMigrateLegacyOverlongNameRowErrorE2E 负向：备注名超过 50 字符是行级错误。
+// 错误文本必须点名 remark 字段，运维才能从 stderr 直接定位，不靠猜。
+func TestMigrateLegacyOverlongNameRowErrorE2E(t *testing.T) {
+	env := e2eSetupDB(t)
+	root := t.TempDir()
+	ex := e2eExport{
+		Users: []map[string]any{
+			e2eUserRow(1, e2eAdminEmail, "user", 0, 1),
+		},
+		Accounts: []map[string]any{
+			e2eAccountRow(1, strings.Repeat("名", 51), e2ePhoneA, e2eAdminEmail,
+				"active", "", "", 0, 0),
+		},
+	}
+	dir := e2eWriteExport(t, root, ex)
+	out := filepath.Join(root, "report")
+
+	code, output := e2eRun(t, env, dir, out, env.defaults())
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (overlong remark name is a row error):\n%s", code, output)
+	}
+	if !strings.Contains(output, "row error in accounts (insert)") {
+		t.Fatalf("output must report the accounts insert row error, got:\n%s", output)
+	}
+	if !strings.Contains(output, "remark") {
+		t.Fatalf("row error must name the remark field, got:\n%s", output)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM accounts"); n != 0 {
+		t.Fatalf("accounts = %d, want 0 (overlong row must leave nothing)", n)
+	}
+	if n := e2eCount(t, env.dsn,
+		"SELECT count(*) FROM legacy_ids WHERE old_table = 'accounts'"); n != 0 {
+		t.Fatalf("account legacy_ids = %d, want 0 (overlong row must leave no mapping)", n)
+	}
+	summary := e2eSummary(t, out)
+	rowErrors := summary["row_errors"].(map[string]any)
+	if rowErrors["accounts"].(float64) != 1 {
+		t.Fatalf("row_errors drifted: %v", rowErrors)
+	}
+}
+
 // TestMigrateLegacyUnmatchedNonActiveOwnerE2E：owner 对不上的非 active
 // 账号不落 fallback，显性行错误。
 func TestMigrateLegacyUnmatchedNonActiveOwnerE2E(t *testing.T) {

@@ -10,8 +10,11 @@
 
 ## 0. 基线与证据口径
 
-- RC 基线：`develop = d7e732d2`，仓库根 `VERSION = 0.7.0`；两个二进制自报
-  `0.7.0 / d7e732d2`。
+- 版本基线：Go 线版本自 **v1.0.0** 起逐步加版，仓库根 `VERSION` 是唯一来源；
+  发布件按切换当日最终 tip 现建，不沿用任何旧基线。当日 tip 以
+  `git log --oneline -1 origin/develop` 为准；构建必须在干净 worktree 跑
+  `server/scripts/build-release.sh`（主树会注入旧 hash；口径见交接手册
+  §3.1，本地过程稿）。
 - 生产现状：旧栈 v0.6.5，目录 `/opt/yiban-auto-sign`，SQLite 库 `data/yiban.db`，
   服务 `yiban-web`；无 docker、无 PostgreSQL。生产机只读巡检可用（`ssh yiban`）。
 - 发布门证据只在 CI：`.github/workflows/deploy-gate.yml` 的三个作业
@@ -31,17 +34,19 @@
 
 版本单一来源是仓库根 `VERSION`（单行 X.Y.Z）；commit 取
 `git rev-parse --short HEAD`；两者由 `server/scripts/build-release.sh`
-用 `-ldflags -X` 注入两个二进制。
+用 `-ldflags -X` 注入两个二进制。版本自 v1.0.0 起逐步加版；本页不写死
+当日 tip 与版本号。
 
 ```bash
-git rev-parse --short HEAD        # 预期 d7e732d2
-cat VERSION                        # 预期 0.7.0
+git log --oneline -1 origin/develop  # 切换当日最终 tip，抄进 §7
+git rev-parse --short HEAD           # 构建点的 commit，V1/V2 以它为准
+cat VERSION                          # 发布版本（≥ 1.0.0）
 bash server/scripts/build-release.sh <outdir>
 ```
 
 | # | 谓词 | 命令与判据 |
 |---|---|---|
-| V1 | server 自报版本 | `<outdir>/yiban-server --version` 打印 `version/commit/build_time` 三行；version == `0.7.0`，commit == `d7e732d2`；出现 `dev`/`unknown` 即失败 |
+| V1 | server 自报版本 | `<outdir>/yiban-server --version` 打印 `version/commit/build_time` 三行；version == `cat VERSION`（发布时 ≥ 1.0.0 的当前值），commit == 构建时 `git rev-parse --short HEAD`；出现 `dev`/`unknown` 即失败 |
 | V2 | cli 自报版本 | `<outdir>/yiban-cli version` 三行同上；与 V1 逐行一致（双侧核对） |
 | V3 | 版本门 | `bash scripts/release-check.sh --only go-version` rc=0（内部含「发布 tag `v$VERSION` 指向 HEAD」断言；打 tag 前该项 FAIL 是预期，发布时才绿） |
 
@@ -60,7 +65,7 @@ bash server/scripts/build-release.sh <outdir>
 
 | # | 谓词 | 命令与判据 |
 |---|---|---|
-| S1 | 清单对账 | `manifest.json` 的 `version` == `0.7.0`；`files[].name` 覆盖 `yiban-server` 与 `yiban-cli`；每件 sha256 与发布件实算一致 |
+| S1 | 清单对账 | `manifest.json` 的 `version` == `cat VERSION`（与 V1 同值）；`files[].name` 覆盖 `yiban-server` 与 `yiban-cli`；每件 sha256 与发布件实算一致 |
 | S2 | 验签 | `bash scripts/release/verify.sh --pubkey <发布公钥> --manifest <manifest.json> --signature <manifest.sig>` rc=0 |
 | S3 | 信任锚 | 公钥指纹来自发布件目录**之外**（环境变量或安装根锚文件）；与发布者带外交付的指纹一致 |
 | S4 | 验证确实跑了 | rc=2 表示「验证没跑」（openssl 缺失、文件缺失）；非 0 一律当失败，不得当通过 |
@@ -111,12 +116,17 @@ credential key，只打印写入路径与指纹，不打印值。
 
 判据正本 [`legacy-import.md`](legacy-import.md)，本文不复制。窗口内只确认检查框：
 
-- [ ] 前置条件齐备（新库隔离、新 master 与学校已建、三个密钥形状正确）：
-      [`legacy-import.md`](legacy-import.md) §1。
+- [ ] 前置条件齐备（新库隔离、新 master 与学校已建、密钥形状正确，
+      含 `YIBAN_HASH_PEPPER`）：[`legacy-import.md`](legacy-import.md) §1。
 - [ ] 旧库备份完成，sha256 已记录：§1.1。
 - [ ] 冻结后导出完成，`summary.json` 已逐项核对：§2。
 - [ ] `migrate-legacy ... --strict` 退出码 0：§3。
 - [ ] 对账逐项通过（行数守恒、`decrypt_failed=0`、映射无悬空）：§4。
+- [ ] 同 owner 的 live 账号数已复核；大于 1 的按 §3.1 处置。
+- [ ] 自选时间补录完成：`backfill-time-prefs` 先 dry-run，核对
+      `writes` / `conflicts` / `skips`，再 `--apply`，最后 dry-run 复核
+      `rows_written=0`：§8 步 7 与
+      [`../dev/time-prefs-backfill.md`](../dev/time-prefs-backfill.md)。
 - [ ] 幂等重跑符合预期（可选）：§5。
 
 ## 4. 切换前检查单
@@ -156,7 +166,7 @@ T0 之前逐项打勾。任何一项不过：不切流。
 
 ## 5. 窗口执行顺序（切流）
 
-按 [`legacy-import.md`](legacy-import.md) §8 的十步执行；本文只列顺序与出口判据：
+按 [`legacy-import.md`](legacy-import.md) §8 的十一步执行；本文只列顺序与出口判据：
 
 | 序 | 阶段 | 出口判据（正本在 §8 与所指节） |
 |---|---|---|
@@ -165,14 +175,15 @@ T0 之前逐项打勾。任何一项不过：不切流。
 | 3 | 备份旧库 | §8 步 3 ＋ §1.1；sha256 已记录 |
 | 4 | 导出 | §8 步 4 ＋ §2；`summary.json` 已核对 |
 | 5 | 导入 | §8 步 5 ＋ §3；`--strict` 退出码 0 |
-| 6 | 对账 | §8 步 6 ＋ §4；任何一项不符即停，不切流量 |
-| 7 | 直连冒烟 | §8 步 7 ＋ §6；不切正式反代 |
-| 8 | 切正式反代 | §8 步 8；`https://<域名>/healthz` 与登录复测通过 |
-| 9 | 旧栈停机保留 | §8 步 9；旧库与备份保留，不再写 |
-| 10 | 观察 | §8 步 10 → 本文 §6 |
+| 6 | 对账与一人一号复核 | §8 步 6 ＋ §4 ＋ §3.1；对账全绿；同 owner live>1 已处置 |
+| 7 | 补录自选时间 | §8 步 7 ＋ [`../dev/time-prefs-backfill.md`](../dev/time-prefs-backfill.md)；dry-run → 核对 → `--apply` → 再 dry-run 复核 |
+| 8 | 直连冒烟 | §8 步 8 ＋ §6；不切正式反代 |
+| 9 | 切正式反代 | §8 步 9；`https://<域名>/healthz` 与登录复测通过 |
+| 10 | 旧栈停机保留 | §8 步 10；旧库与备份保留，不再写 |
+| 11 | 观察 | §8 步 11 → 本文 §6 |
 
-第 8 步之前的失败按 [`legacy-import.md`](legacy-import.md) §7 的切换前回滚
-口径处理（停新栈、保留旧栈、新库可丢弃重导）。第 8 步之后进入 §6 观察。
+第 9 步之前的失败按 [`legacy-import.md`](legacy-import.md) §7 的切换前回滚
+口径处理（停新栈、保留旧栈、新库可丢弃重导）。第 9 步之后进入 §6 观察。
 
 ## 6. 切流后的观察与回滚
 
