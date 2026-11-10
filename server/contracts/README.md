@@ -204,6 +204,10 @@ either side drifts.
 |  |  |  | 只读配置名册，按组返回；敏感键只给 `{set, masked, source}`，永不回显原文；source=env/default/unknown（file 保留，本服务不产出）。可写回的调度三键（schedule.edge_front_sec、schedule.edge_back_sec、schedule.allow_time_pref）额外读 settings 覆盖行：有效行存在时报 source=db 与行值，DB 覆盖 env（sett2）。键全集来自编译期嵌入的 `internal/configdata/registry.json`。 |
 | PUT | `/api/admin/schedule-settings` | master | sett2 |
 |  |  |  | 部分补丁写回调度键：缺字段=不动该键、显式 null=删覆盖行回缺省、值=upsert；sett2 三键（edge 两键收 0–300 整数秒、allow_time_pref 收 true/false 字面）＋批 3b 四枚 DB-only 键（sunday_sign/saturday_sign 周末门布尔，缺行=false=当日不铺行，行为对齐旧线周末缺省不签；default_sign_start_min/end_min 收 0–1439 分钟，成对生效：单侧写入与生效值组合后仍需 start<end 否则 400，读面半对/非法整对回退内置 06:30/07:50）＋批 3c 的 sign_dist（收小写 front|uniform：front 顺序装满前段且为缺行默认档（既有行为），uniform 全窗分层；大写/未知词 400）。越域、JSON 类型错、未知字段 400 且零写入零审计；写入与 `settings.schedule_writeback` 审计同事务，detail 只含变更键旧→新。edge、窗口与分布档改值次日构建生效（当日已铺行不回改）；allow_time_pref 次请求生效；五枚机制键不出现在名册响应。200 回全量名册（同 GET 形态）。 |
+| GET | `/api/admin/quota-settings` | master/admin | r4r |
+|  |  |  | 读两枚 DB-only 配额键（quota.max_users/quota.max_accounts）的生效值与来源：缺行=1（master 自用紧档），0=不限哨兵；source=db（有效覆盖行）/default（缺行或坏行，坏行每键 Warn 一次）。配额键不进 GET /api/admin/settings 名册；存储故障 500，不报成缺省。 |
+| PUT | `/api/admin/quota-settings` | master | r4r |
+|  |  |  | 部分补丁写回配额两键：缺字段=不动该键、显式 null=删覆盖行回缺省、值=upsert；两键收 0–100000 整数（0=不限：计数检查整体跳过，一人一号规则独立不动）。越域、JSON 类型错、未知字段、空体 400 且零写入零审计；写入与恰一行 `settings.quota_writeback` 审计同事务，detail 只含变更键旧→新。写回热生效（下一次注册/建号/恢复即用新值，无需重启）；删行不回收存量行，只拒新写。200 回生效配额报告。 |
 | POST | `/api/admin/mail/test` | master | c3e |
 |  |  |  | 向当前会话邮箱同步发一封测试信；空请求体，收件人不可由客户端指定；邮件投递关闭（SMTP 未启用）与无邮箱均 409（文案不同）、发送失败 502（不含 SMTP 应答/主机/口令）；每次外呼（成功/失败）写 `settings.mail_test` 审计，detail 只含 result 与粗分类；每管理员 60s 冷却（进程内，重启清空）429＋Retry-After。 |
 | POST | `/api/admin/webhook/test` | master | kqa |

@@ -111,6 +111,22 @@ func (s *stubScheduleSettings) SetSchedule(context.Context, corescope.Scope, app
 	return nil
 }
 
+// stubQuotaSettings 是配额读写端口的进程内替身（r4r）。
+type stubQuotaSettings struct{ sets int }
+
+func (s *stubQuotaSettings) QuotaSettings(context.Context, corescope.Scope) (appsettings.QuotaReport, error) {
+	return appsettings.QuotaReport{
+		MaxUsers:    appsettings.QuotaValue{Value: 1, Source: appsettings.QuotaSourceDefault},
+		MaxAccounts: appsettings.QuotaValue{Value: 1, Source: appsettings.QuotaSourceDefault},
+	}, nil
+}
+
+func (s *stubQuotaSettings) SetQuota(context.Context, corescope.Scope, appaudit.Actor,
+	[]appsettings.QuotaChange) error {
+	s.sets++
+	return nil
+}
+
 func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 	t.Helper()
 	return newSettingsEngineWith(t,
@@ -118,7 +134,8 @@ func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 		systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}).
 			WithAutoApprove(&stubAutoApprove{}).
 			WithWebhookTest(stubWebhookTest{}).
-			WithScheduleSettings(&stubScheduleSettings{}))
+			WithScheduleSettings(&stubScheduleSettings{}).
+			WithQuotaSettings(&stubQuotaSettings{}))
 }
 
 func newSettingsEngineWith(t *testing.T, notify *notifyhttp.Handler, system *systemhttp.Handler) (*gin.Engine, *stubIssuer) {
@@ -227,6 +244,13 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 		{"schedule settings admin", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, admin, true, http.StatusForbidden},
 		{"schedule settings without csrf", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, master, false, http.StatusForbidden},
 		{"schedule settings master", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, master, true, http.StatusOK},
+		{"quota settings user", http.MethodGet, "/api/admin/quota-settings", "", user, false, http.StatusForbidden},
+		{"quota settings admin", http.MethodGet, "/api/admin/quota-settings", "", admin, false, http.StatusOK},
+		{"quota settings master", http.MethodGet, "/api/admin/quota-settings", "", master, false, http.StatusOK},
+		{"quota settings write user", http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, user, true, http.StatusForbidden},
+		{"quota settings write admin", http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, admin, true, http.StatusForbidden},
+		{"quota settings write without csrf", http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, master, false, http.StatusForbidden},
+		{"quota settings write master", http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, master, true, http.StatusOK},
 		{"mail test user", http.MethodPost, "/api/admin/mail/test", "", user, true, http.StatusForbidden},
 		{"mail test admin", http.MethodPost, "/api/admin/mail/test", "", admin, true, http.StatusForbidden},
 		{"mail test master without csrf", http.MethodPost, "/api/admin/mail/test", "", master, false, http.StatusForbidden},
@@ -284,6 +308,8 @@ func TestSettingsRoutesNilHandlersReturn501(t *testing.T) {
 		{http.MethodGet, "/api/admin/auto-approve", "", false},
 		{http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, true},
 		{http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, true},
+		{http.MethodGet, "/api/admin/quota-settings", "", false},
+		{http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, true},
 		{http.MethodPost, "/api/admin/mail/test", "", true},
 		{http.MethodPost, "/api/admin/webhook/test", "", true},
 		{http.MethodGet, "/api/announcement", "", false},
@@ -326,6 +352,8 @@ func TestSettingsRoutesSingleSideWiring(t *testing.T) {
 	systemCases := []settingsEndpoint{
 		{http.MethodGet, "/api/admin/settings", "", false, http.StatusOK},
 		{http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, true, http.StatusOK},
+		{http.MethodGet, "/api/admin/quota-settings", "", false, http.StatusOK},
+		{http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, true, http.StatusOK},
 		{http.MethodPost, "/api/admin/mail/test", "", true, http.StatusOK},
 		{http.MethodPost, "/api/admin/webhook/test", "", true, http.StatusOK},
 		{http.MethodGet, "/api/announcement", "", false, http.StatusOK},
@@ -360,7 +388,8 @@ func TestSettingsRoutesSingleSideWiring(t *testing.T) {
 	t.Run("system only", func(t *testing.T) {
 		systemHandler := systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}).
 			WithWebhookTest(stubWebhookTest{}).
-			WithScheduleSettings(&stubScheduleSettings{})
+			WithScheduleSettings(&stubScheduleSettings{}).
+			WithQuotaSettings(&stubQuotaSettings{})
 		engine, issuer := newSettingsEngineWith(t, nil, systemHandler)
 		master := issueUser(t, issuer, auth.RoleMaster)
 		for _, tc := range notifyCases {

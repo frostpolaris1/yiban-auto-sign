@@ -476,6 +476,8 @@ var nullableOptionalExemptions = map[string]string{
 	// 显式 null=删覆盖行回 env。处理器自解码原始 JSON（键存在性判定），
 	// 不经生成物编码，required 的 omitempty 口径不适用。
 	"AdminScheduleSettingsUpdate": "请求对象；部分补丁语义（缺字段=不动、null=删行），响应侧无此形状",
+	// r4r 配额写回：同 sett2 形态，两键全 optional，处理器自解码原始 JSON。
+	"AdminQuotaSettingsUpdate": "请求对象；部分补丁语义（缺字段=不动、null=删行），响应侧无此形状",
 }
 
 // 可空响应字段必须 required：缺键与 null 对客户端是两种形状。
@@ -557,6 +559,8 @@ var additionalPropertiesExemptions = map[string][]string{
 	// sett2 调度设置写回：请求对象；未知键由处理器显式拒绝（400），
 	// 比解码器静默忽略更严——声明与行为一致，豁免只为过登记门。
 	"AdminScheduleSettingsUpdate": {"请求对象；未知键由处理器显式 400，非静默忽略"},
+	// r4r 配额写回：同 sett2 形态，未知键由处理器显式 400。
+	"AdminQuotaSettingsUpdate": {"请求对象；未知键由处理器显式 400，非静默忽略"},
 }
 
 // contractNoAdditionalProperties 匹配 YAML 映射里的一项 additionalProperties: false。

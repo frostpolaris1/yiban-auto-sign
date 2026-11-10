@@ -2257,6 +2257,76 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/quota-settings:
+    get:
+      tags: [settings]
+      operationId: AdminQuotaSettings
+      summary: Read the effective active-user and active-account quotas.
+      description: |
+        Master or admin. Returns the effective value and source of the two
+        database-only quota keys. quota.max_users caps the number of live
+        users across the deployment; quota.max_accounts caps the number of
+        live signing accounts. A value of 0 means unlimited: the capacity
+        count check is skipped entirely, not "zero allowed". The default
+        when no override row exists is 1 for both keys (the master-only
+        tight default: a fresh deployment can create exactly one master and
+        one account, and raising the quota is the master's first settings
+        action). The source is db when a valid override row exists and
+        default when the row is absent or invalid. These keys never appear
+        in GET /api/admin/settings (they are not registry keys). A storage
+        failure answers 500; it is never reported as the default.
+      x-roles: [master, admin]
+      responses:
+        '200':
+          description: Effective quota values and their sources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaReport'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    put:
+      tags: [settings]
+      operationId: AdminQuotaSettingsSet
+      summary: Write runtime overrides for the active-user and active-account quotas.
+      description: |
+        Master only. A partial patch of the two quota keys: a field absent
+        from the body leaves that key untouched; an explicit null deletes
+        the stored override row so the key reads its default again; a value
+        upserts the override row. Both fields accept integers between 0 and
+        100000; 0 means unlimited (the capacity count check is skipped,
+        while the one-account-per-owner rule is independent and unchanged).
+        An out-of-domain value, a wrong JSON type, an unknown field or an
+        empty body answers 400 with zero writes and zero audit rows. The
+        write and one settings.quota_writeback audit row commit in one
+        transaction; the audit detail holds only the changed keys with
+        their previous and new values. The write takes effect on the next
+        registration, user creation, account creation or restore request
+        (no restart). Deleting a row while the live count exceeds the
+        default does not remove existing rows: only new writes are
+        rejected. The answer is the effective quota report after the write.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminQuotaSettingsUpdate'
+      responses:
+        '200':
+          description: Effective quota values after the write.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaReport'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/admin/mail/test:
     post:
       tags: [settings]
@@ -3784,6 +3854,54 @@ components:
             across the whole window. Lowercase literals only: any other
             value, including case variants, answers 400. Takes effect at
             the next daily plan build.
+    QuotaSetting:
+      type: object
+      description: |
+        One effective quota value and the layer that provided it. The two
+        quota keys are database-only: there is no environment counterpart,
+        so the source is db when a valid override row exists and default
+        otherwise.
+      required: [value, source]
+      properties:
+        value:
+          type: integer
+          minimum: 0
+          maximum: 100000
+          description: Effective limit; 0 means unlimited.
+        source:
+          type: string
+          enum: [db, default]
+          description: db when a valid override row exists, default otherwise.
+    QuotaReport:
+      type: object
+      description: Effective values of the two quota keys.
+      required: [max_users, max_accounts]
+      properties:
+        max_users:
+          $ref: '#/components/schemas/QuotaSetting'
+        max_accounts:
+          $ref: '#/components/schemas/QuotaSetting'
+    AdminQuotaSettingsUpdate:
+      type: object
+      description: |
+        Partial patch of the quota keys. Every field is optional: absent
+        leaves the key untouched, null deletes the override row, a value
+        upserts it. Unknown fields answer 400.
+      additionalProperties: false
+      properties:
+        max_users:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100000
+          description: |
+            Live-user cap across the deployment; 0 means unlimited.
+        max_accounts:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100000
+          description: |
+            Live-account cap across the deployment; 0 means unlimited.
+            The one-account-per-owner rule is independent and unchanged.
     MailTestResult:
       type: object
       required: [message]

@@ -695,6 +695,24 @@ func (s *server) AdminScheduleSettingsSet(c *gin.Context, params oapi.AdminSched
 	s.system.AdminScheduleSettingsSet(c, params)
 }
 
+// AdminQuotaSettings 委托配额设置读取。未装配时仍是 501。
+func (s *server) AdminQuotaSettings(c *gin.Context) {
+	if s.system == nil {
+		notImplemented(c)
+		return
+	}
+	s.system.AdminQuotaSettings(c)
+}
+
+// AdminQuotaSettingsSet 委托配额设置写回。未装配时仍是 501。
+func (s *server) AdminQuotaSettingsSet(c *gin.Context, params oapi.AdminQuotaSettingsSetParams) {
+	if s.system == nil {
+		notImplemented(c)
+		return
+	}
+	s.system.AdminQuotaSettingsSet(c, params)
+}
+
 // AdminAutoApprove 委托自动审批开关读取。未装配时仍是 501。
 func (s *server) AdminAutoApprove(c *gin.Context) {
 	if s.system == nil {
