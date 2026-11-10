@@ -258,7 +258,7 @@ sudo bash deploy/baremetal/update.sh \
   --manifest release/manifest.json \
   --signature release/manifest.sig \
   --pubkey release-pubkey.pem \
-  --expect-version 0.7.0
+  --expect-version 1.0.0
 ```
 
 一条命令走完：**自检 → 备份（数据库＋照片）→ 停服 → 迁移 → 换件 → 健康检查 →

@@ -45,7 +45,7 @@ ARG GOPROXY
 
 # 版本身份：注入 `yiban-server --version` 与 `yiban-cli version`。
 # 缺省 dev/unknown 是显性占位符（不编造 sha 或时间）；发布构建必须传：
-#   --build-arg BUILD_VERSION=0.7.0 \
+#   --build-arg BUILD_VERSION=1.0.0 \
 #   --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
 #   --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ARG BUILD_VERSION=dev
