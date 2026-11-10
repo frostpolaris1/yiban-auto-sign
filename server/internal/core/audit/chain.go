@@ -441,6 +441,8 @@ func validateDetailValue(key string, value any) error {
 	case map[string][2]any:
 		// changes（sett2）是唯一允许的键→[旧,新]对形态：
 		// 键限 settings 键形状，元素限 nil/布尔/整数标量，无自由文本。
+		// 3c：字符串枚举（schedule.sign_dist）只收状态词形状（wordShape）——
+		// 数字串、大写、空白与邮箱/手机号形状都不通过，仍无自由文本容量。
 		if key != "changes" {
 			return fmt.Errorf("%w: %q must not be a map", ErrDetailType, key)
 		}
@@ -449,8 +451,12 @@ func validateDetailValue(key string, value any) error {
 				return fmt.Errorf("%w: changes key %q is not a settings key shape", ErrDetailShape, name)
 			}
 			for _, item := range pair {
-				switch item.(type) {
+				switch value := item.(type) {
 				case nil, bool, int, int64:
+				case string:
+					if !wordShape.MatchString(value) {
+						return fmt.Errorf("%w: changes %q value has the wrong value shape", ErrDetailShape, name)
+					}
 				default:
 					return fmt.Errorf("%w: changes %q value has type %T", ErrDetailType, name, item)
 				}

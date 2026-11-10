@@ -74,6 +74,35 @@ const (
 	signWindowMinuteMax = 1439
 )
 
+// KeyScheduleSignDist 是铺点分布档（批 3c DB-only 字符串枚举）。
+// 与 engine.paused 同口径：不经名册（registry 无对应键，Known 恒 false，
+// 覆盖行不进 GET /api/admin/settings）、无 env 对应位。
+// 缺行=现行默认档 front（装配端传 SignDistFront，即既有 buildRows
+// 的 Front=true 实参）；行值只认小写 front/uniform。
+const KeyScheduleSignDist = "schedule.sign_dist"
+
+// SignDist 是铺点分布档的字符串枚举。词表本体只此一处：
+// 入口层解码、用例层域校验与读面解析共用，不复制第二份。
+type SignDist string
+
+const (
+	// SignDistFront 顺序装满前段（缺行默认档，对齐既有 Front=true）。
+	SignDistFront SignDist = "front"
+	// SignDistUniform 全窗分层（摊薄峰值，对齐既有 Front=false）。
+	SignDistUniform SignDist = "uniform"
+)
+
+// ParseSignDist 把原始字符串折成枚举：只认小写词表，大小写错、
+// 前后空白与未知词一律不合法（写面据此回 400，读面据此判坏行）。
+func ParseSignDist(raw string) (SignDist, bool) {
+	switch SignDist(raw) {
+	case SignDistFront, SignDistUniform:
+		return SignDist(raw), true
+	default:
+		return "", false
+	}
+}
+
 // SettingDomain 是一个整型键的合法域（registry domain 注入视图）。
 type SettingDomain struct {
 	Min int
@@ -129,6 +158,9 @@ type OverrideReader interface {
 	IntOverride(ctx context.Context, key string) (int, bool, error)
 	// BoolOverride 读布尔行：只认小写 true/false 字面；坏行报校验错。
 	BoolOverride(ctx context.Context, key string) (bool, bool, error)
+	// StringOverride 读字符串行（批 3c 分布档）：值原样返回（两侧空白已裁），
+	// 词表校验由用例层做；found=false 是缺行。
+	StringOverride(ctx context.Context, key string) (string, bool, error)
 }
 
 // OverrideWriter 是覆盖行的写面端口。
@@ -136,6 +168,8 @@ type OverrideReader interface {
 type OverrideWriter interface {
 	SetInt(ctx context.Context, key string, value int, by string) error
 	SetBool(ctx context.Context, key string, value bool, by string) error
+	// SetString 写字符串行（批 3c 分布档）；值由用例层先过词表。
+	SetString(ctx context.Context, key, value, by string) error
 	// ClearSetting 删行（PUT 显式 null＝回退 env）；删不存在的行是幂等成功。
 	ClearSetting(ctx context.Context, key string) error
 }
@@ -366,4 +400,26 @@ func (r *Resolver) ResolveSignWindow(ctx context.Context, fallbackStart, fallbac
 		return fallbackStart, fallbackEnd, nil
 	}
 	return start, end, nil
+}
+
+// ResolveSignDist 解析铺点分布档（批 3c，消费点＝日切构建铺点）。
+// 行存在且值在小写词表内→行值；行缺失→fallback（装配端传 SignDistFront，
+// 即现行默认档：既有 buildRows 的 Front=true）；
+// 坏行（词表外、大小写错、空白包裹）→回 fallback 并每进程 Warn 一次
+// （沿用 3b 坏行语义：fail-open 但留痕）；存储故障原样上抛——
+// 故障不是配置状态，错档位比不铺更糟。
+func (r *Resolver) ResolveSignDist(ctx context.Context, fallback SignDist) (SignDist, error) {
+	raw, found, err := r.store.StringOverride(ctx, KeyScheduleSignDist)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return fallback, nil
+	}
+	value, ok := ParseSignDist(raw)
+	if !ok {
+		r.warnOnce(KeyScheduleSignDist, "string")
+		return fallback, nil
+	}
+	return value, nil
 }

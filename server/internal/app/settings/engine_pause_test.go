@@ -67,6 +67,14 @@ func (p *pauseStore) SetInt(context.Context, string, int, string) error {
 	return errs.New(errs.CodeInternal, "not used in pause tests")
 }
 
+func (p *pauseStore) StringOverride(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (p *pauseStore) SetString(context.Context, string, string, string) error {
+	return errs.New(errs.CodeInternal, "not used in pause tests")
+}
+
 func (p *pauseStore) ClearSetting(context.Context, string) error {
 	return errs.New(errs.CodeInternal, "not used in pause tests")
 }

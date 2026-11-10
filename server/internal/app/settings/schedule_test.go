@@ -20,15 +20,18 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
-// fakeScheduleStore 是内存覆盖行存取：int/bool 各一行位，
+// fakeScheduleStore 是内存覆盖行存取：int/bool/string 各一行位，
 // 记录每次写与删。failWrite 注入写失败。
 type fakeScheduleStore struct {
 	intValue   int
 	intExists  bool
 	boolValue  bool
 	boolExists bool
+	strValue   string
+	strExists  bool
 	intWrites  []int
 	boolWrites []bool
+	strWrites  []string
 	clears     []string
 	writtenBy  string
 	failWrite  bool
@@ -40,6 +43,10 @@ func (f *fakeScheduleStore) IntOverride(context.Context, string) (int, bool, err
 
 func (f *fakeScheduleStore) BoolOverride(context.Context, string) (bool, bool, error) {
 	return f.boolValue, f.boolExists, nil
+}
+
+func (f *fakeScheduleStore) StringOverride(context.Context, string) (string, bool, error) {
+	return f.strValue, f.strExists, nil
 }
 
 func (f *fakeScheduleStore) SetInt(_ context.Context, _ string, value int, by string) error {
@@ -60,6 +67,15 @@ func (f *fakeScheduleStore) SetBool(_ context.Context, _ string, value bool, by 
 	return nil
 }
 
+func (f *fakeScheduleStore) SetString(_ context.Context, _ string, value string, by string) error {
+	if f.failWrite {
+		return errs.New(errs.CodeInternal, "write rejected")
+	}
+	f.strWrites = append(f.strWrites, value)
+	f.strExists, f.strValue, f.writtenBy = true, value, by
+	return nil
+}
+
 func (f *fakeScheduleStore) ClearSetting(_ context.Context, key string) error {
 	if f.failWrite {
 		return errs.New(errs.CodeInternal, "write rejected")
@@ -70,6 +86,8 @@ func (f *fakeScheduleStore) ClearSetting(_ context.Context, key string) error {
 		f.intExists = false
 	case appsettings.KeyScheduleAllowTimePref:
 		f.boolExists = false
+	case appsettings.KeyScheduleSignDist:
+		f.strExists = false
 	}
 	return nil
 }
@@ -306,8 +324,10 @@ func TestScheduleSettingsAuditFailureRollsBack(t *testing.T) {
 type keyedWriteStore struct {
 	intRows    map[string]string
 	boolRows   map[string]string
+	strRows    map[string]string
 	intWrites  map[string]int
 	boolWrites map[string]bool
+	strWrites  map[string]string
 	clears     []string
 	readErr    error
 	failWrite  bool
@@ -315,8 +335,8 @@ type keyedWriteStore struct {
 
 func newKeyedWriteStore() *keyedWriteStore {
 	return &keyedWriteStore{
-		intRows: map[string]string{}, boolRows: map[string]string{},
-		intWrites: map[string]int{}, boolWrites: map[string]bool{},
+		intRows: map[string]string{}, boolRows: map[string]string{}, strRows: map[string]string{},
+		intWrites: map[string]int{}, boolWrites: map[string]bool{}, strWrites: map[string]string{},
 	}
 }
 
@@ -383,6 +403,29 @@ func (f *keyedWriteStore) SetBool(_ context.Context, key string, value bool, _ s
 	return nil
 }
 
+func (f *keyedWriteStore) StringOverride(_ context.Context, key string) (string, bool, error) {
+	if f.readErr != nil {
+		return "", false, f.readErr
+	}
+	raw, ok := f.strRows[key]
+	return raw, ok, nil
+}
+
+func (f *keyedWriteStore) SetString(_ context.Context, key, value, _ string) error {
+	if f.failWrite {
+		return errs.New(errs.CodeInternal, "write rejected")
+	}
+	if f.strRows == nil {
+		f.strRows = map[string]string{}
+	}
+	if f.strWrites == nil {
+		f.strWrites = map[string]string{}
+	}
+	f.strWrites[key] = value
+	f.strRows[key] = value
+	return nil
+}
+
 func (f *keyedWriteStore) ClearSetting(_ context.Context, key string) error {
 	if f.failWrite {
 		return errs.New(errs.CodeInternal, "write rejected")
@@ -390,6 +433,7 @@ func (f *keyedWriteStore) ClearSetting(_ context.Context, key string) error {
 	f.clears = append(f.clears, key)
 	delete(f.intRows, key)
 	delete(f.boolRows, key)
+	delete(f.strRows, key)
 	return nil
 }
 
@@ -645,5 +689,118 @@ func TestScheduleSettingsFailsClosedWithoutStore(t *testing.T) {
 	if err := svcNoResolver.SetSchedule(context.Background(), corescope.Master(), scheduleActor, changes); err == nil ||
 		errs.From(err).Code != errs.CodeInternal {
 		t.Fatalf("missing resolver err = %v, want internal", err)
+	}
+}
+
+// ===== 批 3c：铺点分布档进写面（schedule.sign_dist）=====
+//
+// 判据：只收 SignDist 强类型且值在小写词表内；set 落行、null 删行
+//（回默认档 front）；audit detail 只含该键的旧→新字符串；非法值/错类型
+// 400 零写零审计；审计失败整体回滚（既有同事务口径覆盖新键）。
+
+// 分布档写回：set 落行并记旧→新；再写覆盖旧值；null 删行回默认档。
+func TestScheduleSettingsSignDistWriteAndClear(t *testing.T) {
+	ctx := context.Background()
+	store := newKeyedWriteStore()
+	audits := &fakeAudit{}
+	svc, tx := newScheduleService(t, store, audits)
+
+	// 首次 set：旧值 nil（缺行=默认档），新值 uniform。
+	if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpSet, Value: appsettings.SignDistUniform},
+	}); err != nil {
+		t.Fatalf("SetSchedule(uniform): %v", err)
+	}
+	if store.strRows[appsettings.KeyScheduleSignDist] != "uniform" {
+		t.Fatalf("sign_dist row = %q, want uniform", store.strRows[appsettings.KeyScheduleSignDist])
+	}
+	if len(audits.entries) != 1 {
+		t.Fatalf("audit rows = %d, want exactly 1", len(audits.entries))
+	}
+	pair := audits.entries[0].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSignDist]
+	if pair[0] != nil || pair[1] != "uniform" {
+		t.Fatalf("pair = %#v, want [nil uniform]", pair)
+	}
+	if tx.committed != 1 {
+		t.Fatalf("commits = %d, want 1", tx.committed)
+	}
+
+	// 覆盖：旧值读自覆盖行，detail 记 uniform→front。
+	if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpSet, Value: appsettings.SignDistFront},
+	}); err != nil {
+		t.Fatalf("SetSchedule(front): %v", err)
+	}
+	pair = audits.entries[1].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSignDist]
+	if pair[0] != "uniform" || pair[1] != "front" {
+		t.Fatalf("pair = %#v, want [uniform front]", pair)
+	}
+
+	// null 删行：行缺失读回默认档 front。
+	if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpClear},
+	}); err != nil {
+		t.Fatalf("SetSchedule(clear): %v", err)
+	}
+	if _, found, err := store.StringOverride(ctx, appsettings.KeyScheduleSignDist); err != nil || found {
+		t.Fatalf("after clear StringOverride found = %v (err %v), want missing row", found, err)
+	}
+	pair = audits.entries[2].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSignDist]
+	if pair[0] != "front" || pair[1] != nil {
+		t.Fatalf("clear pair = %#v, want [front nil]", pair)
+	}
+}
+
+// 非法词表/大小写/空串与错 JSON 类型一律 400 零写零审计。
+func TestScheduleSettingsSignDistRejectsInvalidValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+	}{
+		{"uppercase", appsettings.SignDist("FRONT")},
+		{"unknown", appsettings.SignDist("spread")},
+		{"empty", appsettings.SignDist("")},
+		{"raw_string", "uniform"},
+		{"boolean", true},
+		{"integer", 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newKeyedWriteStore()
+			audits := &fakeAudit{}
+			svc, tx := newScheduleService(t, store, audits)
+			err := svc.SetSchedule(context.Background(), corescope.Master(), scheduleActor,
+				[]appsettings.ScheduleChange{
+					{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpSet, Value: c.value},
+				})
+			if err == nil || errs.From(err).Code != errs.CodeValidation {
+				t.Fatalf("err = %v, want validation", err)
+			}
+			if len(store.strWrites) != 0 || len(audits.entries) != 0 || tx.committed != 0 {
+				t.Fatalf("zero-write violated: writes=%v audits=%d commits=%d",
+					store.strWrites, len(audits.entries), tx.committed)
+			}
+		})
+	}
+}
+
+// 审计失败整体回滚：新字符串键与既有键同存亡。
+func TestScheduleSettingsSignDistAuditFailureRollsBack(t *testing.T) {
+	store := newKeyedWriteStore()
+	audits := &fakeAudit{err: errs.New(errs.CodeInternal, "audit rejected")}
+	svc, tx := newScheduleService(t, store, audits)
+
+	err := svc.SetSchedule(context.Background(), corescope.Master(), scheduleActor,
+		[]appsettings.ScheduleChange{
+			{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpSet, Value: appsettings.SignDistUniform},
+		})
+	if err == nil {
+		t.Fatal("audit failure must fail the PUT")
+	}
+	if !tx.rolledBack {
+		t.Fatal("audit failure must roll the transaction back")
+	}
+	if len(audits.entries) != 0 {
+		t.Fatalf("audit rows = %d, want 0", len(audits.entries))
 	}
 }

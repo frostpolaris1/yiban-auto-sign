@@ -41,8 +41,8 @@ const (
 )
 
 // ScheduleChange 是一个调度设置键的写意图。
-// Op=set 时 Value 是 int（edge 键）或 bool（allow_time_pref）；
-// Op=clear 时 Value 必须为 nil。
+// Op=set 时 Value 是 int（edge/窗口键）、bool（布尔键）或
+// SignDist（批 3c 分布档）；Op=clear 时 Value 必须为 nil。
 type ScheduleChange struct {
 	Key   string
 	Op    ScheduleOp
@@ -132,6 +132,25 @@ func (s *Service) validateScheduleChanges(ctx context.Context, changes []Schedul
 			}
 			if _, ok := change.Value.(bool); !ok {
 				return coreerrs.New(coreerrs.CodeValidation, "sign gate settings require a boolean")
+			}
+		case KeyScheduleSignDist:
+			// 铺点分布档（批 3c）：只收强类型枚举且值在小写词表内；
+			// 裸 string 也不收——入口层必须先经 ParseSignDist，防止绕过词表。
+			if change.Op != ScheduleOpSet && change.Op != ScheduleOpClear {
+				return coreerrs.New(coreerrs.CodeValidation, "unknown schedule settings operation")
+			}
+			if change.Op == ScheduleOpClear {
+				if change.Value != nil {
+					return coreerrs.New(coreerrs.CodeValidation, "clearing a setting must not carry a value")
+				}
+				continue
+			}
+			value, ok := change.Value.(SignDist)
+			if !ok {
+				return coreerrs.New(coreerrs.CodeValidation, "sign distribution settings require the sign_dist enum")
+			}
+			if _, ok := ParseSignDist(string(value)); !ok {
+				return coreerrs.New(coreerrs.CodeValidation, "sign_dist must be front or uniform")
 			}
 		case KeyScheduleDefaultSignStartMin, KeyScheduleDefaultSignEndMin:
 			// 默认窗口两键（批 3b）：分钟域不走 Resolver.CheckInt——
@@ -262,6 +281,11 @@ func (s *Service) applyScheduleChange(ctx context.Context, change ScheduleChange
 			return nil, nil, err
 		}
 		return old, value, nil
+	case SignDist:
+		if err := s.deps.Schedule.SetString(ctx, change.Key, string(value), actor.UserID); err != nil {
+			return nil, nil, err
+		}
+		return old, string(value), nil
 	}
 	// validateScheduleChanges 已挡住其他类型；此分支不可达。
 	return nil, nil, coreerrs.New(coreerrs.CodeInternal, "unreachable schedule change value")
@@ -270,6 +294,22 @@ func (s *Service) applyScheduleChange(ctx context.Context, change ScheduleChange
 // readOverrideOld 读覆盖行旧值作审计标量。
 // 存储故障原样上抛；坏行按未覆盖（nil）——坏值原文绝不进审计。
 func (s *Service) readOverrideOld(ctx context.Context, key string) (any, error) {
+	if key == KeyScheduleSignDist {
+		raw, found, err := s.deps.Schedule.StringOverride(ctx, key)
+		if err != nil {
+			if isSettingValueInvalid(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if !found {
+			return nil, nil
+		}
+		if _, ok := ParseSignDist(raw); !ok {
+			return nil, nil
+		}
+		return raw, nil
+	}
 	if key == KeyScheduleAllowTimePref {
 		value, found, err := s.deps.Schedule.BoolOverride(ctx, key)
 		if err != nil {

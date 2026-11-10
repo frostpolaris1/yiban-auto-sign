@@ -343,11 +343,14 @@ func TestEncodeDetailRejectsFusedPhone(t *testing.T) {
 }
 
 // sett2 调度设置写回：changes 只接受 settings 键形状的键与
-// nil/布尔/整数元素对；其余形状一律拒绝，防止它变成自由文本通道。
+// nil/布尔/整数元素对；3c 起字符串只收状态词形状（无自由文本容量）。
+// 其余形状一律拒绝，防止它变成自由文本通道。
 func TestEncodeDetailAcceptsScheduleWritebackChanges(t *testing.T) {
 	detail := map[string]any{"changes": map[string][2]any{
 		"schedule.edge_front_sec":  {nil, 120},
 		"schedule.allow_time_pref": {false, true},
+		// 3c：分布档旧→新是小写状态词。
+		"schedule.sign_dist": {"front", "uniform"},
 	}}
 	if _, err := coreaudit.EncodeDetail(detail); err != nil {
 		t.Fatalf("合法 changes 被拒绝: %v", err)
@@ -361,12 +364,13 @@ func TestEncodeDetailAcceptsScheduleWritebackChanges(t *testing.T) {
 			t.Fatalf("changes 键 %q 未被拒绝", bad)
 		}
 	}
-	// 元素只允许 nil/布尔/整数；字符串与浮点一律拒绝。
-	for _, bad := range []any{"120", 1.5, []int{1}} {
+	// 元素只允许 nil/布尔/整数与小写状态词；数字串、大写、空白、
+	// 浮点与切片一律拒绝（字符串不得成为自由文本通道）。
+	for _, bad := range []any{"120", "UPPER", "front space", "a@b", 1.5, []int{1}} {
 		if _, err := coreaudit.EncodeDetail(map[string]any{
 			"changes": map[string][2]any{"schedule.edge_back_sec": {nil, bad}},
 		}); err == nil {
-			t.Fatalf("changes 元素 %T 未被拒绝", bad)
+			t.Fatalf("changes 元素 %q 未被拒绝", bad)
 		}
 	}
 	// changes 键位不可挪用：其他键携带该形态依旧拒绝。
