@@ -18,10 +18,16 @@
   多学校迁移不在本流程范围。
 - `--school-id` 与 `--fallback-owner-user-id` 必须已存在且可用；
   导入器不建学校、不建用户。
-- 三个密钥只从进程环境读：`YIBAN_DATABASE_URL`（DSN）、
-  `YIBAN_CREDENTIAL_KEY`（base64 的 32 字节）、`YIBAN_LEGACY_ACCOUNTS_KEY`
-  （64 位 hex）。前两个与目标新库同源；最后一个只给本 CLI，
-  不进 `/etc/yiban/server.env`。
+- 密钥只从进程环境读，按命令分两组：
+  - `migrate-legacy`：`YIBAN_DATABASE_URL`（DSN）、`YIBAN_CREDENTIAL_KEY`
+    （base64 的 32 字节，新 KEK）、`YIBAN_LEGACY_ACCOUNTS_KEY`（64 位 hex，
+    旧钥）。前两个与目标新库同源；旧钥只给本 CLI，
+    不进 `/etc/yiban/server.env`。
+  - `user create-master`：`YIBAN_DATABASE_URL` 与 `YIBAN_HASH_PEPPER`
+    （至少 16 字符；审计链钥由它派生，见 `server/cmd/cli/user.go:90-92`）。
+  - `backfill-time-prefs`：只需要 `YIBAN_DATABASE_URL`。
+  §1.2 的 `source /etc/yiban/server.env` 会隐式带入 pepper，但按本清单
+  准备环境时不要漏掉它。
 - 备份目录、导出目录、报告目录都先建为 `0700`；文件为 `0600`。
   工具不会修正已存在目录的权限，必须预先建好。
 - 以下命令以裸机 `/etc/yiban/server.env` 为例。容器形态不要照抄，
@@ -64,9 +70,12 @@ master 已存在时不要重复创建；用 `GET /api/auth/me` 取当前 master 
 
 ### 1.3 学校
 
-旧库没有学校表。用新 master 登录管理界面创建一所学校（接口是
-`POST /api/schools`，仅 master 可写；请求体 `code` 与 `name` 必填），
-把响应里的 `id` 记为 `<school-uuid>`。学校代码建后不可改。
+旧库没有学校表。建校走 HTTP 接口，必须先有服务在跑：先按第 6 节起
+临时入口（临时监听端口或临时反代，不占正式域名），再用新 master 登录
+管理界面创建一所学校（接口是 `POST /api/schools`，仅 master 可写；
+请求体 `code` 与 `name` 必填），把响应里的 `id` 记为 `<school-uuid>`。
+建完可停临时入口；正式反代仍指旧栈。学校建好后再进入第 2 节导出与
+第 3 节导入。学校代码建后不可改。
 
 ## 2. 导出
 
@@ -144,6 +153,86 @@ yiban-cli migrate-legacy \
 `legacy_ids` 与行数（`summary.json` 可能不存在），再决定是否重跑；
 重跑是幂等的。不要手改导出物：无行错误时，导入器在提交前逐行比对
 `reconciliation.jsonl`，不一致即回滚。
+
+### 3.1 一人一号冲突处置（同 owner 多账号）
+
+老库允许同一 owner 名下多个账号：旧 `accounts.owner` 没有唯一约束
+（`yiban/adapters/persistence/migrations.py:172-188`），旧栈自带的
+`scripts/list_duplicate_owners.py` 就是为这种存量准备的
+（[`backup-restore.md`](../dev/backup-restore.md) 的取证与排障工具节）。
+`migrate-legacy` 直接 SQL 插 `accounts`
+（`server/internal/adapters/legacy/import.go:483-486`），不经过新栈应用层
+「属主名下无 live 账号」的判据（`server/internal/adapters/pg/account.go:85`）。
+因此同 owner 的多行会被原样导入，导入后该 owner 的 live 账号数可以大于 1。
+旧内置 master 名下的账号（owner=`admin`）全部落
+`--fallback-owner-user-id`，同样可能让新 master 名下 live>1；
+`list_duplicate_owners.py` 不统计 `admin`，要单独复核兜底 owner。
+
+这是**违规态**，不是导入失败——新栈的一人一号只在应用层判。实测后果
+（行号按基底 `b8a809e8` 复核）：
+
+- 该 owner 再建号返回 409 `owner already has a live account`
+  （`server/internal/adapters/pg/account.go:96`）；不是 429，
+  只有全局容量满才报 `capacity_exceeded`（同文件 `:99`）。
+- 恢复该 owner 名下已软删的账号同样被拒：恢复语句要求属主名下没有其他
+  live 行（`server/internal/adapters/pg/account.go:476-485`）。
+- 补录自选时间时，同 owner 多账号取值不一致会整用户进 `conflicts`
+  （[`time-prefs-backfill.md`](../dev/time-prefs-backfill.md) §5）。
+
+导入器不做去重，也不校验一人一号。处置二选一；**不要手改导出物**
+（会破坏 `reconciliation.jsonl` 的逐行比对，见本节前一段）。
+
+**路线 A：导入前在旧栈处置（推荐）**
+
+路线 A 必须在 T-1 或导出前完成；T0 窗口内不要动旧库（§8 末段禁令）。
+
+1. 导出前用旧栈只读工具拿清单：
+   `python3 scripts/list_duplicate_owners.py --db <旧库路径>`。
+   它只列 `deleted=0`、owner 非空且非 `admin` 的重复 owner。
+2. 在旧栈里软删多余账号（走旧栈 UI/接口；审计与 `deleted_at` 同事务，
+   `yiban/adapters/persistence/accounts.py:650` 的 `set_account_deleted`）。
+   软删行仍会导出并导入为软删行，不占新栈 live 数。
+3. 重新导出，再导入。导出物与旧库一致，对账自然通过。
+
+保留哪一行按下列优先级人工定。旧库没有 `updated_at` / `last_login`，
+没有现成的「已验证」列，判据只能取可读字段：
+
+1. `status=active`、`user_paused=0`、`deleted=0`——否则新栈也不可用。
+2. `verify_jobs` 最近一条 `done` 优先（在线校验通过；
+   `yiban/adapters/persistence/verify_jobs.py` 的状态机）。该表只保留 7 天
+   （`VERIFY_JOB_RETENTION_DAYS`），过期就退回下一条。
+3. 旧 `password` 非空，且 dry-run 导入的 `credentials.decrypt_failed=0`。
+4. 同等条件取 `time_prefs.updated_at` 最新（最近改过自选时间＝最近活跃）。
+5. `sort_order` 是签到顺序，不是新旧；旧 `id` 会被 `replace_accounts`
+   重排，也不是可靠的创建序。两者都不作判据。
+
+**路线 B：导入后在新栈合并软删**
+
+1. 先完成导入与 §4 对账；对账通过后再动账号行。
+2. 用 master 会话查 live 数（只出计数与 user UUID，不出邮箱、手机号、姓名）：
+
+   ```sql
+   SELECT owner_user_id, count(*) AS live_accounts
+   FROM accounts WHERE deleted_at IS NULL
+   GROUP BY owner_user_id HAVING count(*) > 1
+   ORDER BY live_accounts DESC, owner_user_id;
+   ```
+
+3. 用 master 管理界面或 `DELETE /api/accounts/{id}` 软删多余行（带
+   `current_password` 与 CSRF；写 `deleted_at` / `deleted_by` 与审计）。
+   不要直连 SQL 改 `deleted_at`：会绕过审计与凭据级联口径。
+4. 复核同一查询只剩每 owner 1 行；再跑补录，`conflicts` 应只剩真正的
+   取值冲突用户。
+
+路线 B 在导入后短暂保留 live>1；若先补录后处置，这些用户会先以
+`conflicts` 出现，处置后要重跑 dry-run 复核。
+
+两案的代码工作量（本批只补文档，不改导入行为；是否做由主会话拍板）：
+
+| 方案 | 改动面 | 量级 | 风险 |
+|---|---|---|---|
+| 导入器 dedup 开关 | `import.go` 预扫描与保留判据、`migrate_legacy.go` 旗位、summary 计数、对账排除、e2e | 约 200–300 行＋e2e，半天到一天 | 保留判据写进代码即固化产品口径；跳过行必须同步从对账排除，否则 exit 2；重跑幂等要重新定义 |
+| 后处理命令 `dedupe-owners` | 新子命令、查询与软删事务、dry-run 报告、测试 | 约 150–250 行＋测试，半天 | 直连 SQL 软删不写审计（需复用 app 服务或补审计）；保留策略仍要人定 |
 
 ## 4. 对账
 
@@ -276,7 +365,7 @@ curl -fsS http://127.0.0.1:<临时端口>/healthz
   不需要重置口令。
 
 若生产 Cookie 要求 HTTPS，给临时入口配一次性 TLS 终止或临时反代；
-临时入口仍不要占用正式域名。直连冒烟通过后，才在窗口步骤第 8 步切正式反代；
+临时入口仍不要占用正式域名。直连冒烟通过后，才在窗口步骤第 9 步切正式反代；
 切完再用 `https://<域名>/healthz` 复测。
 
 如需验证平台口令，可用 `POST /api/accounts/{id}/verify`。它会真实登录平台，
@@ -303,7 +392,7 @@ dropdb --if-exists <新库名>
 
 1. T-1：在一次性/隔离 PG 上彩排；准备目标新库。先启动临时入口
    （直连或临时反代），用新 master 登录并建学校；master 可先用 CLI 建。
-   建完停掉临时入口。正式反代仍指旧栈。核对三个密钥形状与旧库备份；
+   建完停掉临时入口。正式反代仍指旧栈。核对密钥形状（含 pepper）与旧库备份；
    发维护通知。
 2. T0：停旧栈写入（停服务或进维护模式），确认不再有写。
 3. T0：备份旧库，`chmod 600`，记录 sha256。
@@ -311,12 +400,19 @@ dropdb --if-exists <新库名>
 5. T0：`migrate-legacy ... --strict`，记录退出码与 stdout。
    从 T0 起 stderr 必须直接落 `0600` 文件（畸形掩码值会原样出现）。
 6. T0：按第 4 节对账。任何一项不符即停止，不切流量；需要回退时恢复旧栈服务。
-7. T0：启动新栈到临时监听端口或临时入口，按第 6 节直连冒烟；
+7. T0：补录自选时间：`yiban-cli backfill-time-prefs --dir <导出目录>`
+   先 dry-run，核对 `writes` / `conflicts` / `skips`；再 `--apply`；
+   最后再 dry-run 复核 `rows_written=0`。部署顺序正本见
+   `server/cmd/cli/backfill_time_prefs.go:12`
+   （migrate → migrate-legacy → backfill-time-prefs）；报告判据见
+   [`time-prefs-backfill.md`](../dev/time-prefs-backfill.md)。同 owner
+   多账号的处置见 §3.1；先处置再补录可减少 `conflicts`。
+8. T0：启动新栈到临时监听端口或临时入口，按第 6 节直连冒烟；
    不要切正式反代。
-8. T0：直连冒烟通过后，切正式反代到新栈；用 `https://<域名>/healthz`
+9. T0：直连冒烟通过后，切正式反代到新栈；用 `https://<域名>/healthz`
    与登录复测，观察错误日志。
-9. T0：旧栈保持停机，旧库与备份保留；不要在旧库上继续写。
-10. T+1：观察登录失败、凭据解密失败与通知投递；提醒用户补全自选时间、
+10. T0：旧栈保持停机，旧库与备份保留；不要在旧库上继续写。
+11. T+1：观察登录失败、凭据解密失败与通知投递；提醒用户补全自选时间、
     照片与备注名，管理员按需重建学校任务。
 
 窗口内不要做：改旧库 schema、在旧库上跑迁移或清理、把导出物放进仓库、
