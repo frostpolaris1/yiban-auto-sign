@@ -305,9 +305,9 @@ var (
 	// 只服务 settings.schedule_writeback / settings.quota_writeback 的 changes 键位。
 	settingsKeyShape = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,63}$`)
 	// hostShape 匹配 SMTP 主机名或 IP 字面量：字母、数字、点、冒号、连字符。
-	// 无空白、@、引号与路径分隔符，故不是自由文本通道；
-	// 只服务 settings.mail_writeback 的 mail.smtp_host 字面值。
-	hostShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$`)
+	// 首字符允许冒号以容纳 IPv6 字面量（::1）；无空白、@、引号与路径分隔符，
+	// 故不是自由文本通道。只服务 settings.mail_writeback 的 mail.smtp_host 字面值。
+	hostShape = regexp.MustCompile(`^[A-Za-z0-9:][A-Za-z0-9.:-]{0,252}$`)
 )
 
 var detailKeys = map[string]bool{

@@ -417,3 +417,17 @@ func TestMailResolverResolvesPerCall(t *testing.T) {
 		t.Fatalf("config after write = %+v", cfg)
 	}
 }
+
+// IPv6 字面量是合法 SMTP 主机：写面与审计形状都必须放行。
+func TestSetMailAcceptsIPv6Host(t *testing.T) {
+	f := newMailFixture(t, mailEnv(), newMailCipher())
+	if err := f.svc.SetMail(context.Background(), corescope.Master(), scheduleActor,
+		[]appsettings.MailChange{
+			{Key: appsettings.KeyMailSMTPHost, Op: appsettings.OpSet, Value: "::1"},
+		}); err != nil {
+		t.Fatalf("SetMail(::1): %v", err)
+	}
+	if f.store.strRows[appsettings.KeyMailSMTPHost] != "::1" {
+		t.Fatalf("host row = %q", f.store.strRows[appsettings.KeyMailSMTPHost])
+	}
+}

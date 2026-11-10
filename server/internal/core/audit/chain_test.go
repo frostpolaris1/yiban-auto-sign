@@ -362,6 +362,12 @@ func TestEncodeDetailAcceptsScheduleWritebackChanges(t *testing.T) {
 	if _, err := coreaudit.EncodeDetail(detail); err != nil {
 		t.Fatalf("合法 changes 被拒绝: %v", err)
 	}
+	// IPv6 字面量是合法主机：首字符冒号必须放行。
+	if _, err := coreaudit.EncodeDetail(map[string]any{
+		"changes": map[string][2]any{"mail.smtp_host": {nil, "::1"}},
+	}); err != nil {
+		t.Fatalf("IPv6 host 被拒绝: %v", err)
+	}
 	// 主机名形状只放行 mail.smtp_host：其它键带主机名仍拒绝。
 	if _, err := coreaudit.EncodeDetail(map[string]any{
 		"changes": map[string][2]any{"schedule.edge_back_sec": {nil, "smtp.example.com"}},
