@@ -362,7 +362,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	}
 	scheduleHandler := schedulehttp.NewHandler(scheduleSvc, prefSvc, adminSvc, schedulehttp.Config{
 		Location: loc, Workers: 1, Avg: 60 * time.Second, Rate: 1.0, Util: 0.8,
-		SlotsPerSlice: 5, Front: true, UsePrefs: true,
+		SlotsPerSlice: 5, SignDist: appschedule.SignDistFront, UsePrefs: true,
 		Logger: logger,
 	}).WithStats(statsSvc)
 	userSvc, err := appuser.NewService(appuser.Deps{

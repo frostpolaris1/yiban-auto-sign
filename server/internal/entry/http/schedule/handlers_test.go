@@ -212,7 +212,7 @@ func newRouterFull(t *testing.T, scope corescope.Scope, planner schedulehttp.Pla
 	}
 	handler := schedulehttp.NewHandler(planner, prefs, &fakeAuthorizer{scope: scope}, schedulehttp.Config{
 		Location: shanghai, Clock: coreclock.Fixed{T: time.Date(2026, 10, 29, 8, 0, 0, 0, shanghai)}, Workers: 6, Avg: 3 * time.Second, Rate: 1.0, Util: 0.8,
-		SlotsPerSlice: 10, Front: true, UsePrefs: true,
+		SlotsPerSlice: 10, SignDist: appschedule.SignDistFront, UsePrefs: true,
 		EdgeFront: 30 * time.Second, EdgeBack: 30 * time.Second,
 		Logger: logger,
 	})

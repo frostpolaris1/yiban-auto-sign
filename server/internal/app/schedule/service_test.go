@@ -186,7 +186,7 @@ func baseInput() appschedule.Input {
 		SchoolID: "school-1", SchoolTaskID: "task-1", Day: "2026-10-29",
 		Location: shanghai,
 		Workers:  6, Avg: 3 * time.Second, Rate: 1.0, Util: 0.8,
-		SlotsPerSlice: 10, Front: true,
+		SlotsPerSlice: 10, SignDist: appschedule.SignDistFront,
 		EdgeFront: 0, EdgeBack: 0,
 	}
 }
@@ -377,6 +377,12 @@ func (f *keyedSettingStore) IntOverride(_ context.Context, key string) (int, boo
 func (f *keyedSettingStore) BoolOverride(_ context.Context, _ string) (bool, bool, error) {
 	return false, false, nil
 }
+
+func (f *keyedSettingStore) StringOverride(_ context.Context, _ string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (f *keyedSettingStore) SetString(_ context.Context, _, _, _ string) error { return nil }
 
 func (f *keyedSettingStore) SetInt(_ context.Context, key string, value int, _ string) error {
 	f.rows[key] = strconv.Itoa(value)
@@ -1038,23 +1044,25 @@ func TestOverrideValidation(t *testing.T) {
 }
 
 // 没有偏好时落点必须与 core/plan.SpreadWithin 逐值相同。
-// 这条不变式保证引入自选没有改变既有铺点行为。
+// 这条不变式保证引入自选没有改变既有铺点行为，也钉住两档运行期差异。
 func TestNoPrefsMatchesSpreadWithin(t *testing.T) {
 	ids := make([]string, 25)
 	for i := range ids {
 		ids[i] = "acct-" + string(rune('a'+i))
 	}
-	for _, front := range []bool{true, false} {
-		t.Run(map[bool]string{true: "front", false: "uniform"}[front], func(t *testing.T) {
+	for _, dist := range []appschedule.SignDist{appschedule.SignDistFront, appschedule.SignDistUniform} {
+		t.Run(map[appschedule.SignDist]string{
+			appschedule.SignDistFront: "front", appschedule.SignDistUniform: "uniform",
+		}[dist], func(t *testing.T) {
 			svc := newService(t, &fakeWindowStore{}, &fakePlanStore{}, fakeAccounts{ids: ids},
 				&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
 			in := baseInput()
-			in.Front = front
+			in.SignDist = dist
 			prev, err := svc.Preview(context.Background(), in)
 			if err != nil {
 				t.Fatalf("preview: %v", err)
 			}
-			want := coreplan.SpreadWithin(len(ids), in.SlotsPerSlice, 16, front)
+			want := coreplan.SpreadWithin(len(ids), in.SlotsPerSlice, 16, dist == appschedule.SignDistFront)
 			for i, r := range prev.Rows {
 				got := r.RunAt.Sub(prev.WindowStart)
 				if got != want[i] {
@@ -1062,6 +1070,32 @@ func TestNoPrefsMatchesSpreadWithin(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 两档有可断言的形状差（3c 谓词）：25 行 / 10 槽/片 / 16 片时，
+// front 首片满 10 人，uniform 首片只落 ceil(25/16)=2 人。
+func TestSignDistChangesFirstSliceCount(t *testing.T) {
+	ids := make([]string, 25)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i))
+	}
+	cases := map[appschedule.SignDist]int{
+		appschedule.SignDistFront:   10,
+		appschedule.SignDistUniform: 2,
+	}
+	for dist, want := range cases {
+		svc := newService(t, &fakeWindowStore{}, &fakePlanStore{}, fakeAccounts{ids: ids},
+			&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+		in := baseInput()
+		in.SignDist = dist
+		prev, err := svc.Preview(context.Background(), in)
+		if err != nil {
+			t.Fatalf("preview(%v): %v", dist, err)
+		}
+		if got := prev.Histogram[0]; got != want {
+			t.Fatalf("SignDist %v 首片人数 = %d, want %d: %v", dist, got, want, prev.Histogram)
+		}
 	}
 }
 

@@ -102,10 +102,12 @@ type Config struct {
 	Rate          float64
 	Util          float64
 	SlotsPerSlice int
-	Front         bool
-	UsePrefs      bool
-	EdgeFront     time.Duration
-	EdgeBack      time.Duration
+	// SignDist 是手动预览/建计划的铺点分布档静态值（3c）。
+	// DB 写回只接日切构建（次日生效）；HTTP 面维持装配静态档（front）。
+	SignDist  appschedule.SignDist
+	UsePrefs  bool
+	EdgeFront time.Duration
+	EdgeBack  time.Duration
 	// Overrides 每请求解析可写回键（sett2）。nil 时用静态值。
 	Overrides ScheduleOverrides
 	// Logger 为空时用 slog.Default；用户自选读面的降级路径要留痕。
@@ -693,7 +695,7 @@ func (h *Handler) inputWith(usePrefs bool, front, back time.Duration, day, schoo
 		Rate:          h.cfg.Rate,
 		Util:          h.cfg.Util,
 		SlotsPerSlice: h.cfg.SlotsPerSlice,
-		Front:         h.cfg.Front,
+		SignDist:      h.cfg.SignDist,
 		UsePrefs:      usePrefs,
 		EdgeFront:     front,
 		EdgeBack:      back,

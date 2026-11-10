@@ -56,7 +56,7 @@ func testBuilder(tasks fakeTasks, planner *fakePlanner) *appschedule.DailyBuilde
 		Clock: coreclock.Fixed{T: dailyNow}, Location: dailySH,
 		Params: appschedule.BuildParams{
 			Workers: 4, Avg: 3 * time.Second, Rate: 1, Util: 0.8,
-			SlotsPerSlice: 10, Front: true,
+			SlotsPerSlice: 10, SignDist: appschedule.SignDistFront,
 		},
 	}
 }
@@ -322,5 +322,59 @@ func TestBuildTodayWeekendGateFailureFailsBuild(t *testing.T) {
 	}
 	if planner.calls != 0 {
 		t.Fatalf("Build calls = %d, want 0", planner.calls)
+	}
+}
+
+// ===== 批 3c：铺点分布档（schedule.sign_dist）=====
+//
+// 判据：解析端给的档位一路传到铺点输入（Build → Input.SignDist）；
+// 缺行＝解析端传 SignDistFront（现行默认档）；未接写回层时用 Params 档位
+//（装配传 front），行为与基线一致。
+
+// 解析值 uniform 一路传到铺点输入：次日构建按分层档铺点。
+func TestBuildTodayUsesResolvedSignDist(t *testing.T) {
+	planner := &fakePlanner{}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	b.Overrides = func(context.Context) (appschedule.BuildOverrides, error) {
+		return appschedule.BuildOverrides{SignDist: appschedule.SignDistUniform}, nil
+	}
+	if _, err := b.BuildToday(context.Background()); err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if got := planner.lastInput.SignDist; got != appschedule.SignDistUniform {
+		t.Fatalf("input SignDist = %v, want uniform", got)
+	}
+}
+
+// 缺行＝现行默认档 front：解析端显式给 front 时输入也是 front（显式断言）。
+func TestBuildTodaySignDistDefaultsToFront(t *testing.T) {
+	planner := &fakePlanner{}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	b.Overrides = func(context.Context) (appschedule.BuildOverrides, error) {
+		return appschedule.BuildOverrides{SignDist: appschedule.SignDistFront}, nil
+	}
+	if _, err := b.BuildToday(context.Background()); err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if got := planner.lastInput.SignDist; got != appschedule.SignDistFront {
+		t.Fatalf("input SignDist = %v, want front", got)
+	}
+}
+
+// 未接写回层（Overrides 为 nil）仍用显式默认档 front：3b 同款负例。
+func TestBuildTodayWithoutOverridesKeepsDefaultSignDist(t *testing.T) {
+	planner := &fakePlanner{}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	if _, err := b.BuildToday(context.Background()); err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if got := planner.lastInput.SignDist; got != appschedule.SignDistFront {
+		t.Fatalf("input SignDist = %v, want front from Params", got)
 	}
 }

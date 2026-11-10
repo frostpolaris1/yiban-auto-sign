@@ -42,6 +42,18 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
+// SignDist 是铺点分布档（批 3c）。零值＝SignDistFront＝现行默认档。
+// 字符串词表（front/uniform）单源在 app/settings；本包不感知配置，
+// 只按装配层映射后的枚举分发铺点（app 目录之间不互相 import）。
+type SignDist int
+
+const (
+	// SignDistFront 顺序装满前段（现行默认档：既有 Front=true）。
+	SignDistFront SignDist = iota
+	// SignDistUniform 全窗分层（摊薄峰值：既有 Front=false）。
+	SignDistUniform
+)
+
 // Input 是一次计划构建的输入。
 type Input struct {
 	SchoolID     string
@@ -56,8 +68,9 @@ type Input struct {
 	Util float64
 	// SlotsPerSlice 是每个 5 分钟片的账号槽数。
 	SlotsPerSlice int
-	// Front 为真时顺序装满前段；为假时全窗分层。
-	Front bool
+	// SignDist 是铺点分布档；零值=SignDistFront（现行默认档）。
+	// 3c：日切构建从 settings 写回解析后代入；HTTP 手动面用装配静态档。
+	SignDist SignDist
 	// UsePrefs 为真时读取并应用用户自选偏移。
 	// 它是部署开关：关掉后已存偏好不再影响计划。
 	UsePrefs bool
@@ -931,6 +944,8 @@ func (s *Service) buildRows(ctx context.Context, in Input, eff corewindow.Window
 // placeRows 先满足用户自选偏移，再把其余账号铺进剩余槽位。
 // 没有偏好时，逐行落点与 core/plan.SpreadWithin 完全相同：
 // 顺序模式线性填片，分层模式轮转填片。
+// 3c：只有显式 SignDistUniform 走分层；零值与未知值一律按 front
+// （缺省档，失败方向与「缺行=默认档」一致）。
 func (s *Service) placeRows(ctx context.Context, in Input, accounts []AccountRef, span time.Duration, slices int) ([]time.Duration, error) {
 	used := make([]int, slices)
 	offsets := make([]time.Duration, len(accounts))
@@ -940,7 +955,8 @@ func (s *Service) placeRows(ctx context.Context, in Input, accounts []AccountRef
 			return nil, err
 		}
 	}
-	cursor := &slotCursor{used: used, cap: in.SlotsPerSlice, slices: slices, front: in.Front}
+	cursor := &slotCursor{used: used, cap: in.SlotsPerSlice, slices: slices,
+		front: in.SignDist != SignDistUniform}
 	for i := range accounts {
 		if assigned[i] {
 			continue
