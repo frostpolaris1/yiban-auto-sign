@@ -20,11 +20,12 @@ import (
 	"testing"
 )
 
-// contractEnum 描述一张契约枚举与对应的码侧词表（core 或 signing/contract）。
+// contractEnum 描述一张契约枚举与对应的码侧词表（core、signing/contract
+// 或 app/settings 这类契约词表的单源用例包）。
 type contractEnum struct {
 	apiDir   string // oapi 包目录；整目录扫描
 	apiType  string // oapi 常量显式类型名
-	dir      string // 码侧包目录（core 或 signing/contract），相对本包目录；整目录扫描
+	dir      string // 码侧包目录（core/signing/contract/app 用例层），相对本包目录；整目录扫描
 	coreType string // 码侧常量显式类型名
 	prefix   string // 码侧常量名前缀；同前缀但无显式类型即红
 	min      int    // 两侧常量数量下限，防空扫当绿
@@ -43,6 +44,8 @@ var contractEnums = []contractEnum{
 	{".", "NotifyCategory", "../../../core/notify", "Category", "Category", 4},
 	{".", "NotifyChannel", "../../../core/notify", "Channel", "Channel", 2},
 	{".", "ScheduleWindowSource", "../../../signing/contract", "WindowSource", "Window", 4},
+	// 3c：分布档词表单源在 app/settings（用例层）；契约与用例词表同集。
+	{".", "ScheduleSignDist", "../../../app/settings", "SignDist", "SignDist", 2},
 	{".", "SchoolStatus", "../../../core/school", "Status", "Status", 2},
 	{".", "UserListParamsGroup", "../../../core/user", "Group", "Group", 3},
 	{".", "UserRole", "../../../core/auth", "Role", "Role", 3},

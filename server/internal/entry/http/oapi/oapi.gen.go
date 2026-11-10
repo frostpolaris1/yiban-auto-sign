@@ -446,6 +446,24 @@ func (e PhotoRetentionUpdateDays) Valid() bool {
 	}
 }
 
+// Defines values for ScheduleSignDist.
+const (
+	Front   ScheduleSignDist = "front"
+	Uniform ScheduleSignDist = "uniform"
+)
+
+// Valid indicates whether the value is a known member of the ScheduleSignDist enum.
+func (e ScheduleSignDist) Valid() bool {
+	switch e {
+	case Front:
+		return true
+	case Uniform:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScheduleWindowSource.
 const (
 	ScheduleWindowSourceCache    ScheduleWindowSource = "cache"
@@ -1252,6 +1270,14 @@ type AdminScheduleSettingsUpdate struct {
 	// Saturday plan builds.
 	SaturdaySign *bool `json:"saturday_sign,omitempty"`
 
+	// SignDist Distribution mode of plan rows inside the window. front fills
+	// the early slices in order and is the built-in default when the
+	// row is absent (the historical behavior); uniform spreads rows
+	// across the whole window. Lowercase literals only: any other
+	// value, including case variants, answers 400. Takes effect at
+	// the next daily plan build.
+	SignDist *ScheduleSignDist `json:"sign_dist,omitempty"`
+
 	// SundaySign Weekend gate for Sundays. A missing row reads as false: no
 	// plan rows are built on Sundays at all (the default aligns with
 	// the legacy off-by-default weekend gate). true restores Sunday
@@ -1910,6 +1936,9 @@ type ScheduleRow struct {
 	AccountId string    `json:"account_id"`
 	RunAt     time.Time `json:"run_at"`
 }
+
+// ScheduleSignDist Plan row distribution mode; lowercase front or uniform.
+type ScheduleSignDist string
 
 // ScheduleWindow defines model for ScheduleWindow.
 type ScheduleWindow struct {

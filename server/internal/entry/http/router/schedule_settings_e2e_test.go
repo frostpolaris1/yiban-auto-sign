@@ -52,10 +52,13 @@ func (m e2eEnvSource) Lookup(key string) (string, bool) {
 type e2eOverrideStore struct {
 	intRows  map[string]string
 	boolRows map[string]string
+	strRows  map[string]string
 }
 
 func newE2EOverrideStore() *e2eOverrideStore {
-	return &e2eOverrideStore{intRows: map[string]string{}, boolRows: map[string]string{}}
+	return &e2eOverrideStore{
+		intRows: map[string]string{}, boolRows: map[string]string{}, strRows: map[string]string{},
+	}
 }
 
 func (s *e2eOverrideStore) IntOverride(_ context.Context, key string) (int, bool, error) {
@@ -95,9 +98,20 @@ func (s *e2eOverrideStore) SetBool(_ context.Context, key string, value bool, _ 
 	return nil
 }
 
+func (s *e2eOverrideStore) StringOverride(_ context.Context, key string) (string, bool, error) {
+	raw, ok := s.strRows[key]
+	return raw, ok, nil
+}
+
+func (s *e2eOverrideStore) SetString(_ context.Context, key, value, _ string) error {
+	s.strRows[key] = value
+	return nil
+}
+
 func (s *e2eOverrideStore) ClearSetting(_ context.Context, key string) error {
 	delete(s.intRows, key)
 	delete(s.boolRows, key)
+	delete(s.strRows, key)
 	return nil
 }
 

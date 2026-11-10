@@ -93,3 +93,66 @@ func TestScheduleWeekendKeysAreNotInRoster(t *testing.T) {
 		}
 	}
 }
+
+// 名册不显示 3c 的分布档键：写回键集之外的行不进 source=db 通路。
+// 与 3b 四键同一守卫形态（engine.paused 批 3a 同口径）。
+func TestScheduleSignDistKeyIsNotInRoster(t *testing.T) {
+	store := newMemScheduleStore()
+	resolver, err := appsettings.NewResolver(store, map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	roster, err := appsettings.NewRoster([]appsettings.Entry{
+		{Key: "YIBAN_WINDOW_EDGE_FRONT_SEC", Group: "调度", Default: float64(60), HasDefault: true},
+	}, mapSource{})
+	if err != nil {
+		t.Fatalf("NewRoster: %v", err)
+	}
+	roster.WithOverrides(resolver)
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store: &memAnnouncementStore{}, Audit: &memAudit{}, Tx: passthroughTx{}, Clock: fixedClock{},
+		Schedule: store, Resolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	handler := systemhttp.NewHandler(roster, svc, nil).WithScheduleSettings(svc)
+
+	actor := appaudit.Actor{UserID: "11111111-1111-1111-1111-111111111111",
+		Role: coreauth.RoleMaster, Label: "m***@example.com"}
+	if err := svc.SetSchedule(context.Background(), corescope.Master(), actor,
+		[]appsettings.ScheduleChange{
+			{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpSet, Value: appsettings.SignDistUniform},
+		}); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	if store.strRows[appsettings.KeyScheduleSignDist] != "uniform" {
+		t.Fatalf("sign_dist row = %q, want uniform", store.strRows[appsettings.KeyScheduleSignDist])
+	}
+
+	c, rec := newContextWithEmail(http.MethodGet, "/api/admin/settings", "", coreauth.RoleMaster, "m@example.com")
+	handler.AdminSettings(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET settings = %d: %s", rec.Code, rec.Body.String())
+	}
+	var parsed struct {
+		Groups []struct {
+			Items []struct {
+				Key string `json:"key"`
+			} `json:"items"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("decode roster: %v", err)
+	}
+	for _, group := range parsed.Groups {
+		for _, item := range group.Items {
+			if item.Key == appsettings.KeyScheduleSignDist {
+				t.Fatalf("%s must not appear in the settings roster", item.Key)
+			}
+		}
+	}
+}
