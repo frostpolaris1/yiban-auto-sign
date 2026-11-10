@@ -231,3 +231,5 @@ server/internal/app/user/create.go	uncovered=Go 包门 go test ./internal/app/us
 server/internal/app/user/mail_notify_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/user 真跑），本批仅把 Limit 换成 Quota 替身
 server/internal/app/user/quota_stub_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/user 真跑），固定配额替身无独立行为
 server/internal/app/user/restore.go	uncovered=Go 包门 go test ./internal/app/user 真跑；恢复配额改经 app.QuotaLimits，0=不限语义由 pg quota e2e 真库钉住
+server/cmd/cli/backfill_time_prefs.go	uncovered=Go 包门 go test ./cmd/cli 真跑迁移 e2e；r4r 仅补部署顺序注释（缺省配额 1/1 与 legacy import 直插不占额），零行为变化
+server/internal/adapters/legacy/import.go	uncovered=上游 #346 文案改动（随 develop 合入）；迁移适配器行为由 cmd/cli migrate-legacy e2e 真库覆盖
