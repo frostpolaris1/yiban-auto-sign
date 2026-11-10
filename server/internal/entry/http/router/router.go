@@ -212,6 +212,11 @@ func New(opts Options) (*gin.Engine, error) {
 			bindError(c, err)
 		},
 	})
+	// 文档页与爬虫协议是页面路由，不进契约：它们是 HTML/文本，没有 JSON 形状。
+	// 挂在契约注册之后、NoRoute 之前：命中即由这里回，未命中才落页面路由。
+	engine.GET("/terms", srv.docs.terms)
+	engine.GET("/privacy", srv.docs.privacy)
+	engine.GET("/robots.txt", srv.docs.robots)
 	if opts.UIDir != "" {
 		ui, err := newUIHandler(opts.UIDir)
 		if err != nil {

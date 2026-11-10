@@ -245,3 +245,6 @@ server/internal/entry/http/system/mail_settings_test.go	uncovered=Go 测试文�
 server/internal/entry/http/system/handlers.go	uncovered=Go 包门 go test ./internal/entry/http/system 真跑：WithReauth/reauthenticate 与 mail 写面接线由 mail_settings_test 钉住
 server/internal/entry/http/router/handlers.go	uncovered=Go 包门 go test ./internal/entry/http/router 真跑：AdminMailSettings/AdminMailSettingsSet 委托与 501 由 settings_routes_test 路由表钉住
 server/cmd/server/mail_settings_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑真装配写回/密文/每发送/审计回滚 e2e）
+# ---- v1.0.0 尾批：changelog/协议页/robots（2026-11-10）----
+server/go.mod	uncovered=Go 模块清单：依赖许可证由 server/scripts/license.sh 与 THIRD_PARTY_LICENSES.md 门钉住，版本由 go.sum 锁定；本批新增 github.com/yuin/goldmark v1.8.7（MIT，协议页 Markdown 渲染）
+server/go.sum	uncovered=同上：go.sum 是 go.mod 的校验和镜像，由 go mod tidy 生成，不手改

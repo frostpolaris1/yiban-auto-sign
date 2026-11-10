@@ -1,12 +1,16 @@
 package router_test
 
-// 更新日志读面的门。
+// 文档只读面与静态页路由的门。
 //
 // # 功能
-// 钉住两条用户可见不变式：无会话可读；读不到时回固定回落文案。
+// 钉住四条用户可见不变式：
+//   - /api/changelog 无会话可读，读不到时回固定回落文案；
+//   - /terms 与 /privacy 的 Markdown 注释不进正文，白名单外链接不落 href；
+//   - /robots.txt 的禁抓集合；
+//   - 站标缺失 404、存在一小时短缓存。
 //
 // # 归属
-// entry/http/router 是这条路由的所有者，门与实现同包。
+// entry/http/router 是这些路由的所有者，门与实现同包。
 // 本文件**不**连数据库、**不**读真实仓库文档：fixture 全部在临时目录里造。
 //
 // # 口径
@@ -88,5 +92,129 @@ func TestChangelogFallsBackWhenFileMissing(t *testing.T) {
 	h := newDocsEngine(t, t.TempDir())
 	if got := changelogText(t, h); got != "暂无更新日志" {
 		t.Fatalf("changelog 回落 = %q, want 暂无更新日志", got)
+	}
+}
+
+// 协议页：注释里的内容不得出现在正文。
+// 旧线自研渲染器专门跳过 <!-- -->；换成 goldmark 后靠「原始 HTML 关闭」守同一条线。
+func TestDocPagesDoNotLeakHTMLComments(t *testing.T) {
+	const secret = "comment-secret-2026-11-10"
+	h := newDocsEngine(t, writeDocsDir(t, map[string]string{
+		"USER_AGREEMENT.md": "<!-- " + secret + " -->\n\n# 用户协议\n\n正文段落。\n",
+		"PRIVACY_POLICY.md": "首段 <!-- " + secret + " --> 尾段。\n\n# 隐私政策\n",
+	}))
+	for _, target := range []string{"/terms", "/privacy"} {
+		rec := get(t, h, target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", target, rec.Code)
+		}
+		if body := rec.Body.String(); strings.Contains(body, secret) {
+			t.Fatalf("GET %s 泄漏了注释内容: %q", target, body)
+		}
+	}
+}
+
+// 负向用例：白名单外协议不落 href，标签文本保留。
+func TestDocPagesDropUnsafeLinkSchemes(t *testing.T) {
+	h := newDocsEngine(t, writeDocsDir(t, map[string]string{
+		"USER_AGREEMENT.md": strings.Join([]string{
+			"# 用户协议",
+			"",
+			"[点我](javascript:alert(1))",
+			"",
+			"[数据](data:text/html;base64,PHNjcmlwdD4=)",
+			"",
+			"[自定](tel:10086)",
+			"",
+			"[放行](https://example.com/doc)",
+			"",
+			"[片段](#section)",
+		}, "\n"),
+	}))
+	rec := get(t, h, "/terms")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /terms = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, banned := range []string{"javascript:", "data:text/html", "tel:10086"} {
+		if strings.Contains(body, banned) {
+			t.Fatalf("正文含未放行的协议 %q: %q", banned, body)
+		}
+	}
+	for _, label := range []string{"点我", "数据", "自定"} {
+		if !strings.Contains(body, label) {
+			t.Fatalf("降级后丢了链接文本 %q: %q", label, body)
+		}
+	}
+	if !strings.Contains(body, `href="https://example.com/doc"`) {
+		t.Fatalf("https 链接未落 href: %q", body)
+	}
+	if !strings.Contains(body, `href="#section"`) {
+		t.Fatalf("页内片段未落 href: %q", body)
+	}
+}
+
+// 文档缺失：协议页仍 200，正文是一句占位文案。
+func TestDocPagesFallBackWhenFileMissing(t *testing.T) {
+	h := newDocsEngine(t, t.TempDir())
+	for _, target := range []string{"/terms", "/privacy"} {
+		rec := get(t, h, target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", target, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "文档暂缺，请联系运营者") {
+			t.Fatalf("GET %s 缺占位文案: %q", target, rec.Body.String())
+		}
+	}
+}
+
+// 未设置文档目录：与文件缺失同一条回落路径。
+func TestDocPagesFallBackWithoutDocsDir(t *testing.T) {
+	h := newDocsEngine(t, "")
+	rec := get(t, h, "/terms")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /terms = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "文档暂缺，请联系运营者") {
+		t.Fatalf("GET /terms 缺占位文案: %q", rec.Body.String())
+	}
+}
+
+// 爬虫协议：只放行登录页与静态资源，其余全禁。
+// 对齐旧线 tests/test_static_routes.py 的 test_robots_disallows_private_pages。
+func TestRobotsTxtDisallowsPrivatePages(t *testing.T) {
+	h := newDocsEngine(t, "")
+	rec := get(t, h, "/robots.txt")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /robots.txt = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
+	}
+	want := "User-agent: *\nAllow: /login\nAllow: /assets/\nDisallow: /\n"
+	if got := rec.Body.String(); got != want {
+		t.Fatalf("robots.txt = %q, want %q", got, want)
+	}
+}
+
+// 站标：缺失 404（浏览器退回默认图标），存在一小时短缓存。
+func TestFaviconMissingAndShortCache(t *testing.T) {
+	dir := writeUIDist(t)
+	h := newUIEngine(t, dir)
+
+	rec := get(t, h, "/favicon.png")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("缺 favicon 时 GET /favicon.png = %d, want 404", rec.Code)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "favicon.png"), []byte("png-bytes"), 0o644); err != nil {
+		t.Fatalf("写 favicon: %v", err)
+	}
+	rec = get(t, h, "/favicon.png")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("有 favicon 时 GET /favicon.png = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Fatalf("favicon Cache-Control = %q, want public, max-age=3600", got)
 	}
 }

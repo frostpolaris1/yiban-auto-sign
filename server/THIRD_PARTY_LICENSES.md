@@ -38,6 +38,7 @@
 | github.com/ugorji/go/codec | MIT |
 | github.com/wneessen/go-mail | MIT |
 | github.com/wneessen/go-mail/smtp | BSD-3-Clause |
+| github.com/yuin/goldmark | MIT |
 | go.mongodb.org/mongo-driver/v2 | Apache-2.0 |
 | go.uber.org/multierr | MIT |
 | golang.org/x/crypto | BSD-3-Clause |
@@ -48,4 +49,4 @@
 | golang.org/x/time/rate | BSD-3-Clause |
 | google.golang.org/protobuf | BSD-3-Clause |
 
-共 36 个模块/包。
+共 37 个模块/包。

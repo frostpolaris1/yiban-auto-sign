@@ -55,6 +55,9 @@ var publicPaths = map[string]struct{}{
 	"/api/auth/reset-password":  {},
 	"/api/me/restore":           {},
 	"/api/changelog":            {},
+	"/terms":                    {},
+	"/privacy":                  {},
+	"/robots.txt":               {},
 }
 
 // csrfExemptPaths 要么建立会话，要么不携带会话权限。
