@@ -52,7 +52,9 @@ const (
 	docsPrivacyName   = "PRIVACY_POLICY.md"
 )
 
-// 回落文案。更新日志对齐旧线 api_changelog；协议页对齐旧线 _read_doc_html。
+// 回落文案。更新日志沿用旧线 api_changelog 的「暂无更新日志」；
+// 协议页用本线自己的一句占位——旧线 _read_doc_html 按「缺失/异常」分两句，
+// 本线不区分原因，统一一句。
 const (
 	changelogFallback  = "暂无更新日志"
 	docMissingFallback = "文档暂缺，请联系运营者"
@@ -165,6 +167,10 @@ func (d *docsHandler) robots(c *gin.Context) {
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(robotsTxt))
 }
 
+// rawHTMLPlaceholder 是 goldmark 关闭原始 HTML 时写出的占位注释。
+// 判空与输出都要先剥掉它：只剩注释的模板不该把占位当正文。
+const rawHTMLPlaceholder = "<!-- raw HTML omitted -->"
+
 // renderDocMarkdown 把一份 Markdown 渲染成 HTML 片段。
 // 渲染失败或正文为空时回退占位文案：空模板只剩注释，回显编辑者注释没有意义。
 func renderDocMarkdown(source []byte) string {
@@ -172,10 +178,12 @@ func renderDocMarkdown(source []byte) string {
 	if err := docMarkdown.Convert(source, &out); err != nil {
 		return docMissingFallback
 	}
-	if strings.TrimSpace(out.String()) == "" {
+	// 原始 HTML 一律不输出，占位注释也不留：正文只剩空白即视为未发布。
+	body := strings.ReplaceAll(out.String(), rawHTMLPlaceholder, "")
+	if strings.TrimSpace(body) == "" {
 		return docMissingFallback
 	}
-	return out.String()
+	return body
 }
 
 // docLinkWhitelist 把白名单外的链接、图片与自动链接降级为纯文本。
@@ -213,7 +221,7 @@ func (docLinkWhitelist) Transform(doc *ast.Document, reader text.Reader, _ parse
 				docReplaceWithChildren(node)
 			}
 		case *ast.AutoLink:
-			if docAutoLinkAllowed(node) {
+			if docAutoLinkAllowed(node, source) {
 				continue
 			}
 			if parent := node.Parent(); parent != nil {
@@ -223,17 +231,16 @@ func (docLinkWhitelist) Transform(doc *ast.Document, reader text.Reader, _ parse
 	}
 }
 
-// docAutoLinkAllowed 判 <scheme:...> 自动链接。
-// Protocol 为 nil 是邮箱自动链接，渲染成 mailto:，放行。
-func docAutoLinkAllowed(node *ast.AutoLink) bool {
-	if node.Protocol == nil {
+// docAutoLinkAllowed 判 <...> 自动链接。
+//
+// goldmark v1.8.7 的解析器**不填** Protocol（恒为 nil），故不能按 Protocol 判：
+// 邮箱自动链接渲染成 mailto:，直接放行；其余取 node.URL(source) 过同一份
+// 协议白名单。按 Protocol 判会得到「nil 即放行」的死分支，<tel:10086> 会落 href。
+func docAutoLinkAllowed(node *ast.AutoLink, source []byte) bool {
+	if node.AutoLinkType == ast.AutoLinkEmail {
 		return true
 	}
-	switch strings.ToLower(string(node.Protocol)) {
-	case "http", "https", "mailto":
-		return true
-	}
-	return false
+	return docLinkAllowed(node.URL(source))
 }
 
 // docLinkAllowed 是链接协议白名单。

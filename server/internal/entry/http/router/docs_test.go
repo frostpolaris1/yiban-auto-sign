@@ -154,6 +154,64 @@ func TestDocPagesDropUnsafeLinkSchemes(t *testing.T) {
 	}
 }
 
+// 自动链接（<...>）单独一组：goldmark v1.8.7 不填 AutoLink.Protocol，
+// 按 Protocol 判会得到「nil 即放行」的死分支，<tel:10086> 会落成可点 href。
+// 降级后文本保留（它就是标签），但 href 集合里不得出现白名单外的协议。
+func TestDocPagesDropUnsafeAutoLinks(t *testing.T) {
+	h := newDocsEngine(t, writeDocsDir(t, map[string]string{
+		"USER_AGREEMENT.md": strings.Join([]string{
+			"# 用户协议",
+			"",
+			"<tel:10086>",
+			"",
+			"<javascript:alert(1)>",
+			"",
+			"<https://example.com/a>",
+			"",
+			"<a@example.com>",
+		}, "\n"),
+	}))
+	rec := get(t, h, "/terms")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /terms = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, href := range docHrefs(body) {
+		switch {
+		case strings.HasPrefix(href, "https://example.com/a"),
+			strings.HasPrefix(href, "mailto:a@example.com"),
+			strings.HasPrefix(href, "/login"):
+		default:
+			t.Fatalf("出现白名单外的 href %q: %q", href, body)
+		}
+	}
+	// 降级为纯文本：文本还在，标签不在。
+	if !strings.Contains(body, "tel:10086") || strings.Contains(body, `href="tel:`) {
+		t.Fatalf("tel 自动链接未降级为纯文本: %q", body)
+	}
+	if !strings.Contains(body, "javascript:alert(1)") || strings.Contains(body, `href="javascript:`) {
+		t.Fatalf("javascript 自动链接未降级为纯文本: %q", body)
+	}
+	if !strings.Contains(body, `href="https://example.com/a"`) {
+		t.Fatalf("https 自动链接未落 href: %q", body)
+	}
+	if !strings.Contains(body, `href="mailto:a@example.com"`) {
+		t.Fatalf("邮箱自动链接未落 mailto: %q", body)
+	}
+}
+
+// docHrefs 取出正文里全部 href 值。
+// 断言按集合判，不按出现顺序：渲染器的标签顺序不是本门的判据。
+func docHrefs(body string) []string {
+	var out []string
+	for _, part := range strings.Split(body, `href="`)[1:] {
+		if end := strings.IndexByte(part, '"'); end >= 0 {
+			out = append(out, part[:end])
+		}
+	}
+	return out
+}
+
 // 文档缺失：协议页仍 200，正文是一句占位文案。
 func TestDocPagesFallBackWhenFileMissing(t *testing.T) {
 	h := newDocsEngine(t, t.TempDir())
@@ -171,12 +229,75 @@ func TestDocPagesFallBackWhenFileMissing(t *testing.T) {
 // 未设置文档目录：与文件缺失同一条回落路径。
 func TestDocPagesFallBackWithoutDocsDir(t *testing.T) {
 	h := newDocsEngine(t, "")
+	for _, target := range []string{"/terms", "/privacy"} {
+		rec := get(t, h, target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", target, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "文档暂缺，请联系运营者") {
+			t.Fatalf("GET %s 缺占位文案: %q", target, rec.Body.String())
+		}
+	}
+}
+
+// 只剩注释的模板：占位注释不得被当成正文，仍走「文档暂缺」。
+func TestDocPagesFallBackWhenOnlyComments(t *testing.T) {
+	h := newDocsEngine(t, writeDocsDir(t, map[string]string{
+		"USER_AGREEMENT.md": "<!-- 编辑者说明：正文待补 -->\n",
+	}))
 	rec := get(t, h, "/terms")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /terms = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "文档暂缺，请联系运营者") {
-		t.Fatalf("GET /terms 缺占位文案: %q", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, "文档暂缺，请联系运营者") {
+		t.Fatalf("全注释模板未回落: %q", body)
+	}
+	if strings.Contains(body, "raw HTML omitted") {
+		t.Fatalf("占位注释被当成正文输出: %q", body)
+	}
+}
+
+// 各路由的 Content-Type：JSON 读面与 HTML/文本页各按自己的类型回。
+func TestDocsRoutesContentType(t *testing.T) {
+	h := newDocsEngine(t, writeDocsDir(t, map[string]string{
+		"CHANGELOG.md":      "# 更新日志\n",
+		"USER_AGREEMENT.md": "# 用户协议\n",
+		"PRIVACY_POLICY.md": "# 隐私政策\n",
+	}))
+	cases := []struct {
+		target string
+		want   string
+	}{
+		{"/api/changelog", "application/json; charset=utf-8"},
+		{"/terms", "text/html; charset=utf-8"},
+		{"/privacy", "text/html; charset=utf-8"},
+	}
+	for _, tc := range cases {
+		rec := get(t, h, tc.target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", tc.target, rec.Code)
+		}
+		if got := rec.Header().Get("Content-Type"); got != tc.want {
+			t.Fatalf("GET %s Content-Type = %q, want %q", tc.target, got, tc.want)
+		}
+	}
+}
+
+// 更新日志是首读缓存：第一次读不到就钉住回落值，之后补文件也不变。
+// 部署者换文档要重启，这条钉的就是 sync.Once 的口径。
+func TestChangelogFallbackIsCached(t *testing.T) {
+	dir := t.TempDir()
+	h := newDocsEngine(t, dir)
+	if got := changelogText(t, h); got != "暂无更新日志" {
+		t.Fatalf("首次读不到时 = %q, want 暂无更新日志", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG.md"),
+		[]byte("# 更新日志\n\n后补内容\n"), 0o644); err != nil {
+		t.Fatalf("补写 CHANGELOG.md: %v", err)
+	}
+	if got := changelogText(t, h); got != "暂无更新日志" {
+		t.Fatalf("首读缓存失效：后补文件后 = %q, want 暂无更新日志", got)
 	}
 }
 

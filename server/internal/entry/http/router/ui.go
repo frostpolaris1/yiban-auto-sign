@@ -108,7 +108,7 @@ func isRegularFile(fsys fs.FS, name string) bool {
 
 // setCacheHeader 只给哈希资产长缓存。
 // index.html 必须每次重验证：它指向当次构建的资产名。
-// 根级 png（部署者自放的站标）取一小时短缓存：换图后不必等长缓存过期。
+// 所有根级 png（favicon、未来 og 图）取一小时短缓存：换图后不必等长缓存过期。
 func (u *uiHandler) setCacheHeader(h http.Header, name string) {
 	if strings.HasPrefix(name, "assets/") {
 		h.Set("Cache-Control", "public, max-age=31536000, immutable")
