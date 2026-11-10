@@ -1226,11 +1226,37 @@ type AdminScheduleSettingsUpdate struct {
 	// AllowTimePref Master switch for user time preferences.
 	AllowTimePref *bool `json:"allow_time_pref,omitempty"`
 
+	// DefaultSignEndMin Minute of the business day where the fallback sign window ends
+	// when the platform offers none (built-in default 07:50). Stored
+	// as a pair with default_sign_start_min under the same pair
+	// rules.
+	DefaultSignEndMin *int `json:"default_sign_end_min,omitempty"`
+
+	// DefaultSignStartMin Minute of the business day where the fallback sign window
+	// starts when the platform offers none (built-in default 06:30).
+	// Stored as a pair with default_sign_end_min; the pair must
+	// satisfy start < end after the write combines with the
+	// effective other side, and a half pair falls back to the
+	// built-in pair as a whole at read time.
+	DefaultSignStartMin *int `json:"default_sign_start_min,omitempty"`
+
 	// EdgeBackSec Seconds trimmed from the back of the window.
 	EdgeBackSec *int `json:"edge_back_sec,omitempty"`
 
 	// EdgeFrontSec Seconds trimmed from the front of the window.
 	EdgeFrontSec *int `json:"edge_front_sec,omitempty"`
+
+	// SaturdaySign Weekend gate for Saturdays. A missing row reads as false: no
+	// plan rows are built on Saturdays at all (the default aligns
+	// with the legacy off-by-default weekend gate). true restores
+	// Saturday plan builds.
+	SaturdaySign *bool `json:"saturday_sign,omitempty"`
+
+	// SundaySign Weekend gate for Sundays. A missing row reads as false: no
+	// plan rows are built on Sundays at all (the default aligns with
+	// the legacy off-by-default weekend gate). true restores Sunday
+	// plan builds.
+	SundaySign *bool `json:"sunday_sign,omitempty"`
 }
 
 // AdminTaskRow defines model for AdminTaskRow.

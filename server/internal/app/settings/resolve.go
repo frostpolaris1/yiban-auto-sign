@@ -48,6 +48,32 @@ const (
 // 读经覆盖链解析器（故障上抛、坏行回退缺省并出声），写经 SetBool。
 const KeyEnginePaused = "engine.paused"
 
+// 批 3b 的四枚 DB-only 机制键。与 engine.paused 同口径：不经名册
+// （registry 无对应键，Known 恒 false，覆盖行不进 GET /api/admin/settings）、
+// 无 env 对应位、三份环境模板不动。
+const (
+	// KeyScheduleSundaySign 是周日计划构建开关（布尔）。
+	// 缺行=false=周日不铺任何计划行（对齐旧线 SUNDAY_SIGN 缺省 0）。
+	KeyScheduleSundaySign = "schedule.sunday_sign"
+	// KeyScheduleSaturdaySign 是周六计划构建开关（布尔）。
+	// 缺行=false=周六不铺任何计划行（对齐旧线 SATURDAY_SIGN 缺省 0）。
+	KeyScheduleSaturdaySign = "schedule.saturday_sign"
+	// KeyScheduleDefaultSignStartMin 是全局默认签到窗口起点（业务日内分钟）。
+	KeyScheduleDefaultSignStartMin = "schedule.default_sign_start_min"
+	// KeyScheduleDefaultSignEndMin 是全局默认签到窗口终点（业务日内分钟）。
+	KeyScheduleDefaultSignEndMin = "schedule.default_sign_end_min"
+)
+
+// 默认窗口分钟域 [0,1439]（业务日内分钟，00:00 起）。
+// DB-only 键不经 registry：域没有名册载体，按批 3b 派单在用例层显式写死；
+// 读面（ResolveSignWindow）与写面（SetSchedule 的域校验）共用此一对常量，
+// 不复制第二份。上界与 core/schedule.MaxOffsetMin（1440，不含）同源：
+// 业务日最多 1440 分钟，1439 是最后一个合法分钟。
+const (
+	signWindowMinuteMin = 0
+	signWindowMinuteMax = 1439
+)
+
 // SettingDomain 是一个整型键的合法域（registry domain 注入视图）。
 type SettingDomain struct {
 	Min int
@@ -279,4 +305,65 @@ func (r *Resolver) warnOnce(key, kind string) {
 		logfield.KeyKind, kind,
 		logfield.KeyReason, key,
 	)
+}
+
+// warnSignWindowPairOnce 是默认窗口对的出声口径：每进程只 Warn 一次。
+// reason 是回退原因词（bad_row/half_pair/out_of_domain/start_not_before_end），
+// 不含值原文。警告以 start 键为索引（对级问题共用一条记录）。
+func (r *Resolver) warnSignWindowPairOnce(reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.warned[KeyScheduleDefaultSignStartMin] {
+		return
+	}
+	r.warned[KeyScheduleDefaultSignStartMin] = true
+	r.log.Warn("schedule default sign window override is invalid; falling back to built-in constants",
+		logfield.KeyEvent, "settings.override_invalid",
+		logfield.KeyKind, "pair",
+		logfield.KeyReason, reason,
+	)
+}
+
+// ResolveSignWindow 解析全局默认签到窗口对（批 3b，消费点＝fallback 窗口）。
+// 两侧行都存在且都在 [0,1439] 且 start<end → 行值对；
+// 双缺行 → 常量对（调用方传 core/schedule 缺省常量，常量仍单源在 core）；
+// 半对（一侧有行一侧缺行）、坏行、越域或 start>=end → 整对回退常量并
+// 每进程 Warn 一次——半对配置不得使用，防止跨语义拼接；
+// 存储故障原样上抛（故障不是配置状态）。
+func (r *Resolver) ResolveSignWindow(ctx context.Context, fallbackStart, fallbackEnd int) (int, int, error) {
+	start, startFound, err := r.store.IntOverride(ctx, KeyScheduleDefaultSignStartMin)
+	if err != nil {
+		if isSettingValueInvalid(err) {
+			r.warnSignWindowPairOnce("bad_row")
+			return fallbackStart, fallbackEnd, nil
+		}
+		return 0, 0, err
+	}
+	end, endFound, err := r.store.IntOverride(ctx, KeyScheduleDefaultSignEndMin)
+	if err != nil {
+		if isSettingValueInvalid(err) {
+			r.warnSignWindowPairOnce("bad_row")
+			return fallbackStart, fallbackEnd, nil
+		}
+		return 0, 0, err
+	}
+	switch {
+	case !startFound && !endFound:
+		// 双缺行是常态：静默用常量对（对齐覆盖链「缺行→传参缺省」口径）。
+		return fallbackStart, fallbackEnd, nil
+	case startFound != endFound:
+		// 半对：一侧有行一侧缺行。整对回退，不与常量拼接另一侧行值。
+		r.warnSignWindowPairOnce("half_pair")
+		return fallbackStart, fallbackEnd, nil
+	}
+	if start < signWindowMinuteMin || start > signWindowMinuteMax ||
+		end < signWindowMinuteMin || end > signWindowMinuteMax {
+		r.warnSignWindowPairOnce("out_of_domain")
+		return fallbackStart, fallbackEnd, nil
+	}
+	if start >= end {
+		r.warnSignWindowPairOnce("start_not_before_end")
+		return fallbackStart, fallbackEnd, nil
+	}
+	return start, end, nil
 }

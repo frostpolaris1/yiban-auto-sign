@@ -2,6 +2,7 @@ package timepref_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -154,6 +155,46 @@ func TestClear(t *testing.T) {
 	}
 	if view.OffsetMin != nil || store.pref.OffsetMin != nil {
 		t.Fatalf("清除后仍非空: view=%+v store=%+v", view, store.pref)
+	}
+}
+
+// 3b 复审 F1：展示窗必须与计划 fallback 同源——注入的窗口对
+// 接管 Window 与槽位；端口故障原样上抛（口径同 Allow）。
+// 未注入（nil）=常量对的回归由 TestViewWindowAndSlots 钉住。
+func TestViewUsesWindowPort(t *testing.T) {
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+	svc, err := apptimepref.NewService(apptimepref.Deps{
+		Store: &fakeStore{}, Clock: coreclock.Fixed{T: now},
+		Allow:    func(context.Context) (bool, error) { return true, nil },
+		Window:   func(context.Context) (int, int, error) { return 405, 465, nil }, // 06:45~07:45
+		Cooldown: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	view, err := svc.Get(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if view.Window.Start != "06:45" || view.Window.End != "07:45" {
+		t.Fatalf("window = %+v, want 注入的 06:45~07:45", view.Window)
+	}
+	if len(view.Slots) != 12 || view.Slots[11].Label != "07:40" {
+		t.Fatalf("slots = %d 条，末槽 %+v, want 12 条末槽 07:40", len(view.Slots), view.Slots[len(view.Slots)-1])
+	}
+	svcDown, err := apptimepref.NewService(apptimepref.Deps{
+		Store: &fakeStore{}, Clock: coreclock.Fixed{T: now},
+		Allow: func(context.Context) (bool, error) { return true, nil },
+		Window: func(context.Context) (int, int, error) {
+			return 0, 0, errors.New("settings down")
+		},
+		Cooldown: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svcDown.Get(context.Background(), "u1"); err == nil {
+		t.Fatal("窗口端口故障必须上抛（故障不是常量窗口）")
 	}
 }
 

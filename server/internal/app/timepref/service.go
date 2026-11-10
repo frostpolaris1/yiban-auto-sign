@@ -47,11 +47,15 @@ type Store interface {
 // settings 写回后 DB 覆盖 env（sett2），故取函数而非定值。
 // 返回错误原样上抛——故障不是「关闭」；装配未接写回层时
 // 传「恒返 env 值」的闭包即可，行为与定值完全一致。
+// Window 是标准窗口的每请求解析对（分钟）：计划回退窗与自选展示窗
+// **必须同源**（3b 复审 F1——默认窗已可写回，裸常量会漂移成第二事实源）。
+// 返回错误原样上抛，口径同 Allow；nil 仅用于未接写回层的装配，回退 core 常量对。
 // Cooldown 是两次写入之间的最小间隔；非正值表示不限制。
 type Deps struct {
 	Store    Store
 	Clock    coreclock.Clock
 	Allow    func(ctx context.Context) (bool, error)
+	Window   func(ctx context.Context) (startMin, endMin int, err error)
 	Cooldown time.Duration
 }
 
@@ -105,6 +109,16 @@ func (s *Service) allowed(ctx context.Context) (bool, error) {
 	return s.deps.Allow(ctx)
 }
 
+// window 每请求解析标准窗口对，与计划 fallback 同源（F1）。
+// nil 端口=未接写回层的装配，取 core 常量对——与 schedule
+// defaultWindow 的 nil 语义逐字一致。
+func (s *Service) window(ctx context.Context) (int, int, error) {
+	if s.deps.Window == nil {
+		return coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute, nil
+	}
+	return s.deps.Window(ctx)
+}
+
 // Get 返回用户当前自选。没有记录时 OffsetMin 为 nil。
 // 关闭开关时仍返回已存值：界面要显示"功能未开启"，而不是假装未设置。
 func (s *Service) Get(ctx context.Context, userID string) (View, error) {
@@ -115,14 +129,18 @@ func (s *Service) Get(ctx context.Context, userID string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
+	startMin, endMin, err := s.window(ctx)
+	if err != nil {
+		return View{}, err
+	}
 	pref, err := s.deps.Store.Get(ctx, userID)
 	if err != nil {
 		if errors.Is(err, coreerrs.ErrNotFound) {
-			return s.view(nil, allow), nil
+			return s.view(nil, allow, startMin, endMin), nil
 		}
 		return View{}, err
 	}
-	return s.view(pref.OffsetMin, allow), nil
+	return s.view(pref.OffsetMin, allow, startMin, endMin), nil
 }
 
 // Set 写或清除自选。
@@ -145,6 +163,10 @@ func (s *Service) Set(ctx context.Context, userID string, offset *int) (View, er
 				"offset must be a multiple of 5 between 0 and 1439")
 		}
 	}
+	startMin, endMin, err := s.window(ctx)
+	if err != nil {
+		return View{}, err
+	}
 	now := s.deps.Clock.Now()
 	updated, err := s.deps.Store.PutWithin(ctx, userID, offset, now, s.deps.Cooldown)
 	if err != nil {
@@ -154,16 +176,14 @@ func (s *Service) Set(ctx context.Context, userID string, offset *int) (View, er
 		return View{}, coreerrs.New(coreerrs.CodeRateLimited,
 			"time preference changed too recently")
 	}
-	return s.view(offset, allow), nil
+	return s.view(offset, allow, startMin, endMin), nil
 }
 
-// view 组装读面。窗口与槽位只由 core/schedule 的默认常量派生：
-// 计划回退窗口与自选展示窗口不会出现两套 06:30/07:50。
+// view 组装读面。窗口对来自每请求解析（s.window），与计划回退窗同源：
+// 默认窗写回后（3b），自选展示窗口不会与铺行窗口出现两套值。
 // 这里是服务端标准窗口；实际执行窗口可被平台窗口或 override 平移，
 // slot label 只表示相对标准窗口的偏好时刻。
-func (s *Service) view(offset *int, allow bool) View {
-	start := coreschedule.DefaultSignWindowStartMinute
-	end := coreschedule.DefaultSignWindowEndMinute
+func (s *Service) view(offset *int, allow bool, start, end int) View {
 	out := View{
 		OffsetMin: offset,
 		Allowed:   allow,

@@ -1462,20 +1462,31 @@ export interface paths {
         get?: never;
         /**
          * Write runtime overrides for the schedule settings.
-         * @description Master only. A partial patch of the three writable schedule keys:
-         *     a field absent from the body leaves that key untouched; an explicit
-         *     null deletes the stored override row so the key reads its
-         *     environment value again; a value upserts the override row. The edge
-         *     fields accept integers between 0 and 300 (seconds); allow_time_pref
-         *     accepts the true/false literals. An out-of-domain value, a wrong
-         *     JSON type or an unknown field answers 400 with zero writes and zero
-         *     audit rows. The write and one settings.schedule_writeback audit row
-         *     commit in one transaction; the audit detail holds only the changed
-         *     keys with their previous and new values. Edge changes take effect at
-         *     the next daily plan build (rows already built for today are not
+         * @description Master only. A partial patch of the three writable schedule keys
+         *     plus four database-only mechanism keys (weekend gate and global
+         *     default sign window): a field absent from the body leaves that key
+         *     untouched; an explicit null deletes the stored override row so the
+         *     key reads its default again; a value upserts the override row. The
+         *     edge fields accept integers between 0 and 300 (seconds);
+         *     allow_time_pref and the weekend gate fields accept the true/false
+         *     literals; the default window fields accept minutes between 0 and
+         *     1439. A weekend gate row is absent or false, no plan rows are built
+         *     for that weekday at all (the new default aligns with the legacy
+         *     off-by-default weekend gate); true restores plan builds for that
+         *     weekday. The default window pair must satisfy start < end after
+         *     the write combines with the effective other side (stored row or
+         *     built-in 06:30/07:50 constant); a lone side that violates this
+         *     answers 400. At read time a half pair (one row present, one
+         *     missing) or an invalid pair falls back to the built-in pair as a
+         *     whole. An out-of-domain value, a wrong JSON type or an unknown
+         *     field answers 400 with zero writes and zero audit rows. The write
+         *     and one settings.schedule_writeback audit row commit in one
+         *     transaction; the audit detail holds only the changed keys with
+         *     their previous and new values. Edge and window changes take effect
+         *     at the next daily plan build (rows already built for today are not
          *     rebuilt); allow_time_pref takes effect on the next request. The
-         *     answer is the full roster in the same shape as
-         *     GET /api/admin/settings.
+         *     four mechanism keys never appear in the roster answer. The answer
+         *     is the full roster in the same shape as GET /api/admin/settings.
          */
         put: operations["AdminScheduleSettingsSet"];
         post?: never;
@@ -2510,6 +2521,36 @@ export interface components {
             edge_back_sec?: number | null;
             /** @description Master switch for user time preferences. */
             allow_time_pref?: boolean | null;
+            /**
+             * @description Weekend gate for Sundays. A missing row reads as false: no
+             *     plan rows are built on Sundays at all (the default aligns with
+             *     the legacy off-by-default weekend gate). true restores Sunday
+             *     plan builds.
+             */
+            sunday_sign?: boolean | null;
+            /**
+             * @description Weekend gate for Saturdays. A missing row reads as false: no
+             *     plan rows are built on Saturdays at all (the default aligns
+             *     with the legacy off-by-default weekend gate). true restores
+             *     Saturday plan builds.
+             */
+            saturday_sign?: boolean | null;
+            /**
+             * @description Minute of the business day where the fallback sign window
+             *     starts when the platform offers none (built-in default 06:30).
+             *     Stored as a pair with default_sign_end_min; the pair must
+             *     satisfy start < end after the write combines with the
+             *     effective other side, and a half pair falls back to the
+             *     built-in pair as a whole at read time.
+             */
+            default_sign_start_min?: number | null;
+            /**
+             * @description Minute of the business day where the fallback sign window ends
+             *     when the platform offers none (built-in default 07:50). Stored
+             *     as a pair with default_sign_start_min under the same pair
+             *     rules.
+             */
+            default_sign_end_min?: number | null;
         };
         MailTestResult: {
             /**

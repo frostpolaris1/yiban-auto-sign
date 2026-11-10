@@ -26,6 +26,7 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
@@ -67,7 +68,7 @@ func (s *Service) SetSchedule(ctx context.Context, scope corescope.Scope, actor 
 	if len(changes) == 0 {
 		return coreerrs.New(coreerrs.CodeValidation, "schedule settings update is empty")
 	}
-	if err := s.validateScheduleChanges(changes); err != nil {
+	if err := s.validateScheduleChanges(ctx, changes); err != nil {
 		return err
 	}
 	return s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
@@ -96,8 +97,9 @@ func (s *Service) SetSchedule(ctx context.Context, scope corescope.Scope, actor 
 }
 
 // validateScheduleChanges 在事务外做全部拒绝判定：
-// 键必须在写回集内、Op 合法、值类型与键匹配、整型值在名册域内。
-func (s *Service) validateScheduleChanges(changes []ScheduleChange) error {
+// 键必须在写回集内、Op 合法、值类型与键匹配、整型值在名册域内，
+// 默认窗口对再做跨字段一致性校验（批 3b）。
+func (s *Service) validateScheduleChanges(ctx context.Context, changes []ScheduleChange) error {
 	for _, change := range changes {
 		switch change.Key {
 		case KeyScheduleEdgeFrontSec, KeyScheduleEdgeBackSec:
@@ -117,7 +119,8 @@ func (s *Service) validateScheduleChanges(changes []ScheduleChange) error {
 			if err := s.deps.Resolver.CheckInt(change.Key, value); err != nil {
 				return err
 			}
-		case KeyScheduleAllowTimePref:
+		case KeyScheduleAllowTimePref, KeyScheduleSundaySign, KeyScheduleSaturdaySign:
+			// 周末门两键（批 3b）与 allow_time_pref 同形：布尔字面，无 registry 域。
 			if change.Op != ScheduleOpSet && change.Op != ScheduleOpClear {
 				return coreerrs.New(coreerrs.CodeValidation, "unknown schedule settings operation")
 			}
@@ -128,13 +131,111 @@ func (s *Service) validateScheduleChanges(changes []ScheduleChange) error {
 				continue
 			}
 			if _, ok := change.Value.(bool); !ok {
-				return coreerrs.New(coreerrs.CodeValidation, "allow_time_pref requires a boolean")
+				return coreerrs.New(coreerrs.CodeValidation, "sign gate settings require a boolean")
+			}
+		case KeyScheduleDefaultSignStartMin, KeyScheduleDefaultSignEndMin:
+			// 默认窗口两键（批 3b）：分钟域不走 Resolver.CheckInt——
+			// CheckInt 绑定 registry 注入域，而这两键是 DB-only、不在名册，
+			// 没有名册域可注入；按派单把域写在用例层（与读面 ResolveSignWindow
+			// 共用 resolve.go 的同一对域常量，不复制第二份）。
+			if change.Op != ScheduleOpSet && change.Op != ScheduleOpClear {
+				return coreerrs.New(coreerrs.CodeValidation, "unknown schedule settings operation")
+			}
+			if change.Op == ScheduleOpClear {
+				if change.Value != nil {
+					return coreerrs.New(coreerrs.CodeValidation, "clearing a setting must not carry a value")
+				}
+				continue
+			}
+			value, ok := change.Value.(int)
+			if !ok {
+				return coreerrs.New(coreerrs.CodeValidation, "sign window settings require an integer")
+			}
+			if value < signWindowMinuteMin || value > signWindowMinuteMax {
+				return coreerrs.New(coreerrs.CodeValidation,
+					"sign window minute must be between 0 and 1439")
 			}
 		default:
 			return coreerrs.New(coreerrs.CodeValidation, "unknown schedule setting key")
 		}
 	}
+	return s.validateSignWindowPair(ctx, changes)
+}
+
+// signWindowIntent 收集本次 PUT 对默认窗口两键的写意图：
+// 未列出（零值 Op）、set（新值）或 clear。
+type signWindowIntent struct {
+	op    ScheduleOp
+	value int
+}
+
+// validateSignWindowPair 判默认窗口对的跨字段一致性（批 3b）：
+// 本次 PUT 只改一侧时，与另一侧的生效值组合后仍需 start<end。
+// 生效值口径与读面一致：本次 set 用新值；本次 clear 或未动时读 DB 行，
+// 行缺失、坏行或越域一律按 core 常量（读面 ResolveSignWindow 同口径，
+// 半对整对回退，不与行值拼接）。本次 PUT 不涉窗口两键时不校验：
+// 半对的存量行不得卡死其他键的普通写回。
+// 存储故障原样上抛（校验期读失败不静默写）。
+func (s *Service) validateSignWindowPair(ctx context.Context, changes []ScheduleChange) error {
+	var startIntent, endIntent signWindowIntent
+	touched := false
+	for _, change := range changes {
+		switch change.Key {
+		case KeyScheduleDefaultSignStartMin:
+			startIntent.op, startIntent.value = change.Op, intValueOf(change.Value)
+			touched = true
+		case KeyScheduleDefaultSignEndMin:
+			endIntent.op, endIntent.value = change.Op, intValueOf(change.Value)
+			touched = true
+		}
+	}
+	if !touched {
+		return nil
+	}
+	start, err := s.signWindowEffectiveSide(ctx, KeyScheduleDefaultSignStartMin,
+		startIntent, coreschedule.DefaultSignWindowStartMinute)
+	if err != nil {
+		return err
+	}
+	end, err := s.signWindowEffectiveSide(ctx, KeyScheduleDefaultSignEndMin,
+		endIntent, coreschedule.DefaultSignWindowEndMinute)
+	if err != nil {
+		return err
+	}
+	if start >= end {
+		return coreerrs.New(coreerrs.CodeValidation,
+			"default sign window must satisfy start < end after combining with the effective other side")
+	}
 	return nil
+}
+
+// signWindowEffectiveSide 计算写后该侧的生效分钟值：
+// set 用新值；clear 或未动时读覆盖行，行缺失/坏行/越域按常量。
+func (s *Service) signWindowEffectiveSide(ctx context.Context, key string, intent signWindowIntent, fallback int) (int, error) {
+	if intent.op == ScheduleOpSet {
+		return intent.value, nil
+	}
+	if intent.op == ScheduleOpClear {
+		return fallback, nil
+	}
+	row, found, err := s.deps.Schedule.IntOverride(ctx, key)
+	if err != nil {
+		if isSettingValueInvalid(err) {
+			return fallback, nil
+		}
+		return 0, err
+	}
+	if !found || row < signWindowMinuteMin || row > signWindowMinuteMax {
+		return fallback, nil
+	}
+	return row, nil
+}
+
+// intValueOf 取 set 意图里的整型值；clear/未动时零值。
+// 值类型已由 validateScheduleChanges 的逐键分支判定，这里只取数。
+func intValueOf(value any) int {
+	v, _ := value.(int)
+	return v
 }
 
 // applyScheduleChange 落一行覆盖并返回审计用的旧→新值对。

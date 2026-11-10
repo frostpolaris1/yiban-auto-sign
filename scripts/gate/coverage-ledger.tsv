@@ -148,3 +148,21 @@ server/cmd/server/w2c_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG
 server/canonical.tsv	uncovered=人工对账门：go test ./tools/gate 钉住哈希（TestCanonicalRuleRowsPinned）＋verify 双跑（±-tests）
 server/tools/gate/anchors_test.go	uncovered=Go 包门 go test ./tools/gate 自证（哈希即本文件常量）
 server/internal/adapters/pg/credential_state_e2e_test.go	uncovered=Go 测试文件自身即门（真库 e2e；本批仅补恒假 Paused 注入，零断言变化）
+# 批 3b（周末门＋全局默认窗口，票 nzo，2026-11-10）
+server/internal/app/settings/resolve.go	covered_by=server/internal/app/settings/resolve_test.go	3b：四枚 DB-only 键常量＋ResolveSignWindow 半对/非法整对回退与故障上抛，由窗口对解析七测钉住
+server/internal/app/settings/schedule.go	covered_by=server/internal/app/settings/schedule_test.go	3b：写面扩周末门两布尔键＋窗口分钟对域[0,1439]（用例层域，DB-only 无 registry domain）与跨字段组合校验，由周末键写回与成对校验测试钉住
+server/internal/app/settings/resolve_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/settings 真跑），不需要 Python 侧覆盖
+server/internal/app/settings/schedule_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/settings 真跑），不需要 Python 侧覆盖
+server/internal/app/schedule/daily.go	covered_by=server/internal/app/schedule/daily_test.go	3b：BuildOverrides 扩周末门两键＋BuildToday weekday 判定（缺行=false 整日不铺行零构建、键=true 照常、读取失败上抛），由周末门五测钉住
+server/internal/app/schedule/repo.go	covered_by=server/internal/app/schedule/service_test.go	3b：Deps.Defaults 端口（默认窗口对解析，nil 时行为与常量一致），由 fallback 窗口四测钉住
+server/internal/app/schedule/service.go	covered_by=server/internal/app/schedule/service_test.go	3b：CachedWindow 与 resolveWindow 两处 fallbackAt 改走 defaultWindow 解析（DB 行>常量、故障上抛），写入→删除→常量恢复链测钉住
+server/internal/app/schedule/daily_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/schedule 真跑），不需要 Python 侧覆盖
+server/internal/app/schedule/service_test.go	uncovered=Go 测试文件自身即门（go test ./internal/app/schedule 真跑），不需要 Python 侧覆盖
+server/internal/assembly/assembly.go	covered_by=server/internal/assembly（go test ./internal/assembly 包门）	3b：buildScheduleOverrides 扩周末门两键 ResolveBool（envValue=false）＋scheduleSvc Deps.Defaults 注入 ResolveSignWindow＋DailyBuilder.Logger；装配编译即咬接线，消费面由 app 层测试钉住
+server/internal/entry/http/system/handlers.go	covered_by=server/internal/entry/http/system/schedule_settings_test.go	3b：scheduleBodyKeys 扩四字段（bool/int 分派）＋方法注释；新字段往返/类型错/越域/组合违规 400 零写零审计由入口测试钉住
+server/internal/entry/http/system/schedule_settings_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/system 真跑），不需要 Python 侧覆盖
+server/internal/entry/http/system/weekend_roster_test.go	uncovered=Go 测试文件自身即门（仿 TestEnginePausedKeyIsNotInRoster：四键存在行时 GET settings 不含），不需要 Python 侧覆盖
+server/contracts/openapi.yaml	uncovered=契约文本由 scripts/contract-gate.sh（spectral+oasdiff，本批 0 个非获准 ERR 变更）与 contract_gates_test.go 守卫；本批为 PUT /api/admin/schedule-settings 加 4 个可选字段（additive）＋缺省行为与半对回退描述
+server/contracts/README.md	uncovered=文档面（TestContractRoleTablesAgree 逐行比对 openapi×README 角色表）；本批更新 PUT schedule-settings 行描述，角色不变 master
+server/internal/entry/http/oapi/oapi.gen.go	uncovered=生成物，由 bash scripts/generate.sh --check 逐字节钉住；契约改动后必须同批重生成
+ui/src/lib/api/schema.d.ts	uncovered=生成物，由 node ui/scripts/generate-api.mjs --check 逐字节钉住；契约改动后必须同批重生成

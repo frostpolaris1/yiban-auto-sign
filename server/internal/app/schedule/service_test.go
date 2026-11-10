@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
+	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
@@ -350,6 +352,186 @@ func TestWindowSourcePrecedence(t *testing.T) {
 	if !prev.WindowStart.Equal(time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai)) ||
 		!prev.WindowEnd.Equal(time.Date(2026, 10, 29, 7, 50, 0, 0, shanghai)) {
 		t.Fatalf("回退窗口 = [%v, %v], want 06:30~07:50", prev.WindowStart, prev.WindowEnd)
+	}
+}
+
+// ===== 批 3b：fallback 窗口走全局默认窗口解析（Deps.Defaults）=====
+
+// keyedSettingStore 是按键区分行的 settings 覆盖行最小替身：
+// 只需读面（Resolver 构造与 ResolveSignWindow 走 IntOverride），
+// 写面直通 map（供测试造行）。
+type keyedSettingStore struct{ rows map[string]string }
+
+func (f *keyedSettingStore) IntOverride(_ context.Context, key string) (int, bool, error) {
+	raw, ok := f.rows[key]
+	if !ok {
+		return 0, false, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, true, coreerrs.New(coreerrs.CodeValidation, "settings value is not an integer")
+	}
+	return value, true, nil
+}
+
+func (f *keyedSettingStore) BoolOverride(_ context.Context, _ string) (bool, bool, error) {
+	return false, false, nil
+}
+
+func (f *keyedSettingStore) SetInt(_ context.Context, key string, value int, _ string) error {
+	f.rows[key] = strconv.Itoa(value)
+	return nil
+}
+
+func (f *keyedSettingStore) SetBool(_ context.Context, key string, value bool, _ string) error {
+	f.rows[key] = strconv.FormatBool(value)
+	return nil
+}
+
+func (f *keyedSettingStore) ClearSetting(_ context.Context, key string) error {
+	delete(f.rows, key)
+	return nil
+}
+
+// newServiceWithDefaults 构造带默认窗口解析端口的计划服务。
+func newServiceWithDefaults(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a fakeAccounts, d *fakeDiscover,
+	defaults func(context.Context) (int, int, error)) *appschedule.Service {
+	t.Helper()
+	svc, err := appschedule.NewService(appschedule.Deps{
+		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: &fakeTx{}, Defaults: defaults,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+// fallbackPreview 构造走 fallback 分支的场景（无缓存、无覆盖、平台发现失败）。
+func fallbackPreview(t *testing.T, defaults func(context.Context) (int, int, error)) (appschedule.Preview, error) {
+	t.Helper()
+	svc := newServiceWithDefaults(t, &fakeWindowStore{}, &fakePlanStore{},
+		fakeAccounts{ids: []string{"a1"}}, &fakeDiscover{err: errors.New("upstream down")}, defaults)
+	return svc.Preview(context.Background(), baseInput())
+}
+
+// DB 写入的默认窗口对生效：无平台窗口日的计划用新默认窗口。
+func TestFallbackWindowUsesDefaultsPort(t *testing.T) {
+	prev, err := fallbackPreview(t, func(context.Context) (int, int, error) {
+		return 480, 540, nil
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if !prev.WindowStart.Equal(time.Date(2026, 10, 29, 8, 0, 0, 0, shanghai)) ||
+		!prev.WindowEnd.Equal(time.Date(2026, 10, 29, 9, 0, 0, 0, shanghai)) {
+		t.Fatalf("fallback window = [%v, %v], want 08:00~09:00 (480/540)", prev.WindowStart, prev.WindowEnd)
+	}
+}
+
+// 未接解析端口时保持常量对：行为与既有完全一致（回归钉住）。
+func TestFallbackWindowWithoutDefaultsPortKeepsConstants(t *testing.T) {
+	prev, err := fallbackPreview(t, nil)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if !prev.WindowStart.Equal(time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai)) ||
+		!prev.WindowEnd.Equal(time.Date(2026, 10, 29, 7, 50, 0, 0, shanghai)) {
+		t.Fatalf("fallback window = [%v, %v], want builtin 06:30~07:50", prev.WindowStart, prev.WindowEnd)
+	}
+}
+
+// 解析端口故障上抛：故障不是配置状态，不得静默回退常量。
+func TestFallbackWindowDefaultsFailurePropagates(t *testing.T) {
+	_, err := fallbackPreview(t, func(context.Context) (int, int, error) {
+		return 0, 0, errors.New("db down")
+	})
+	if err == nil {
+		t.Fatal("defaults failure must propagate")
+	}
+}
+
+// 3b 复审 F2：CachedWindow 的默认窗解析必须是惰性的——
+// 缓存/覆盖命中时 settings 故障不得把可用的用户读面变红；
+// 无任何命中时故障照旧上抛（对侧不放松）。
+func TestCachedWindowHitIgnoresDefaultsFailure(t *testing.T) {
+	start := time.Date(2026, 10, 29, 7, 0, 0, 0, shanghai)
+	failing := func(context.Context) (int, int, error) {
+		return 0, 0, errors.New("settings down")
+	}
+	hit := &fakeWindowStore{ok: true, record: coreschedule.WindowRecord{
+		Start: start, End: start.Add(80 * time.Minute), Source: "platform",
+	}}
+	svc, err := appschedule.NewService(appschedule.Deps{
+		Windows: hit, Plans: &fakePlanStore{}, Accounts: fakeAccounts{ids: []string{"a1"}},
+		Discover: &fakeDiscover{}, Tx: &fakeTx{}, Defaults: failing,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	got, err := svc.CachedWindow(context.Background(), baseInput())
+	if err != nil {
+		t.Fatalf("缓存命中时 Defaults 故障不得上抛: %v", err)
+	}
+	if got.Source != "platform" {
+		t.Fatalf("source = %q, want platform", got.Source)
+	}
+	svcMiss, err := appschedule.NewService(appschedule.Deps{
+		Windows: &fakeWindowStore{}, Plans: &fakePlanStore{}, Accounts: fakeAccounts{ids: []string{"a1"}},
+		Discover: &fakeDiscover{}, Tx: &fakeTx{}, Defaults: failing,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svcMiss.CachedWindow(context.Background(), baseInput()); err == nil {
+		t.Fatal("无命中时 Defaults 故障必须上抛（对侧不放松）")
+	}
+}
+
+// 写入→删除→常量恢复（验收谓词 7 的单元链）：真 Resolver＋keyed store
+// 组装 Defaults 端口，DB 写入后新窗口生效，删行后回常量对。
+func TestFallbackWindowWriteThenClearRestoresConstants(t *testing.T) {
+	store := &keyedSettingStore{rows: map[string]string{}}
+	resolver, err := appsettings.NewResolver(store, map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	ctx := context.Background()
+	defaults := func(ctx context.Context) (int, int, error) {
+		return resolver.ResolveSignWindow(ctx,
+			coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+	}
+
+	if err := store.SetInt(ctx, appsettings.KeyScheduleDefaultSignStartMin, 480, "u"); err != nil {
+		t.Fatalf("SetInt: %v", err)
+	}
+	if err := store.SetInt(ctx, appsettings.KeyScheduleDefaultSignEndMin, 540, "u"); err != nil {
+		t.Fatalf("SetInt: %v", err)
+	}
+	prev, err := fallbackPreview(t, defaults)
+	if err != nil {
+		t.Fatalf("preview after write: %v", err)
+	}
+	if !prev.WindowStart.Equal(time.Date(2026, 10, 29, 8, 0, 0, 0, shanghai)) ||
+		!prev.WindowEnd.Equal(time.Date(2026, 10, 29, 9, 0, 0, 0, shanghai)) {
+		t.Fatalf("fallback after write = [%v, %v], want 08:00~09:00", prev.WindowStart, prev.WindowEnd)
+	}
+
+	if err := store.ClearSetting(ctx, appsettings.KeyScheduleDefaultSignStartMin); err != nil {
+		t.Fatalf("ClearSetting: %v", err)
+	}
+	if err := store.ClearSetting(ctx, appsettings.KeyScheduleDefaultSignEndMin); err != nil {
+		t.Fatalf("ClearSetting: %v", err)
+	}
+	prev, err = fallbackPreview(t, defaults)
+	if err != nil {
+		t.Fatalf("preview after clear: %v", err)
+	}
+	if !prev.WindowStart.Equal(time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai)) ||
+		!prev.WindowEnd.Equal(time.Date(2026, 10, 29, 7, 50, 0, 0, shanghai)) {
+		t.Fatalf("fallback after clear = [%v, %v], want builtin 06:30~07:50", prev.WindowStart, prev.WindowEnd)
 	}
 }
 

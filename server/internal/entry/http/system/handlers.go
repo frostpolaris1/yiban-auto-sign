@@ -2,7 +2,8 @@
 //
 // 功能：
 // GET /api/admin/settings（master/admin 只读名册，写回键报 source=db）、
-// PUT /api/admin/schedule-settings（master 部分补丁写回调度三键，sett2）、
+// PUT /api/admin/schedule-settings（master 部分补丁写回调度键：sett2 三键
+// ＋批 3b 四枚 DB-only 键——周末门两布尔与默认窗口两分钟）、
 // POST /api/admin/mail/test（master 向自己的邮箱发测试信）、
 // POST /api/admin/webhook/test（master 经配置的 webhook 出口发测试推送）、
 // PUT /api/admin/announcement（master）、GET /api/announcement（所有已登录角色）。
@@ -147,6 +148,8 @@ func settingsReportResponse(report appsettings.Report) oapi.SettingsReport {
 // 键存在性只能在解码原始 JSON 时判定（与 TimePrefSet 同因），
 // 未知字段在这里显式拒绝（400），不被解码器静默忽略。
 // 域校验与写入都在用例层：任何拒绝零写入零审计。
+// 批 3b：默认窗口两键另有跨字段成对校验（单侧写入与生效值组合后
+// 仍需 start<end，违规 400）。
 func (h *Handler) AdminScheduleSettingsSet(c *gin.Context, _ oapi.AdminScheduleSettingsSetParams) {
 	session, ok := requester(c)
 	if !ok {
@@ -183,40 +186,57 @@ func (h *Handler) AdminScheduleSettingsSet(c *gin.Context, _ oapi.AdminScheduleS
 	respond.JSON(c.Writer, http.StatusOK, settingsReportResponse(report))
 }
 
+// scheduleFieldKind 是 PUT 字段的值类型（解码分派用）：布尔字面或整数分钟。
+type scheduleFieldKind int
+
+const (
+	scheduleFieldInt scheduleFieldKind = iota
+	scheduleFieldBool
+)
+
 // scheduleBodyKeys 把 PUT 请求体字段名（对齐旧线设置页字段）映射到
-// settings 表键名。三键之外的字段一律未知（400）。
-var scheduleBodyKeys = map[string]string{
-	"edge_front_sec":  appsettings.KeyScheduleEdgeFrontSec,
-	"edge_back_sec":   appsettings.KeyScheduleEdgeBackSec,
-	"allow_time_pref": appsettings.KeyScheduleAllowTimePref,
+// settings 表键名与值类型。批 3b 扩四枚 DB-only 键：周末门两布尔
+// 与默认窗口两分钟。表外字段一律未知（400）。
+var scheduleBodyKeys = map[string]struct {
+	key  string
+	kind scheduleFieldKind
+}{
+	"edge_front_sec":         {key: appsettings.KeyScheduleEdgeFrontSec, kind: scheduleFieldInt},
+	"edge_back_sec":          {key: appsettings.KeyScheduleEdgeBackSec, kind: scheduleFieldInt},
+	"allow_time_pref":        {key: appsettings.KeyScheduleAllowTimePref, kind: scheduleFieldBool},
+	"sunday_sign":            {key: appsettings.KeyScheduleSundaySign, kind: scheduleFieldBool},
+	"saturday_sign":          {key: appsettings.KeyScheduleSaturdaySign, kind: scheduleFieldBool},
+	"default_sign_start_min": {key: appsettings.KeyScheduleDefaultSignStartMin, kind: scheduleFieldInt},
+	"default_sign_end_min":   {key: appsettings.KeyScheduleDefaultSignEndMin, kind: scheduleFieldInt},
 }
 
 // scheduleChangesFromJSON 把原始 JSON 体折成写意图。
-// 未知字段、JSON 类型错、空更新都在这里 400；域校验在用例层。
+// 未知字段、JSON 类型错、空更新都在这里 400；域校验（含默认窗口的
+// 跨字段成对校验）在用例层。
 func scheduleChangesFromJSON(body map[string]json.RawMessage) ([]appsettings.ScheduleChange, error) {
 	changes := make([]appsettings.ScheduleChange, 0, len(body))
 	for field, raw := range body {
-		key, known := scheduleBodyKeys[field]
+		spec, known := scheduleBodyKeys[field]
 		if !known {
 			return nil, errs.New(errs.CodeValidation, "unknown schedule setting key "+field)
 		}
 		if string(raw) == "null" {
-			changes = append(changes, appsettings.ScheduleChange{Key: key, Op: appsettings.ScheduleOpClear})
+			changes = append(changes, appsettings.ScheduleChange{Key: spec.key, Op: appsettings.ScheduleOpClear})
 			continue
 		}
-		if key == appsettings.KeyScheduleAllowTimePref {
+		if spec.kind == scheduleFieldBool {
 			var value bool
 			if err := json.Unmarshal(raw, &value); err != nil {
 				return nil, errs.New(errs.CodeValidation, field+" requires a boolean literal")
 			}
-			changes = append(changes, appsettings.ScheduleChange{Key: key, Op: appsettings.ScheduleOpSet, Value: value})
+			changes = append(changes, appsettings.ScheduleChange{Key: spec.key, Op: appsettings.ScheduleOpSet, Value: value})
 			continue
 		}
 		var value int
 		if err := json.Unmarshal(raw, &value); err != nil {
 			return nil, errs.New(errs.CodeValidation, field+" requires an integer")
 		}
-		changes = append(changes, appsettings.ScheduleChange{Key: key, Op: appsettings.ScheduleOpSet, Value: value})
+		changes = append(changes, appsettings.ScheduleChange{Key: spec.key, Op: appsettings.ScheduleOpSet, Value: value})
 	}
 	if len(changes) == 0 {
 		return nil, errs.New(errs.CodeValidation, "schedule settings update is empty")

@@ -22,6 +22,7 @@ import (
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
+	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
@@ -601,5 +602,104 @@ func TestScheduleSettingsServiceE2E(t *testing.T) {
 	}
 	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyScheduleEdgeFrontSec); value != "120" {
 		t.Fatalf("settings value after failed put = %q, want the pre-failure 120", value)
+	}
+}
+
+// 批 3b：四枚 DB-only 键的真库链（周末门＋默认窗口对）。
+// 判据：多键一次 PUT 恰一行审计；null 删行回缺行语义（周末门缺行=false、
+// 窗口缺行回常量对）；单侧组合违规 400 零写零审计（用例层读真库生效值）。
+func TestWeekendAndWindowKeysServiceE2E(t *testing.T) {
+	e := newEnv(t)
+	master := e.createUser("weekend-gate-master@example.com")
+	resolver, err := appsettings.NewResolver(pg.NewSettingsRepo(e.db), map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store:    pg.NewAnnouncementRepo(e.db),
+		Audit:    e.audits,
+		Tx:       e.db,
+		Clock:    coreclock.Fixed{T: time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)},
+		Schedule: pg.NewSettingsRepo(e.db),
+		Resolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	actor := appaudit.Actor{UserID: master.ID, Role: coreauth.RoleMaster, Label: "m***@example.com"}
+
+	// 多键一次 PUT：周末门开＋窗口对写入；恰一行审计、changes 明细含四键。
+	err = svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: true},
+		{Key: appsettings.KeyScheduleSaturdaySign, Op: appsettings.ScheduleOpSet, Value: true},
+		{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpSet, Value: 480},
+		{Key: appsettings.KeyScheduleDefaultSignEndMin, Op: appsettings.ScheduleOpSet, Value: 540},
+	})
+	if err != nil {
+		t.Fatalf("SetSchedule(four keys): %v", err)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'settings.schedule_writeback'"); rows != 1 {
+		t.Fatalf("audit rows = %d, want exactly 1", rows)
+	}
+	detail := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'settings.schedule_writeback' ORDER BY id DESC LIMIT 1")
+	for _, key := range []string{
+		appsettings.KeyScheduleSundaySign, appsettings.KeyScheduleSaturdaySign,
+		appsettings.KeyScheduleDefaultSignStartMin, appsettings.KeyScheduleDefaultSignEndMin,
+	} {
+		if !strings.Contains(detail, key) {
+			t.Fatalf("audit detail %q misses %q", detail, key)
+		}
+	}
+
+	// 生效链：周末门读 true；窗口对读 480/540。
+	allowed, err := resolver.ResolveBool(e.ctx, appsettings.KeyScheduleSundaySign, false)
+	if err != nil || !allowed {
+		t.Fatalf("ResolveBool(sunday) = (%v, %v), want true", allowed, err)
+	}
+	start, end, err := resolver.ResolveSignWindow(e.ctx,
+		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+	if err != nil || start != 480 || end != 540 {
+		t.Fatalf("ResolveSignWindow = (%d, %d, %v), want (480, 540)", start, end, err)
+	}
+
+	// 单侧组合违规：DB end=540 时写 start=600，用例层 400 零写零审计。
+	auditRowsBefore := e.scalarInt("SELECT count(*) FROM audit_logs")
+	err = svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpSet, Value: 600},
+	})
+	if err == nil {
+		t.Fatal("lone start crossing stored end must be rejected")
+	}
+	requireValidation(t, err)
+	if startRow := e.scalarInt("SELECT value::int FROM settings WHERE key = $1",
+		appsettings.KeyScheduleDefaultSignStartMin); startRow != 480 {
+		t.Fatalf("start row after rejected put = %d, want untouched 480", startRow)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs"); rows != auditRowsBefore {
+		t.Fatalf("rejected put wrote audit rows: %d -> %d", auditRowsBefore, rows)
+	}
+
+	// null 删行：周末门回缺行=false；窗口对删行回常量对（常量恢复）。
+	err = svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpClear},
+		{Key: appsettings.KeyScheduleSaturdaySign, Op: appsettings.ScheduleOpClear},
+		{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpClear},
+		{Key: appsettings.KeyScheduleDefaultSignEndMin, Op: appsettings.ScheduleOpClear},
+	})
+	if err != nil {
+		t.Fatalf("SetSchedule(clear all): %v", err)
+	}
+	allowed, err = resolver.ResolveBool(e.ctx, appsettings.KeyScheduleSundaySign, false)
+	if err != nil || allowed {
+		t.Fatalf("ResolveBool after clear = (%v, %v), want false", allowed, err)
+	}
+	start, end, err = resolver.ResolveSignWindow(e.ctx,
+		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+	if err != nil || start != coreschedule.DefaultSignWindowStartMinute || end != coreschedule.DefaultSignWindowEndMinute {
+		t.Fatalf("ResolveSignWindow after clear = (%d, %d, %v), want builtin constants", start, end, err)
 	}
 }
