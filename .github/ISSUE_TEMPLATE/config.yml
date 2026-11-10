@@ -1,0 +1,14 @@
+# Issue 模板入口配置
+#
+# blank_issues_enabled 取 true：模板只覆盖缺陷与功能请求两类；
+# 本仓还有 `[contrib]` 任务认领、文档修订、部署与用法问题等形态，
+# 保留自由格式避免把「类型说不清」的贡献者挡在门外。
+# 需要立即引导的两类走 contact_links（安全漏洞、用法讨论）。
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞私密上报
+    url: https://github.com/frostpolaris1/yiban-auto-sign/security/advisories/new
+    about: 凭据、会话、越权、SSRF、脱敏失效类问题请走私密 advisory，不要开公开 issue（见 SECURITY.md）
+  - name: 使用与部署讨论
+    url: https://github.com/frostpolaris1/yiban-auto-sign/discussions
+    about: 安装、配置、部署与用法问题请走 Discussions；可复现的缺陷仍请用缺陷模板

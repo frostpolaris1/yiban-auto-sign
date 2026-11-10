@@ -31,6 +31,9 @@ ALLOWED_TOP = {
     # 2026-10-31 入库：贡献指南（外部贡献者的方向、任务、边界与流程）。
     # 本项消失即红，故它同时是「贡献指南必须入库」的守卫。
     "CONTRIBUTING.md",
+    # 2026-11-10 入库：安全政策（漏洞私密上报、适用面、响应口径）。
+    # 与 PRIVACY_POLICY.md 互链；本项消失即红，守卫「安全政策必须入库」。
+    "SECURITY.md",
     ".gitignore", ".gitattributes", ".editorconfig", ".dockerignore", ".importlinter",
     ".env.example", ".env.docker.example",   # 配置模板：只放占位值，真值不入库
     "pyproject.toml", "requirements.txt", "requirements.lock",
