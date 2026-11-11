@@ -25,6 +25,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -493,15 +494,16 @@ func TestU5EngineRetryingTruncated(t *testing.T) {
 	now := u5NowFromServer(t, e, client)
 	school := u3SeedSchool(t, e, "U5 截断学校")
 	task := u3SeedTask(t, e, school.ID, "早签到")
-	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800000041")
+	day := now.Format("2006-01-02")
 
-	// 同账号同任务、跨 201 个业务日各一条：超出 EngineRetryLimit 一行。
+	// 同日 201 个账号各一条：超出 EngineRetryLimit 一行。
+	// 跨日行会被监控的 day 过滤排除（P1-6），故用同日多账号造量。
 	const total = 201
 	rows := make([]coreschedule.PlanRow, 0, total)
 	for i := 0; i < total; i++ {
+		acc := u3SeedAccount(t, e, owner.ID, school.ID, fmt.Sprintf("138%08d", 10000000+i))
 		rows = append(rows, coreschedule.PlanRow{
-			AccountID: acc, SchoolTaskID: task,
-			Day:   now.UTC().AddDate(0, 0, -total+i).Format("2006-01-02"),
+			AccountID: acc, SchoolTaskID: task, Day: day,
 			RunAt: now.Add(time.Duration(i-total) * time.Minute),
 		})
 	}
@@ -511,8 +513,8 @@ func TestU5EngineRetryingTruncated(t *testing.T) {
 	}
 	if _, err := e.db.Exec(e.ctx,
 		`UPDATE sign_tasks SET state = 'pending', attempts = 2, result = 'transient'
-		  WHERE account_id = $1::uuid AND school_task_id = $2::uuid`,
-		acc, task); err != nil {
+		  WHERE school_task_id = $1::uuid`,
+		task); err != nil {
 		t.Fatalf("seed retry states: %v", err)
 	}
 

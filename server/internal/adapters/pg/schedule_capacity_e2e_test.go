@@ -89,7 +89,7 @@ func TestBuildCapacityShrinkReleasesExcessRows(t *testing.T) {
 		t.Fatalf("capacity_released rows = %d, want 32", got)
 	}
 
-	claimed, err := e.sched.ClaimDue(e.ctx, end.Add(time.Minute), 100)
+	claimed, err := e.sched.ClaimDue(e.ctx, end.Add(time.Minute), day, 100)
 	if err != nil {
 		t.Fatalf("claim due: %v", err)
 	}

@@ -53,7 +53,8 @@ type DayOutcomeCounts = coreschedule.DayOutcomeCounts
 type Store interface {
 	// ClaimDue 认领到期任务并推进到 running（单语句 CAS）。
 	// 租约由仓储写入 lease_expires_at；过期的 running 由 ReclaimExpired 回收。
-	ClaimDue(ctx context.Context, now time.Time, limit int) ([]coreschedule.TaskRow, error)
+	// day 是当前业务日：只领 day >= 今天的行，跨日 pending 行不再执行（P1-6）。
+	ClaimDue(ctx context.Context, now time.Time, day string, limit int) ([]coreschedule.TaskRow, error)
 	// ReclaimExpired 把租约过期的 running 行放回 pending，并写 task.reclaim 审计。
 	ReclaimExpired(ctx context.Context, now time.Time, limit int) (int64, error)
 	// Finish 把 running 行落终态。
@@ -72,8 +73,9 @@ type Store interface {
 	// 同一事务里写 task.rearm 审计；actor 是发起手动签到的会话主体。
 	Rearm(ctx context.Context, taskID string, runAt time.Time, actor appaudit.Actor) error
 	// ResetRunning 回收无租约或租约已过期的 running 行（启动时调用）。
+	// now 是注入时钟的当前时刻：落点与过期判据都用它，不读库内 now()。
 	// 仓储带 advisory lock：多实例同时启动时只有一个执行。
-	ResetRunning(ctx context.Context) (int64, error)
+	ResetRunning(ctx context.Context, now time.Time) (int64, error)
 	// CountRunning 数当前 running 行。优雅停机用它报在飞清零。
 	CountRunning(ctx context.Context) (int64, error)
 	// GetWindow 取任务当日窗口；无缓存返回 errs.ErrNotFound。

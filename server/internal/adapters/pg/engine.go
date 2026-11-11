@@ -8,7 +8,7 @@ package pg
 // scopePredicate 的 admin 分支（空绑定＝空快照，绝不退化成全量）；
 // user 范围在用例层已拒绝，这里再守一道。
 // 四段查询共享同一份 (scope, day, now)：
-//   - 在飞：running 且认领与租约都已写；
+//   - 在飞：running、认领与租约都已写且租约未过期（过期租约不是在飞）；
 //   - 到期：pending 且 run_at <= now（如实反映「到点未执行」，
 //     不再判账号可用性——那是认领判据，不是监控口径）；
 //   - 当日终态：每账号只看当日作用域内最后一条任务行
@@ -17,11 +17,12 @@ package pg
 //     软删账号整段排除——看板 KPI 与 sign-stats 同口径；
 //   - 待重试：pending 且 attempts>0，按 run_at 升序，
 //     行数截断于 EngineRetryLimit（多取一行探测截断）。
+// 在飞/到期/待重试都只算 day >= 今天的行：跨日行不混算（P1-6/2-15）。
 // 列表顺序固定（在飞按认领时刻、待重试按落点），行 id 兜底，可重放。
 
 import (
 	"context"
-	"strconv"
+	"fmt"
 	"time"
 
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
@@ -46,31 +47,36 @@ func (r *ScheduleRepo) EngineSnapshot(ctx context.Context, scope corescope.Scope
 	}
 	data := coreschedule.EngineData{}
 
-	// 列表查询无其他参数：作用域谓词占 $1。
-	// 空绑定给空数组，永不退化成全量。
-	scopeClause, scopeArgs, err := scopePredicate(scope, 1, "st.")
+	// 在飞：running、认领与租约都已写、租约未过期，且 day >= 今天。
+	// 过期租约不是在飞（P3-22）；跨日行不混算（P1-6/2-15）。
+	// $1=day、$2=now，作用域谓词占 $3。
+	inflightScopeClause, inflightScopeArgs, err := scopePredicate(scope, 3, "st.")
 	if err != nil {
 		return coreschedule.EngineData{}, err
 	}
-
 	inflight := `SELECT s.account_id::text, a.phone, st.school_id::text, sc.name,
 		s.claimed_at, s.lease_expires_at` + engineFrom + `
 		AND s.state = 'running' AND s.claimed_at IS NOT NULL
-		AND s.lease_expires_at IS NOT NULL` + scopeClause + `
+		AND s.lease_expires_at IS NOT NULL AND s.lease_expires_at > $2
+		AND s.day >= $1::date` + inflightScopeClause + `
 		ORDER BY s.claimed_at, s.id`
-	if data.Inflight, err = r.engineInflight(ctx, inflight, scopeArgs); err != nil {
+	inflightArgs := append([]any{day, now}, inflightScopeArgs...)
+	if data.Inflight, err = r.engineInflight(ctx, inflight, inflightArgs); err != nil {
 		return coreschedule.EngineData{}, err
 	}
 
-	// 到期计数保持原口径：pending 且 run_at<=now 的行数。
-	// $1 是 now：作用域谓词占 $2。
-	dueScopeClause, dueScopeArgs, err := scopePredicate(scope, 2, "st.")
+	// 到期计数：pending 且 run_at<=now、day >= 今天。
+	// 作用域谓词占 $1；now/day 的参数位跟在作用域参数之后。
+	dueScopeClause, dueScopeArgs, err := scopePredicate(scope, 1, "st.")
 	if err != nil {
 		return coreschedule.EngineData{}, err
 	}
-	due := `SELECT count(*) FILTER (WHERE s.state = 'pending' AND s.run_at <= $1)` +
-		engineFrom + dueScopeClause
-	dueArgs := append([]any{now}, dueScopeArgs...)
+	nowParam := len(dueScopeArgs) + 1
+	dueDayParam := len(dueScopeArgs) + 2
+	due := fmt.Sprintf(
+		`SELECT count(*) FILTER (WHERE s.state = 'pending' AND s.run_at <= $%d AND s.day >= $%d::date)`,
+		nowParam, dueDayParam) + engineFrom + dueScopeClause
+	dueArgs := append(append([]any{}, dueScopeArgs...), now, day)
 	if err := r.db.q(ctx).QueryRow(ctx, due, dueArgs...).Scan(&data.DueNow); err != nil {
 		return coreschedule.EngineData{}, mapError(err)
 	}
@@ -105,15 +111,20 @@ func (r *ScheduleRepo) EngineSnapshot(ctx context.Context, scope corescope.Scope
 		return coreschedule.EngineData{}, mapError(err)
 	}
 
-	// LIMIT 的参数位跟在作用域参数之后：master 无谓词时占 $1，
-	// admin 的作用域占 $1 时占 $2（与 ListTasks 的参数位推法同源）。
-	limitParam := len(scopeArgs) + 1
-	retrying := `SELECT s.id::text, s.account_id::text, a.phone, st.school_id::text, sc.name,
-		st.name, s.attempts, s.run_at, s.result` + engineFrom + `
-		AND s.state = 'pending' AND s.attempts > 0` + scopeClause + `
+	// 待重试：pending 且 attempts>0、day >= 今天。
+	// 作用域谓词占 $1；day 与 LIMIT 的参数位跟在作用域参数之后。
+	retryScopeClause, retryScopeArgs, err := scopePredicate(scope, 1, "st.")
+	if err != nil {
+		return coreschedule.EngineData{}, err
+	}
+	retryDayParam := len(retryScopeArgs) + 1
+	limitParam := len(retryScopeArgs) + 2
+	retrying := fmt.Sprintf(`SELECT s.id::text, s.account_id::text, a.phone, st.school_id::text, sc.name,
+		st.name, s.attempts, s.run_at, s.result`+engineFrom+`
+		AND s.state = 'pending' AND s.attempts > 0 AND s.day >= $%d::date`+retryScopeClause+`
 		ORDER BY s.run_at, s.id
-		LIMIT $` + strconv.Itoa(limitParam)
-	retryArgs := append(append([]any{}, scopeArgs...), coreschedule.EngineRetryLimit+1)
+		LIMIT $%d`, retryDayParam, limitParam)
+	retryArgs := append(append([]any{}, retryScopeArgs...), day, coreschedule.EngineRetryLimit+1)
 	retryingRows, truncated, err := r.engineRetrying(ctx, retrying, retryArgs)
 	if err != nil {
 		return coreschedule.EngineData{}, err

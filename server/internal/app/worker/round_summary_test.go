@@ -32,6 +32,21 @@ func newSummaryService(t *testing.T, st *fakeStore, clk coreclock.Clock, logger 
 	return svc
 }
 
+// newPausedSummaryService 构造暂停态服务：Step 不认领，但仍跑轮末汇总。
+func newPausedSummaryService(t *testing.T, st *fakeStore, logger *slog.Logger) *appworker.Service {
+	t.Helper()
+	svc, err := appworker.NewService(appworker.Deps{
+		Store: st, Creds: fakeCreds{}, Signer: defaultSigner(), Egress: fakeEgress{},
+		Limiter: fakeLimiter{allow: true}, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Paused: func(context.Context) (bool, error) { return true, nil },
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
 // recordsWithMsg 返回指定消息的全部日志记录。
 func recordsWithMsg(recs []map[string]any, msg string) []map[string]any {
 	var out []map[string]any
@@ -323,5 +338,45 @@ func TestRoundSummarySkipsEmptyDay(t *testing.T) {
 	}
 	if recs := recordsWithMsg(sink.records(t), "round summary"); len(recs) != 0 {
 		t.Fatalf("total=0 不得出汇总行: %v", recs)
+	}
+}
+
+// 暂停轮仍跑轮末汇总：空轮记一行 INFO（reason=paused），每业务日一次；
+// 暂停期间不认领、不回收（R1 急停语义保持不变）（P3-22）。
+func TestRoundSummaryPausedEmptyRoundLogsOnce(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	sink := &logSink{}
+	svc := newPausedSummaryService(t, st, newSinkLogger(sink))
+
+	for i := 0; i < 3; i++ {
+		n, err := svc.Step(context.Background(), 1)
+		if err != nil || n != 0 {
+			t.Fatalf("暂停 Step %d = (%d,%v), want (0,nil)", i, n, err)
+		}
+	}
+	recs := recordsWithMsg(sink.records(t), "round summary")
+	if len(recs) != 1 {
+		t.Fatalf("暂停空轮汇总行数 = %d, want 1（每业务日一次）", len(recs))
+	}
+	rec := recs[0]
+	if rec["level"] != "INFO" {
+		t.Fatalf("暂停空轮级别 = %v, want INFO", rec["level"])
+	}
+	if rec[logfield.KeyDay] != "2026-10-28" {
+		t.Fatalf("汇总日 = %v, want 2026-10-28", rec[logfield.KeyDay])
+	}
+	wantCount(t, rec, logfield.KeyTotal, 0)
+	if rec[logfield.KeyReason] != "paused" {
+		t.Fatalf("reason = %v, want paused", rec[logfield.KeyReason])
+	}
+	if len(st.dayCountCalls) != 1 {
+		t.Fatalf("汇总查询次数 = %d, want 1（同日不重试）", len(st.dayCountCalls))
+	}
+	if len(st.claimed) != 0 {
+		t.Fatalf("暂停期间认领了 %d 行, want 0", len(st.claimed))
+	}
+	if st.reclaimCalls != 0 {
+		t.Fatalf("暂停期间回收了 %d 次, want 0（急停整轮不动）", st.reclaimCalls)
 	}
 }

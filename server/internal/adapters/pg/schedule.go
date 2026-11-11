@@ -307,6 +307,31 @@ func (r *ScheduleRepo) RearrangePlan(ctx context.Context, schoolTaskID, day stri
 	return updated, nil
 }
 
+// PendingPlan 返回某任务某日仍为 pending 的计划行（账号与 run_at）。
+// 构建用它与新计划逐行比对几何：窗口未变但名册/档位变了也要重排（P1-8）。
+// 只读、不加锁：调用方随后在同一事务里重排，重复重排是幂等的。
+func (r *ScheduleRepo) PendingPlan(ctx context.Context, schoolTaskID, day string) ([]coreschedule.PlanRow, error) {
+	rows, err := r.db.q(ctx).Query(ctx,
+		`SELECT account_id::text, school_task_id::text, day::text, run_at
+		   FROM sign_tasks
+		  WHERE school_task_id = $1::uuid AND day = $2::date AND state = 'pending'
+		  ORDER BY account_id, id`,
+		schoolTaskID, day)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	var out []coreschedule.PlanRow
+	for rows.Next() {
+		var row coreschedule.PlanRow
+		if err := rows.Scan(&row.AccountID, &row.SchoolTaskID, &row.Day, &row.RunAt); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, row)
+	}
+	return out, mapError(rows.Err())
+}
+
 // SkipPlanRows 把一批账号的 pending 行落 skipped(result)，不物理删除。
 // 容量缩容后超出容量的行由此保留当日历史语义：行还在，结论是
 // 「容量释放」而不是「从未存在」。运行中与终态行一律不动。
@@ -319,6 +344,20 @@ func (r *ScheduleRepo) SkipPlanRows(ctx context.Context, schoolTaskID, day strin
 		 WHERE school_task_id = $1::uuid AND day = $2::date AND state = 'pending'
 		   AND account_id = ANY($3::uuid[])`,
 		schoolTaskID, day, accountIDs, result)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return ct.RowsAffected(), nil
+}
+
+// SkipStalePending 把 beforeDay 之前的 pending 行落 skipped(result)。
+// 跨业务日的行永远不会再被 ClaimDue 认领（day 过滤），日切时统一了结：
+// 行还在，结论是「窗口已过」，不物理删除（P1-6）。
+func (r *ScheduleRepo) SkipStalePending(ctx context.Context, beforeDay, result string) (int64, error) {
+	ct, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE sign_tasks SET state = 'skipped', result = $2, lease_expires_at = NULL
+		 WHERE state = 'pending' AND day < $1::date`,
+		beforeDay, result)
 	if err != nil {
 		return 0, mapError(err)
 	}
@@ -436,13 +475,14 @@ func (r *ScheduleRepo) Task(ctx context.Context, taskID string) (coreschedule.Ta
 }
 
 // ClaimDue 认领到期任务：单条 UPDATE 批量领取。
-// 判据全在 SQL：pending、run_at 已到、账号活跃未删、任务启用、
-// 同账号当前无 running（I-7 的查询面，库层唯一索引仍是最终兜底）。
+// 判据全在 SQL：pending、run_at 已到、day >= 当前业务日、账号活跃未删、
+// 任务启用、同账号当前无 running（I-7 的查询面，库层唯一索引仍是最终兜底）。
 // **不按学校状态过滤**（D5 挡新不挡旧）：禁校前已铺的 pending 行照常执行。
+// day 过滤是跨日清理的兜底：日切前残留的旧行即使还在 pending 也不领（P1-6）。
 // FOR UPDATE SKIP LOCKED 让多 worker 不互等。
 // 外层 state='pending' 是第二道闸：READ COMMITTED 下 CTE 快照与行锁之间
 // 存在窗口，并发语句可能在快照后改状态；该谓词把这类行排除。
-func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) ([]coreschedule.TaskRow, error) {
+func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, day string, limit int) ([]coreschedule.TaskRow, error) {
 	if limit < 1 {
 		limit = 1
 	}
@@ -450,7 +490,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 		`WITH picked AS (
 		   SELECT DISTINCT ON (s.account_id) s.id
 		   FROM sign_tasks s
-		   WHERE s.state = 'pending' AND s.run_at <= $1
+		   WHERE s.state = 'pending' AND s.run_at <= $1 AND s.day >= $4::date
 		     AND NOT EXISTS (
 		       SELECT 1 FROM sign_tasks r
 		       WHERE r.account_id = s.account_id AND r.state = 'running')
@@ -475,7 +515,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 		           t.day::text, t.run_at, t.state::text, t.attempts, t.claim_seq,
 		           (SELECT a.owner_user_id::text FROM accounts a WHERE a.id = t.account_id),
 		           t.result`,
-		now, limit, r.lease.Seconds())
+		now, limit, r.lease.Seconds(), day)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -681,8 +721,9 @@ func (r *ScheduleRepo) EnabledTasks(ctx context.Context) ([]coreschedule.TaskInf
 
 // ResetRunning 回收无租约或租约已过期的 running 行（启动时调用）：
 // 租约为空的行来自上次崩溃；已过期的行不会再被原持有者结算。落点改为 now，立即可执行。
+// now 来自注入时钟：过期判据与落点同源，不读库内 now()（P3-18）。
 // 回收前取 pg_try_advisory_xact_lock：多实例同时启动时只有一个执行。
-func (r *ScheduleRepo) ResetRunning(ctx context.Context) (int64, error) {
+func (r *ScheduleRepo) ResetRunning(ctx context.Context, now time.Time) (int64, error) {
 	var n int64
 	err := r.db.InTx(ctx, func(ctx context.Context) error {
 		var ok bool
@@ -696,9 +737,10 @@ func (r *ScheduleRepo) ResetRunning(ctx context.Context) (int64, error) {
 		}
 		ct, err := r.db.q(ctx).Exec(ctx,
 			`UPDATE sign_tasks SET state = 'pending', claimed_at = NULL,
-			        lease_expires_at = NULL, run_at = now()
+			        lease_expires_at = NULL, run_at = $1
 			 WHERE state = 'running'
-			   AND (lease_expires_at IS NULL OR lease_expires_at <= now())`)
+			   AND (lease_expires_at IS NULL OR lease_expires_at <= $1)`,
+			now)
 		if err != nil {
 			return mapError(err)
 		}

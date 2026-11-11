@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -90,6 +91,9 @@ type Input struct {
 	// 显式路径在写库/发现前先判急停（PausedError → 入口 503）；
 	// 日切与自动兜底（Explicit=false）保持容忍回退。
 	Explicit bool
+	// override 是 Override 用例内部注入的待写覆盖：预览按它算，
+	// 不读库内旧覆盖，落库与覆盖行同事务。入口层不可设置（未导出）。
+	override *coreschedule.WindowOverride
 }
 
 // Row 是一行计划落点。
@@ -545,10 +549,10 @@ func (s *Service) overrideActive(ctx context.Context, taskID, day string) (bool,
 // Override 写一条人工窗口覆盖，并按新窗口重建当日计划。
 //
 // 覆盖优先级最高：同任务同日存在覆盖时不再采信平台窗口。
-// 覆盖写库与计划重建分两步；重建走 buildOnce，因此窗口变化检测、
-// pending 重排与补插仍只有一条实现路径。
-// **重建失败时覆盖意图已落库，会留下部分状态**：覆盖是持久意图，下一次
-// Build 自愈；调用方遇到失败应重试，不要以为覆盖没生效（k0y-2）。
+// 覆盖行与计划物化在**同一事务**：覆盖写、窗口缓存、pending 重排与补插
+// 要么全落、要么全回滚，不再留下「覆盖已写、计划未建」的半态（P2-10）。
+// 预览按请求窗口算（Input.override），不读库内旧覆盖；版本竞争
+// （ErrWindowStale）时整体重试一次。
 // 停用任务拒写覆盖（k0y-6）：判据在写库之前，回 conflict 且不留覆盖行。
 func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input, start, end time.Time, reason, actorID string) (Preview, error) {
 	if err := requireScheduleScope(scope); err != nil {
@@ -588,27 +592,37 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	if in.WeekendClosed {
 		return s.closedPreview(ctx, in)
 	}
-	if err := s.deps.Windows.PutOverride(ctx, coreschedule.WindowOverride{
+	ov := coreschedule.WindowOverride{
 		SchoolTaskID: in.SchoolTaskID,
 		Day:          in.Day,
 		Start:        start,
 		End:          end,
 		Reason:       reason,
 		CreatedBy:    actorID,
-	}); err != nil {
+	}
+	in.override = &ov
+	b, err := s.prepareBuild(ctx, in)
+	if err != nil {
 		return Preview{}, err
 	}
-	p, changed, err := s.buildOnce(ctx, in)
+	putOverride := func(ctx context.Context) error {
+		return s.deps.Windows.PutOverride(ctx, ov)
+	}
+	changed, err := s.writeBuild(ctx, in, b, putOverride)
 	if errors.Is(err, coreschedule.ErrWindowStale) {
-		p, changed, err = s.buildOnce(ctx, in)
+		b, err = s.prepareBuild(ctx, in)
+		if err != nil {
+			return Preview{}, err
+		}
+		changed, err = s.writeBuild(ctx, in, b, putOverride)
 	}
 	if err != nil {
 		return Preview{}, err
 	}
 	// 覆盖同样可能改变容量（窗口变短/账号变多）：与 Build 同一口径。
-	s.publishWindow(ctx, in, p, changed)
-	s.publishCapacity(ctx, in, p)
-	return p, nil
+	s.publishWindow(ctx, in, b.preview, changed)
+	s.publishCapacity(ctx, in, b.preview)
+	return b.preview, nil
 }
 
 // sameBusinessDay 报告 t 在 loc 下是否为 day（YYYY-MM-DD）。
@@ -652,6 +666,15 @@ func scopeAllowsSchool(scope corescope.Scope, schoolID string) bool {
 	return false
 }
 
+// buildPlan 是一次构建的预览与落库计划。
+type buildPlan struct {
+	preview Preview
+	res     windowResolution
+	rows    []coreschedule.PlanRow
+	// excess 是超出容量的账号 ID（容量缺口时非空）。
+	excess []string
+}
+
 // buildOnce 是一次完整尝试：预览 → 容量降级 → 同事务写入。
 // 返回值带 changed：窗口是否真实重写（发布判据用）。
 // 容量缺口自然降级：按可用容量截断计划行（能排多少排多少），
@@ -659,41 +682,115 @@ func scopeAllowsSchool(scope corescope.Scope, schoolID string) bool {
 // 缩容重建时超出容量的 pending 行落 skipped(capacity_released)：
 // 不物理删除，保留当日任务历史；否则它们仍会被 ClaimDue 认领。
 func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error) {
-	p, res, err := s.previewWithWindow(ctx, in, policyLive)
+	b, err := s.prepareBuild(ctx, in)
 	if err != nil {
 		return Preview{}, false, err
+	}
+	changed, err := s.writeBuild(ctx, in, b, nil)
+	if err != nil {
+		return Preview{}, false, err
+	}
+	return b.preview, changed, nil
+}
+
+// stalePendingResult 是跨日 pending 行的跳过结论词，与 worker 的
+// window_closed 同词（本包不 import app/worker，按字面复写）。
+const stalePendingResult = "window_closed"
+
+// SkipStalePending 把 day 之前的 pending 行落 skipped(window_closed)。
+// 日切构建在铺当日计划前调用：跨业务日的行不会再被认领，
+// 必须当日了结并保留历史（P1-6）。返回落结论的行数。
+func (s *Service) SkipStalePending(ctx context.Context, day string) (int64, error) {
+	if !validDay(day) {
+		return 0, validation("day must be YYYY-MM-DD")
+	}
+	return s.deps.Plans.SkipStalePending(ctx, day, stalePendingResult)
+}
+
+// prepareBuild 做一次实时预览并降级到可用容量；不写库。
+// Override 复用它：覆盖窗口先注入 Input，预览与落库看到同一份几何。
+func (s *Service) prepareBuild(ctx context.Context, in Input) (*buildPlan, error) {
+	p, res, err := s.previewWithWindow(ctx, in, policyLive)
+	if err != nil {
+		return nil, err
 	}
 	rows := planRows(in, p.Rows)
 	var excess []string
 	if p.Shortfall > 0 {
 		rows, excess, p = degradeToCapacity(in, p)
 	}
-	changed := res.changed()
-	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
-		if changed {
-			version, err := s.deps.Windows.PutWindow(ctx, res.effective, res.version())
+	return &buildPlan{preview: p, res: res, rows: rows, excess: excess}, nil
+}
+
+// writeBuild 在一个事务里物化计划：可选前置写（Override 的覆盖行）、
+// 窗口缓存、重排、补插与容量释放。before 失败则整批回滚。
+// 窗口变化与计划几何变化分开判定：窗口版本/事件只随真实窗口变化，
+// 名册或档位变化只触发重排（P1-8）。
+func (s *Service) writeBuild(ctx context.Context, in Input, b *buildPlan, before func(context.Context) error) (bool, error) {
+	windowChanged := b.res.changed()
+	planChanged := windowChanged
+	if !planChanged {
+		existing, err := s.deps.Plans.PendingPlan(ctx, in.SchoolTaskID, in.Day)
+		if err != nil {
+			return false, err
+		}
+		planChanged = planGeometryChanged(existing, b.rows)
+	}
+	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		if before != nil {
+			if err := before(ctx); err != nil {
+				return err
+			}
+		}
+		if windowChanged {
+			version, err := s.deps.Windows.PutWindow(ctx, b.res.effective, b.res.version())
 			if err != nil {
 				return err
 			}
-			p.Version = version
-			if _, err := s.deps.Plans.RearrangePlan(ctx, in.SchoolTaskID, in.Day, rows); err != nil {
+			b.preview.Version = version
+		}
+		if planChanged {
+			if _, err := s.deps.Plans.RearrangePlan(ctx, in.SchoolTaskID, in.Day, b.rows); err != nil {
 				return err
 			}
 		}
-		if _, err := s.deps.Plans.InsertPlan(ctx, rows); err != nil {
+		if _, err := s.deps.Plans.InsertPlan(ctx, b.rows); err != nil {
 			return err
 		}
-		if len(excess) > 0 {
-			if _, err := s.deps.Plans.SkipPlanRows(ctx, in.SchoolTaskID, in.Day, excess, capacityReleasedResult); err != nil {
+		if len(b.excess) > 0 {
+			if _, err := s.deps.Plans.SkipPlanRows(ctx, in.SchoolTaskID, in.Day, b.excess, capacityReleasedResult); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		return Preview{}, false, err
+		return false, err
 	}
-	return p, changed, nil
+	return windowChanged, nil
+}
+
+// planGeometryChanged 报告新计划是否与库内 pending 行不同（P1-8）。
+// 库内没有 pending 行时没有可重排的对象：新行由 InsertPlan 补插，
+// 已终态的行不参与重排。只比较新计划里的账号：库内 pending 行若属于
+// 已不在名册的账号，由跨日清理处理，不驱动重排。已终态的账号不在
+// pending 集合里，会被视为「新行」——多一次幂等 RearrangePlan，
+// 不改变任何结论。
+func planGeometryChanged(existing, rows []coreschedule.PlanRow) bool {
+	if len(existing) == 0 {
+		return false
+	}
+	byAccount := make(map[string]time.Time, len(existing))
+	for _, r := range existing {
+		byAccount[r.AccountID] = r.RunAt
+	}
+	for _, r := range rows {
+		at, ok := byAccount[r.AccountID]
+		if !ok || !at.Equal(r.RunAt) {
+			return true
+		}
+	}
+	return false
 }
 
 // capacityReleasedResult 是容量缩容时超出容量行的跳过结论词。
@@ -702,21 +799,40 @@ func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error
 const capacityReleasedResult = "capacity_released"
 
 // degradeToCapacity 把预览截到可用容量：能排多少排多少。
-// 行序保持铺点顺序：front 模式前 capacity 行恰是最早一段，
-// uniform 模式前 capacity 行是均匀铺开的子集；直方图按截后行重算，
-// 与返回的行同源。demand/capacity/shortfall/瓶颈/建议值一律不动：
-// 缺口是事实，响应与告警都要如实看到。
+// 截尾前按 run_at 升序选行（同刻按账号 ID 兜底）：用户自选的早槽
+// 可能落在账号序的后面，按账号序切会把它丢掉（P1-7）。
+// 返回行保持原铺点顺序；直方图按截后行重算，与返回的行同源。
+// demand/capacity/shortfall/瓶颈/建议值一律不动：缺口是事实，
+// 响应与告警都要如实看到。
 // 第二个返回值是超出容量的账号 ID：调用方把它们在库内的 pending 行
 // 落 skipped，避免缩容后仍全量签（P0-1）。
 // 调用前提是 Shortfall>0，此时 capacity < demand == len(rows)。
 func degradeToCapacity(in Input, p Preview) ([]coreschedule.PlanRow, []string, Preview) {
-	kept := p.Rows[:p.Capacity]
-	excess := p.Rows[p.Capacity:]
-	excessIDs := make([]string, len(excess))
-	for i, r := range excess {
-		excessIDs[i] = r.AccountID
+	order := make([]int, len(p.Rows))
+	for i := range order {
+		order[i] = i
 	}
-	hist := make(map[int]int, len(p.Histogram))
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := p.Rows[order[i]], p.Rows[order[j]]
+		if !a.RunAt.Equal(b.RunAt) {
+			return a.RunAt.Before(b.RunAt)
+		}
+		return a.AccountID < b.AccountID
+	})
+	keep := make(map[int]bool, p.Capacity)
+	for _, idx := range order[:p.Capacity] {
+		keep[idx] = true
+	}
+	kept := make([]Row, 0, p.Capacity)
+	excessIDs := make([]string, 0, len(p.Rows)-p.Capacity)
+	for i, r := range p.Rows {
+		if keep[i] {
+			kept = append(kept, r)
+			continue
+		}
+		excessIDs = append(excessIDs, r.AccountID)
+	}
+	hist := make(map[int]int, len(kept))
 	for _, r := range kept {
 		hist[coreplan.SlotOf(r.RunAt.Sub(p.WindowStart))]++
 	}
@@ -936,12 +1052,22 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 	res.cached = cached
 	res.cacheOK = cacheErr == nil &&
 		corewindow.Validate(corewindow.Window{Start: cached.Start, End: cached.End}) == nil
-	override, ovErr := s.deps.Windows.GetOverride(ctx, in.SchoolTaskID, in.Day)
-	if ovErr != nil && !isNotFound(ovErr) {
-		return res, ovErr
+	// Override 用例在 Input 里注入待写覆盖：预览按它算，不读库内旧覆盖。
+	// 其余路径仍读库；读失败除「没有覆盖」外一律上抛。
+	var override coreschedule.WindowOverride
+	if in.override != nil {
+		override = *in.override
+		res.overrideOK = corewindow.Validate(
+			corewindow.Window{Start: override.Start, End: override.End}) == nil
+	} else {
+		var ovErr error
+		override, ovErr = s.deps.Windows.GetOverride(ctx, in.SchoolTaskID, in.Day)
+		if ovErr != nil && !isNotFound(ovErr) {
+			return res, ovErr
+		}
+		res.overrideOK = ovErr == nil &&
+			corewindow.Validate(corewindow.Window{Start: override.Start, End: override.End}) == nil
 	}
-	res.overrideOK = ovErr == nil &&
-		corewindow.Validate(corewindow.Window{Start: override.Start, End: override.End}) == nil
 
 	discover := false
 	if policy == policyCached {

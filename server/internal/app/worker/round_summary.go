@@ -15,7 +15,8 @@ package worker
 // 「轮」= 业务日：用 deps.Location（上海）从注入时钟取 YYYY-MM-DD。
 // 汇总按 sign_tasks 任务行计数，不做账号去重；Pending 含 pending 与 running。
 // outcome_counts 只统计 failed 行，空 result 归 unknown。
-// 前一日 total=0 不出汇总行；failed=0 出汇总行但不带 outcome_counts。
+// 前一日 total=0 不出汇总行（当前轮暂停时例外：记一行 INFO 带
+// reason=paused，每业务日一次，不刷屏）；failed=0 出汇总行但不带 outcome_counts。
 // 查询失败只记一条 Warn，不影响 Step 与签到结论；失败当日不再重试，
 // 避免每 tick 刷同一条告警。
 
@@ -38,9 +39,13 @@ const dayLayout = "2006-01-02"
 //   - 跨日：汇总 lastDay，再把 lastDay 推到 today；
 //   - 同日：直接返回。
 //
+// 暂停轮也调用本函数（P3-22）：汇总是只读诊断面，跨日暂停不得让
+// 上一日汇总一直缺到恢复。paused 为真且当日 total=0 时仍记一行
+// INFO（reason=paused），让「暂停中的空轮」可见；非暂停的空轮不记。
+//
 // 锁只保护 lastDay：查询在锁外。Step 生产上串行，锁只负责"同一进程
 // 同一业务日只汇总一次"；并发调用时后到者看到 today 即返回。
-func (s *Service) summarizePreviousDay(ctx context.Context, now time.Time) {
+func (s *Service) summarizePreviousDay(ctx context.Context, now time.Time, paused bool) {
 	local := now.In(s.deps.Location)
 	today := local.Format(dayLayout)
 
@@ -63,7 +68,7 @@ func (s *Service) summarizePreviousDay(ctx context.Context, now time.Time) {
 		s.log.Warn("round summary failed", logfield.KeyDay, day, logfield.KeyError, err.Error())
 		return
 	}
-	if counts.Total == 0 {
+	if counts.Total == 0 && !paused {
 		return
 	}
 
@@ -81,6 +86,9 @@ func (s *Service) summarizePreviousDay(ctx context.Context, now time.Time) {
 	if counts.Failed > 0 {
 		attrs = append(attrs, logfield.KeyOutcomeCounts, failedOutcomes(counts.FailedByOutcome))
 		level = slog.LevelWarn
+	}
+	if paused && counts.Total == 0 {
+		attrs = append(attrs, logfield.KeyReason, "paused")
 	}
 	s.log.Log(ctx, level, "round summary", attrs...)
 }

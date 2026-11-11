@@ -118,7 +118,7 @@ func TestTaskRowsCarryOwner(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	claimed, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), 10)
+	claimed, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), day, 10)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim = (%d,%v)", len(claimed), err)
 	}

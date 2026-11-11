@@ -724,6 +724,107 @@ func TestBuildCapacityShrinkReleasesExcessPending(t *testing.T) {
 	}
 }
 
+// 容量截断按 run_at 排序：偏好用户的早槽不能被账号序切掉（P1-7）。
+func TestBuildCapacityTruncatesByRunAt(t *testing.T) {
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	accts := fakeAccounts{
+		ids:    []string{"a1", "a2"},
+		owners: map[string]string{"a1": "u1", "a2": "u2"},
+	}
+	prefs := &fakePrefs{offsets: map[string]int{"u2": 0}}
+	svc := newServiceWithPrefs(t, ws, ps, accts,
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)}, prefs)
+	in := baseInput()
+	in.UsePrefs = true
+	in.Workers = 1
+	in.Avg = 80 * time.Minute // 80 分钟窗、80 分钟/次：容量 1
+	in.Rate = 1.0
+	in.Util = 1.0
+
+	built, err := svc.Build(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(built.Rows) != 1 {
+		t.Fatalf("保留行数 = %d, want 1", len(built.Rows))
+	}
+	// a2 的偏好槽是窗口起点（run_at 06:30:00）；a1 顺延到 06:30:30。
+	// 账号序是 [a1, a2]，按账号序截尾会丢掉更早的 a2。
+	if built.Rows[0].AccountID != "a2" {
+		t.Fatalf("保留账号 = %s, want a2（run_at 更早的偏好行）", built.Rows[0].AccountID)
+	}
+	if !built.Rows[0].RunAt.Equal(built.WindowStart) {
+		t.Fatalf("保留行 run_at = %v, want 窗口起点 %v", built.Rows[0].RunAt, built.WindowStart)
+	}
+	if _, ok := ps.pending["a2|task-1|2026-10-29"]; !ok {
+		t.Fatal("a2 必须落库为 pending")
+	}
+	if _, ok := ps.pending["a1|task-1|2026-10-29"]; ok {
+		t.Fatal("a1 超容量，不得落库为 pending")
+	}
+}
+
+// newServiceWithAccounts 注入可变账号源：名册变化测试需要两次构建看到不同名册。
+func newServiceWithAccounts(t *testing.T, w *fakeWindowStore, p *fakePlanStore,
+	a appschedule.Accounts, d *fakeDiscover) *appschedule.Service {
+	t.Helper()
+	svc, err := appschedule.NewService(appschedule.Deps{
+		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: &fakeTx{},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+// mutableAccounts 是可在两次构建之间改名的账号源。
+type mutableAccounts struct{ ids []string }
+
+func (m *mutableAccounts) ActiveAccounts(context.Context, string) ([]appschedule.AccountRef, error) {
+	out := make([]appschedule.AccountRef, len(m.ids))
+	for i, id := range m.ids {
+		out[i] = appschedule.AccountRef{ID: id}
+	}
+	return out, nil
+}
+
+// 名册变化（更小手机号账号加入）必须触发重排：窗口未变也要按新几何落点，
+// 否则旧行留在原片、新行插进同片，片容量被突破（P1-8）。
+func TestBuildRosterChangeRearrangesPlan(t *testing.T) {
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	accts := &mutableAccounts{ids: []string{"b", "c"}}
+	svc := newServiceWithAccounts(t, ws, ps, accts,
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.SlotsPerSlice = 1 // 每片 1 槽：不重排就会在 0 号片叠两行
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("首次构建: %v", err)
+	}
+	accts.ids = []string{"a", "b", "c"} // 更小手机号账号加入，名册整体前移
+	built, err := svc.Build(context.Background(), in)
+	if err != nil {
+		t.Fatalf("名册变化重建: %v", err)
+	}
+	if len(ps.rearranged) != 2 {
+		t.Fatalf("重排次数 = %d, want 2（首次 + 名册变化）", len(ps.rearranged))
+	}
+	if built.Histogram[0] != 1 || built.Histogram[1] != 1 || built.Histogram[2] != 1 {
+		t.Fatalf("直方图 = %v, want 0/1/2 号片各 1 行（片容量不得突破）", built.Histogram)
+	}
+	seen := map[time.Time]bool{}
+	for _, r := range ps.pending {
+		if seen[r.RunAt] {
+			t.Fatalf("落点重复: %v（片容量被突破）", r.RunAt)
+		}
+		seen[r.RunAt] = true
+	}
+	if len(ps.pending) != 3 {
+		t.Fatalf("pending 行数 = %d, want 3", len(ps.pending))
+	}
+}
+
 // 容量缺口如实上报；超容量的行仍在窗内（顺延不丢号）。
 func TestCapacityShortfallReported(t *testing.T) {
 	ids := make([]string, 100)

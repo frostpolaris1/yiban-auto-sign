@@ -248,7 +248,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	claimed := 0
 	claimNow := winEnd.Add(time.Hour)
 	for {
-		rows, err := sched.ClaimDue(ctx, claimNow, cfg.ClaimBatch)
+		rows, err := sched.ClaimDue(ctx, claimNow, day, cfg.ClaimBatch)
 		if err != nil {
 			return res, fmt.Errorf("bench: claim due: %w", err)
 		}

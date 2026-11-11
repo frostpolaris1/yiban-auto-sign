@@ -37,7 +37,7 @@ func TestClaimDueSkipsSameAccountRunning(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	claimed, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), 10)
+	claimed, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), day, 10)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestClaimDueSkipsSameAccountRunning(t *testing.T) {
 			}
 		}
 	}
-	again, err := e.sched.ClaimDue(e.ctx, at.Add(2*time.Minute), 10)
+	again, err := e.sched.ClaimDue(e.ctx, at.Add(2*time.Minute), day, 10)
 	if err != nil {
 		t.Fatalf("claim2: %v", err)
 	}
@@ -86,15 +86,18 @@ func TestResetRunningRecovers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), 1); err != nil {
+	if _, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), day, 1); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	n, err := e.sched.ResetRunning(e.ctx)
+	now := at.Add(4 * time.Minute) // 认领租约 2 分钟，此时已过期
+	n, err := e.sched.ResetRunning(e.ctx, now)
 	if err != nil || n != 1 {
 		t.Fatalf("reset = (%d,%v), want (1,nil)", n, err)
 	}
-	if got := e.scalarInt("SELECT count(*) FROM sign_tasks WHERE account_id = $1::uuid AND state = 'pending'", acctID); got != 1 {
-		t.Fatalf("回收后 pending 行 = %d, want 1", got)
+	if got := e.scalarInt(
+		"SELECT count(*) FROM sign_tasks WHERE account_id = $1::uuid AND state = 'pending' AND run_at = $2",
+		acctID, now); got != 1 {
+		t.Fatalf("回收后 pending 行 = %d, want 1（落点取注入时钟）", got)
 	}
 }
 
@@ -198,7 +201,7 @@ func TestClaimDueSkipsPausedAndDisabled(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	claimed, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), 10)
+	claimed, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), day, 10)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -232,12 +235,12 @@ func TestClaimDueSkipsAccountWithRunning(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	// 第一次认领：拿到其中一条。
-	first, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), 10)
+	first, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), day, 10)
 	if err != nil || len(first) != 1 {
 		t.Fatalf("first claim = (%d,%v), want 1", len(first), err)
 	}
 	// 该账号已在 running：第二次认领必须为空（另一条 pending 被排除）。
-	second, err := e.sched.ClaimDue(e.ctx, at.Add(2*time.Minute), 10)
+	second, err := e.sched.ClaimDue(e.ctx, at.Add(2*time.Minute), day, 10)
 	if err != nil {
 		t.Fatalf("second claim: %v", err)
 	}
