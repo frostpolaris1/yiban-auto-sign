@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/protocol"
 )
 
 func newTestProvider(t *testing.T) (*Provider, *upstream) {
@@ -61,6 +62,39 @@ func TestProviderIdentity(t *testing.T) {
 	}
 	if caps.ImageRequired || caps.ManualCaptcha || caps.Rank {
 		t.Fatalf("unexpected capabilities = %+v", caps)
+	}
+}
+
+// 线协议错误在提供方边界翻成契约结论：宿主入口不再认 protocol。
+// 会话失效映射 transient，文案与旧入口分支逐字节一致。
+func TestProviderVerifySessionExpiredIsOutcomeError(t *testing.T) {
+	p, up := newTestProvider(t)
+	up.authBody = []byte(`{"code":999,"msg":"expired"}`)
+	_, err := p.Verify(context.Background(), contract.VerifyRequest{
+		Account: providerAccount(), Credential: providerCredential(),
+	})
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) {
+		t.Fatalf("error = %v, want OutcomeError", err)
+	}
+	if outcomeErr.Outcome != contract.OutcomeTransient || outcomeErr.Message != "session expired" {
+		t.Fatalf("outcome = %+v, want transient/session expired", outcomeErr)
+	}
+}
+
+// 解析错误映射 unknown，文案固定且不带原始片段。
+func TestProviderVerifyParseErrorIsOutcomeError(t *testing.T) {
+	p, _ := newTestProvider(t)
+	err := p.verifyError(&protocol.ParseError{Field: "auth", Fragment: "secret"})
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeUnknown {
+		t.Fatalf("error = %v, want unknown OutcomeError", err)
+	}
+	if outcomeErr.Message != "malformed platform response" {
+		t.Fatalf("message = %q, want malformed platform response", outcomeErr.Message)
+	}
+	if strings.Contains(outcomeErr.Message, "secret") {
+		t.Fatal("message leaked the parse fragment")
 	}
 }
 
