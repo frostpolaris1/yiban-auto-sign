@@ -83,7 +83,7 @@ func TestCanonicalRuleIDsPinned(t *testing.T) {
 	want := []string{
 		"clock.now", "clock.location", "clock.tz",
 		"env.get", "env.lookup",
-		"status.literal", "errors.http",
+		"status.literal", "errors.http", "fs.os.impl",
 		"mask.phone", "mask.email", "mask.device", "mask.text",
 		"capacity.func", "retry.type", "egress.func",
 		"plan.slot", "image.prepare",
@@ -164,7 +164,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// internal/adapters/pg/schedule_override_e2e_test.go 与
 	// internal/adapters/pg/schedule_geometry_e2e_test.go
 	// （容量缩容/回升、覆盖原子性与名册几何的用例层 e2e 需要真实 PG 适配器）。
-	const want = "3f06892d39140c997176dec59d9696b76d60fedc4836e34b3f5024f52b2aaa18"
+	// sfr：新增 fs.os.impl forbid 规则：app 层不得实现 OS 文件系统
+	// （CreateTemp 原子写），实现由 cmd/cli 注入（P2-b，2026-11-11）。
+	const want = "0fabed253ce059f3a619f1185f81102a858b87a4c3c15ad8f68e9d33fa8eaa81"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}
