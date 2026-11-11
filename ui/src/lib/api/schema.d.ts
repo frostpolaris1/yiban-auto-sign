@@ -2482,11 +2482,11 @@ export interface paths {
          * @description Master and admin only. Each slot is a five-minute offset from the
          *     effective window start of the selected task and day. count is the
          *     number of users with an active account in that school who picked the
-         *     offset; pending, rejected and paused accounts do not count. cap is
-         *     the per-slice capacity the plan uses. Slots cover the effective
-         *     window in whole five-minute slices and stop at two hours. A window
-         *     shorter than five minutes still returns one slot, matching the
-         *     plan's clamp.
+         *     offset and have a plan row for the selected task and day; pending,
+         *     rejected and paused accounts do not count. cap is the per-slice
+         *     capacity the plan uses. Slots cover the effective window in whole
+         *     five-minute slices and stop at two hours. A window shorter than five
+         *     minutes still returns one slot, matching the plan's clamp.
          */
         get: operations["TimePrefStats"];
         put?: never;
