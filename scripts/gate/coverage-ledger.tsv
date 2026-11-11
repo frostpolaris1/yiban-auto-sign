@@ -111,7 +111,7 @@ server/internal/app/schedule/daily_test.go	uncovered=Go 测试文件自身即门
 server/internal/entry/http/schedule/handlers.go	uncovered=Go 测试文件自身即门：Overrides 每请求解析（nil 回静态值）由 handlers_test.go 既有 Config 用例与 fakePlanner 断言钉住
 server/internal/entry/http/system/handlers.go	uncovered=Go 测试文件自身即门：PUT 端点角色门/域负例/部分补丁/source=db 回环由 schedule_settings_test.go 钉住；真路由与 CSRF 另有 router e2e
 server/internal/entry/http/system/schedule_settings_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/system），不需要 Python 侧覆盖
-server/internal/entry/http/router/handlers.go	uncovered=Go 测试文件自身即门：AdminScheduleSettingsSet 委托与 501/单侧装配由 settings_routes_test.go 路由表钉住
+server/internal/entry/http/router/oapi_server.go	uncovered=Go 测试文件自身即门：AdminScheduleSettingsSet 委托与 501/单侧装配由 settings_routes_test.go 路由表钉住
 server/internal/entry/http/router/settings_routes_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/router），不需要 Python 侧覆盖
 server/internal/entry/http/router/schedule_settings_e2e_test.go	uncovered=Go 测试文件自身即门：热生效真路由 e2e（PUT 闸→GET/PUT /api/me/time-pref→null 删行→403）
 server/internal/entry/http/oapi/contract_gates_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/oapi），不需要 Python 侧覆盖
@@ -138,7 +138,7 @@ server/internal/app/worker/worker_targets_test.go	uncovered=Go 测试文件自�
 server/internal/assembly/worker_deps_test.go	uncovered=Go 测试文件自身即门（go test ./internal/assembly 真跑）：Paused 字段镜像与搬运哨兵
 server/internal/entry/http/schedule/engine.go	uncovered=Go 包门 go test ./internal/entry/http/schedule：Pause 方向分闸/口令复核/缺字段 400/快照 paused 由 engine_pause_test.go 钉住；真路由与 CSRF 由 router 包 e2e 钉住
 server/internal/entry/http/schedule/engine_pause_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/schedule 真跑），不需要 Python 侧覆盖
-server/internal/entry/http/router/handlers.go	uncovered=Go 测试文件自身即门：AdminEnginePause 委托由 router 包 engine_pause_e2e_test.go 真路由钉住
+server/internal/entry/http/router/oapi_server.go	uncovered=Go 测试文件自身即门：AdminEnginePause 委托由 router 包 engine_pause_e2e_test.go 真路由钉住
 server/internal/entry/http/router/engine_pause_e2e_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/router 真跑），不需要 Python 侧覆盖
 server/internal/entry/http/system/engine_pause_roster_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/system 真跑），不需要 Python 侧覆盖
 server/cmd/server/engine_pause_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：YIBAN_TEST_DATABASE_URL 下 go test ./cmd/server 跑暂停消费 e2e），不需要 Python 侧覆盖
@@ -243,7 +243,7 @@ server/internal/app/settings/mail_test.go	uncovered=Go 测试文件自身即门�
 server/internal/entry/http/system/mail_settings.go	uncovered=Go 包门 go test ./internal/entry/http/system 真跑：GET/PUT 角色门、current_password 缺失/错误、部分补丁、掩码响应由 mail_settings_test 钉住
 server/internal/entry/http/system/mail_settings_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/system 真跑），不需要 Python 侧覆盖
 server/internal/entry/http/system/handlers.go	uncovered=Go 包门 go test ./internal/entry/http/system 真跑：WithReauth/reauthenticate 与 mail 写面接线由 mail_settings_test 钉住
-server/internal/entry/http/router/handlers.go	uncovered=Go 包门 go test ./internal/entry/http/router 真跑：AdminMailSettings/AdminMailSettingsSet 委托与 501 由 settings_routes_test 路由表钉住
+server/internal/entry/http/router/oapi_server.go	uncovered=Go 包门 go test ./internal/entry/http/router 真跑：AdminMailSettings/AdminMailSettingsSet 委托与 501 由 settings_routes_test 路由表钉住
 server/cmd/server/mail_settings_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑真装配写回/密文/每发送/审计回滚 e2e）
 # ---- v1.0.0 尾批：changelog/协议页/robots（2026-11-10）----
 server/go.mod	uncovered=Go 模块清单：依赖许可证由 server/scripts/license.sh 与 THIRD_PARTY_LICENSES.md 门钉住，版本由 go.sum 锁定；本批新增 github.com/yuin/goldmark v1.8.7（MIT，协议页 Markdown 渲染）
