@@ -4391,11 +4391,14 @@ export interface components {
         /**
          * @description The global engine pause (settings row engine.paused) is in effect.
          *     The request made no platform call and changed nothing; retry after
-         *     the pause is lifted. The envelope code stays in the existing closed
-         *     set: capacity_exceeded with the message "engine is paused". The
-         *     status is 503, not 429, so clients treat it as temporarily
-         *     unavailable. Retry-After is optional and omitted when the server
-         *     cannot estimate the wait.
+         *     the pause is lifted. Paused is checked before the weekend gate and
+         *     any existing override, so an explicit refresh, plan or override
+         *     answers 503 even when the weekend gate is closed or an override
+         *     already exists. The envelope code stays in the existing closed set:
+         *     capacity_exceeded with the message "engine is paused". The status
+         *     is 503, not 429, so clients treat it as temporarily unavailable.
+         *     Retry-After is optional and omitted when the server cannot estimate
+         *     the wait.
          */
         ServiceUnavailableError: {
             headers: {

@@ -1633,3 +1633,64 @@ func isPaused(err error) bool {
 	var paused *coreerrs.PausedError
 	return errors.As(err, &paused)
 }
+
+// 急停优先于周末门与既有覆盖：显式路径先判 paused，再短路。
+// 三条正是审查实测红：paused×weekend×Override、paused×weekend×Preview、
+// paused×既有覆盖×Preview。
+func TestPausedWinsOverWeekendAndOverride(t *testing.T) {
+	ctx := context.Background()
+	paused := func(context.Context) (bool, error) { return true, nil }
+	start := time.Date(2026, 10, 31, 9, 0, 0, 0, shanghai)
+	end := start.Add(30 * time.Minute)
+
+	// paused × weekend-closed × Override：503 码，且不写覆盖。
+	w := &fakeWindowStore{task: enabledTask()}
+	svc := newServiceWithPaused(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}},
+		&fakeDiscover{}, paused)
+	in := baseInput()
+	in.Day = "2026-10-31"
+	in.WeekendClosed = true
+	in.Explicit = true
+	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", "u1"); !isPaused(err) {
+		t.Fatalf("paused×weekend×Override err = %v, want paused", err)
+	}
+	if w.overrideOK {
+		t.Fatal("paused×weekend×Override 不得写覆盖")
+	}
+
+	// paused × weekend-closed × Preview：503 码。
+	if _, err := svc.Preview(ctx, in); !isPaused(err) {
+		t.Fatalf("paused×weekend×Preview err = %v, want paused", err)
+	}
+
+	// paused × 既有合法覆盖 × Preview：503 码（覆盖短路不得吞急停）。
+	w = &fakeWindowStore{
+		task: enabledTask(),
+		override: coreschedule.WindowOverride{
+			SchoolTaskID: "task-1", Day: "2026-10-29",
+			Start:  time.Date(2026, 10, 29, 9, 0, 0, 0, shanghai),
+			End:    time.Date(2026, 10, 29, 9, 30, 0, 0, shanghai),
+			Reason: "既有覆盖", CreatedBy: "u1",
+		},
+		overrideOK: true,
+	}
+	svc = newServiceWithPaused(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}},
+		&fakeDiscover{}, paused)
+	withOverride := baseInput()
+	withOverride.Explicit = true
+	if _, err := svc.Preview(ctx, withOverride); !isPaused(err) {
+		t.Fatalf("paused×既有覆盖×Preview err = %v, want paused", err)
+	}
+
+	// 对侧：GET 只读预览（Explicit=false）不判急停，周末门仍回 0 行。
+	read := baseInput()
+	read.Day = "2026-10-31"
+	read.WeekendClosed = true
+	p, err := svc.PreviewCached(ctx, read)
+	if err != nil {
+		t.Fatalf("GET 只读预览不应判急停: %v", err)
+	}
+	if len(p.Rows) != 0 || p.Note != appschedule.WeekendGateNote {
+		t.Fatalf("GET 只读周末回执 = %+v", p)
+	}
+}

@@ -85,8 +85,10 @@ type Input struct {
 	// WeekendClosed 表示请求日的周末门关闭：既有校验照跑，
 	// 写阶段跳过，回执 0 行 + note，来源 weekend_closed。
 	WeekendClosed bool
-	// Explicit 表示 HTTP 手动面。显式发现遇急停（PausedError）时上抛，
-	// 入口回 503；日切与自动兜底保持容忍回退（Explicit=false）。
+	// Explicit 表示显式发现/写库的 HTTP 手动面：
+	// POST refresh、POST plan、POST override。GET 只读路径为 false。
+	// 显式路径在写库/发现前先判急停（PausedError → 入口 503）；
+	// 日切与自动兜底（Explicit=false）保持容忍回退。
 	Explicit bool
 }
 
@@ -159,11 +161,17 @@ func NewService(deps Deps) (*Service, error) {
 // Preview 只算不写：返回窗口解析结果与完整计划行。
 // 与 Build 同一解析口径（预览就是计划），故不节流；Refresh 不影响本方法。
 // **有平台发现**：入口只在 POST /api/schedule/preview/refresh 调用它。
+// 显式路径先判急停：paused 优先于周末门与既有覆盖，回 503。
 // 周末门关闭时校验照跑，回执 0 行 + note（不发现平台）。
 // 停用任务同样可预览（k0y-6）。
 func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
 	if err := validateInput(in); err != nil {
 		return Preview{}, err
+	}
+	if in.Explicit {
+		if err := s.requireNotPaused(ctx); err != nil {
+			return Preview{}, err
+		}
 	}
 	if in.WeekendClosed {
 		return s.closedPreview(ctx, in)
@@ -569,16 +577,16 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	if !sameBusinessDay(start, in.Day, in.Location) || !sameBusinessDay(end, in.Day, in.Location) {
 		return Preview{}, validation("override start and end must fall on the business day")
 	}
-	// 周末门关闭：全部既有校验已通过，仅在写阶段跳过。
-	// 覆盖不落库，回执来源 weekend_closed，不回显请求窗口为生效值。
-	if in.WeekendClosed {
-		return s.closedPreview(ctx, in)
-	}
-	// 显式手动面写库前判急停：暂停时覆盖与计划都零写入。
+	// 显式手动面先判急停：paused 优先于周末门与既有覆盖，零写入回 503。
 	if in.Explicit {
 		if err := s.requireNotPaused(ctx); err != nil {
 			return Preview{}, err
 		}
+	}
+	// 周末门关闭：全部既有校验已通过，仅在写阶段跳过。
+	// 覆盖不落库，回执来源 weekend_closed，不回显请求窗口为生效值。
+	if in.WeekendClosed {
+		return s.closedPreview(ctx, in)
 	}
 	if err := s.deps.Windows.PutOverride(ctx, coreschedule.WindowOverride{
 		SchoolTaskID: in.SchoolTaskID,

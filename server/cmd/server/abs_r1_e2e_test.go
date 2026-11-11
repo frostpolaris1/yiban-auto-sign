@@ -107,6 +107,17 @@ func TestAbsR1PausedGatesManualSurfaces(t *testing.T) {
 		 ON CONFLICT (key) DO UPDATE SET value = 'true'`); err != nil {
 		t.Fatalf("pause engine: %v", err)
 	}
+	// 业务日无关：周末门显式打开，避免测试在周末必红。
+	if _, err := e.db.Exec(ctx,
+		`INSERT INTO settings (key, value) VALUES
+		   ('schedule.sunday_sign','true'), ('schedule.saturday_sign','true')
+		 ON CONFLICT (key) DO UPDATE SET value = 'true'`); err != nil {
+		t.Fatalf("open weekend gates: %v", err)
+	}
+
+	// 零写入基线：paused 请求不得新增窗口缓存或审计行。
+	windowCacheBefore := e.scalarInt("SELECT count(*) FROM window_cache")
+	auditBefore := e.scalarInt("SELECT count(*) FROM audit_logs")
 
 	// 中国标准时间无夏令时，固定偏移与服务端 Asia/Shanghai 等价。
 	loc := time.FixedZone("CST", 8*3600)
@@ -164,11 +175,17 @@ func TestAbsR1PausedGatesManualSurfaces(t *testing.T) {
 	})
 	want503("override", resp, payload)
 
-	// 急停期间零落行、零覆盖。
+	// 急停期间零落行、零覆盖、零缓存写入、零审计。
 	if n := e.scalarInt("SELECT count(*) FROM sign_tasks"); n != 0 {
 		t.Fatalf("paused plan wrote %d task rows, want 0", n)
 	}
 	if n := e.scalarInt("SELECT count(*) FROM window_overrides"); n != 0 {
 		t.Fatalf("paused override wrote %d rows, want 0", n)
+	}
+	if n := e.scalarInt("SELECT count(*) FROM window_cache"); n != windowCacheBefore {
+		t.Fatalf("paused refresh wrote window_cache: %d -> %d", windowCacheBefore, n)
+	}
+	if n := e.scalarInt("SELECT count(*) FROM audit_logs"); n != auditBefore {
+		t.Fatalf("paused requests wrote audit rows: %d -> %d", auditBefore, n)
 	}
 }

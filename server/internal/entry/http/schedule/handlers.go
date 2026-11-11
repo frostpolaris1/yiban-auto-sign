@@ -220,6 +220,8 @@ func (h *Handler) preview(c *gin.Context, day, schoolID, taskID string, refresh 
 		fail(c, err)
 		return
 	}
+	// 显式发现：POST refresh 先判急停；GET 只读不判。
+	in.Explicit = refresh
 	open, err := h.weekendOpen(c.Request.Context(), day)
 	if err != nil {
 		fail(c, err)
@@ -266,6 +268,8 @@ func (h *Handler) Plan(c *gin.Context, _ oapi.SchedulePlanParams) {
 		fail(c, err)
 		return
 	}
+	// 显式写库面：先判急停，再判周末门。
+	in.Explicit = true
 	// 周末门：与日切构建同源（settings 每请求读）。关闭时交给用例层：
 	// 停用/参数校验先跑，之后回 0 行 + note，不写库、不 400。
 	open, err := h.weekendOpen(c.Request.Context(), body.Day)
@@ -298,6 +302,8 @@ func (h *Handler) Override(c *gin.Context, _ oapi.ScheduleOverrideParams) {
 		fail(c, err)
 		return
 	}
+	// 显式写库面：先判急停，再判周末门。
+	in.Explicit = true
 	// 周末门：关闭时交给用例层；全部既有校验先跑，仅在写阶段跳过。
 	open, err := h.weekendOpen(c.Request.Context(), body.Day)
 	if err != nil {
@@ -350,6 +356,8 @@ func (h *Handler) capacity(c *gin.Context, dayParam *string, schoolID, taskID st
 		return
 	}
 	in.Refresh = refresh
+	// 显式发现：POST refresh 先判急停；GET 只读不判。
+	in.Explicit = refresh
 	p, err := h.planner.Report(c.Request.Context(), in)
 	if err != nil {
 		fail(c, err)
@@ -781,8 +789,6 @@ func (h *Handler) inputWith(ov resolvedOverrides, day, schoolID, taskID string) 
 		UsePrefs:      ov.usePrefs,
 		EdgeFront:     ov.front,
 		EdgeBack:      ov.back,
-		// HTTP 手动面：显式发现遇急停上抛 503（日切保持回退）。
-		Explicit: true,
 	}
 }
 
