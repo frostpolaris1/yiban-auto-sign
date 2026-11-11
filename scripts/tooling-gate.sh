@@ -72,8 +72,12 @@ echo "== golangci-lint =="
 (cd server && golangci-lint run ./...)
 
 echo "== govulncheck =="
-# stdlib 漏洞按工具链版本判定，固定到 go.mod 的 toolchain 行同值。
-(cd server && GOTOOLCHAIN=go1.27.3 govulncheck ./...)
+# stdlib 漏洞按工具链版本判定：值从 go.mod 的 toolchain 行取（单一事实源）。
+# 教训（2026-11-11 GO-2026-6859）：此前此行手写版本号，go.mod 抬到 1.27.4
+# 后本门仍按 1.27.3 扫描——双源手工同步必漂移，改为派生。
+GO_TC="$(awk '/^toolchain /{print $2}' "$ROOT/server/go.mod" 2>/dev/null || true)"
+[ -n "$GO_TC" ] || GO_TC=auto
+(cd server && GOTOOLCHAIN="$GO_TC" govulncheck ./...)
 
 echo "== npm audit（high 及以上）=="
 (cd ui && npm audit --audit-level=high)

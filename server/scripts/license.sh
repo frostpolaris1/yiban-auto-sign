@@ -23,10 +23,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# go-licenses v1.6.0（当前最新）读不了 Go 1.27.3 的 module 信息：
+# go-licenses v1.6.0（当前最新）读不了 Go 1.27.3 及以后格式的 module 信息：
 # 它把 stdlib 包当成「没有 module info」直接报错。许可证扫描因此固定在
-# 1.27.2 的工具链上跑；go.mod 的 toolchain 行仍指向 1.27.3（构建与漏洞扫描用）。
-# 上游修复后删掉这行。
+# 1.27.2 的工具链上跑；go.mod 的 toolchain 行指向构建/漏洞扫描用的版本
+# （现 1.27.4，GO-2026-6859 修复版）。两者不一致是刻意的，上游修复后删本行。
 export GOTOOLCHAIN=go1.27.2
 
 MANIFEST="THIRD_PARTY_LICENSES.md"
