@@ -17,6 +17,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -290,11 +291,16 @@ func (f *fakeRegistrations) SetRegistrationEnabled(_ context.Context, enabled bo
 }
 
 type fakeAudits struct {
+	mu      sync.Mutex
 	actions []coreaudit.Action
+	entries []coreaudit.Entry
 }
 
 func (f *fakeAudits) Append(_ context.Context, in coreaudit.Entry) (coreaudit.Row, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.actions = append(f.actions, in.Action)
+	f.entries = append(f.entries, in)
 	return coreaudit.Row{}, nil
 }
 

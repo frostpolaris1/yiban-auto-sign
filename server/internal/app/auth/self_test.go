@@ -58,7 +58,8 @@ func sessionOf(rec appuser.Record) coreauth.Session {
 	}}
 }
 
-// TestDeleteSelfReauthGate 覆盖缺值/错误/连败三态与零写入。
+// TestDeleteSelfReauthGate 覆盖缺值/错误/连败三态与零业务写入；
+// 错误与连败各留一条 reauth 审计，注销动作不落。
 func TestDeleteSelfReauthGate(t *testing.T) {
 	h := newHarness(t)
 	user := seedSelfUser(t, h, "gate@example.com", "right-pass", coreauth.RoleUser)
@@ -74,8 +75,12 @@ func TestDeleteSelfReauthGate(t *testing.T) {
 	if err := h.svc.DeleteSelf(t.Context(), sess, "wrong-pass"); errs.From(err).Code != errs.CodeForbidden {
 		t.Fatalf("wrong password code = %v, want forbidden", errs.From(err).Code)
 	}
-	if len(h.users.selfDeleted) != 0 || len(h.sessions.revokedAll) != 0 || len(h.audits.actions) != 0 {
-		t.Fatal("a wrong password wrote state")
+	if len(h.users.selfDeleted) != 0 || len(h.sessions.revokedAll) != 0 {
+		t.Fatal("a wrong password wrote business state")
+	}
+	// 失败本身要留痕：恰一条 reauth 审计，且不是注销动作。
+	if len(h.audits.actions) != 1 || h.audits.actions[0] != coreaudit.ActionAuthReauthFailed {
+		t.Fatalf("wrong-password audit = %v, want one auth.reauth_failed", h.audits.actions)
 	}
 
 	// 上面已有一次错误；补到阈值（共 5 次失败），下一次必须 429。
@@ -90,7 +95,16 @@ func TestDeleteSelfReauthGate(t *testing.T) {
 		t.Fatalf("throttled code = %v, want rate_limited", errs.From(err).Code)
 	}
 	if len(h.users.selfDeleted) != 0 || len(h.sessions.revokedAll) != 0 {
-		t.Fatal("a throttled call wrote state")
+		t.Fatal("a throttled call wrote business state")
+	}
+	// 5 次 403 + 1 次 429 各一条审计；没有任何 user.self_delete。
+	if len(h.audits.actions) != appauth.ReauthFailureLimit+1 {
+		t.Fatalf("reauth audit rows = %d, want %d", len(h.audits.actions), appauth.ReauthFailureLimit+1)
+	}
+	for _, action := range h.audits.actions {
+		if action != coreaudit.ActionAuthReauthFailed {
+			t.Fatalf("unexpected audit action %q", action)
+		}
 	}
 }
 

@@ -51,8 +51,11 @@ type Action string
 
 // P1 动作词表。P4 补任务类与凭据状态类动作。
 const (
-	ActionAuthLogin         Action = "auth.login"
-	ActionAuthLoginFailed   Action = "auth.login_failed"
+	ActionAuthLogin       Action = "auth.login"
+	ActionAuthLoginFailed Action = "auth.login_failed"
+	// 危险操作二次口令失败：403（口令错/用户不可用）与 429（窗口内失败超限）
+	// 共用本动作。detail 只记字段、状态词与失败计数，**绝无口令或邮箱**。
+	ActionAuthReauthFailed  Action = "auth.reauth_failed"
 	ActionAuthLogout        Action = "auth.logout"
 	ActionAuthPasswordReset Action = "auth.password_reset"
 	// 登录态自助改密：调用方已通过旧口令校验。

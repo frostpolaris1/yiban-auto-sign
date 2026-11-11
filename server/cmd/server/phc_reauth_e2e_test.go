@@ -3,7 +3,8 @@ package main
 // phc：危险操作二次口令与登录口令策略的端到端测试。真库、真 HTTP、真 cookie。
 //
 // # 功能
-// 每个危险端点钉住 missing→400 / wrong→403 / right→原行为 与「失败零写入零审计」；
+// 每个危险端点钉住 missing→400 / wrong→403 / right→原行为 与「失败零业务写入」；
+// reauth 失败本身写一条无 PII 审计（见 TestPHCReauthFailureIsAudited）；
 // 账号面钉住 name-only 不要口令、凭据面要口令；策略面钉住 user 10/2 与
 // master/admin 12/3 的正负例、易班账号口令不受限、节流 5 次后 429 且成功清零。
 // 本文件**不**测性能，**不**复制用例层单测。
@@ -25,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 )
@@ -95,6 +97,52 @@ func TestPHCReauthUserPatchGate(t *testing.T) {
 	}
 	if n := e.scalarInt("SELECT count(*) FROM audit_logs WHERE target_id = $1 AND action = 'user.role_change'", target.ID); n != 1 {
 		t.Fatalf("user.role_change rows = %d, want 1", n)
+	}
+}
+
+// 二次口令失败与超限各写一条 auth.reauth_failed；detail 不含口令或邮箱。
+func TestPHCReauthFailureIsAudited(t *testing.T) {
+	e := newAuthEnv(t)
+	session := phcLoginMaster(t, e, "phc-audit-boss@example.com", "boss-pass")
+	target := w2dSeedUser(t, e, "phc-audit-target@example.com", "target-pass", coreauth.RoleUser)
+	path := "/api/users/" + target.ID
+	csrf := map[string]string{"X-CSRF-Token": session.CSRFToken}
+
+	resp, payload := e.do(http.MethodPatch, path,
+		map[string]any{"role": "admin", "current_password": "wrong-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong password = %d, want 403; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'auth.reauth_failed' AND actor_user_id = $1", session.ID); got != 1 {
+		t.Fatalf("auth.reauth_failed rows = %d, want 1", got)
+	}
+	detail := e.scalarString("SELECT detail FROM audit_logs WHERE action = 'auth.reauth_failed' ORDER BY id DESC LIMIT 1")
+	if strings.Contains(detail, "wrong-pass-42") || strings.Contains(detail, "phc-audit-boss@example.com") {
+		t.Fatalf("reauth audit detail leaked a password or email: %s", detail)
+	}
+	if !strings.Contains(detail, `"to":"invalid"`) || !strings.Contains(detail, `"count":1`) {
+		t.Fatalf("reauth audit detail = %s, want to=invalid count=1", detail)
+	}
+
+	// 补到阈值；第 6 次 429 也留一条 throttled 审计。
+	for i := 1; i < appauth.ReauthFailureLimit; i++ {
+		resp, payload = e.do(http.MethodPatch, path,
+			map[string]any{"role": "admin", "current_password": "wrong-pass-42"}, csrf)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("failure %d = %d, want 403; body=%q", i+1, resp.StatusCode, payload)
+		}
+	}
+	resp, payload = e.do(http.MethodPatch, path,
+		map[string]any{"role": "admin", "current_password": "wrong-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("throttled = %d, want 429; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'auth.reauth_failed' AND actor_user_id = $1", session.ID); got != appauth.ReauthFailureLimit+1 {
+		t.Fatalf("reauth audit rows = %d, want %d", got, appauth.ReauthFailureLimit+1)
+	}
+	detail = e.scalarString("SELECT detail FROM audit_logs WHERE action = 'auth.reauth_failed' ORDER BY id DESC LIMIT 1")
+	if !strings.Contains(detail, `"to":"throttled"`) || !strings.Contains(detail, `"count":5`) {
+		t.Fatalf("throttled audit detail = %s, want to=throttled count=5", detail)
 	}
 }
 

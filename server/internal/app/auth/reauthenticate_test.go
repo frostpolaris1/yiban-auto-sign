@@ -5,7 +5,8 @@ package auth_test
 // # 功能
 // 用进程内替身钉住四条不变式：错误口令统一 forbidden、
 // 用户不存在同垫时同错误、窗口内 5 次失败后 429、成功清零。
-// 另钉住「失败不写审计」。本文件**不**连数据库，**不**发 HTTP。
+// 另钉住「失败与超限各写一条无 PII 审计，成功不写」。
+// 本文件**不**连数据库，**不**发 HTTP。
 //
 // # 口径
 // 真库与真 HTTP 行为由 cmd/server 的 e2e 负责。
@@ -21,6 +22,7 @@ import (
 
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 )
@@ -111,7 +113,25 @@ func TestReauthenticateAcceptsCorrectPassword(t *testing.T) {
 	}
 }
 
-// 错误口令统一 forbidden；用户不存在同垫时同错误；都不写审计。
+// wantReauthAudit 断言第 index 条审计是 reauth 失败动作，且 detail 无 PII。
+func wantReauthAudit(t *testing.T, h *harness, index int, outcome string, count int) {
+	t.Helper()
+	if len(h.audits.entries) <= index {
+		t.Fatalf("audit entries = %d, want at least %d", len(h.audits.entries), index+1)
+	}
+	entry := h.audits.entries[index]
+	if entry.Action != coreaudit.ActionAuthReauthFailed {
+		t.Fatalf("audit action = %q, want %q", entry.Action, coreaudit.ActionAuthReauthFailed)
+	}
+	if entry.Detail["field"] != "current_password" || entry.Detail["from"] != "unknown" || entry.Detail["to"] != outcome {
+		t.Fatalf("audit detail = %v", entry.Detail)
+	}
+	if got := entry.Detail["count"]; got != count {
+		t.Fatalf("audit count = %v, want %d", got, count)
+	}
+}
+
+// 错误口令统一 forbidden；用户不存在同垫时同错误；两者都写无 PII 审计。
 func TestReauthenticateRejectsWrongAndUnknown(t *testing.T) {
 	h := newHarness(t)
 	seedActiveUser(t, h, "u1")
@@ -123,14 +143,16 @@ func TestReauthenticateRejectsWrongAndUnknown(t *testing.T) {
 	if errs.From(wrong).Code != errs.CodeForbidden {
 		t.Fatalf("wrong password code = %q, want forbidden", errs.From(wrong).Code)
 	}
+	wantReauthAudit(t, h, 0, "invalid", 1)
+
 	unknown := h.svc.Reauthenticate(t.Context(), "ghost", "wrong-password-42")
 	if unknown != appauth.ErrReauthFailed {
 		t.Fatalf("unknown user error = %v, want ErrReauthFailed", unknown)
 	}
-	if len(h.audits.actions) != 0 {
-		t.Fatalf("failed reauth wrote audit rows: %v", h.audits.actions)
-	}
-	// 停用用户同样 forbidden：active 校验在校验路径上。
+	// 未知用户单独计数：不占 u1 的失败额度。
+	wantReauthAudit(t, h, 1, "invalid", 1)
+
+	// 停用用户同样 forbidden：active 校验在校验路径上；u1 计数累加到 2。
 	h.users.byID["u1"] = appuser.Record{
 		ID: "u1", Email: "u1@example.com",
 		PasswordHash: h.users.byID["u1"].PasswordHash,
@@ -139,6 +161,7 @@ func TestReauthenticateRejectsWrongAndUnknown(t *testing.T) {
 	if err := h.svc.Reauthenticate(t.Context(), "u1", "right-password-42"); err != appauth.ErrReauthFailed {
 		t.Fatalf("disabled user error = %v, want ErrReauthFailed", err)
 	}
+	wantReauthAudit(t, h, 2, "invalid", 2)
 }
 
 // 窗口内第 6 次尝试 429，即使口令正确；窗口滑过之后恢复。
@@ -165,10 +188,18 @@ func TestReauthenticateThrottlesAfterFiveFailures(t *testing.T) {
 	if h.kdf.verifies.Load() != verifies {
 		t.Fatal("a throttled attempt still ran a KDF verify")
 	}
-	// 窗口滑过（5 分钟后）：计数清空，正确口令通过。
+	// 前 5 次失败各一条 invalid；第 6 次一条 throttled，计数停在窗口上限。
+	for i := 0; i < appauth.ReauthFailureLimit; i++ {
+		wantReauthAudit(t, h, i, "invalid", i+1)
+	}
+	wantReauthAudit(t, h, appauth.ReauthFailureLimit, "throttled", appauth.ReauthFailureLimit)
+	// 窗口滑过（5 分钟后）：计数清空，正确口令通过，且成功不写审计。
 	clk.advance(appauth.ReauthWindow + time.Second)
 	if err := h.svc.Reauthenticate(ctx, "u1", password); err != nil {
 		t.Fatalf("after the window: %v", err)
+	}
+	if got := len(h.audits.entries); got != appauth.ReauthFailureLimit+1 {
+		t.Fatalf("audit entries after success = %d, want %d", got, appauth.ReauthFailureLimit+1)
 	}
 }
 
@@ -250,6 +281,20 @@ func TestReauthenticateThrottleIsConcurrencySafe(t *testing.T) {
 	}
 	if h.kdf.verifies.Load() != appauth.ReauthFailureLimit {
 		t.Fatalf("KDF verifies = %d, want %d", h.kdf.verifies.Load(), appauth.ReauthFailureLimit)
+	}
+	// 每次尝试都留一条审计：5 条 invalid + 15 条 throttled。
+	invalidAudits, throttledAudits := 0, 0
+	for _, entry := range h.audits.entries {
+		switch entry.Detail["to"] {
+		case "invalid":
+			invalidAudits++
+		case "throttled":
+			throttledAudits++
+		}
+	}
+	if invalidAudits != appauth.ReauthFailureLimit || throttledAudits != attempts-appauth.ReauthFailureLimit {
+		t.Fatalf("audit outcomes = %d invalid / %d throttled, want %d / %d",
+			invalidAudits, throttledAudits, appauth.ReauthFailureLimit, attempts-appauth.ReauthFailureLimit)
 	}
 }
 
