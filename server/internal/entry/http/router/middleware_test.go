@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	corephoto "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/photo"
 )
 
@@ -54,16 +56,34 @@ func TestBatchSignPathIsIPRateLimited(t *testing.T) {
 	}
 }
 
-// 安全头走真实中间件链：CSP 必须在每个响应上出现，且 script-src 不含
-// 'unsafe-inline'。UI 的内联主题脚本已外置，这条断言与 index.html 结构守卫配套。
-func TestSecurityHeadersSetBaselineCSP(t *testing.T) {
+// cspWiringIssuer 是只满足 router.New 会话依赖的最小替身。
+// 本文件不断言会话行为；解析一律失败即可。
+type cspWiringIssuer struct{}
+
+func (cspWiringIssuer) Issue(context.Context, coreauth.User) (coreauth.Issued, error) {
+	return coreauth.Issued{}, nil
+}
+func (cspWiringIssuer) Resolve(context.Context, string) (coreauth.Session, error) {
+	return coreauth.Session{}, coreauth.ErrNoSession
+}
+func (cspWiringIssuer) Revoke(context.Context, string) error           { return nil }
+func (cspWiringIssuer) RevokeAllForUser(context.Context, string) error { return nil }
+
+// 安全头必须由 router.New 的真实中间件链下发：删掉 router.go 的
+// securityHeaders() 注册，本测试即红。CSP 的 script-src 不含
+// 'unsafe-inline'，与 index.html 无内联块的结构守卫配套。
+func TestSecurityHeadersWiredThroughRouter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	engine.Use(securityHeaders())
-	engine.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	engine, err := New(Options{Sessions: cspWiringIssuer{}})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
 
 	rec := httptest.NewRecorder()
-	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /healthz = %d, want 200", rec.Code)
+	}
 
 	csp := rec.Header().Get("Content-Security-Policy")
 	for _, want := range []string{
