@@ -439,6 +439,28 @@ func (f *keyedWriteStore) ClearSetting(_ context.Context, key string) error {
 	return nil
 }
 
+// 周末布尔旧值：第二次写回必须读 BoolOverride 得到 true，而不是落 IntOverride 记 nil。
+func TestScheduleSettingsWeekendOldValueIsBool(t *testing.T) {
+	store := newKeyedWriteStore()
+	audits := &fakeAudit{}
+	svc, _ := newScheduleService(t, store, audits)
+	ctx := context.Background()
+	if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: true},
+	}); err != nil {
+		t.Fatalf("SetSchedule(true): %v", err)
+	}
+	if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: false},
+	}); err != nil {
+		t.Fatalf("SetSchedule(false): %v", err)
+	}
+	pair := audits.entries[1].Detail["changes"].(map[string][2]any)[appsettings.KeyScheduleSundaySign]
+	if pair[0] != true || pair[1] != false {
+		t.Fatalf("weekend pair = %#v, want [true false]", pair)
+	}
+}
+
 // 周末门键写回：set 落行、null 删行、audit detail 含 bool 旧→新；
 // 旧三键不受影响（缺=不动）。
 func TestScheduleSettingsWeekendKeysWriteAndClear(t *testing.T) {

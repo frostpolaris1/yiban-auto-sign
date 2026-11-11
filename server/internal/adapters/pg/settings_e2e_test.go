@@ -633,6 +633,52 @@ func TestScheduleSettingsServiceE2E(t *testing.T) {
 	}
 }
 
+// 周末布尔旧值：第二次写回必须记 [true,false] 真值，而不是 [null,false]。
+// readOverrideOld 曾把布尔键落到 IntOverride，真库读布尔行失败后按坏行记 nil。
+func TestWeekendBoolOldValueE2E(t *testing.T) {
+	e := newEnv(t)
+	master := e.createUser("weekend-old-value-master@example.com")
+	resolver, err := appsettings.NewResolver(pg.NewSettingsRepo(e.db), map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store:    pg.NewAnnouncementRepo(e.db),
+		Audit:    e.audits,
+		Tx:       e.db,
+		Clock:    coreclock.Fixed{T: time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)},
+		Schedule: pg.NewSettingsRepo(e.db),
+		Resolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	actor := appaudit.Actor{UserID: master.ID, Role: coreauth.RoleMaster, Label: "m***@example.com"}
+
+	if err := svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: true},
+		{Key: appsettings.KeyScheduleSaturdaySign, Op: appsettings.ScheduleOpSet, Value: true},
+	}); err != nil {
+		t.Fatalf("SetSchedule(true): %v", err)
+	}
+	if err := svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: false},
+		{Key: appsettings.KeyScheduleSaturdaySign, Op: appsettings.ScheduleOpSet, Value: false},
+	}); err != nil {
+		t.Fatalf("SetSchedule(false): %v", err)
+	}
+	detail := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'settings.schedule_writeback' ORDER BY id DESC LIMIT 1")
+	for _, key := range []string{appsettings.KeyScheduleSundaySign, appsettings.KeyScheduleSaturdaySign} {
+		if !strings.Contains(detail, `"`+key+`":[true,false]`) {
+			t.Fatalf("audit detail = %q, want %q to record [true,false]", detail, key)
+		}
+	}
+}
+
 // 批 3b：四枚 DB-only 键的真库链（周末门＋默认窗口对）。
 // 判据：多键一次 PUT 恰一行审计；null 删行回缺行语义（周末门缺行=false、
 // 窗口缺行回常量对）；单侧组合违规 400 零写零审计（用例层读真库生效值）。
