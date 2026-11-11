@@ -166,6 +166,11 @@ const (
 	// P5：图片入库。detail 只记四边裁切比例与输出摘要，
 	// 无自由文本，无用户标识之外的主体信息。
 	ActionPhotoUpload Action = "photo.upload"
+	// P5：图片软删。属主自助删除，actor 是本人；detail 只记照片 id 形状。
+	ActionPhotoDelete Action = "photo.delete"
+	// 保留期自动物理清理：系统 actor（system:purge），按删除批次记计数。
+	// detail 只含 count，无照片 id、属主或任何个人数据。
+	ActionPhotoPurge Action = "photo.purge"
 	// P5：学校默认图登记。detail 只记新照片 id 与旧照片 id（可空）。
 	ActionSchoolDefaultPhotoSet Action = "school.default_photo_set"
 )

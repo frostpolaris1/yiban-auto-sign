@@ -69,7 +69,7 @@ type Service interface {
 	ListAccount(ctx context.Context, scope corescope.Scope, accountID, cursor string, limit int) (appphotos.Page, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
 	Open(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, io.ReadCloser, error)
-	Delete(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
+	Delete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (corephoto.Record, error)
 	Retention(ctx context.Context, scope corescope.Scope) (int, error)
 	SetRetention(ctx context.Context, scope corescope.Scope, days int) (int, error)
 	GetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string) (appphotos.SchoolDefaultPhoto, error)
@@ -314,13 +314,14 @@ func writePhotoValidator(c *gin.Context, etag string) {
 }
 
 // PhotoDelete 实现 DELETE /api/me/photos/{id}。
-// 任何角色都只删自己的照片：作用域由会话 userID 构造。
+// 任何角色都只删自己的照片：作用域由会话 userID 构造；
+// 审计 actor 是本人（属主自助删除）。
 func (h *Handler) PhotoDelete(c *gin.Context, id oapi.PhotoID, _ oapi.PhotoDeleteParams) {
-	session, _, _, ok := h.principal(c)
+	session, _, actor, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	if _, err := h.svc.Delete(c.Request.Context(), ownerScope(session), string(id)); err != nil {
+	if _, err := h.svc.Delete(c.Request.Context(), ownerScope(session), string(id), actor); err != nil {
 		fail(c, err)
 		return
 	}
