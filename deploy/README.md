@@ -427,6 +427,10 @@ sudo systemctl start yiban.service
 2. 传 `X-Forwarded-Proto: https`。
 3. 传 `X-Forwarded-For`。
 
+建议代理同时下发 HSTS（`Strict-Transport-Security: max-age=31536000; includeSubDomains`）。
+Go 进程**不**设 HSTS：TLS 在代理终结，HSTS 必须由同一层统一下发，避免双头取值不一致；
+只在确认全站与子域都可长期 HTTPS 后再加 `includeSubDomains`。
+
 服务端只采信 `YIBAN_TRUSTED_PROXIES` 里来源的转发头。不配时：
 
 - 所有请求按代理地址计，登录等受限端点共用同一个 IP 桶（默认 60 次/分钟）。
