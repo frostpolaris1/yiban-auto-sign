@@ -6,9 +6,10 @@ change its behavior.
 
 ## Layout
 
-Full tree and naming rules: [`../STRUCTURE.md`](../STRUCTURE.md). The entries
-below are the single-source owners plus the build and gate files; this list is
-not the whole tree.
+Full tree and naming rules: [`../STRUCTURE.md`](../STRUCTURE.md); the registered
+directory roster is [`structure.tsv`](structure.tsv). The entries below are the
+single-source owners plus the build and gate files; this list is not the whole
+tree.
 
 ```text
 server/
@@ -79,7 +80,8 @@ server/
 └── scripts/verify.sh          gofmt + vet + test + gate + drift + structure + license
 ```
 
-Layer and domain names are fixed by the repository map in `../STRUCTURE.md`.
+Layer and domain rules are in `../STRUCTURE.md`; registered directory names are
+in `structure.tsv`.
 
 ## Deploy
 
