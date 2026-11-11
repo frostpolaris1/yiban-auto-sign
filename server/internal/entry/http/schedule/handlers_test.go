@@ -163,10 +163,20 @@ func (f *fakeTimePrefs) Set(_ context.Context, userID string, offset *int) (appt
 type fakeStats struct {
 	counts map[int]int
 	err    error
+	// taskCalls 记录任务级端口被调用次数；旧全校端口保留为兼容回退。
+	taskCalls int
+	lastTask  string
+	lastDay   string
 }
 
 func (f *fakeStats) SignStats(context.Context, corescope.Scope, string, string) (appstats.Report, error) {
 	return appstats.Report{}, nil
+}
+
+func (f *fakeStats) OffsetCountsForTask(_ context.Context, _, taskID, day string) (map[int]int, error) {
+	f.taskCalls++
+	f.lastTask, f.lastDay = taskID, day
+	return f.counts, f.err
 }
 
 func (f *fakeStats) OffsetCounts(context.Context, string) (map[int]int, error) {
@@ -702,6 +712,11 @@ func TestTimePrefGetEnrichesCrowdingAndEstimate(t *testing.T) {
 	}
 	if slots[len(slots)-1].EdgeNote != "结尾 0.5 分钟保留" {
 		t.Fatalf("末槽 edge_note = %q", slots[len(slots)-1].EdgeNote)
+	}
+	// 拥挤度必须走任务级端口，并带上选中任务与业务日（P2-13）。
+	if stats.taskCalls != 1 || stats.lastTask != "task-secret" || stats.lastDay != "2026-10-29" {
+		t.Fatalf("任务级拥挤度 = calls %d task %q day %q, want 1/task-secret/2026-10-29",
+			stats.taskCalls, stats.lastTask, stats.lastDay)
 	}
 	if got.Estimated == nil || *got.Estimated != "06:42" {
 		t.Fatalf("estimated = %v, want 06:42", got.Estimated)

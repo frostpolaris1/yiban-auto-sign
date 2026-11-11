@@ -414,6 +414,8 @@ func TestTimePrefCrowdingAndEstimate(t *testing.T) {
 	e.seedTimePref(peer.ID, 0)
 	runAt := userReadAt(t, today, 6, 42, 0)
 	e.seedTask(acctUser, task, today, corestatus.TaskPending, 0, runAt, runAt)
+	// 拥挤度按选中任务过滤（P2-13）：peer 也必须在当日任务上有计划行。
+	e.seedTask(acctPeer, task, today, corestatus.TaskPending, 0, runAt, runAt)
 
 	rec := e.do(http.MethodGet, "/api/me/time-pref", nil, e.login(user))
 	w2cWantStatus(t, rec, http.StatusOK)

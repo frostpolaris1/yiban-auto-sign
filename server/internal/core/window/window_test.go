@@ -77,6 +77,23 @@ func TestEffective(t *testing.T) {
 	}
 }
 
+// 负缓冲不是「让出」而是扩窗：必须夹到 0，Effective 只允许收缩（P3-19）。
+func TestEffectiveClampsNegativeEdges(t *testing.T) {
+	got, clamped := window.Effective(-time.Hour, -time.Hour)
+	if clamped {
+		t.Fatal("负缓冲被夹到 0 后不该报收缩")
+	}
+	if !got.Start.Equal(start) || !got.End.Equal(end) {
+		t.Fatalf("Effective(负,负) = [%v, %v], want 原窗口 [%v, %v]",
+			got.Start, got.End, start, end)
+	}
+	// 一侧负、一侧正：负侧不扩窗，正侧照常收缩。
+	got, _ = window.Effective(-time.Hour, time.Minute)
+	if !got.Start.Equal(start) || !got.End.Equal(at(7, 49, 0)) {
+		t.Fatalf("Effective(负,1m) = [%v, %v], want [06:30, 07:49]", got.Start, got.End)
+	}
+}
+
 func TestEffectiveShrinksOversizedEdges(t *testing.T) {
 	// 缓冲之和**恰好等于**窗口宽度：这是 >= 与 > 的分界，突变验证要求必须踩到。
 	// 5 分钟窗口、前后各 2.5 分钟（和恰 5 分钟）：budget = 300s×0.2 = 60s，scale = 0.2，
