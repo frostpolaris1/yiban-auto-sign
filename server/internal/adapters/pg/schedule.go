@@ -350,6 +350,21 @@ func (r *ScheduleRepo) SkipPlanRows(ctx context.Context, schoolTaskID, day strin
 	return ct.RowsAffected(), nil
 }
 
+// ReviveCapacityReleased 把当日该任务被容量释放的 skipped 行翻回 pending。
+// 只认 result='capacity_released' 的等值匹配：window_closed 等其他
+// skipped 结论绝不复活。run_at 暂留，调用方随后统一重排（H1）。
+func (r *ScheduleRepo) ReviveCapacityReleased(ctx context.Context, schoolTaskID, day string) (int64, error) {
+	ct, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE sign_tasks SET state = 'pending', claimed_at = NULL, lease_expires_at = NULL
+		 WHERE school_task_id = $1::uuid AND day = $2::date
+		   AND state = 'skipped' AND result = 'capacity_released'`,
+		schoolTaskID, day)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return ct.RowsAffected(), nil
+}
+
 // SkipStalePending 把 beforeDay 之前的 pending 行落 skipped(result)。
 // 跨业务日的行永远不会再被 ClaimDue 认领（day 过滤），日切时统一了结：
 // 行还在，结论是「窗口已过」，不物理删除（P1-6）。

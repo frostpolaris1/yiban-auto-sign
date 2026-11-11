@@ -183,6 +183,19 @@ func (f *fakeStats) OffsetCounts(context.Context, string) (map[int]int, error) {
 	return f.counts, f.err
 }
 
+// legacyStats 只实现旧全校端口：验证回退路径与 warn-once（M4）。
+type legacyStats struct {
+	counts map[int]int
+}
+
+func (legacyStats) SignStats(context.Context, corescope.Scope, string, string) (appstats.Report, error) {
+	return appstats.Report{}, nil
+}
+
+func (f legacyStats) OffsetCounts(context.Context, string) (map[int]int, error) {
+	return f.counts, nil
+}
+
 type fakeAuthorizer struct {
 	scope corescope.Scope
 	err   error
@@ -737,6 +750,35 @@ func TestTimePrefGetEnrichesCrowdingAndEstimate(t *testing.T) {
 	}
 	if planner.selfUserID != "u1" || planner.selfDay != "2026-10-29" {
 		t.Fatalf("self 输入 = %q %q", planner.selfUserID, planner.selfDay)
+	}
+}
+
+// 旧全校拥挤度回退只告警一次，不刷屏（M4）。
+func TestTimePrefLegacyStatsWarnsOnce(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	planner := &fakePlanner{
+		self: coreschedule.SelfContext{
+			HasAccount: true, SchoolID: "s1", HasTask: true, TaskID: "task-secret",
+		},
+		cached: coreschedule.WindowRecord{
+			SchoolTaskID: "task-secret", Day: "2026-10-29",
+			Start:  time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai),
+			End:    time.Date(2026, 10, 29, 7, 50, 0, 0, shanghai),
+			Source: "platform", Version: 1,
+		},
+	}
+	prefs := &fakeTimePrefs{view: apptimepref.View{Allowed: true}}
+	engine, issued := newRouterFull(t, corescope.User("u1"), planner, prefs,
+		legacyStats{counts: map[int]int{0: 1}}, logger)
+	for i := 0; i < 2; i++ {
+		rec := do(t, engine, issued, http.MethodGet, "/api/me/time-pref", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get %d status = %d: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if got := strings.Count(logs.String(), "stats.legacy_offset_counts"); got != 1 {
+		t.Fatalf("回退告警次数 = %d, want 1（warn-once）: %s", got, logs.String())
 	}
 }
 

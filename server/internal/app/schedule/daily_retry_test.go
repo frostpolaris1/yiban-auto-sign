@@ -42,10 +42,9 @@ func (retryTasks) EnabledTasks(context.Context) ([]coreschedule.TaskInfo, error)
 	return []coreschedule.TaskInfo{{ID: "t1", SchoolID: "s1", Enabled: true}}, nil
 }
 
-// retryCron 构造日切宿主并注入记录延迟的 wait 钩子。
-func retryCron(t *testing.T, planner *retryPlanner) (*DailyCron, *[]time.Duration) {
-	t.Helper()
-	b := &DailyBuilder{
+// retryBuilder 构造日切构建器：时钟固定在 2026-10-30 00:05（周五，无周末门）。
+func retryBuilder(planner DailyPlanner) *DailyBuilder {
+	return &DailyBuilder{
 		Service: planner, Tasks: retryTasks{},
 		Clock:    coreclock.Fixed{T: time.Date(2026, 10, 30, 0, 5, 0, 0, retrySH)},
 		Location: retrySH,
@@ -54,7 +53,12 @@ func retryCron(t *testing.T, planner *retryPlanner) (*DailyCron, *[]time.Duratio
 			SlotsPerSlice: 10, SignDist: SignDistFront,
 		},
 	}
-	cron, err := NewDailyCron(b, nil)
+}
+
+// retryCron 构造日切宿主并注入记录延迟的 wait 钩子。
+func retryCron(t *testing.T, planner *retryPlanner) (*DailyCron, *[]time.Duration) {
+	t.Helper()
+	cron, err := NewDailyCron(retryBuilder(planner), nil)
 	if err != nil {
 		t.Fatalf("NewDailyCron: %v", err)
 	}
@@ -112,5 +116,80 @@ func TestDailyCronRetryWaitCanceled(t *testing.T) {
 	}
 	if len(*delays) != 1 || (*delays)[0] != 15*time.Minute {
 		t.Fatalf("重试延迟 = %v, want [15m]", *delays)
+	}
+}
+
+// blockingPlanner 在 Build 里阻塞，用于验证单飞锁。
+type blockingPlanner struct {
+	started chan struct{}
+	release chan struct{}
+	calls   int
+}
+
+func (p *blockingPlanner) Build(context.Context, Input) (Preview, error) {
+	p.calls++
+	close(p.started)
+	<-p.release
+	return Preview{}, nil
+}
+
+func (p *blockingPlanner) SkipStalePending(context.Context, string) (int64, error) {
+	return 0, nil
+}
+
+// 启动补建与 00:10 轮不得重叠：后到者跳过本轮（M1）。
+func TestDailyCronSingleFlightSkipsOverlappingRun(t *testing.T) {
+	planner := &blockingPlanner{started: make(chan struct{}), release: make(chan struct{})}
+	cron, err := NewDailyCron(retryBuilder(planner), nil)
+	if err != nil {
+		t.Fatalf("NewDailyCron: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		cron.run(context.Background(), "daily")
+		close(done)
+	}()
+	select {
+	case <-planner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("首轮未进入构建")
+	}
+	cron.run(context.Background(), "daily") // 单飞锁：后到者立即返回
+	if planner.calls != 1 {
+		t.Fatalf("构建次数 = %d, want 1（重叠轮必须跳过）", planner.calls)
+	}
+	close(planner.release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("首轮未结束")
+	}
+}
+
+// Stop 取消真实 waitContext 的 1 小时退避：必须 1s 内返回（M2）。
+func TestDailyCronStopCancelsRealRetryWait(t *testing.T) {
+	planner := &retryPlanner{failUntil: 100}
+	cron, err := NewDailyCron(retryBuilder(planner), nil)
+	if err != nil {
+		t.Fatalf("NewDailyCron: %v", err)
+	}
+	cron.retryDelays = []time.Duration{time.Hour}
+	entered := make(chan struct{})
+	cron.wait = func(ctx context.Context, d time.Duration) bool {
+		close(entered)
+		return waitContext(ctx, d)
+	}
+	if err := cron.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("未进入退避等待")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := cron.Stop(ctx); err != nil {
+		t.Fatalf("Stop 未在 1s 内返回: %v", err)
 	}
 }

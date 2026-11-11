@@ -220,6 +220,10 @@ type DailyCron struct {
 	// retryCtx 取消待执行的退避等待；Stop 时取消。
 	retryCtx    context.Context
 	retryCancel context.CancelFunc
+	// runMu 是单飞锁：启动补建（含重试）与 00:10 轮不得重叠。
+	// 后到者跳过本轮并记一行 Warn；用锁而不是 cron.SkipIfStillRunning，
+	// 因为启动补建是普通 goroutine，cron 包装器管不到它。
+	runMu sync.Mutex
 }
 
 // NewDailyCron 构造日切宿主。builder 与 logger 缺一即失败。
@@ -321,7 +325,14 @@ func (d *DailyCron) Stop(ctx context.Context) error {
 
 // run 执行一轮构建并记结果；失败按 dailyRetryDelays 当日重试，成功即止。
 // 重试在同一个 goroutine 里等待：不新增调度器，也不与下一轮并跑。
+// 单飞锁覆盖启动补建与 00:10 轮：后到者跳过本轮，避免两轮同时发现/落库。
 func (d *DailyCron) run(parent context.Context, trigger string) {
+	if !d.runMu.TryLock() {
+		d.log.Warn("schedule: daily build skipped; another run is in flight",
+			logfield.KeyTrigger, trigger)
+		return
+	}
+	defer d.runMu.Unlock()
 	for retry := 0; ; retry++ {
 		ctx, cancel := context.WithTimeout(parent, dailyBuildLimit)
 		built, err := d.builder.BuildToday(ctx)

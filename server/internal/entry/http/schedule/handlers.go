@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -140,6 +141,8 @@ type Handler struct {
 	authz   Authorizer
 	cfg     Config
 	log     *slog.Logger
+	// legacyWarn 让「旧全校拥挤度回退」只告警一次，不刷屏。
+	legacyWarn sync.Once
 }
 
 // NewHandler 构造处理器。缺少 Location 时按 UTC；服务层仍会校验。
@@ -512,12 +515,17 @@ func (h *Handler) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams)
 }
 
 // offsetCounts 读拥挤度：优先任务级端口（P2-13），回退旧全校端口。
+// 回退保留给旧装配与测试替身；只告警一次，避免每请求刷屏。
 // 两者都没有是装配错误，回 500，不把空 map 当「没人选」。
 func (h *Handler) offsetCounts(ctx context.Context, schoolID, taskID, day string) (map[int]int, error) {
 	if stats, ok := h.stats.(TaskStats); ok {
 		return stats.OffsetCountsForTask(ctx, schoolID, taskID, day)
 	}
 	if stats, ok := h.stats.(LegacyStats); ok {
+		h.legacyWarn.Do(func() {
+			h.log.Warn("schedule: stats service has no task-scoped crowding; using school-wide fallback",
+				logfield.KeyEvent, "stats.legacy_offset_counts")
+		})
 		return stats.OffsetCounts(ctx, schoolID)
 	}
 	return nil, errs.New(errs.CodeInternal, "stats service has no offset counts")

@@ -723,9 +723,12 @@ func (s *Service) prepareBuild(ctx context.Context, in Input) (*buildPlan, error
 }
 
 // writeBuild 在一个事务里物化计划：可选前置写（Override 的覆盖行）、
-// 窗口缓存、重排、补插与容量释放。before 失败则整批回滚。
+// 容量释放复活、窗口缓存、重排、补插与容量释放。before 失败则整批回滚。
 // 窗口变化与计划几何变化分开判定：窗口版本/事件只随真实窗口变化，
 // 名册或档位变化只触发重排（P1-8）。
+// 每次重建先复活当日 capacity_released 行再按当前容量截断：容量回升
+// （override 撤销/窗口变长/重建）时被释放的行回到 pending，结果等于
+// 当前容量的确定态（revive→truncate 幂等）。其他 skipped 词绝不复活。
 func (s *Service) writeBuild(ctx context.Context, in Input, b *buildPlan, before func(context.Context) error) (bool, error) {
 	windowChanged := b.res.changed()
 	planChanged := windowChanged
@@ -741,6 +744,14 @@ func (s *Service) writeBuild(ctx context.Context, in Input, b *buildPlan, before
 			if err := before(ctx); err != nil {
 				return err
 			}
+		}
+		revived, err := s.deps.Plans.ReviveCapacityReleased(ctx, in.SchoolTaskID, in.Day)
+		if err != nil {
+			return err
+		}
+		if revived > 0 {
+			// 复活行的 run_at 暂留，必须统一重排到当前几何。
+			planChanged = true
 		}
 		if windowChanged {
 			version, err := s.deps.Windows.PutWindow(ctx, b.res.effective, b.res.version())
@@ -771,11 +782,12 @@ func (s *Service) writeBuild(ctx context.Context, in Input, b *buildPlan, before
 }
 
 // planGeometryChanged 报告新计划是否与库内 pending 行不同（P1-8）。
-// 库内没有 pending 行时没有可重排的对象：新行由 InsertPlan 补插，
-// 已终态的行不参与重排。只比较新计划里的账号：库内 pending 行若属于
-// 已不在名册的账号，由跨日清理处理，不驱动重排。已终态的账号不在
-// pending 集合里，会被视为「新行」——多一次幂等 RearrangePlan，
-// 不改变任何结论。
+// 库内没有 pending 行时没有可重排的对象：新行由 InsertPlan 补插。
+// 只比较新计划里的账号：库内 pending 行若属于已不在名册的账号，
+// 由跨日清理处理，不驱动重排。已终态的账号不在 pending 集合里，
+// 会被视为「新行」——多一次幂等 RearrangePlan，不改变任何结论。
+// capacity_released 是例外：它由 writeBuild 的 revive 步翻回 pending
+// 并强制重排，不能按「终态不改变结论」处理。
 func planGeometryChanged(existing, rows []coreschedule.PlanRow) bool {
 	if len(existing) == 0 {
 		return false

@@ -103,8 +103,10 @@ type fakePlanStore struct {
 	// pending 模拟库内 pending 行：InsertPlan 落入、RearrangePlan 改写、
 	// SkipPlanRows 移出。几何对比与容量释放的判据都读它。
 	pending map[string]coreschedule.PlanRow
-	// skipped 记录被容量释放的账号 → result 词。
-	skipped map[string]string
+	// skipped 记录被跳过的行（planKey）→ result 词；skippedRows 保留行形状，
+	// 供容量回升时 revive 回 pending。
+	skipped     map[string]string
+	skippedRows map[string]coreschedule.PlanRow
 	// insertErr 注入落库失败（Override 同事务回滚判据用）。
 	insertErr error
 }
@@ -167,28 +169,59 @@ func (f *fakePlanStore) SkipPlanRows(_ context.Context, taskID, day string, acco
 	if f.skipped == nil {
 		f.skipped = map[string]string{}
 	}
+	if f.skippedRows == nil {
+		f.skippedRows = map[string]coreschedule.PlanRow{}
+	}
 	var n int64
 	for _, id := range accountIDs {
 		key := id + "|" + taskID + "|" + day
-		if _, ok := f.pending[key]; !ok {
+		row, ok := f.pending[key]
+		if !ok {
 			continue
 		}
 		delete(f.pending, key)
-		f.skipped[id] = result
+		f.skipped[key] = result
+		f.skippedRows[key] = row
+		n++
+	}
+	return n, nil
+}
+
+// ReviveCapacityReleased 只复活 result='capacity_released' 的行：
+// window_closed 等其他 skipped 结论保持原状（H1 的等值匹配判据）。
+func (f *fakePlanStore) ReviveCapacityReleased(_ context.Context, taskID, day string) (int64, error) {
+	if f.skippedRows == nil {
+		return 0, nil
+	}
+	var n int64
+	for key, row := range f.skippedRows {
+		if row.SchoolTaskID != taskID || row.Day != day {
+			continue
+		}
+		if f.skipped[key] != "capacity_released" {
+			continue
+		}
+		f.pending[key] = row
+		delete(f.skippedRows, key)
+		delete(f.skipped, key)
 		n++
 	}
 	return n, nil
 }
 
 func (f *fakePlanStore) SkipStalePending(_ context.Context, beforeDay, result string) (int64, error) {
+	if f.skipped == nil {
+		f.skipped = map[string]string{}
+	}
+	if f.skippedRows == nil {
+		f.skippedRows = map[string]coreschedule.PlanRow{}
+	}
 	var n int64
 	for key, r := range f.pending {
 		if r.Day < beforeDay {
 			delete(f.pending, key)
-			if f.skipped == nil {
-				f.skipped = map[string]string{}
-			}
-			f.skipped[r.AccountID] = result
+			f.skipped[key] = result
+			f.skippedRows[key] = r
 			n++
 		}
 	}
@@ -717,10 +750,88 @@ func TestBuildCapacityShrinkReleasesExcessPending(t *testing.T) {
 	if len(ps.skipped) != 32 {
 		t.Fatalf("容量释放行数 = %d, want 32", len(ps.skipped))
 	}
-	for id, result := range ps.skipped {
+	for key, result := range ps.skipped {
 		if result != "capacity_released" {
-			t.Fatalf("账号 %s 的 result = %q, want capacity_released", id, result)
+			t.Fatalf("行 %s 的 result = %q, want capacity_released", key, result)
 		}
+	}
+}
+
+// 容量回升（64→32→64）：被释放的行必须复活并重排，不能永久 skipped（H1）。
+func TestBuildCapacityRecoveryRevivesReleasedRows(t *testing.T) {
+	ids := make([]string, 64)
+	for i := range ids {
+		ids[i] = "acct-" + strconv.Itoa(i)
+	}
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	svc := newService(t, ws, ps, fakeAccounts{ids: ids},
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 60 * time.Second
+	in.Rate = 1.0
+	in.Util = 1.0 // 容量 80
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("首次构建: %v", err)
+	}
+	in.Util = 0.4 // 容量 32：32 行被释放
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("缩容重建: %v", err)
+	}
+	if len(ps.pending) != 32 || len(ps.skipped) != 32 {
+		t.Fatalf("缩容后 pending/skipped = %d/%d, want 32/32", len(ps.pending), len(ps.skipped))
+	}
+	in.Util = 1.0 // 容量回到 64：全部复活
+	built, err := svc.Build(context.Background(), in)
+	if err != nil {
+		t.Fatalf("回升重建: %v", err)
+	}
+	if len(ps.pending) != 64 {
+		t.Fatalf("回升后 pending = %d, want 64（被释放行必须复活）", len(ps.pending))
+	}
+	if len(ps.skipped) != 0 {
+		t.Fatalf("回升后 skipped = %d, want 0", len(ps.skipped))
+	}
+	want := make(map[string]time.Time, len(built.Rows))
+	for _, r := range built.Rows {
+		want[r.AccountID] = r.RunAt
+	}
+	for key, row := range ps.pending {
+		at, ok := want[row.AccountID]
+		if !ok || !at.Equal(row.RunAt) {
+			t.Fatalf("行 %s 落点 = %v, want %v（复活后必须统一重排）", key, row.RunAt, at)
+		}
+	}
+}
+
+// 容量回升只复活 capacity_released；window_closed 等其他 skipped 词绝不复活（H1）。
+func TestBuildCapacityRecoveryKeepsWindowClosedSkipped(t *testing.T) {
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	svc := newService(t, ws, ps, fakeAccounts{ids: []string{"x"}},
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 60 * time.Second
+	in.Rate = 1.0
+	in.Util = 1.0
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("首次构建: %v", err)
+	}
+	key := "x|task-1|2026-10-29"
+	if _, err := ps.SkipPlanRows(context.Background(), "task-1", "2026-10-29",
+		[]string{"x"}, "window_closed"); err != nil {
+		t.Fatalf("seed window_closed: %v", err)
+	}
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("回升重建: %v", err)
+	}
+	if _, ok := ps.pending[key]; ok {
+		t.Fatal("window_closed 行被 revive 误捞回 pending")
+	}
+	if got := ps.skipped[key]; got != "window_closed" {
+		t.Fatalf("window_closed 行 result = %q, want window_closed", got)
 	}
 }
 

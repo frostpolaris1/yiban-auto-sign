@@ -51,6 +51,10 @@ type PlanStore interface {
 	// SkipPlanRows 把指定账号的 pending 行落 skipped(result)，不物理删除。
 	// 容量缩容后超出容量的行由此保留当日历史语义（P0-1）。
 	SkipPlanRows(ctx context.Context, schoolTaskID, day string, accountIDs []string, result string) (int64, error)
+	// ReviveCapacityReleased 把当日该任务 result='capacity_released' 的
+	// skipped 行翻回 pending。只认等值匹配；其他 skipped 词绝不复活。
+	// run_at 暂留，调用方随后统一重排。容量回升时重建收敛到当前容量（H1）。
+	ReviveCapacityReleased(ctx context.Context, schoolTaskID, day string) (int64, error)
 	// SkipStalePending 把 beforeDay 之前的 pending 行落 skipped(result)。
 	// 跨业务日的行永远不会再被认领；日切构建调用它保留当日历史语义（P1-6）。
 	SkipStalePending(ctx context.Context, beforeDay, result string) (int64, error)
