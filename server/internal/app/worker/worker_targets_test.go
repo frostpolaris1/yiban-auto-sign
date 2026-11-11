@@ -128,13 +128,13 @@ func TestSamplingFollowsRotatedTarget(t *testing.T) {
 	if secondReq.Target.ID != "pos-2" {
 		t.Fatalf("第 2 次尝试用 %q, want pos-2", secondReq.Target.ID)
 	}
-	if !corelocation.PointInPolygon(firstReq.Location.Lng, firstReq.Location.Lat, first.Polygon) {
+	if !corelocation.PointInPolygon(firstReq.Location.Lng, firstReq.Location.Lat, corePolygon(first.Polygon)) {
 		t.Fatalf("第 1 次提交点不在第 1 个候选围栏内: %+v", firstReq.Location)
 	}
-	if !corelocation.PointInPolygon(secondReq.Location.Lng, secondReq.Location.Lat, second.Polygon) {
+	if !corelocation.PointInPolygon(secondReq.Location.Lng, secondReq.Location.Lat, corePolygon(second.Polygon)) {
 		t.Fatalf("第 2 次提交点不在第 2 个候选围栏内: %+v", secondReq.Location)
 	}
-	if corelocation.PointInPolygon(secondReq.Location.Lng, secondReq.Location.Lat, first.Polygon) {
+	if corelocation.PointInPolygon(secondReq.Location.Lng, secondReq.Location.Lat, corePolygon(first.Polygon)) {
 		t.Fatalf("第 2 次提交点落在第 1 个候选围栏内：采样用了错的围栏: %+v", secondReq.Location)
 	}
 }

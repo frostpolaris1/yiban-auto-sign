@@ -32,6 +32,7 @@ import (
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
@@ -102,7 +103,7 @@ func (s *Service) Set(ctx context.Context, scope corescope.Scope, accountID stri
 	if utf8.RuneCountInString(reason) > maxReasonChars {
 		return contract.Location{}, errs.New(errs.CodeValidation, "reason must be at most 200 characters")
 	}
-	var point *contract.Point
+	var point *corelocation.Point
 	switch in.Mode {
 	case "auto":
 		// auto 行不带坐标：旧点清空，避免留下读得到但用不上的残留。
@@ -113,7 +114,7 @@ func (s *Service) Set(ctx context.Context, scope corescope.Scope, accountID stri
 		if err := validatePoint(*in.Lng, *in.Lat); err != nil {
 			return contract.Location{}, err
 		}
-		point = &contract.Point{Lng: *in.Lng, Lat: *in.Lat}
+		point = &corelocation.Point{Lng: *in.Lng, Lat: *in.Lat}
 	default:
 		return contract.Location{}, errs.New(errs.CodeValidation, "mode must be auto or fixed")
 	}

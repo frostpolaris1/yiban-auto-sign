@@ -22,8 +22,6 @@ package location
 
 import (
 	"math"
-
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // epsDeg 是边界判定的距离容差（度）。
@@ -38,7 +36,7 @@ const earthRadiusM = 6371000.0
 //
 // 判据分两步：先按"点在任一边上"判内（顶点与边都算），
 // 再按水平射线法数交点。少于三个顶点的输入没有围栏，恒判在外。
-func PointInPolygon(lng, lat float64, poly []contract.Point) bool {
+func PointInPolygon(lng, lat float64, poly []Point) bool {
 	if len(poly) < 3 {
 		return false
 	}
@@ -68,7 +66,7 @@ func PointInPolygon(lng, lat float64, poly []contract.Point) bool {
 
 // onSegment 报告点是否落在段上（含端点）。
 // 判据：到段的垂距不超过 epsDeg，且落在两端点的包围盒内。
-func onSegment(lng, lat float64, a, b contract.Point) bool {
+func onSegment(lng, lat float64, a, b Point) bool {
 	dx, dy := b.Lng-a.Lng, b.Lat-a.Lat
 	length := math.Hypot(dx, dy)
 	if length <= epsDeg {
@@ -85,7 +83,7 @@ func onSegment(lng, lat float64, a, b contract.Point) bool {
 
 // DistanceMeters 返回两点的大圆距离（米）。
 // haversine 公式对经度回绕天然成立：跨反子午线的两点得到短弧距离。
-func DistanceMeters(a, b contract.Point) float64 {
+func DistanceMeters(a, b Point) float64 {
 	phi1, phi2 := a.Lat*math.Pi/180, b.Lat*math.Pi/180
 	dphi := phi2 - phi1
 	dlambda := (b.Lng - a.Lng) * math.Pi / 180
@@ -99,15 +97,15 @@ func DistanceMeters(a, b contract.Point) float64 {
 // 判据顺序：多边形优先；无多边形才用中心与半径。
 // auto 模式没有宿主侧点位，恒判在内（见包注释口径）；
 // fixed 模式取 Location 的经纬度参与判定。
-func Resolve(target contract.Target, loc contract.Location) bool {
-	if loc.Mode != contract.LocationFixed {
+func Resolve(target Target, loc Location) bool {
+	if loc.Mode != LocationFixed {
 		return true
 	}
 	if len(target.Polygon) >= 3 {
 		return PointInPolygon(loc.Lng, loc.Lat, target.Polygon)
 	}
 	return distanceWithin(float64(target.RadiusM),
-		DistanceMeters(contract.Point{Lng: loc.Lng, Lat: loc.Lat}, target.Center))
+		DistanceMeters(Point{Lng: loc.Lng, Lat: loc.Lat}, target.Center))
 }
 
 // distanceWithin 报告距离是否仍在半径内：恰好等于半径按在内。

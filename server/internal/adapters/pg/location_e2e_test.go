@@ -11,14 +11,13 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // fixedPref 构造一次 fixed 写入。
 func fixedPref(accountID string, lng, lat float64) corelocation.Pref {
 	return corelocation.Pref{
 		AccountID: accountID, Mode: "fixed",
-		Point: &contract.Point{Lng: lng, Lat: lat},
+		Point: &corelocation.Point{Lng: lng, Lat: lat},
 		Now:   time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC),
 	}
 }
@@ -37,7 +36,7 @@ func TestLocationRepoRoundTrip(t *testing.T) {
 
 	if err := repo.Set(ctx, corelocation.Pref{
 		AccountID: acct.ID, Mode: "fixed",
-		Point:     &contract.Point{Lng: 116.4, Lat: 39.9},
+		Point:     &corelocation.Point{Lng: 116.4, Lat: 39.9},
 		Reason:    "在校门口",
 		UpdatedBy: operator.ID, Now: at,
 	}); err != nil {
