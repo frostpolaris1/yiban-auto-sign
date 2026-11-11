@@ -262,3 +262,4 @@ server/internal/entry/http/events/sse.go	uncovered=Go 包门 go test ./internal/
 server/internal/entry/http/events/sse_test.go	uncovered=Go 测试文件自身即门（go test ./internal/entry/http/events 真跑），不需要 Python 侧覆盖
 ui/index.html	uncovered=前端入口：主题引导外置与无内联脚本由 Go router 的 TestUIIndexHasNoInlineScripts 钉住；页面行为由 Playwright e2e/快照真跑
 ui/public/theme-boot.js	uncovered=静态主题引导脚本：同步加载防首屏闪色；由 Go router 结构守卫与 Playwright e2e/快照真跑
+server/cmd/server/abs_r1_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑急停门 e2e）；本批修 #353 遗留的 CST/UTC 日界窗，测试内显式钉 Asia/Shanghai
