@@ -77,6 +77,11 @@ func (r *PasswordResetRepo) Peek(ctx context.Context, tokenHash coreauth.TokenHa
 //
 // 一条语句完成两件事，故并发消费同一用户的不同令牌时行锁顺序一致，
 // 不会互相死锁；后到的事务在锁释放后重判 used_at，返回零行即 not_found。
+//
+// 与保留期清理之间是**与已过期行不相交**而非严格不相交：消费时刻未过期、
+// 清理时刻恰好过期的残余窗口 (T_consume, T_cleanup) 理论上仍可交错；两侧
+// 时钟同为注入源（非 DB now()），窗口为秒级且需同用户多枚临界令牌同刻并发。
+// 死锁脚本重放不再复现，见 TestPasswordResetConsumeSkipsExpiredSiblings。
 func (r *PasswordResetRepo) Consume(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) (coreauth.PasswordReset, error) {
 	if tokenHash.IsZero() {
 		return coreauth.PasswordReset{}, coreerrNotFound()
