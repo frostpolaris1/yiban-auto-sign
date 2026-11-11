@@ -165,8 +165,8 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// internal/adapters/pg/schedule_geometry_e2e_test.go
 	// （容量缩容/回升、覆盖原子性与名册几何的用例层 e2e 需要真实 PG 适配器）。
 	// sfr：新增 fs.os.impl forbid 规则：app 层不得实现 OS 文件系统
-	// （CreateTemp 原子写），实现由 cmd/cli 注入（P2-b，2026-11-11）。
-	const want = "0fabed253ce059f3a619f1185f81102a858b87a4c3c15ad8f68e9d33fa8eaa81"
+	// （os.CreateTemp 原子写），实现由 cmd/cli 注入（P2-b，2026-11-11）。
+	const want = "1b27cc70d31c276ab1252c8b6770f2c8820683925d76223abd9efc81ded1c3a2"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

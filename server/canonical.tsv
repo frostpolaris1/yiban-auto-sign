@@ -33,7 +33,7 @@ status.literal	string	internal/core/status/	pending,running,success,failed,skipp
 errors.http	forbid	*	http.Error	internal/entry/http/respond/	use respond.Error
 # app 层只留 FileSystem 端口；OS 实现（CreateTemp 原子写）由 cmd/cli 注入。
 # 这条规则防止实现回流到 app/selfcheck（P2-b，2026-11-11）。
-fs.os.impl	forbid	internal/app/	CreateTemp		app must not implement the OS filesystem; inject it from cmd
+fs.os.impl	forbid	internal/app/	os.CreateTemp		app must not implement the OS filesystem; inject it from cmd
 mask.phone	func	internal/core/mask/	MaskPhone	internal/core/mask/	use mask.MaskPhone
 mask.email	func	internal/core/mask/	MaskEmail	internal/core/mask/	use mask.MaskEmail
 mask.device	func	internal/core/mask/	MaskDevice	internal/core/mask/	use mask.MaskDevice
