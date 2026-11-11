@@ -352,10 +352,13 @@ func (r *ScheduleRepo) SkipPlanRows(ctx context.Context, schoolTaskID, day strin
 
 // ReviveCapacityReleased 把当日该任务被容量释放的 skipped 行翻回 pending。
 // 只认 result='capacity_released' 的等值匹配：window_closed 等其他
-// skipped 结论绝不复活。run_at 暂留，调用方随后统一重排（H1）。
+// skipped 结论绝不复活。result 清空（列定义 NOT NULL DEFAULT 空串，
+// 空串即「无结果」，与 Rearm 同口径），否则管理面会把复活行显示成
+// capacity_released。run_at 暂留，调用方随后统一重排（H1/N3）。
 func (r *ScheduleRepo) ReviveCapacityReleased(ctx context.Context, schoolTaskID, day string) (int64, error) {
 	ct, err := r.db.q(ctx).Exec(ctx,
-		`UPDATE sign_tasks SET state = 'pending', claimed_at = NULL, lease_expires_at = NULL
+		`UPDATE sign_tasks SET state = 'pending', result = '', claimed_at = NULL,
+		        lease_expires_at = NULL
 		 WHERE school_task_id = $1::uuid AND day = $2::date
 		   AND state = 'skipped' AND result = 'capacity_released'`,
 		schoolTaskID, day)

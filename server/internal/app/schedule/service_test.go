@@ -103,6 +103,9 @@ type fakePlanStore struct {
 	// pending 模拟库内 pending 行：InsertPlan 落入、RearrangePlan 改写、
 	// SkipPlanRows 移出。几何对比与容量释放的判据都读它。
 	pending map[string]coreschedule.PlanRow
+	// pendingResult 模拟 pending 行的 result 列：新行与复活行都是空串，
+	// 与真实库 NOT NULL DEFAULT '' 同口径（N3）。
+	pendingResult map[string]string
 	// skipped 记录被跳过的行（planKey）→ result 词；skippedRows 保留行形状，
 	// 供容量回升时 revive 回 pending。
 	skipped     map[string]string
@@ -126,6 +129,9 @@ func (f *fakePlanStore) InsertPlan(_ context.Context, rows []coreschedule.PlanRo
 	if f.pending == nil {
 		f.pending = map[string]coreschedule.PlanRow{}
 	}
+	if f.pendingResult == nil {
+		f.pendingResult = map[string]string{}
+	}
 	var n int64
 	for _, r := range rows {
 		key := planKey(r)
@@ -134,6 +140,7 @@ func (f *fakePlanStore) InsertPlan(_ context.Context, rows []coreschedule.PlanRo
 		}
 		f.existing[key] = true
 		f.pending[key] = r
+		f.pendingResult[key] = ""
 		n++
 	}
 	return n, nil
@@ -180,6 +187,7 @@ func (f *fakePlanStore) SkipPlanRows(_ context.Context, taskID, day string, acco
 			continue
 		}
 		delete(f.pending, key)
+		delete(f.pendingResult, key)
 		f.skipped[key] = result
 		f.skippedRows[key] = row
 		n++
@@ -193,6 +201,9 @@ func (f *fakePlanStore) ReviveCapacityReleased(_ context.Context, taskID, day st
 	if f.skippedRows == nil {
 		return 0, nil
 	}
+	if f.pendingResult == nil {
+		f.pendingResult = map[string]string{}
+	}
 	var n int64
 	for key, row := range f.skippedRows {
 		if row.SchoolTaskID != taskID || row.Day != day {
@@ -202,6 +213,7 @@ func (f *fakePlanStore) ReviveCapacityReleased(_ context.Context, taskID, day st
 			continue
 		}
 		f.pending[key] = row
+		f.pendingResult[key] = "" // 与真实 SQL 的 result='' 同语义（N3）。
 		delete(f.skippedRows, key)
 		delete(f.skipped, key)
 		n++
@@ -220,6 +232,7 @@ func (f *fakePlanStore) SkipStalePending(_ context.Context, beforeDay, result st
 	for key, r := range f.pending {
 		if r.Day < beforeDay {
 			delete(f.pending, key)
+			delete(f.pendingResult, key)
 			f.skipped[key] = result
 			f.skippedRows[key] = r
 			n++
@@ -801,6 +814,9 @@ func TestBuildCapacityRecoveryRevivesReleasedRows(t *testing.T) {
 		at, ok := want[row.AccountID]
 		if !ok || !at.Equal(row.RunAt) {
 			t.Fatalf("行 %s 落点 = %v, want %v（复活后必须统一重排）", key, row.RunAt, at)
+		}
+		if got := ps.pendingResult[key]; got != "" {
+			t.Fatalf("复活行 %s 的 result = %q, want 空串（N3）", key, got)
 		}
 	}
 }

@@ -7,8 +7,11 @@ package schedule
 // 测试注入 wait 钩子，不真实等待 15 分钟。
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,10 +140,12 @@ func (p *blockingPlanner) SkipStalePending(context.Context, string) (int64, erro
 	return 0, nil
 }
 
-// 启动补建与 00:10 轮不得重叠：后到者跳过本轮（M1）。
+// 启动补建与 00:10 轮不得重叠：后到者跳过本轮并记 Warn（M1/N2）。
 func TestDailyCronSingleFlightSkipsOverlappingRun(t *testing.T) {
 	planner := &blockingPlanner{started: make(chan struct{}), release: make(chan struct{})}
-	cron, err := NewDailyCron(retryBuilder(planner), nil)
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	cron, err := NewDailyCron(retryBuilder(planner), logger)
 	if err != nil {
 		t.Fatalf("NewDailyCron: %v", err)
 	}
@@ -157,6 +162,10 @@ func TestDailyCronSingleFlightSkipsOverlappingRun(t *testing.T) {
 	cron.run(context.Background(), "daily") // 单飞锁：后到者立即返回
 	if planner.calls != 1 {
 		t.Fatalf("构建次数 = %d, want 1（重叠轮必须跳过）", planner.calls)
+	}
+	if logText := logs.String(); !strings.Contains(logText, "daily build skipped") ||
+		!strings.Contains(logText, "another run is in flight") {
+		t.Fatalf("重叠轮缺 Warn 日志: %q", logText)
 	}
 	close(planner.release)
 	select {
