@@ -88,7 +88,10 @@ func TestCanonicalRuleIDsPinned(t *testing.T) {
 		"capacity.func", "retry.type", "egress.func",
 		"plan.slot", "image.prepare",
 		"boundary.core", "boundary.app", "boundary.adapters",
-		"boundary.entry", "boundary.signing", "boundary.assembly",
+		"boundary.entry", "boundary.signing",
+		"boundary.core.protocol", "boundary.core.contract",
+		"boundary.app.protocol", "boundary.entry.protocol",
+		"boundary.assembly",
 		"cookie.set",
 		"kdf.argon.idkey", "kdf.argon.id",
 		"token.csrf.func", "token.new.func",
@@ -154,7 +157,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// 来自 core/account，测试断言按该词表书写）。
 	// 3a：env.get allow 增列 cmd/server/engine_pause_e2e_test.go
 	// （全局暂停真库 e2e 沿用 loop/p12_wait_target 的 os.Getenv 读测试 DSN 口径）。
-	const want = "0faa8a6a0519a28b685d5f7f584c96a4a56eea903efbd0494eab0473f62dd075"
+	// 76t：signing 边界收口，新增 boundary.core.protocol / boundary.core.contract /
+	// boundary.app.protocol / boundary.entry.protocol 四条 import 规则。
+	const want = "241e47cf0ac08753b5fb3a35f1d997f67781af5a97a49720b8588d561bd47520"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

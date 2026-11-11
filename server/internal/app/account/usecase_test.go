@@ -22,14 +22,22 @@ type fakeListRepo struct {
 	Repo
 	lists           int
 	items           []Record
+	lastScope       corescope.Scope
+	lastSchoolID    string
+	lastStatus      Status
+	lastLimit       int
 	credentialCalls int
 	credentialIDs   []string
 	credentials     map[string]Credential
 	credentialErr   error
 }
 
-func (f *fakeListRepo) List(_ context.Context, _ corescope.Scope, _ string, _ Status, _, _ string, _ int, _ bool) ([]Record, string, error) {
+func (f *fakeListRepo) List(_ context.Context, scope corescope.Scope, schoolID string, status Status, _, _ string, limit int, _ bool) ([]Record, string, error) {
 	f.lists++
+	f.lastScope = scope
+	f.lastSchoolID = schoolID
+	f.lastStatus = status
+	f.lastLimit = limit
 	return f.items, "", nil
 }
 
@@ -129,6 +137,39 @@ func TestListRejectsZeroValueScope(t *testing.T) {
 	}
 	if repo.lists != 0 {
 		t.Fatalf("List queried the repository %d times with a zero-value scope", repo.lists)
+	}
+}
+
+// FirstActiveForSchool 复用 List 的 master 口径：只取该校 active 账号的第一条。
+func TestFirstActiveForSchoolUsesActiveFilter(t *testing.T) {
+	repo := &fakeListRepo{items: []Record{{ID: "acc-1"}, {ID: "acc-2"}}}
+	svc := newListService(t, repo, nil)
+	got, err := svc.FirstActiveForSchool(context.Background(), "school-1")
+	if err != nil {
+		t.Fatalf("FirstActiveForSchool: %v", err)
+	}
+	if got.ID != "acc-1" {
+		t.Fatalf("account = %q, want acc-1", got.ID)
+	}
+	if repo.lastSchoolID != "school-1" || repo.lastStatus != StatusActive || repo.lastLimit != 1 {
+		t.Fatalf("filter = school %q status %q limit %d, want school-1/active/1",
+			repo.lastSchoolID, repo.lastStatus, repo.lastLimit)
+	}
+	if repo.lastScope.Kind() != corescope.KindMaster {
+		t.Fatalf("scope = %v, want master", repo.lastScope.Kind())
+	}
+}
+
+// 空列表是 not_found：计划层据此回退缓存窗口，不当平台故障。
+func TestFirstActiveForSchoolEmptyIsNotFound(t *testing.T) {
+	repo := &fakeListRepo{}
+	svc := newListService(t, repo, nil)
+	_, err := svc.FirstActiveForSchool(context.Background(), "school-1")
+	if err == nil {
+		t.Fatal("empty school returned an account")
+	}
+	if code := errs.From(err).Code; code != errs.CodeNotFound {
+		t.Fatalf("code = %q, want not_found", code)
 	}
 }
 

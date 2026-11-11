@@ -10,12 +10,11 @@ import (
 	"testing"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // 13 点合成围栏：形状明显，非真实点位。
 // 顺带覆盖"点多于三"与凹凸边，采样仍须保持包含判定。
-var syntheticFence = []contract.Point{
+var syntheticFence = []location.Point{
 	{Lng: 100.0, Lat: 20.0}, {Lng: 101.5, Lat: 20.2}, {Lng: 102.4, Lat: 20.9},
 	{Lng: 102.1, Lat: 21.6}, {Lng: 101.2, Lat: 21.9}, {Lng: 100.6, Lat: 21.5},
 	{Lng: 100.2, Lat: 22.0}, {Lng: 99.4, Lat: 21.7}, {Lng: 99.1, Lat: 21.0},
@@ -25,7 +24,7 @@ var syntheticFence = []contract.Point{
 
 // 任何种子采出的点都必须落在多边形内。
 func TestSamplePointStaysInsidePolygon(t *testing.T) {
-	for _, poly := range [][]contract.Point{square, syntheticFence} {
+	for _, poly := range [][]location.Point{square, syntheticFence} {
 		for i := 0; i < 200; i++ {
 			point, ok := location.SamplePoint(poly, "attempt-"+strconv.Itoa(i))
 			if !ok {
@@ -61,13 +60,13 @@ func TestSamplePointIsReproducible(t *testing.T) {
 func TestSamplePointRejectsInvalidPolygon(t *testing.T) {
 	cases := []struct {
 		name string
-		poly []contract.Point
+		poly []location.Point
 	}{
 		{"无多边形", nil},
-		{"两点退化", []contract.Point{{Lng: 100, Lat: 20}, {Lng: 110, Lat: 30}}},
-		{"零面积重合点", []contract.Point{{Lng: 100, Lat: 20}, {Lng: 100, Lat: 20}, {Lng: 100, Lat: 20}}},
-		{"经度非有限", []contract.Point{{Lng: math.Inf(1), Lat: 20}, {Lng: 110, Lat: 20}, {Lng: 110, Lat: 30}}},
-		{"纬度非有限", []contract.Point{{Lng: 100, Lat: math.NaN()}, {Lng: 110, Lat: 20}, {Lng: 110, Lat: 30}}},
+		{"两点退化", []location.Point{{Lng: 100, Lat: 20}, {Lng: 110, Lat: 30}}},
+		{"零面积重合点", []location.Point{{Lng: 100, Lat: 20}, {Lng: 100, Lat: 20}, {Lng: 100, Lat: 20}}},
+		{"经度非有限", []location.Point{{Lng: math.Inf(1), Lat: 20}, {Lng: 110, Lat: 20}, {Lng: 110, Lat: 30}}},
+		{"纬度非有限", []location.Point{{Lng: 100, Lat: math.NaN()}, {Lng: 110, Lat: 20}, {Lng: 110, Lat: 30}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -82,7 +81,7 @@ func TestSamplePointRejectsInvalidPolygon(t *testing.T) {
 // 该输入钉住"用尽投点后返回 false"的分支：
 // 上面的非法多边形都在包围盒检查处提前返回。
 func TestSamplePointExhaustsDegeneratePolygon(t *testing.T) {
-	collinear := []contract.Point{{Lng: 100, Lat: 20}, {Lng: 101, Lat: 21}, {Lng: 102, Lat: 22}}
+	collinear := []location.Point{{Lng: 100, Lat: 20}, {Lng: 101, Lat: 21}, {Lng: 102, Lat: 22}}
 	for _, seed := range []string{"task-1#0", "task-1#1", "task-1#2"} {
 		if point, ok := location.SamplePoint(collinear, seed); ok {
 			t.Fatalf("共线多边形仍采样: %+v（种子 %s）", point, seed)

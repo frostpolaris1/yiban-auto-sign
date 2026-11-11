@@ -6,15 +6,13 @@ package location
 import (
 	"context"
 	"time"
-
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // Pref 是写入存储的一行定位偏好。Point 为 nil 表示 auto（清空坐标）。
 type Pref struct {
 	AccountID string
 	Mode      string
-	Point     *contract.Point
+	Point     *Point
 	Reason    string
 	UpdatedBy string
 	Now       time.Time

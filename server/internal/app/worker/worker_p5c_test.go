@@ -307,7 +307,7 @@ func TestNoPhotoRequiredKeepsNilImage(t *testing.T) {
 func TestFenceBoundaryStaysInside(t *testing.T) {
 	target := contract.Target{Center: contract.Point{Lng: 116.4, Lat: 39.9}, RadiusM: 500}
 	loc := fixedLoc(116.4, 39.9+500.0/111194.93, "")
-	if !corelocation.Resolve(target, loc) {
+	if !corelocation.Resolve(coreTarget(target), coreLocation(loc)) {
 		t.Fatal("半径恰好的点应判在内")
 	}
 }

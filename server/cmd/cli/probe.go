@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 )
 
@@ -29,7 +28,7 @@ func openPgProbe(ctx context.Context, dsn string, pepper []byte) (dbHandle, erro
 		return nil, err
 	}
 	h := &pgHandle{db: db}
-	key, keyErr := assembly.DeriveAuditKey(pepper)
+	key, keyErr := coreaudit.DeriveKey(pepper)
 	if keyErr != nil {
 		// pepper 缺失不是连接失败：连接可探，审计检查自行跳过。
 		return h, nil

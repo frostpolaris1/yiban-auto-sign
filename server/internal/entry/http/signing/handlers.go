@@ -41,7 +41,6 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/protocol"
 )
 
 // Service 是凭据读取用例端口。
@@ -416,6 +415,7 @@ func isAppError(err error) bool {
 
 // verifyConclusion 把 provider 错误映射成中性结论。
 // 平台结论与解析失败是 200；网络与未知错误返回 false，由调用方回 502 信封。
+// 只认契约语义：线协议错误由提供方在 signing 边界翻成 OutcomeError。
 func verifyConclusion(err error) (oapi.AccountVerifyResult, bool) {
 	var outcomeErr *contract.OutcomeError
 	if errors.As(err, &outcomeErr) && outcomeErr != nil {
@@ -423,18 +423,6 @@ func verifyConclusion(err error) (oapi.AccountVerifyResult, bool) {
 			Ok:      false,
 			Code:    string(outcomeErr.Outcome),
 			Message: messagePtr(outcomeErr.Message),
-		}, true
-	}
-	var expired *protocol.SessionExpired
-	if errors.As(err, &expired) {
-		return oapi.AccountVerifyResult{
-			Ok: false, Code: "transient", Message: messagePtr("session expired"),
-		}, true
-	}
-	var parse *protocol.ParseError
-	if errors.As(err, &parse) {
-		return oapi.AccountVerifyResult{
-			Ok: false, Code: "unknown", Message: messagePtr("malformed platform response"),
 		}, true
 	}
 	return oapi.AccountVerifyResult{}, false

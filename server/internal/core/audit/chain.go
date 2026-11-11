@@ -11,7 +11,7 @@
 //
 // # 复用
 // Action 及全部动作常量；Entry、Row、Report、Status、RowSource；
-// EncodeDetail、Payload、Hash、Verify、VerifyStream、ZeroHash；
+// EncodeDetail、Payload、Hash、Verify、VerifyStream、ZeroHash、DeriveKey；
 // 错误值 ErrEmptyChain、ErrBrokenChain、ErrDetail*；
 // 上限常量 MaxDetailBytes、MaxReasonChars、Domain。
 //

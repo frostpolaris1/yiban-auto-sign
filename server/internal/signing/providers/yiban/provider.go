@@ -47,8 +47,30 @@ func (p *Provider) Capabilities() contract.Capabilities {
 }
 
 // Verify 执行一次登录并返回非秘密身份。
+// 线协议错误在提供方边界翻成契约结论：宿主只认 contract，不认 protocol。
 func (p *Provider) Verify(ctx context.Context, req contract.VerifyRequest) (contract.Profile, error) {
-	return p.client.Verify(ctx, req.Account.ID, req.Credential)
+	profile, err := p.client.Verify(ctx, req.Account.ID, req.Credential)
+	if err != nil {
+		return contract.Profile{}, p.verifyError(err)
+	}
+	return profile, nil
+}
+
+// verifyError 把校验路径的线协议错误翻成稳定结论。
+//
+// 会话失效映射 transient；结构解析失败映射 unknown。
+// 两处文案与旧入口分支逐字节一致：HTTP 200/502 行为不变。
+// 其余错误原样上抛：网络与取消失败保持原生 error（契约口径）。
+func (p *Provider) verifyError(err error) error {
+	var expired *protocol.SessionExpired
+	if errors.As(err, &expired) {
+		return &contract.OutcomeError{Outcome: contract.OutcomeTransient, Message: sessionExpiredMessage}
+	}
+	var parse *protocol.ParseError
+	if errors.As(err, &parse) {
+		return &contract.OutcomeError{Outcome: contract.OutcomeUnknown, Message: "malformed platform response"}
+	}
+	return err
 }
 
 // sessionExpiredMessage 是会话失效的固定文案。
