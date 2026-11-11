@@ -379,6 +379,7 @@ func TestAccountBatchValidationErrors(t *testing.T) {
 	}{
 		{"eleven ids", "pause", eleven},
 		{"duplicate ids", "pause", []string{batchMissingID, batchMissingID}},
+		{"case-variant duplicate", "pause", []string{batchMissingID, strings.ToUpper(batchMissingID)}},
 		{"empty ids", "pause", []string{}},
 		{"unknown action", "freeze", []string{batchMissingID}},
 	}

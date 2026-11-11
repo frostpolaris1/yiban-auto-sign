@@ -281,7 +281,7 @@ func (s *server) accountLimit(c *gin.Context, key string) bool {
 // 不归一就能用大小写变体把同一个账号拆成多个桶。
 // domain 为空表示默认域（裸键）；非空时键形如 "<domain>:<key>"。
 func (s *server) accountLimitFor(c *gin.Context, domain, key string) bool {
-	key = strings.ToLower(strings.TrimSpace(key))
+	key = ratelimit.NormalizeAccountKey(key)
 	if domain != "" {
 		key = domain + ":" + key
 	}

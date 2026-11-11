@@ -169,9 +169,10 @@ func TestP4BatchSign(t *testing.T) {
 	eleven := []string{okA, okB, okC, signedAcct, closedAcct, inactiveAcct, adminAcct,
 		p4BatchMissingID, p4BatchMissingID + "2", p4BatchMissingID + "3", p4BatchMissingID + "4"}
 	for name, ids := range map[string][]string{
-		"11个": eleven,
-		"重复":  {okA, okB, okA},
-		"空":   {},
+		"11个":   eleven,
+		"重复":    {okA, okB, okA},
+		"大小写重复": {okA, strings.ToUpper(okA)},
+		"空":     {},
 	} {
 		code, _, body := p4BatchDo(t, e, masterIssued, ids)
 		if code != http.StatusBadRequest {

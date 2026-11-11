@@ -740,6 +740,14 @@ func TestBatchSignValidationRejects(t *testing.T) {
 		"空":   {},
 		"11个": {"a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11"},
 		"重复":  {"acc-1", "acc-2", "acc-1"},
+		"大小写重复": {
+			"0190abcd-0000-7000-8000-000000000001",
+			"0190ABCD-0000-7000-8000-000000000001",
+		},
+		"urn重复": {
+			"0190abcd-0000-7000-8000-000000000001",
+			"urn:uuid:0190ABCD-0000-7000-8000-000000000001",
+		},
 	}
 	for name, ids := range cases {
 		rec := callBatchSign(t, engine, issued, oapi.AccountBatchSignRequest{Ids: ids})
@@ -866,6 +874,23 @@ func TestBatchSignAccountLimitHit(t *testing.T) {
 	}
 	if strings.Join(limiter.calls, ",") != "acc-a,acc-b,acc-c" {
 		t.Fatalf("limiter = %v, want 逐项判定三个 id", limiter.calls)
+	}
+}
+
+// 限流键用 UUID 规范形：urn/大写形式与单条端点落到同一桶。
+func TestBatchSignAccountLimitKeyIsCanonical(t *testing.T) {
+	limiter := &batchLimiter{}
+	manual := &batchManual{}
+	engine, issued := newBatchSignRouterLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, manual, &batchAccess{}, limiter)
+	const raw = "urn:uuid:0190ABCD-0000-7000-8000-000000000001"
+	const want = "0190abcd-0000-7000-8000-000000000001"
+	rec := callBatchSign(t, engine, issued, oapi.AccountBatchSignRequest{Ids: []string{raw}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if len(limiter.calls) != 1 || limiter.calls[0] != want {
+		t.Fatalf("limiter keys = %v, want [%s]", limiter.calls, want)
 	}
 }
 

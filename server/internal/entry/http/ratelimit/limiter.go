@@ -20,9 +20,11 @@ package ratelimit
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 )
 
@@ -180,6 +182,17 @@ func (g *Guard) AllowAccountIn(domain, key string) (bool, time.Duration) {
 		return g.Account.Allow(defaultAccountDomain + key)
 	}
 	return g.Account.Allow(domain + ":" + key)
+}
+
+// NormalizeAccountKey 把账号键归一为限流桶键。
+// 可解析的 UUID 用小写规范形：大小写、花括号、urn:uuid: 与
+// 32 位无连字符形都落到同一桶；其余键去空白后小写。
+func NormalizeAccountKey(key string) string {
+	key = strings.TrimSpace(key)
+	if parsed, err := uuid.Parse(key); err == nil {
+		return parsed.String()
+	}
+	return strings.ToLower(key)
 }
 
 // ErrNoTrustedProxy 是可信代理表解析失败的错误前缀。

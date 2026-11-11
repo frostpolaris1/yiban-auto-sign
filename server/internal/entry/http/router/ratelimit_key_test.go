@@ -79,3 +79,26 @@ func TestAccountLimitSharesBucketAcrossCaseVariants(t *testing.T) {
 		t.Fatal("不同账号不得互相挤占")
 	}
 }
+
+// 限流键用 UUID 规范形：urn/花括号形式与规范形共用一桶。
+func TestAccountLimitNormalizesUUIDForms(t *testing.T) {
+	limiter, err := ratelimit.NewThrottle(ratelimit.Quota{PerMinute: 1, Burst: 1})
+	if err != nil {
+		t.Fatalf("NewThrottle: %v", err)
+	}
+	gin.SetMode(gin.TestMode)
+	s := &server{rateLimit: &ratelimit.Guard{Account: limiter}}
+
+	allow := func(key string) bool {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest("POST", "/api/accounts/x/sign", nil)
+		return s.accountLimit(c, key)
+	}
+	const canonical = "0190abcd-0000-7000-8000-000000000001"
+	if !allow(canonical) {
+		t.Fatal("规范形首次必须放行")
+	}
+	if allow("urn:uuid:0190ABCD-0000-7000-8000-000000000001") {
+		t.Fatal("urn 形式必须与规范形共用一桶")
+	}
+}

@@ -27,7 +27,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -39,6 +38,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
+	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/protocol"
@@ -238,10 +238,10 @@ func (h *Handler) BatchSign(c *gin.Context, _ oapi.AccountBatchSignParams) {
 func (h *Handler) batchSignOne(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, id string) oapi.AccountBatchSignItem {
 	item := oapi.AccountBatchSignItem{Id: id}
 	// 账号键限流先于一切判定，与单条端点同序：router 对单条在进
-	// handler 前判 accountLimit(id)，键先小写去首尾空白——UUID 大小写
-	// 不敏感，不归一就能用变体拆桶绕过。只归一限流键，Get/Request
-	// 仍收原样 id。命中只拒本项，批次继续。
-	if ok, _ := h.limiter.AllowAccount(strings.ToLower(strings.TrimSpace(id))); !ok {
+	// handler 前判 accountLimit(id)，键经 NormalizeAccountKey 归一——
+	// UUID 的大小写、花括号、urn 形式都落到同一桶，不归一即可拆桶绕过。
+	// 只归一限流键，Get/Request 仍收原样 id。命中只拒本项，批次继续。
+	if ok, _ := h.limiter.AllowAccount(ratelimit.NormalizeAccountKey(id)); !ok {
 		return batchItemError(item, errs.New(errs.CodeRateLimited, "too many sign requests for this account"))
 	}
 	record, err := h.access.Get(ctx, scope, id)
@@ -279,12 +279,15 @@ func validateBatchIDs(ids []string) error {
 	case len(ids) > batchSignLimit:
 		return errs.New(errs.CodeValidation, "ids must hold at most 10 entries")
 	}
+	// 重复判据与限流键同源归一：同一 UUID 的大小写、花括号、urn 形式
+	// 两次入批即整批 400；非 UUID 字面量去空白后小写比较。
 	seen := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
-		if _, dup := seen[id]; dup {
+		key := ratelimit.NormalizeAccountKey(id)
+		if _, dup := seen[key]; dup {
 			return errs.New(errs.CodeValidation, "ids must not repeat")
 		}
-		seen[id] = struct{}{}
+		seen[key] = struct{}{}
 	}
 	return nil
 }
