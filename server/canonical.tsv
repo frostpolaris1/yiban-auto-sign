@@ -47,6 +47,13 @@ boundary.app	import	internal/app/	internal/adapters,internal/entry,internal/asse
 boundary.adapters	import	internal/adapters/	internal/app,internal/entry,internal/assembly	internal/adapters/pg/usecase_e2e_test.go,internal/adapters/pg/credential_state_e2e_test.go,internal/adapters/pg/settings_e2e_test.go	adapters must not import app, entry or assembly
 boundary.entry	import	internal/entry/	internal/adapters,internal/assembly		entry must not import adapters or assembly
 boundary.signing	import	internal/signing/providers/	internal/app,internal/adapters,internal/assembly		providers must not import the host
+# signing 的线协议错误只在 signing 边界翻译：core/app/entry 只认 contract。
+# core 连 contract 也不认：几何与领域类型自有（core/location），
+# 平台协议形状由调用侧转换。entry 仍需 contract 类型，故只禁 protocol。
+boundary.core.protocol	import	internal/core/	internal/signing/protocol		core must not import signing/protocol
+boundary.core.contract	import	internal/core/	internal/signing/contract		core must not import signing/contract
+boundary.app.protocol	import	internal/app/	internal/signing/protocol		app must not import signing/protocol
+boundary.entry.protocol	import	internal/entry/	internal/signing/protocol		entry must not import signing/protocol
 # 组合根只能被 cmd 消费：internal 下任何包导入 assembly 即红。
 # 防静默失守是双门分工：canonical 保证被查范围内有文件，
 # 目标目录改名/搬走由 structure.tsv 门拦。
