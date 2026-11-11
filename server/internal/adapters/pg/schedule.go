@@ -307,6 +307,24 @@ func (r *ScheduleRepo) RearrangePlan(ctx context.Context, schoolTaskID, day stri
 	return updated, nil
 }
 
+// SkipPlanRows 把一批账号的 pending 行落 skipped(result)，不物理删除。
+// 容量缩容后超出容量的行由此保留当日历史语义：行还在，结论是
+// 「容量释放」而不是「从未存在」。运行中与终态行一律不动。
+func (r *ScheduleRepo) SkipPlanRows(ctx context.Context, schoolTaskID, day string, accountIDs []string, result string) (int64, error) {
+	if len(accountIDs) == 0 {
+		return 0, nil
+	}
+	ct, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE sign_tasks SET state = 'skipped', result = $4, lease_expires_at = NULL
+		 WHERE school_task_id = $1::uuid AND day = $2::date AND state = 'pending'
+		   AND account_id = ANY($3::uuid[])`,
+		schoolTaskID, day, accountIDs, result)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return ct.RowsAffected(), nil
+}
+
 // ActiveAccounts 返回某校的活跃账号及其所有者，按手机号升序
 // （稳定顺序即铺点行序号）。只取 active 且未软删的行：
 // 暂停/待审账号不占计划位。学校 disabled 时返回空：禁校不铺新号（D5 挡新）。

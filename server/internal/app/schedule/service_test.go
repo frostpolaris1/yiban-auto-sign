@@ -100,20 +100,38 @@ type fakePlanStore struct {
 	inserted   [][]coreschedule.PlanRow
 	rearranged [][]coreschedule.PlanRow
 	existing   map[string]bool
+	// pending 模拟库内 pending 行：InsertPlan 落入、RearrangePlan 改写、
+	// SkipPlanRows 移出。几何对比与容量释放的判据都读它。
+	pending map[string]coreschedule.PlanRow
+	// skipped 记录被容量释放的账号 → result 词。
+	skipped map[string]string
+	// insertErr 注入落库失败（Override 同事务回滚判据用）。
+	insertErr error
+}
+
+func planKey(r coreschedule.PlanRow) string {
+	return r.AccountID + "|" + r.SchoolTaskID + "|" + r.Day
 }
 
 func (f *fakePlanStore) InsertPlan(_ context.Context, rows []coreschedule.PlanRow) (int64, error) {
 	f.inserted = append(f.inserted, rows)
+	if f.insertErr != nil {
+		return 0, f.insertErr
+	}
 	if f.existing == nil {
 		f.existing = map[string]bool{}
 	}
+	if f.pending == nil {
+		f.pending = map[string]coreschedule.PlanRow{}
+	}
 	var n int64
 	for _, r := range rows {
-		key := r.AccountID + "|" + r.SchoolTaskID + "|" + r.Day
+		key := planKey(r)
 		if f.existing[key] {
 			continue
 		}
 		f.existing[key] = true
+		f.pending[key] = r
 		n++
 	}
 	return n, nil
@@ -121,7 +139,60 @@ func (f *fakePlanStore) InsertPlan(_ context.Context, rows []coreschedule.PlanRo
 
 func (f *fakePlanStore) RearrangePlan(_ context.Context, taskID, day string, rows []coreschedule.PlanRow) (int64, error) {
 	f.rearranged = append(f.rearranged, rows)
-	return int64(len(rows)), nil
+	if f.pending == nil {
+		f.pending = map[string]coreschedule.PlanRow{}
+	}
+	var n int64
+	for _, r := range rows {
+		key := planKey(r)
+		if _, ok := f.pending[key]; ok {
+			f.pending[key] = r
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakePlanStore) PendingPlan(_ context.Context, taskID, day string) ([]coreschedule.PlanRow, error) {
+	out := make([]coreschedule.PlanRow, 0, len(f.pending))
+	for _, r := range f.pending {
+		if r.SchoolTaskID == taskID && r.Day == day {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakePlanStore) SkipPlanRows(_ context.Context, taskID, day string, accountIDs []string, result string) (int64, error) {
+	if f.skipped == nil {
+		f.skipped = map[string]string{}
+	}
+	var n int64
+	for _, id := range accountIDs {
+		key := id + "|" + taskID + "|" + day
+		if _, ok := f.pending[key]; !ok {
+			continue
+		}
+		delete(f.pending, key)
+		f.skipped[id] = result
+		n++
+	}
+	return n, nil
+}
+
+func (f *fakePlanStore) SkipStalePending(_ context.Context, beforeDay, result string) (int64, error) {
+	var n int64
+	for key, r := range f.pending {
+		if r.Day < beforeDay {
+			delete(f.pending, key)
+			if f.skipped == nil {
+				f.skipped = map[string]string{}
+			}
+			f.skipped[r.AccountID] = result
+			n++
+		}
+	}
+	return n, nil
 }
 
 type fakeAccounts struct {
@@ -611,6 +682,45 @@ func TestBuildDegradesCapacityShortfall(t *testing.T) {
 	}
 	if histSum != 64 {
 		t.Fatalf("直方图总数 = %d, want 64", histSum)
+	}
+}
+
+// 容量缩容重建：超出容量的 pending 行落 skipped(capacity_released)，
+// 不物理删除；容量内的行保持 pending。P0-1。
+func TestBuildCapacityShrinkReleasesExcessPending(t *testing.T) {
+	ids := make([]string, 64)
+	for i := range ids {
+		ids[i] = "acct-" + strconv.Itoa(i)
+	}
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	svc := newService(t, ws, ps, fakeAccounts{ids: ids},
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 60 * time.Second
+	in.Rate = 1.0
+	in.Util = 1.0 // 80 分钟窗、60s/次：容量 80，需求 64，无缺口
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("首次构建: %v", err)
+	}
+	if got := len(ps.pending); got != 64 {
+		t.Fatalf("首次 pending = %d, want 64", got)
+	}
+	in.Util = 0.4 // 容量 32：32 行超容量
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("缩容重建: %v", err)
+	}
+	if got := len(ps.pending); got != 32 {
+		t.Fatalf("缩容后 pending = %d, want 32（超容量行必须落结论）", got)
+	}
+	if len(ps.skipped) != 32 {
+		t.Fatalf("容量释放行数 = %d, want 32", len(ps.skipped))
+	}
+	for id, result := range ps.skipped {
+		if result != "capacity_released" {
+			t.Fatalf("账号 %s 的 result = %q, want capacity_released", id, result)
+		}
 	}
 }
 

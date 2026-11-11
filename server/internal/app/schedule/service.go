@@ -656,14 +656,17 @@ func scopeAllowsSchool(scope corescope.Scope, schoolID string) bool {
 // 返回值带 changed：窗口是否真实重写（发布判据用）。
 // 容量缺口自然降级：按可用容量截断计划行（能排多少排多少），
 // Preview 的数字保持真实口径，缺口在落库后由调用方发出。
+// 缩容重建时超出容量的 pending 行落 skipped(capacity_released)：
+// 不物理删除，保留当日任务历史；否则它们仍会被 ClaimDue 认领。
 func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error) {
 	p, res, err := s.previewWithWindow(ctx, in, policyLive)
 	if err != nil {
 		return Preview{}, false, err
 	}
 	rows := planRows(in, p.Rows)
+	var excess []string
 	if p.Shortfall > 0 {
-		rows, p = degradeToCapacity(in, p)
+		rows, excess, p = degradeToCapacity(in, p)
 	}
 	changed := res.changed()
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
@@ -677,8 +680,15 @@ func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error
 				return err
 			}
 		}
-		_, err := s.deps.Plans.InsertPlan(ctx, rows)
-		return err
+		if _, err := s.deps.Plans.InsertPlan(ctx, rows); err != nil {
+			return err
+		}
+		if len(excess) > 0 {
+			if _, err := s.deps.Plans.SkipPlanRows(ctx, in.SchoolTaskID, in.Day, excess, capacityReleasedResult); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return Preview{}, false, err
@@ -686,21 +696,33 @@ func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error
 	return p, changed, nil
 }
 
+// capacityReleasedResult 是容量缩容时超出容量行的跳过结论词。
+// 它是 sign_tasks.result 的自由文本，不是状态枚举：状态仍是既有
+// skipped（core/status 闭集内），当日不再执行。
+const capacityReleasedResult = "capacity_released"
+
 // degradeToCapacity 把预览截到可用容量：能排多少排多少。
 // 行序保持铺点顺序：front 模式前 capacity 行恰是最早一段，
 // uniform 模式前 capacity 行是均匀铺开的子集；直方图按截后行重算，
 // 与返回的行同源。demand/capacity/shortfall/瓶颈/建议值一律不动：
 // 缺口是事实，响应与告警都要如实看到。
+// 第二个返回值是超出容量的账号 ID：调用方把它们在库内的 pending 行
+// 落 skipped，避免缩容后仍全量签（P0-1）。
 // 调用前提是 Shortfall>0，此时 capacity < demand == len(rows)。
-func degradeToCapacity(in Input, p Preview) ([]coreschedule.PlanRow, Preview) {
+func degradeToCapacity(in Input, p Preview) ([]coreschedule.PlanRow, []string, Preview) {
 	kept := p.Rows[:p.Capacity]
+	excess := p.Rows[p.Capacity:]
+	excessIDs := make([]string, len(excess))
+	for i, r := range excess {
+		excessIDs[i] = r.AccountID
+	}
 	hist := make(map[int]int, len(p.Histogram))
 	for _, r := range kept {
 		hist[coreplan.SlotOf(r.RunAt.Sub(p.WindowStart))]++
 	}
 	p.Rows = kept
 	p.Histogram = hist
-	return planRows(in, kept), p
+	return planRows(in, kept), excessIDs, p
 }
 
 // publishWindow 在窗口真实变化后发 window.changed。

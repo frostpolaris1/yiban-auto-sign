@@ -45,6 +45,9 @@ type PlanStore interface {
 	// RearrangePlan 重排未执行行：只更新 state = 'pending' 的 run_at。
 	// 运行中与终态行一律不动（当日结论不可覆盖）。
 	RearrangePlan(ctx context.Context, schoolTaskID, day string, rows []coreschedule.PlanRow) (int64, error)
+	// SkipPlanRows 把指定账号的 pending 行落 skipped(result)，不物理删除。
+	// 容量缩容后超出容量的行由此保留当日历史语义（P0-1）。
+	SkipPlanRows(ctx context.Context, schoolTaskID, day string, accountIDs []string, result string) (int64, error)
 }
 
 // AccountRef 是铺点所需的账号最小形状：ID 加其所有者。
