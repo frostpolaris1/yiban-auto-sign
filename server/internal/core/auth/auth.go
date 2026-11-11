@@ -118,8 +118,10 @@ func HashValue(pepper []byte, value string) (string, error) {
 }
 
 // HashIP 用服务器 pepper 哈希一个地址。
+// 消息加 "ip:" 域标签：IP 与 User-Agent 摘要不共享消息空间，
+// 同一原始串不会在两种摘要间相等。
 func HashIP(pepper []byte, ip string) (IPHash, error) {
-	d, err := HashValue(pepper, ip)
+	d, err := HashValue(pepper, "ip:"+ip)
 	if err != nil {
 		return IPHash{}, err
 	}
@@ -127,8 +129,9 @@ func HashIP(pepper []byte, ip string) (IPHash, error) {
 }
 
 // HashUserAgent 用服务器 pepper 哈希 User-Agent 字符串。
+// 消息加 "ua:" 域标签，与 HashIP 分开。
 func HashUserAgent(pepper []byte, ua string) (UserAgentHash, error) {
-	d, err := HashValue(pepper, ua)
+	d, err := HashValue(pepper, "ua:"+ua)
 	if err != nil {
 		return UserAgentHash{}, err
 	}

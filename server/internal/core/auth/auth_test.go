@@ -28,6 +28,22 @@ func TestHashValueRejectsEmptyPepper(t *testing.T) {
 	}
 }
 
+// IP 与 UA 摘要不共享消息空间：同一原始串得到不同摘要。
+func TestHashIPAndUserAgentAreDomainSeparated(t *testing.T) {
+	pepper := []byte("0123456789abcdef0123456789abcdef")
+	ip, err := HashIP(pepper, "same-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ua, err := HashUserAgent(pepper, "same-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ip.String() == ua.String() {
+		t.Fatal("ip and user-agent digests share the same message space")
+	}
+}
+
 func TestHashIPRoundTrip(t *testing.T) {
 	pepper := []byte("0123456789abcdef0123456789abcdef")
 	hash, err := HashIP(pepper, "203.0.113.5")
