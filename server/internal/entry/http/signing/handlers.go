@@ -405,13 +405,13 @@ func (h *Handler) PersonName(c *gin.Context, id oapi.AccountID, _ oapi.AccountPe
 	respond.JSON(c.Writer, http.StatusOK, oapi.AccountPersonNameResult{PersonName: profile.DisplayName})
 }
 
-// isAppError 报告 err 是否宿主自产的出口/急停错误。
-// 只放行 capacity_exceeded（含 PausedError 的内嵌码）：急停回 503、
-// 无出口回 429。其余 *errs.Error（尤其带平台原文的 upstream）仍走中性 502，
-// 平台文本不得借稳定码通道外泄。
+// isAppError 报告 err 是否宿主自产的急停错误。
+// 只按类型匹配 *errs.PausedError（入口回 503）；其余 *errs.Error
+// 一律走中性 502，平台原文不得借稳定码通道外泄。
+// 不按 capacity_exceeded 码放行：未来任何宿主 capacity 错误都可能带原文。
 func isAppError(err error) bool {
-	var appErr *errs.Error
-	return errors.As(err, &appErr) && appErr.Code == errs.CodeCapacity
+	var paused *errs.PausedError
+	return errors.As(err, &paused)
 }
 
 // verifyConclusion 把 provider 错误映射成中性结论。

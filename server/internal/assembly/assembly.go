@@ -818,6 +818,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			// 3b 注入面：fallback 窗口的全局默认值每请求解析
 			//（DB 覆盖行>core 常量；半对整对回退）。缺端口时行为与常量一致。
 			Defaults: defaultWindowPair,
+			// 显式手动面写库前判急停：与 worker/交互面同一闭包。
+			Paused: pausedGate,
 			// 窗口发现失败的原因进日志（OCR M1）。
 			Logger: logger,
 		})

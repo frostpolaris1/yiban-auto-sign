@@ -106,10 +106,11 @@ func (e AccountDiagnosticsSuggestion) Valid() bool {
 
 // Defines values for AccountDiagnosticsWindowSource.
 const (
-	AccountDiagnosticsWindowSourceCache    AccountDiagnosticsWindowSource = "cache"
-	AccountDiagnosticsWindowSourceFallback AccountDiagnosticsWindowSource = "fallback"
-	AccountDiagnosticsWindowSourceOverride AccountDiagnosticsWindowSource = "override"
-	AccountDiagnosticsWindowSourcePlatform AccountDiagnosticsWindowSource = "platform"
+	AccountDiagnosticsWindowSourceCache         AccountDiagnosticsWindowSource = "cache"
+	AccountDiagnosticsWindowSourceFallback      AccountDiagnosticsWindowSource = "fallback"
+	AccountDiagnosticsWindowSourceOverride      AccountDiagnosticsWindowSource = "override"
+	AccountDiagnosticsWindowSourcePlatform      AccountDiagnosticsWindowSource = "platform"
+	AccountDiagnosticsWindowSourceWeekendClosed AccountDiagnosticsWindowSource = "weekend_closed"
 )
 
 // Valid indicates whether the value is a known member of the AccountDiagnosticsWindowSource enum.
@@ -122,6 +123,8 @@ func (e AccountDiagnosticsWindowSource) Valid() bool {
 	case AccountDiagnosticsWindowSourceOverride:
 		return true
 	case AccountDiagnosticsWindowSourcePlatform:
+		return true
+	case AccountDiagnosticsWindowSourceWeekendClosed:
 		return true
 	default:
 		return false
@@ -526,10 +529,11 @@ func (e ScheduleSignDist) Valid() bool {
 
 // Defines values for ScheduleWindowSource.
 const (
-	ScheduleWindowSourceCache    ScheduleWindowSource = "cache"
-	ScheduleWindowSourceFallback ScheduleWindowSource = "fallback"
-	ScheduleWindowSourceOverride ScheduleWindowSource = "override"
-	ScheduleWindowSourcePlatform ScheduleWindowSource = "platform"
+	ScheduleWindowSourceCache         ScheduleWindowSource = "cache"
+	ScheduleWindowSourceFallback      ScheduleWindowSource = "fallback"
+	ScheduleWindowSourceOverride      ScheduleWindowSource = "override"
+	ScheduleWindowSourcePlatform      ScheduleWindowSource = "platform"
+	ScheduleWindowSourceWeekendClosed ScheduleWindowSource = "weekend_closed"
 )
 
 // Valid indicates whether the value is a known member of the ScheduleWindowSource enum.
@@ -542,6 +546,8 @@ func (e ScheduleWindowSource) Valid() bool {
 	case ScheduleWindowSourceOverride:
 		return true
 	case ScheduleWindowSourcePlatform:
+		return true
+	case ScheduleWindowSourceWeekendClosed:
 		return true
 	default:
 		return false
@@ -1094,7 +1100,12 @@ type AccountDiagnostics struct {
 
 	// Window Today's planned window; null when not discovered yet.
 	Window *struct {
-		End     time.Time                      `json:"end"`
+		End time.Time `json:"end"`
+
+		// Source Window cache source. weekend_closed is a plan receipt
+		// source and never appears in diagnostics; it is listed
+		// here because the shared WindowSource vocabulary is one
+		// closed set.
 		Source  AccountDiagnosticsWindowSource `json:"source"`
 		Start   time.Time                      `json:"start"`
 		Version int                            `json:"version"`
@@ -1104,7 +1115,10 @@ type AccountDiagnostics struct {
 // AccountDiagnosticsSuggestion defines model for AccountDiagnostics.Suggestion.
 type AccountDiagnosticsSuggestion string
 
-// AccountDiagnosticsWindowSource defines model for AccountDiagnostics.Window.Source.
+// AccountDiagnosticsWindowSource Window cache source. weekend_closed is a plan receipt
+// source and never appears in diagnostics; it is listed
+// here because the shared WindowSource vocabulary is one
+// closed set.
 type AccountDiagnosticsWindowSource string
 
 // AccountLocation The stored location policy. lng and lat are null for auto and carry
@@ -1508,6 +1522,9 @@ type CapacityReport struct {
 
 	// Source platform and cache come from discovery; fallback is the local
 	// default window; override is a master or admin replacement.
+	// weekend_closed is a host-produced receipt source: the weekend gate
+	// is closed, the answer carries zero rows and a note, and nothing is
+	// written.
 	Source ScheduleWindowSource `json:"source"`
 
 	// SuggestedWorkers Total channel count that fits the demand. Present only when
@@ -2147,6 +2164,9 @@ type SchedulePlan struct {
 
 	// Source platform and cache come from discovery; fallback is the local
 	// default window; override is a master or admin replacement.
+	// weekend_closed is a host-produced receipt source: the weekend gate
+	// is closed, the answer carries zero rows and a note, and nothing is
+	// written.
 	Source ScheduleWindowSource `json:"source"`
 
 	// Version Window cache version; zero in a pure preview.
@@ -2206,6 +2226,9 @@ type ScheduleWindowList struct {
 
 // ScheduleWindowSource platform and cache come from discovery; fallback is the local
 // default window; override is a master or admin replacement.
+// weekend_closed is a host-produced receipt source: the weekend gate
+// is closed, the answer carries zero rows and a note, and nothing is
+// written.
 type ScheduleWindowSource string
 
 // School defines model for School.
@@ -2221,9 +2244,13 @@ type School struct {
 	PlatformUniversityId *string `json:"platform_university_id,omitempty"`
 
 	// Status active schools participate in scheduling and signing. A disabled
-	// school stops signing: its enabled tasks are not planned, its active
-	// accounts are not scheduled, and pending task rows are not claimed.
-	// Existing data stays readable.
+	// school stops new signing work: its enabled tasks are not planned,
+	// its active accounts are not scheduled, and new manual sign
+	// candidates are not offered. Pending task rows created before the
+	// school was disabled are still claimed and executed (D5 blocks new
+	// work, not existing work). Management read and window discovery
+	// surfaces stay available for inspection. Existing data stays
+	// readable.
 	Status    SchoolStatus `json:"status"`
 	Timezone  string       `json:"timezone"`
 	UpdatedAt time.Time    `json:"updated_at"`
@@ -2307,9 +2334,13 @@ type SchoolPage struct {
 }
 
 // SchoolStatus active schools participate in scheduling and signing. A disabled
-// school stops signing: its enabled tasks are not planned, its active
-// accounts are not scheduled, and pending task rows are not claimed.
-// Existing data stays readable.
+// school stops new signing work: its enabled tasks are not planned,
+// its active accounts are not scheduled, and new manual sign
+// candidates are not offered. Pending task rows created before the
+// school was disabled are still claimed and executed (D5 blocks new
+// work, not existing work). Management read and window discovery
+// surfaces stay available for inspection. Existing data stays
+// readable.
 type SchoolStatus string
 
 // SchoolUpdate defines model for SchoolUpdate.
@@ -2321,9 +2352,13 @@ type SchoolUpdate struct {
 	PlatformUniversityId *string `json:"platform_university_id,omitempty"`
 
 	// Status active schools participate in scheduling and signing. A disabled
-	// school stops signing: its enabled tasks are not planned, its active
-	// accounts are not scheduled, and pending task rows are not claimed.
-	// Existing data stays readable.
+	// school stops new signing work: its enabled tasks are not planned,
+	// its active accounts are not scheduled, and new manual sign
+	// candidates are not offered. Pending task rows created before the
+	// school was disabled are still claimed and executed (D5 blocks new
+	// work, not existing work). Management read and window discovery
+	// surfaces stay available for inspection. Existing data stays
+	// readable.
 	Status   *SchoolStatus         `json:"status,omitempty"`
 	Timezone *SchoolUpdateTimezone `json:"timezone,omitempty"`
 }

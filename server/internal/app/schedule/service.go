@@ -79,9 +79,15 @@ type Input struct {
 	EdgeFront time.Duration
 	EdgeBack  time.Duration
 	// Refresh 要求重新发现平台窗口（k0y-4）。
-	// 只对只读报告生效：Report 由入口按 refresh 查询参数置位。
-	// Preview 与 Build 恒查平台，忽略本字段。
+	// 只对只读报告与预览生效：入口按 refresh 查询参数置位。
+	// Build 与 Override 恒查平台，忽略本字段。
 	Refresh bool
+	// WeekendClosed 表示请求日的周末门关闭：既有校验照跑，
+	// 写阶段跳过，回执 0 行 + note，来源 weekend_closed。
+	WeekendClosed bool
+	// Explicit 表示 HTTP 手动面。显式发现遇急停（PausedError）时上抛，
+	// 入口回 503；日切与自动兜底保持容忍回退（Explicit=false）。
+	Explicit bool
 }
 
 // Row 是一行计划落点。
@@ -153,8 +159,15 @@ func NewService(deps Deps) (*Service, error) {
 // Preview 只算不写：返回窗口解析结果与完整计划行。
 // 与 Build 同一解析口径（预览就是计划），故不节流；Refresh 不影响本方法。
 // **有平台发现**：入口只在 POST /api/schedule/preview/refresh 调用它。
+// 周末门关闭时校验照跑，回执 0 行 + note（不发现平台）。
 // 停用任务同样可预览（k0y-6）。
 func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
+	if err := validateInput(in); err != nil {
+		return Preview{}, err
+	}
+	if in.WeekendClosed {
+		return s.closedPreview(ctx, in)
+	}
 	p, _, err := s.previewWithWindow(ctx, in, policyLive)
 	return p, err
 }
@@ -163,7 +176,13 @@ func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
 // 覆盖 > 缓存 > 回退，**不**发现平台、不写库。无缓存时用回退窗口。
 // 强制刷新走 Preview（POST /api/schedule/preview/refresh）。
 func (s *Service) PreviewCached(ctx context.Context, in Input) (Preview, error) {
+	if err := validateInput(in); err != nil {
+		return Preview{}, err
+	}
 	in.Refresh = false
+	if in.WeekendClosed {
+		return s.closedPreview(ctx, in)
+	}
 	p, _, err := s.previewWithWindow(ctx, in, policyCached)
 	return p, err
 }
@@ -222,12 +241,21 @@ func (s *Service) storeFresh(ctx context.Context, res windowResolution) (int, er
 // 容量缺口自然降级：按可用容量落库并照常成功，不做运行期自适应；
 // 缺口事件与管理员通知在落库后发出（见 publishCapacity）。
 // 停用任务拒建计划（k0y-6）：回 conflict，且在发现平台窗口之前拒绝。
+// 周末门关闭：停用/参数校验先跑，之后回 0 行 + note，不写库。
 func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
 	if err := validateInput(in); err != nil {
 		return Preview{}, err
 	}
 	if err := s.requireEnabled(ctx, in.SchoolTaskID); err != nil {
 		return Preview{}, err
+	}
+	if in.Explicit {
+		if err := s.requireNotPaused(ctx); err != nil {
+			return Preview{}, err
+		}
+	}
+	if in.WeekendClosed {
+		return s.closedPreview(ctx, in)
 	}
 	p, changed, err := s.buildOnce(ctx, in)
 	if errors.Is(err, coreschedule.ErrWindowStale) {
@@ -240,6 +268,22 @@ func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
 	s.publishWindow(ctx, in, p, changed)
 	s.publishCapacity(ctx, in, p)
 	return p, nil
+}
+
+// requireNotPaused 在显式手动面写库前判急停：暂停时零写入并回 PausedError。
+// 未接暂停端口（测试/旧装配）时不判；查询故障原样上抛（故障不是未暂停）。
+func (s *Service) requireNotPaused(ctx context.Context) error {
+	if s.deps.Paused == nil {
+		return nil
+	}
+	paused, err := s.deps.Paused(ctx)
+	if err != nil {
+		return err
+	}
+	if paused {
+		return coreerrs.NewPaused()
+	}
+	return nil
 }
 
 // requireEnabled 读任务并拒绝停用任务。
@@ -435,6 +479,11 @@ func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day st
 func (s *Service) refreshView(ctx context.Context, v *coreschedule.WindowView, day string) error {
 	found, err := s.deps.Discover.DiscoverWindow(ctx, v.TaskID)
 	if err != nil {
+		// 显式刷新（POST /api/schedule/windows/refresh）遇急停回 503；
+		// 平台其它失败保持原口径：保留旧行，不把读面变红。
+		if isPausedError(err) {
+			return err
+		}
 		return nil
 	}
 	if corewindow.Validate(corewindow.Window{Start: found.Start, End: found.End}) != nil {
@@ -519,6 +568,17 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	}
 	if !sameBusinessDay(start, in.Day, in.Location) || !sameBusinessDay(end, in.Day, in.Location) {
 		return Preview{}, validation("override start and end must fall on the business day")
+	}
+	// 周末门关闭：全部既有校验已通过，仅在写阶段跳过。
+	// 覆盖不落库，回执来源 weekend_closed，不回显请求窗口为生效值。
+	if in.WeekendClosed {
+		return s.closedPreview(ctx, in)
+	}
+	// 显式手动面写库前判急停：暂停时覆盖与计划都零写入。
+	if in.Explicit {
+		if err := s.requireNotPaused(ctx); err != nil {
+			return Preview{}, err
+		}
 	}
 	if err := s.deps.Windows.PutOverride(ctx, coreschedule.WindowOverride{
 		SchoolTaskID: in.SchoolTaskID,
@@ -792,6 +852,44 @@ func (s *Service) previewWithWindow(ctx context.Context, in Input, policy window
 	return p, res, nil
 }
 
+// closedPreview 返回周末门关闭时的 0 行回执。
+// 窗口走只读缓存/覆盖/回退（不发现平台、不写库）；来源标 weekend_closed，
+// 不把请求里的覆盖窗口冒充成生效值。
+func (s *Service) closedPreview(ctx context.Context, in Input) (Preview, error) {
+	loc := in.Location
+	dayDate, err := time.ParseInLocation("2006-01-02", in.Day, loc)
+	if err != nil {
+		return Preview{}, validation("day must be YYYY-MM-DD")
+	}
+	in.Refresh = false
+	res, err := s.resolveWindow(ctx, in, dayDate, loc, policyCached)
+	if err != nil {
+		return Preview{}, err
+	}
+	eff, _ := corewindow.Window{Start: res.effective.Start, End: res.effective.End}.
+		Effective(in.EdgeFront, in.EdgeBack)
+	if err := corewindow.Validate(eff); err != nil {
+		return Preview{}, validation("window has no positive span: " + err.Error())
+	}
+	return Preview{
+		Day:         in.Day,
+		Source:      contract.WindowWeekendClosed,
+		WindowStart: eff.Start,
+		WindowEnd:   eff.End,
+		Version:     res.version(),
+		Note:        WeekendGateNote,
+	}, nil
+}
+
+// WeekendGateNote 是周末门关闭时的回执文案（入口与用例共用）。
+const WeekendGateNote = "weekend gate closed: no plan rows built for this day"
+
+// isPausedError 报告发现错误是否为急停（宿主自产）。
+func isPausedError(err error) bool {
+	var paused *coreerrs.PausedError
+	return errors.As(err, &paused)
+}
+
 // resolveWindow 按覆盖 > 平台 > 缓存 > 回退解析当日窗口。
 // 平台发现失败不算错误（来源如实标注）；缓存读取失败**只有**
 // errs.ErrNotFound 才算无缓存，其他错误上抛。
@@ -837,6 +935,12 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 				s.logWindowFailure(ctx, in, "", mask.MaskText(verr.Error()))
 			}
 		} else {
+			// 显式手动面（HTTP）遇急停原样上抛：入口回 503。
+			// 日切/自动兜底（Explicit=false）继续记日志并回退，
+			// 避免一次暂停让整日构建失败。
+			if in.Explicit && isPausedError(discoverErr) {
+				return res, discoverErr
+			}
 			outcome, reason := windowFailure(discoverErr)
 			s.logWindowFailure(ctx, in, outcome, reason)
 		}

@@ -116,7 +116,7 @@ either side drifts.
 | GET | `/api/schools` | master/admin/user | P1 |
 | POST | `/api/schools` | master | P1 |
 | PATCH | `/api/schools/:id` | master | P1 |
-|  |  |  | `status=disabled` 即停签：该校启用任务不进日切计划、活跃账号不进铺点、pending 任务行不被认领；既有数据仍可读。 |
+|  |  |  | `status=disabled` 挡新不挡旧：该校启用任务不进日切计划、活跃账号不进铺点、手动签到不提供新候选；停校前已铺的 pending 行照常认领执行。管理读面与窗口发现仍可用，既有数据仍可读。 |
 | GET | `/api/schools/:id/admins` | master | P1 |
 | POST | `/api/schools/:id/admins` | master | P1 |
 | DELETE | `/api/schools/:id/admins/:uid` | master | P1 |

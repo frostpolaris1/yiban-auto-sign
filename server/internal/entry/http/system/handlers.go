@@ -298,7 +298,10 @@ func (h *Handler) AdminMailTest(c *gin.Context, _ oapi.AdminMailTestParams) {
 		return
 	}
 	var body oapi.AdminMailTestRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
+	dec := json.NewDecoder(c.Request.Body)
+	// 与设置写面同口径：未知字段显式 400，不被解码器静默忽略。
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
 		respond.BindError(c.Writer, c.Request, err)
 		return
 	}

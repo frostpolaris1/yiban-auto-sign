@@ -2883,7 +2883,8 @@ paths:
         discovers every task's platform window and stores the result before
         answering. This is the explicit refresh path: the GET endpoint never
         calls the platform. A valid override keeps the cached window
-        unchanged (discovery still runs).
+        unchanged (discovery still runs). While the global engine pause is
+        in effect the request answers 503 and makes no platform call.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -2902,6 +2903,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schedule/preview:
     get:
@@ -2947,7 +2949,8 @@ paths:
         Same roles and response schema as GET /api/schedule/preview, but
         discovers the platform window first. This is the explicit refresh
         path: the GET endpoint never calls the platform. Preview still writes
-        nothing.
+        nothing. While the global engine pause is in effect the request
+        answers 503 and makes no platform call.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -2968,6 +2971,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schedule/plan:
@@ -2983,7 +2987,9 @@ paths:
         other day is 400 validation_failed.
 
         A closed weekend gate (schedule.sunday_sign / schedule.saturday_sign)
-        succeeds with zero rows and a note; nothing is written.
+        succeeds with zero rows and a note; nothing is written. While the
+        global engine pause is in effect the request answers 503 and writes
+        nothing.
 
         Capacity shortfall no longer returns 409 capacity_shortfall: the
         plan is built against the available capacity and the request
@@ -3012,6 +3018,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
@@ -3027,7 +3034,9 @@ paths:
         and terminal rows are never moved. A disabled task returns 409 conflict
         and stores no override.
         A closed weekend gate (schedule.sunday_sign / schedule.saturday_sign)
-        succeeds with zero rows and a note; the override is not stored.
+        succeeds with zero rows and a note; the override is not stored. While
+        the global engine pause is in effect the request answers 503 and
+        stores nothing.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -3047,6 +3056,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
@@ -3436,7 +3446,8 @@ paths:
         the platform window and stores it before answering. This is the
         explicit refresh path: the GET endpoint never calls the platform.
         A valid override keeps the cached window unchanged (discovery still
-        runs).
+        runs). While the global engine pause is in effect the request answers
+        503 and makes no platform call.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -3457,6 +3468,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/sign-stats:
@@ -4814,9 +4826,13 @@ components:
       type: string
       description: |
         active schools participate in scheduling and signing. A disabled
-        school stops signing: its enabled tasks are not planned, its active
-        accounts are not scheduled, and pending task rows are not claimed.
-        Existing data stays readable.
+        school stops new signing work: its enabled tasks are not planned,
+        its active accounts are not scheduled, and new manual sign
+        candidates are not offered. Pending task rows created before the
+        school was disabled are still claimed and executed (D5 blocks new
+        work, not existing work). Management read and window discovery
+        surfaces stay available for inspection. Existing data stays
+        readable.
       enum: [active, disabled]
     School:
       type: object
@@ -5252,7 +5268,10 @@ components:
       description: |
         platform and cache come from discovery; fallback is the local
         default window; override is a master or admin replacement.
-      enum: [platform, cache, fallback, override]
+        weekend_closed is a host-produced receipt source: the weekend gate
+        is closed, the answer carries zero rows and a note, and nothing is
+        written.
+      enum: [platform, cache, fallback, override, weekend_closed]
     ScheduleWindow:
       type: object
       required: [school_id, school_name, task_id, task_name, enabled, start, end, source]
@@ -6112,7 +6131,12 @@ components:
                 end: { type: string, format: date-time }
                 source:
                   type: string
-                  enum: [platform, cache, fallback, override]
+                  description: |
+                    Window cache source. weekend_closed is a plan receipt
+                    source and never appears in diagnostics; it is listed
+                    here because the shared WindowSource vocabulary is one
+                    closed set.
+                  enum: [platform, cache, fallback, override, weekend_closed]
                 version: { type: integer }
             egress:
               type: [object, "null"]

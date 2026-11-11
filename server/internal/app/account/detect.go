@@ -142,16 +142,13 @@ func detectSessionRef(phone string) string {
 }
 
 // platformCallFailure 把平台端口错误映射成中性 upstream。
-// 宿主自产的急停（paused）与出口容量（capacity_exceeded）原样上抛：
-// 入口层据此回 503/429，而不是把它们伪装成平台故障。
-// 其余 *errs.Error（含上游细节）仍折叠成中性文案，平台原文不出本层。
+// 只按类型放行宿主急停（*errs.PausedError）：入口据此回 503。
+// 其余错误（含带平台原文的 *errs.Error）一律折叠成中性文案，
+// 平台原文不出本层。
 func platformCallFailure(err error, message string) error {
-	var appErr *errs.Error
-	if errors.As(err, &appErr) {
-		switch appErr.Code {
-		case errs.CodeCapacity: // 急停错误内嵌同一码（PausedError）
-			return err
-		}
+	var paused *errs.PausedError
+	if errors.As(err, &paused) {
+		return err
 	}
 	return errs.New(errs.CodeUpstream, message)
 }

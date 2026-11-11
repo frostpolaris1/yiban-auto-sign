@@ -420,11 +420,12 @@ func TestTaskLookup(t *testing.T) {
 	}
 }
 
-// D5：学校 disabled 即停签。任务不进日切清单、账号不进铺点、
-// 手动签到无候选、pending 行不被 ClaimDue 认领；既有数据仍可读。
-func TestDisabledSchoolStopsSigning(t *testing.T) {
+// D5（2026-11-11 拍板：挡新不挡旧）：学校 disabled 后不再铺新计划、
+// 不再给新手动签到候选；但停校前已铺的 pending 行照常认领执行，
+// DayTasks 仍能看到已有行（手动签到不挡旧）。
+func TestDisabledSchoolStopsNewSigning(t *testing.T) {
 	e := newEnv(t)
-	schoolID, taskID, acctID := e.seedTask("sched-d5", "晨间签到", "d5-owner@example.com", "13800012001")
+	schoolID, taskID, acctID := e.seedTask("sched-d5", "晨间签到", "d5-owner@example.com", "13800138036")
 	day := "2026-10-29"
 	runAt := time.Date(2026, 10, 29, 6, 40, 0, 0, time.UTC)
 	if _, err := e.sched.InsertPlan(e.ctx, []coreschedule.PlanRow{
@@ -434,7 +435,7 @@ func TestDisabledSchoolStopsSigning(t *testing.T) {
 	}
 	now := time.Date(2026, 10, 29, 7, 0, 0, 0, time.UTC)
 
-	// 停校前：三条链都看得到任务/账号，ClaimDue 认领得到。
+	// 停校前：铺点面看得到任务/账号，ClaimDue 认领得到。
 	enabledTasks, err := e.sched.EnabledTasks(e.ctx)
 	if err != nil || !hasTask(enabledTasks, taskID) {
 		t.Fatalf("停校前 EnabledTasks = %+v, %v", enabledTasks, err)
@@ -447,7 +448,7 @@ func TestDisabledSchoolStopsSigning(t *testing.T) {
 	if err != nil || len(claimed) != 1 || claimed[0].AccountID != acctID {
 		t.Fatalf("停校前 ClaimDue = %+v, %v", claimed, err)
 	}
-	// 放回 pending，供停校后的认领判据使用。
+	// 放回 pending，供停校后的「旧行照常执行」判据使用。
 	if _, err := e.db.Exec(e.ctx,
 		`UPDATE sign_tasks SET state = 'pending', claimed_at = NULL, lease_expires_at = NULL
 		 WHERE account_id = $1::uuid`, acctID); err != nil {
@@ -459,28 +460,31 @@ func TestDisabledSchoolStopsSigning(t *testing.T) {
 		t.Fatalf("disable school: %v", err)
 	}
 
+	// 挡新：日切清单、铺点取号面、手动签到新候选都为空。
 	enabledTasks, err = e.sched.EnabledTasks(e.ctx)
 	if err != nil {
 		t.Fatalf("停校后 EnabledTasks: %v", err)
 	}
 	if hasTask(enabledTasks, taskID) {
-		t.Fatal("停校后 EnabledTasks 仍含任务（停校即停签）")
+		t.Fatal("停校后 EnabledTasks 仍含任务（禁校不铺新计划）")
 	}
 	accounts, err = e.sched.ActiveAccounts(e.ctx, schoolID)
 	if err != nil || len(accounts) != 0 {
 		t.Fatalf("停校后 ActiveAccounts = %+v, %v, want empty", accounts, err)
 	}
-	dayTasks, err := e.sched.DayTasks(e.ctx, acctID, day)
-	if err != nil || len(dayTasks) != 0 {
-		t.Fatalf("停校后 DayTasks = %v, %v, want empty", dayTasks, err)
-	}
 	enabled, err := e.sched.AccountEnabledTasks(e.ctx, acctID)
 	if err != nil || len(enabled) != 0 {
 		t.Fatalf("停校后 AccountEnabledTasks = %v, %v, want empty", enabled, err)
 	}
+
+	// 不挡旧：已有 pending 行仍可被手动面看到，也照常被 ClaimDue 认领。
+	dayTasks, err := e.sched.DayTasks(e.ctx, acctID, day)
+	if err != nil || len(dayTasks) != 1 || dayTasks[0] != taskID {
+		t.Fatalf("停校后 DayTasks = %v, %v, want [%s]", dayTasks, err, taskID)
+	}
 	claimed, err = e.sched.ClaimDue(e.ctx, now, 10)
-	if err != nil || len(claimed) != 0 {
-		t.Fatalf("停校后 ClaimDue = %+v, %v, want empty", claimed, err)
+	if err != nil || len(claimed) != 1 || claimed[0].AccountID != acctID {
+		t.Fatalf("停校后 ClaimDue = %+v, %v, want the existing pending row", claimed, err)
 	}
 }
 

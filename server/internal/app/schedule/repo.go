@@ -118,6 +118,10 @@ type Deps struct {
 	// core/schedule 常量对（fallback 窗口与用户自选读面的展示窗），
 	// 行为与既有完全一致。
 	Defaults DefaultSignWindow
+	// Paused 查询全局急停。显式手动面（Input.Explicit）在写库前先判：
+	// 暂停时零写入并回 PausedError（入口 503）。为 nil 时不判。
+	// 日切/自动路径不读它：暂停由发现错误回退处理（见 resolveWindow）。
+	Paused func(ctx context.Context) (bool, error)
 	// Logger 可为 nil：用 slog.Default。窗口发现失败的原因进日志。
 	Logger *slog.Logger
 }

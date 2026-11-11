@@ -355,13 +355,13 @@ func TestMailTestMasterOnly(t *testing.T) {
 	}
 }
 
-// 收件人只取会话邮箱：请求体里的 to 被忽略。
+// 收件人只取会话邮箱：请求体不提供 to（未知字段 400，见 TestMailTestRejectsUnknownFields）。
 func TestMailTestUsesSessionMailbox(t *testing.T) {
 	sender := &fakeSender{}
 	handler, _, audits := newHandlerWith(t, sender, &fakeCooldown{allowed: true})
 
 	c, rec := newContextWithEmail(http.MethodPost, "/api/admin/mail/test",
-		`{"to":"attacker@example.com","current_password":"correct-password"}`,
+		`{"current_password":"correct-password"}`,
 		coreauth.RoleMaster, "owner@example.com")
 	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
 	if rec.Code != http.StatusOK {
@@ -483,5 +483,20 @@ func TestMailTestRequiresReauth(t *testing.T) {
 	}
 	if sender.sends != 1 {
 		t.Fatalf("correct password sends = %d, want 1", sender.sends)
+	}
+}
+
+// 未知字段与设置写面同口径：显式 400，不静默忽略。
+func TestMailTestRejectsUnknownFields(t *testing.T) {
+	sender := &fakeSender{}
+	handler, _, audits := newHandlerWith(t, sender, nil)
+	c, rec := newContext(http.MethodPost, "/api/admin/mail/test",
+		`{"current_password":"correct-password","to":"attacker@example.com"}`, coreauth.RoleMaster)
+	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+	if rec.Code != http.StatusBadRequest || errorCode(t, rec) != "validation_failed" {
+		t.Fatalf("unknown field = %d %s", rec.Code, rec.Body.String())
+	}
+	if sender.sends != 0 || len(audits.entries) != 0 {
+		t.Fatalf("unknown field reached sender/audit: sends=%d audits=%d", sender.sends, len(audits.entries))
 	}
 }

@@ -48,7 +48,6 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // Planner 是计划用例端口（实现为 app/schedule.Service）。
@@ -226,15 +225,7 @@ func (h *Handler) preview(c *gin.Context, day, schoolID, taskID string, refresh 
 		fail(c, err)
 		return
 	}
-	if !open {
-		p, err := h.closedByWeekend(c.Request.Context(), in, task.Enabled)
-		if err != nil {
-			fail(c, err)
-			return
-		}
-		respond.JSON(c.Writer, 200, planResponse(p, task.Enabled))
-		return
-	}
+	in.WeekendClosed = !open
 	var p appschedule.Preview
 	if refresh {
 		p, err = h.planner.Preview(c.Request.Context(), in)
@@ -246,26 +237,6 @@ func (h *Handler) preview(c *gin.Context, day, schoolID, taskID string, refresh 
 		return
 	}
 	respond.JSON(c.Writer, 200, planResponse(p, task.Enabled))
-}
-
-// weekendGateNote 是周末门关闭时的回执文案。
-// 成功但 0 行：旧线无此门，回 400 会破坏既有客户端语义，故用说明字段。
-const weekendGateNote = "weekend gate closed: no plan rows built for this day"
-
-// closedByWeekend 返回周末门关闭时的 0 行回执。
-// 窗口走只读缓存（不发现平台、不写库）；行/直方图/容量清零并带说明。
-func (h *Handler) closedByWeekend(ctx context.Context, in appschedule.Input, enabled bool) (appschedule.Preview, error) {
-	p, err := h.planner.PreviewCached(ctx, in)
-	if err != nil {
-		return appschedule.Preview{}, err
-	}
-	p.Rows = nil
-	p.Histogram = nil
-	p.Demand = 0
-	p.Capacity = 0
-	p.Shortfall = 0
-	p.Note = weekendGateNote
-	return p, nil
 }
 
 // Plan 实现 POST /api/schedule/plan。
@@ -295,22 +266,14 @@ func (h *Handler) Plan(c *gin.Context, _ oapi.SchedulePlanParams) {
 		fail(c, err)
 		return
 	}
-	// 周末门：与日切构建同源（settings 每请求读）。关闭时成功但 0 行，
-	// 不写库、不 400——旧线无此门，回 400 会破坏既有客户端语义。
+	// 周末门：与日切构建同源（settings 每请求读）。关闭时交给用例层：
+	// 停用/参数校验先跑，之后回 0 行 + note，不写库、不 400。
 	open, err := h.weekendOpen(c.Request.Context(), body.Day)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	if !open {
-		p, err := h.closedByWeekend(c.Request.Context(), in, task.Enabled)
-		if err != nil {
-			fail(c, err)
-			return
-		}
-		respond.JSON(c.Writer, 200, planResponse(p, task.Enabled))
-		return
-	}
+	in.WeekendClosed = !open
 	p, err := h.planner.Build(c.Request.Context(), in)
 	if err != nil {
 		fail(c, err)
@@ -335,23 +298,13 @@ func (h *Handler) Override(c *gin.Context, _ oapi.ScheduleOverrideParams) {
 		fail(c, err)
 		return
 	}
-	// 周末门：关闭时不写覆盖、不铺行；回执以请求窗口为准并带说明。
+	// 周末门：关闭时交给用例层；全部既有校验先跑，仅在写阶段跳过。
 	open, err := h.weekendOpen(c.Request.Context(), body.Day)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	if !open {
-		p, err := h.closedByWeekend(c.Request.Context(), in, true)
-		if err != nil {
-			fail(c, err)
-			return
-		}
-		p.Source = contract.WindowOverride
-		p.WindowStart, p.WindowEnd = body.Start, body.End
-		respond.JSON(c.Writer, 200, planResponse(p, true))
-		return
-	}
+	in.WeekendClosed = !open
 	p, err := h.planner.Override(c.Request.Context(), scope, in,
 		body.Start, body.End, body.Reason, user.ID)
 	if err != nil {
@@ -828,6 +781,8 @@ func (h *Handler) inputWith(ov resolvedOverrides, day, schoolID, taskID string) 
 		UsePrefs:      ov.usePrefs,
 		EdgeFront:     ov.front,
 		EdgeBack:      ov.back,
+		// HTTP 手动面：显式发现遇急停上抛 503（日切保持回退）。
+		Explicit: true,
 	}
 }
 

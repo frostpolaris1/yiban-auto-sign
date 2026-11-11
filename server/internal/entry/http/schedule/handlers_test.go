@@ -79,6 +79,9 @@ func (f *fakePlanner) CachedWindow(_ context.Context, in appschedule.Input) (cor
 func (f *fakePlanner) Preview(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
 	f.previewCalls++
 	f.lastInput = in
+	if in.WeekendClosed {
+		return fakeClosedPreview(in), nil
+	}
 	return f.preview, f.previewErr
 }
 
@@ -86,6 +89,9 @@ func (f *fakePlanner) Preview(_ context.Context, in appschedule.Input) (appsched
 func (f *fakePlanner) PreviewCached(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
 	f.previewCachedCalls++
 	f.lastInput = in
+	if in.WeekendClosed {
+		return fakeClosedPreview(in), nil
+	}
 	return f.preview, f.previewErr
 }
 
@@ -99,6 +105,9 @@ func (f *fakePlanner) Report(_ context.Context, in appschedule.Input) (appschedu
 func (f *fakePlanner) Build(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
 	f.builds++
 	f.lastInput = in
+	if in.WeekendClosed {
+		return fakeClosedPreview(in), nil
+	}
 	return f.preview, f.buildErr
 }
 
@@ -107,7 +116,17 @@ func (f *fakePlanner) Override(_ context.Context, _ corescope.Scope, in appsched
 	f.overrides++
 	f.lastInput, f.lastStart, f.lastEnd = in, start, end
 	f.lastReason, f.lastActor = reason, actorID
+	if in.WeekendClosed {
+		return fakeClosedPreview(in), nil
+	}
 	return f.preview, f.overrideErr
+}
+
+// fakeClosedPreview 模拟真实用例层的周末门回执：0 行、来源 weekend_closed。
+func fakeClosedPreview(in appschedule.Input) appschedule.Preview {
+	return appschedule.Preview{
+		Day: in.Day, Source: "weekend_closed", Note: appschedule.WeekendGateNote,
+	}
 }
 
 func (f *fakePlanner) Task(context.Context, corescope.Scope, string) (coreschedule.TaskInfo, error) {
@@ -910,8 +929,14 @@ func TestPlanWeekendGateClosedReturnsZeroRows(t *testing.T) {
 	if body.Note == nil || *body.Note == "" {
 		t.Fatalf("周末门关闭必须带说明回执: %+v", body)
 	}
-	if planner.builds != 0 {
-		t.Fatalf("周末门关闭仍调用了 Build %d 次", planner.builds)
+	if planner.builds != 1 {
+		t.Fatalf("周末门关闭应调用一次 Build（校验链先跑）: %d", planner.builds)
+	}
+	if !planner.lastInput.WeekendClosed {
+		t.Fatal("周末门关闭未透传到用例层")
+	}
+	if body.Source != "weekend_closed" {
+		t.Fatalf("回执来源 = %s, want weekend_closed", body.Source)
 	}
 	if len(ov.weekendCalls) != 1 || ov.weekendCalls[0] != "2026-10-31" {
 		t.Fatalf("周末门解析日 = %v, want [2026-10-31]", ov.weekendCalls)
@@ -970,8 +995,14 @@ func TestOverrideWeekendGateClosedSkipsWrite(t *testing.T) {
 	if len(body.Rows) != 0 || body.Note == nil || *body.Note == "" {
 		t.Fatalf("周末门关闭必须 0 行 + note: %+v", body)
 	}
-	if planner.overrides != 0 {
-		t.Fatalf("周末门关闭仍写了覆盖 %d 次", planner.overrides)
+	if body.Source != "weekend_closed" {
+		t.Fatalf("回执来源 = %s, want weekend_closed（不回显请求窗口）", body.Source)
+	}
+	if planner.overrides != 1 {
+		t.Fatalf("周末门关闭应调用一次 Override（校验链先跑）: %d", planner.overrides)
+	}
+	if !planner.lastInput.WeekendClosed {
+		t.Fatal("周末门关闭未透传到用例层")
 	}
 }
 
@@ -999,5 +1030,12 @@ func TestPreviewWeekendGateClosedReturnsZeroRows(t *testing.T) {
 	}
 	if planner.previewCalls != 0 {
 		t.Fatalf("周末门关闭不得走实时预览: live calls = %d", planner.previewCalls)
+	}
+	if planner.previewCachedCalls != 1 || !planner.lastInput.WeekendClosed {
+		t.Fatalf("周末门关闭应走一次只读预览并透传 WeekendClosed: cached=%d closed=%v",
+			planner.previewCachedCalls, planner.lastInput.WeekendClosed)
+	}
+	if body.Source != "weekend_closed" {
+		t.Fatalf("回执来源 = %s, want weekend_closed", body.Source)
 	}
 }

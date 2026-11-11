@@ -71,6 +71,9 @@ const (
 	// WindowOverride 是 master 或 admin 对某任务某日的人工覆盖。
 	// 优先级最高：覆盖存在时不再采信平台窗口。
 	WindowOverride WindowSource = "override"
+	// WindowWeekendClosed 是宿主自产的回执来源：周末门关闭，不铺行。
+	// 它不是平台/缓存窗口来源；只出现在 0 行回执里。
+	WindowWeekendClosed WindowSource = "weekend_closed"
 )
 
 // Window 是一个签到窗口。
