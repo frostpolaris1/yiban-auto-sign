@@ -48,7 +48,7 @@ const manifestMarker = "-- yiban-backup-manifest"
 // 完整性由两道门钉住：TestManifestTablesCoverEveryBusinessTable（静态）
 // 与 TestManifestTablesCoverLiveSchema（真库 information_schema）。
 var manifestTables = []string{
-	"account_egress", "account_location", "accounts", "admin_schools",
+	"account_egress", "account_location", "accounts", "admin_schools", "anchor_meta",
 	"audit_logs", "credentials", "egresses", "legacy_ids", "notification_deliveries",
 	"notification_prefs", "notifications", "password_resets", "photo_retention",
 	"photos", "school_tasks", "schools", "sessions", "settings", "sign_tasks",

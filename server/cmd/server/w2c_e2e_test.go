@@ -401,7 +401,7 @@ func w2cNewEnvWithAnchor(t *testing.T, anchorPath string) *w2cEnv {
 		t.Fatalf("new audit inspector: %v", err)
 	}
 	if anchorPath != "" {
-		auditInspector.WithAnchor(anchoradapter.NewFile(anchorPath))
+		auditInspector.WithAnchor(anchoradapter.NewFile(anchorPath)).WithAnchorMeta(e.audits)
 	}
 	auditHandler := audithttp.NewHandler(auditReader).WithStatus(auditInspector)
 

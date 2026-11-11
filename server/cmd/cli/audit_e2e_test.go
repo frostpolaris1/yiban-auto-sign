@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,6 +27,8 @@ import (
 
 func TestAuditAnchorE2E(t *testing.T) {
 	dsn := userTestSchema(t)
+	t.Setenv("YIBAN_DATABASE_URL", dsn)
+	t.Setenv("YIBAN_HASH_PEPPER", cliTestPepper)
 	ctx := context.Background()
 	db, err := pg.Open(ctx, pg.Options{DSN: dsn, MaxConns: 2, StatementTimeout: 10 * time.Second})
 	if err != nil {
@@ -43,7 +46,7 @@ func TestAuditAnchorE2E(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit-anchor.log")
 
 	// 空链：拒绝写行，退出码 1，文件不产生锚点行。
-	if out, code := runCLI(t, []string{"audit", "anchor", "--dsn", dsn, "--pepper", cliTestPepper, "--file", path}); code != 1 {
+	if out, code := runCLI(t, []string{"audit", "anchor", "--file", path}); code != 1 {
 		t.Fatalf("empty chain code = %d, out=%s", code, out)
 	}
 	if _, err := os.Stat(path); err == nil {
@@ -61,7 +64,7 @@ func TestAuditAnchorE2E(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append first row: %v", err)
 	}
-	out, code := runCLI(t, []string{"audit", "anchor", "--dsn", dsn, "--pepper", cliTestPepper, "--file", path})
+	out, code := runCLI(t, []string{"audit", "anchor", "--file", path})
 	if code != 0 {
 		t.Fatalf("first anchor code = %d, out=%s", code, out)
 	}
@@ -71,6 +74,20 @@ func TestAuditAnchorE2E(t *testing.T) {
 	}
 	if got.Seq != 1 || got.Count != 1 || len(got.Hash) != 32 {
 		t.Fatalf("anchor = %+v, want seq=1 count=1", got)
+	}
+	seq, err := db.QueryInt64(ctx, "SELECT seq FROM anchor_meta WHERE singleton")
+	if err != nil {
+		t.Fatalf("query anchor_meta seq: %v", err)
+	}
+	if seq != 1 {
+		t.Fatalf("anchor_meta seq = %d, want 1", seq)
+	}
+	hash, err := db.QueryString(ctx, "SELECT encode(head_hash, 'hex') FROM anchor_meta WHERE singleton")
+	if err != nil {
+		t.Fatalf("query anchor_meta hash: %v", err)
+	}
+	if hash != hex.EncodeToString(got.Hash) {
+		t.Fatalf("anchor_meta hash = %q, want %x", hash, got.Hash)
 	}
 
 	// 第二行：第二次追加取新链头，文件保留两行。
@@ -84,7 +101,7 @@ func TestAuditAnchorE2E(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append second row: %v", err)
 	}
-	if out, code := runCLI(t, []string{"audit", "anchor", "--dsn", dsn, "--pepper", cliTestPepper, "--file", path}); code != 0 {
+	if out, code := runCLI(t, []string{"audit", "anchor", "--file", path}); code != 0 {
 		t.Fatalf("second anchor code = %d, out=%s", code, out)
 	}
 	got, err = anchor.NewFile(path).Latest(ctx)
@@ -93,6 +110,13 @@ func TestAuditAnchorE2E(t *testing.T) {
 	}
 	if got.Seq != 2 || got.Count != 2 {
 		t.Fatalf("anchor after second row = %+v, want seq=2 count=2", got)
+	}
+	seq, err = db.QueryInt64(ctx, "SELECT seq FROM anchor_meta WHERE singleton")
+	if err != nil {
+		t.Fatalf("query anchor_meta seq after second row: %v", err)
+	}
+	if seq != 2 {
+		t.Fatalf("anchor_meta seq after second row = %d, want 2", seq)
 	}
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -113,7 +137,7 @@ func TestAuditAnchorE2E(t *testing.T) {
 
 	// 未配置路径：用法错误 2，不连库也不写文件。
 	t.Setenv("YIBAN_AUDIT_ANCHOR_FILE", "")
-	if out, code := runCLI(t, []string{"audit", "anchor", "--dsn", dsn, "--pepper", cliTestPepper}); code != 2 {
+	if out, code := runCLI(t, []string{"audit", "anchor"}); code != 2 {
 		t.Fatalf("missing path code = %d, out=%s", code, out)
 	}
 }

@@ -3319,8 +3319,9 @@ type AuditLogListParams struct {
 	// a full address matches its stored masked label.
 	Actor *string `form:"actor,omitempty" json:"actor,omitempty"`
 
-	// Target Exact target id filter (account or user id). Useful for
-	// aggregating every row that touched one object.
+	// Target Exact target id filter. The value is whatever the action records:
+	// an account id, a user id, a settings/school word or a photo id.
+	// Useful for aggregating every row that touched one object.
 	Target *string `form:"target,omitempty" json:"target,omitempty"`
 
 	// From Inclusive lower bound on the row time (RFC3339).

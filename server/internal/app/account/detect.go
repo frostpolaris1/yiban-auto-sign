@@ -153,9 +153,12 @@ func platformCallFailure(err error, message string) error {
 	return errs.New(errs.CodeUpstream, message)
 }
 
-// validPlatformUniversityID 与审计 detail 的 university_id 形状同口径：
-// 1..128 位 ASCII 字母数字，首字符必须是字母或数字，其后可带 _ 与 -。
-// 非 ASCII、空白或标点都视为平台异常，由调用方映射为中性 502。
+// validPlatformUniversityID 与审计 detail 的 university_id 形状刻意不同：
+// 审计侧更严，11 位 1 开头的纯数字串按手机号形状拒绝（见 core/audit）。
+// 若平台真发 11 位 1 开头，建校事务回 400 属可接受防御；
+// fixtures 是 32 位十六进制，命中该形状的概率极低。
+// 本函数只校验 1..128 位 ASCII 字母数字，首字符必须是字母或数字，
+// 其后可带 _ 与 -；非 ASCII、空白或标点都视为平台异常，由调用方映射为中性 502。
 func validPlatformUniversityID(id string) bool {
 	if len(id) == 0 || len(id) > 128 {
 		return false

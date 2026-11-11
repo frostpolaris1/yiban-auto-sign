@@ -353,9 +353,9 @@ func (s *Service) Open(ctx context.Context, scope corescope.Scope, id string) (c
 	return rec, body, nil
 }
 
-// Delete 软删一张图片。重复删除返回同一行，不报错。
+// Delete 软删一张图片。重复删除返回同一行，不报错，也不重复审计。
 // 只接受 owner 作用域：/api/me/photos/{id} 只能删本人的行。
-// 软删与 photo.delete 审计同事务；审计失败整体回滚。
+// 真实软删与 photo.delete 审计同事务；审计失败整体回滚。
 // detail 只记照片 id 形状（UUID），无属主、摘要或自由文本。
 func (s *Service) Delete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (corephoto.Record, error) {
 	if err := requireUser(scope); err != nil {
@@ -363,9 +363,14 @@ func (s *Service) Delete(ctx context.Context, scope corescope.Scope, id string, 
 	}
 	var deleted corephoto.Record
 	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
-		rec, err := s.deps.Store.SoftDelete(ctx, scope, id, s.deps.Clock.Now())
+		rec, changed, err := s.deps.Store.SoftDelete(ctx, scope, id, s.deps.Clock.Now())
 		if err != nil {
 			return err
+		}
+		deleted = rec
+		// 幂等重放不重复审计：只有真实软删转移才写 photo.delete。
+		if !changed {
+			return nil
 		}
 		if _, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
 			TS:          s.deps.Clock.Now().UTC(),
@@ -379,7 +384,6 @@ func (s *Service) Delete(ctx context.Context, scope corescope.Scope, id string, 
 		}); err != nil {
 			return err
 		}
-		deleted = rec
 		return nil
 	})
 	if err != nil {

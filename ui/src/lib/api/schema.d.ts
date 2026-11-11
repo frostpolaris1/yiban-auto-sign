@@ -6889,8 +6889,9 @@ export interface operations {
                  */
                 actor?: string;
                 /**
-                 * @description Exact target id filter (account or user id). Useful for
-                 *     aggregating every row that touched one object.
+                 * @description Exact target id filter. The value is whatever the action records:
+                 *     an account id, a user id, a settings/school word or a photo id.
+                 *     Useful for aggregating every row that touched one object.
                  */
                 target?: string;
                 /** @description Inclusive lower bound on the row time (RFC3339). */

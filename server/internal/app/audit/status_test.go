@@ -7,6 +7,7 @@ package audit_test
 // 空链不是通过（Empty=true, ok=false）；断链是结论，不是错误。
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -41,6 +42,23 @@ type fakeAnchorReader struct {
 func (f *fakeAnchorReader) Latest(context.Context) (*coreaudit.Anchor, error) {
 	f.calls++
 	return f.anchor, f.err
+}
+
+// fakeAnchorMetaReader 返回固定库内高水位或错误。
+type fakeAnchorMetaReader struct {
+	meta  *coreaudit.AnchorMeta
+	err   error
+	calls int
+}
+
+func (f *fakeAnchorMetaReader) AnchorMeta(context.Context) (*coreaudit.AnchorMeta, error) {
+	f.calls++
+	return f.meta, f.err
+}
+
+// metaOf 用锚点造一条一致的库内高水位。
+func metaOf(anchor *coreaudit.Anchor) *coreaudit.AnchorMeta {
+	return &coreaudit.AnchorMeta{Seq: anchor.Seq, HeadHash: anchor.Hash}
 }
 
 var inspectAt = time.Date(2026, 11, 8, 9, 15, 30, 0, time.UTC)
@@ -145,7 +163,8 @@ func TestInspectorAnchorDisabled(t *testing.T) {
 func TestInspectorAnchorMissingKeepsChainVerdict(t *testing.T) {
 	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
 	reader := &fakeAnchorReader{}
-	status, err := newInspector(t, chain).WithAnchor(reader).Status(context.Background())
+	status, err := newInspector(t, chain).WithAnchor(reader).
+		WithAnchorMeta(&fakeAnchorMetaReader{}).Status(context.Background())
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -163,7 +182,8 @@ func TestInspectorAnchorOK(t *testing.T) {
 	chain := &fakeChain{status: coreaudit.Status{
 		CheckedRows: 3, LastID: 3, Anchor: coreaudit.AnchorResult{Checked: true, OK: true},
 	}}
-	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).Status(context.Background())
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).
+		WithAnchorMeta(&fakeAnchorMetaReader{meta: metaOf(anchor)}).Status(context.Background())
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -185,7 +205,8 @@ func TestInspectorAnchorMismatchTurnsRed(t *testing.T) {
 		CheckedRows: 3, LastID: 3,
 		Anchor: coreaudit.AnchorResult{Checked: true, OK: false, Reason: "prefix removed"},
 	}}
-	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).Status(context.Background())
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).
+		WithAnchorMeta(&fakeAnchorMetaReader{meta: metaOf(anchor)}).Status(context.Background())
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -198,23 +219,98 @@ func TestInspectorAnchorMismatchTurnsRed(t *testing.T) {
 }
 
 func TestInspectorAnchorReadErrorTurnsRed(t *testing.T) {
-	for name, reader := range map[string]*fakeAnchorReader{
-		"io error": {err: errors.New("permission denied")},
-		"empty":    {err: coreaudit.ErrAnchorEmpty},
-	} {
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
+	status, err := newInspector(t, chain).
+		WithAnchor(&fakeAnchorReader{err: errors.New("permission denied")}).
+		WithAnchorMeta(&fakeAnchorMetaReader{}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OK || status.AnchorStatus != appaudit.AnchorStatusError {
+		t.Fatalf("status = %+v, want red with anchor error", status)
+	}
+	if chain.anchor != nil {
+		t.Fatalf("chain received anchor %+v, want nil", chain.anchor)
+	}
+}
+
+// 删锚点末行/整文件：库内高水位还在，必须判 anchor_truncated。
+func TestInspectorAnchorTruncated(t *testing.T) {
+	hash := make([]byte, 32)
+	meta := &coreaudit.AnchorMeta{Seq: 3, HeadHash: hash}
+	cases := map[string]*fakeAnchorReader{
+		"file missing":   {},
+		"file empty":     {err: coreaudit.ErrAnchorEmpty},
+		"seq below meta": {anchor: &coreaudit.Anchor{Seq: 2, Count: 2, Hash: make([]byte, 32)}},
+		"hash changed":   {anchor: &coreaudit.Anchor{Seq: 3, Count: 3, Hash: bytes.Repeat([]byte{0x11}, 32)}},
+	}
+	for name, reader := range cases {
 		t.Run(name, func(t *testing.T) {
 			chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
-			status, err := newInspector(t, chain).WithAnchor(reader).Status(context.Background())
+			status, err := newInspector(t, chain).WithAnchor(reader).
+				WithAnchorMeta(&fakeAnchorMetaReader{meta: meta}).Status(context.Background())
 			if err != nil {
 				t.Fatalf("Status: %v", err)
 			}
-			if status.OK || status.AnchorStatus != appaudit.AnchorStatusError {
-				t.Fatalf("status = %+v, want red with anchor error", status)
+			if status.OK || status.AnchorStatus != appaudit.AnchorStatusMismatch {
+				t.Fatalf("status = %+v, want red with anchor mismatch", status)
 			}
-			if chain.anchor != nil {
-				t.Fatalf("chain received anchor %+v, want nil", chain.anchor)
+			if status.AnchorReason != "anchor_truncated" {
+				t.Fatalf("anchor reason = %q, want anchor_truncated", status.AnchorReason)
 			}
 		})
+	}
+}
+
+// 文件有锚点但库内没有高水位：无法检出截断，必须报错而不是放行。
+func TestInspectorAnchorMetaMissing(t *testing.T) {
+	anchor := &coreaudit.Anchor{Seq: 3, Count: 3, Hash: make([]byte, 32)}
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).
+		WithAnchorMeta(&fakeAnchorMetaReader{}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OK || status.AnchorStatus != appaudit.AnchorStatusError {
+		t.Fatalf("status = %+v, want red with anchor error", status)
+	}
+	if status.AnchorReason != "anchor_meta_missing" {
+		t.Fatalf("anchor reason = %q, want anchor_meta_missing", status.AnchorReason)
+	}
+}
+
+// 文件比库内高水位更强：上一次 meta 写失败或有人追加未登记行，判红。
+func TestInspectorAnchorUnrecorded(t *testing.T) {
+	anchor := &coreaudit.Anchor{Seq: 4, Count: 4, Hash: make([]byte, 32)}
+	meta := &coreaudit.AnchorMeta{Seq: 3, HeadHash: make([]byte, 32)}
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 4, LastID: 4}}
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).
+		WithAnchorMeta(&fakeAnchorMetaReader{meta: meta}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OK || status.AnchorStatus != appaudit.AnchorStatusMismatch {
+		t.Fatalf("status = %+v, want red with anchor mismatch", status)
+	}
+	if status.AnchorReason != "anchor_unrecorded" {
+		t.Fatalf("anchor reason = %q, want anchor_unrecorded", status.AnchorReason)
+	}
+}
+
+// 库内高水位读失败：不得当成"没有锚点"。
+func TestInspectorAnchorMetaReadError(t *testing.T) {
+	anchor := &coreaudit.Anchor{Seq: 3, Count: 3, Hash: make([]byte, 32)}
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).
+		WithAnchorMeta(&fakeAnchorMetaReader{err: errors.New("db down")}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OK || status.AnchorStatus != appaudit.AnchorStatusError {
+		t.Fatalf("status = %+v, want red with anchor error", status)
+	}
+	if status.AnchorReason != "anchor_meta_read_failed" {
+		t.Fatalf("anchor reason = %q, want anchor_meta_read_failed", status.AnchorReason)
 	}
 }
 
@@ -222,7 +318,8 @@ func TestInspectorAnchorNotCheckedOnBrokenChain(t *testing.T) {
 	hash := make([]byte, 32)
 	anchor := &coreaudit.Anchor{Seq: 3, Count: 3, Hash: hash}
 	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 2, BrokenAt: 3}}
-	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).Status(context.Background())
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).
+		WithAnchorMeta(&fakeAnchorMetaReader{meta: metaOf(anchor)}).Status(context.Background())
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -239,7 +336,8 @@ func TestInspectorAnchorMismatchOnEmptyChain(t *testing.T) {
 		Empty:  true,
 		Anchor: coreaudit.AnchorResult{Checked: true, OK: false, Reason: "chain empty"},
 	}}
-	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).Status(context.Background())
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).
+		WithAnchorMeta(&fakeAnchorMetaReader{meta: metaOf(anchor)}).Status(context.Background())
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}

@@ -489,28 +489,70 @@ sudo systemctl restart yiban.service
 
 `GET /api/admin/audit-status` 只复算链内自洽；DB owner 禁用触发器后删首/尾行，
 链内仍然自洽。库外锚点把链头（seq/count/hash）写到数据库之外，巡检时比对：
-删前缀、截尾、整表清空与链尾重签都会 `ok=false`。锚点只覆盖到写入时刻，
-其后的新增行被删需要离机副本（备份/外发）才能发现。
-锚点文件本身必须放在数据库权限之外（0600，只有服务/运维用户可写）：
-删掉锚点文件会让巡检退回链内校验（现行为），所以文件权限与离机副本同样是防线。
+删前缀、截尾、整表清空与链尾重签都会 `ok=false`。库内 `anchor_meta` 单行高水位
+（seq＋head_hash）再兜一层：锚点文件末行被删或整文件消失时，巡检报
+`anchor_truncated`，不会因为剩余行仍自洽而放行。
+锚点只覆盖到写入时刻，其后的新增行被删需要离机副本（备份/外发）才能发现。
+锚点文件本身必须放在数据库权限之外（0600，只有服务/运维用户可写）；
+同一 uid 仍可同时改写文件和库内高水位，离机副本是最后一道防线。
 备份时把锚点文件一并归档；恢复旧备份后按下面的第 3 步重新播种。
 
 1. 在运行配置里设 `YIBAN_AUDIT_ANCHOR_FILE`（空值＝不启用）：
    - 裸机建议 `/var/lib/yiban/audit-anchor.log`（服务用户可写；服务进程只读）。
    - 容器建议 `/data/photos/audit-anchor.log`（落在 photos 卷，随卷保留；
      blob 回收只认两层摘要目录，不会碰根下这个文件）。
-2. 每日追加一次链头（cron 示例；时间放在备份之后、业务低峰）：
+2. 裸机：用 systemd timer 每日追加一次链头。`/etc/yiban/server.env` 是
+   0600 root:root，`yiban` 用户直跑 cron 读不到它；systemd 以 root 读
+   `EnvironmentFile` 后再降权到 `yiban`，这是唯一能同时满足权限与身份的写法。
+   把下面两个单元装进 `/etc/systemd/system/`：
+   ```ini
+   # yiban-audit-anchor.service
+   [Unit]
+   Description=Yiban audit anchor
+   After=network-online.target postgresql.service
+   Wants=network-online.target
+
+   [Service]
+   Type=oneshot
+   User=yiban
+   Group=yiban
+   EnvironmentFile=/etc/yiban/server.env
+   ExecStart=/usr/local/bin/yiban-cli audit anchor
+   ProtectSystem=strict
+   ProtectHome=true
+   ReadWritePaths=/var/lib/yiban
+   NoNewPrivileges=true
+   PrivateTmp=true
+   UMask=0077
+   ```
+   ```ini
+   # yiban-audit-anchor.timer
+   [Unit]
+   Description=Daily Yiban audit anchor
+
+   [Timer]
+   OnCalendar=*-*-* 03:10:00
+   Persistent=true
+   RandomizedDelaySec=300
+
+   [Install]
+   WantedBy=timers.target
+   ```
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now yiban-audit-anchor.timer
+   sudo systemctl list-timers yiban-audit-anchor.timer
+   journalctl -u yiban-audit-anchor.service   # 每次运行一行 seq/count/hash
+   ```
+   容器：在宿主用 cron 进容器执行（compose 已把运行配置注入 app 容器）：
    ```cron
-   # 裸机：yiban 用户执行
-   10 3 * * * yiban /usr/local/bin/yiban-cli audit anchor >> /var/lib/yiban/audit-anchor-cron.log 2>&1
-   # 容器：在宿主执行（app 容器内已有 yiban-cli）
    10 3 * * * root cd /opt/yiban && docker compose --env-file deploy/container/compose.env -f deploy/container/docker-compose.yml exec -T app /usr/local/bin/yiban-cli audit anchor >> /var/log/yiban/audit-anchor-cron.log 2>&1
    ```
    命令输出是一行 `audit anchor: seq=… count=… hash=…`；锚点文件本身由命令追加，
-   不要把 stdout 重定向到同一个锚点文件（cron 的 `>>` 目标是日志，不是锚点文件）。
+   不要把 stdout 重定向到同一个锚点文件（日志的 `>>` 目标不是锚点文件）。
 3. 恢复旧备份或手工整表清理后，锚点会指向已不存在的链头并持续判红。
-   这是预期：确认是合法回滚后，停服、移走旧锚点文件、重新跑一次
-   `yiban-cli audit anchor` 播种新基线，再起服务。
+   这是预期：确认是合法回滚后，停服、移走旧锚点文件（保留取证），
+   重新跑一次 `yiban-cli audit anchor` 播种新基线并覆盖 `anchor_meta`，再起服务。
 
 容器形态另有两个编排层变量，不进 Go 名册，也不在镜像里：`POSTGRES_PASSWORD`
 （db 初始口令，同时是派生 `YIBAN_DATABASE_URL` 的唯一来源）与

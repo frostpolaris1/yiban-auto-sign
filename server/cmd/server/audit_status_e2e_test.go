@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/hex"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -166,8 +167,79 @@ func TestAuditStatusE2E(t *testing.T) {
 	}
 }
 
-// 库外锚点：删前缀、截尾、整表清空都必须把巡检翻红。
-// 前缀删除后剩余链仍自洽（首行 prev_hash 不比对），只有锚点行数能发现。
+// 锚点文件末行被删/整文件被删：库内高水位还在，巡检必须报 anchor_truncated。
+func TestAuditStatusAnchorTruncatedE2E(t *testing.T) {
+	for name, remove := range map[string]func(string) error{
+		"last line removed": func(path string) error {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			cut := strings.LastIndexByte(strings.TrimSuffix(string(data), "\n"), '\n')
+			if cut < 0 {
+				return os.WriteFile(path, nil, 0o600)
+			}
+			return os.WriteFile(path, data[:cut+1], 0o600)
+		},
+		"file removed": os.Remove,
+	} {
+		t.Run(name, func(t *testing.T) {
+			anchorPath := filepath.Join(t.TempDir(), "audit-anchor.log")
+			e := w2cNewEnvWithAnchor(t, anchorPath)
+			master := e.user("anchor-truncated-"+strings.ReplaceAll(name, " ", "-")+"@example.com", coreauth.RoleMaster)
+			session := e.login(master)
+			if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+				for _, action := range []coreaudit.Action{
+					coreaudit.ActionUserCreate,
+					coreaudit.ActionSchoolCreate,
+					coreaudit.ActionAdminGrant,
+				} {
+					if _, err := e.audits.Append(ctx, appaudit.Entry{
+						TS:         time.Date(2026, 11, 8, 8, 0, 0, 0, time.UTC),
+						ActorLabel: "anchor-master",
+						Action:     action,
+					}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatalf("append audit rows: %v", err)
+			}
+			lastID := e.scalarInt("SELECT id FROM audit_logs ORDER BY id DESC LIMIT 1")
+			hashHex := e.scalarString("SELECT encode(hash, 'hex') FROM audit_logs WHERE id = $1", lastID)
+			hash, err := hex.DecodeString(hashHex)
+			if err != nil || len(hash) != 32 {
+				t.Fatalf("decode head hash: %v", err)
+			}
+			file := anchoradapter.NewFile(anchorPath)
+			if err := file.Append(e.ctx, coreaudit.Anchor{
+				Seq: lastID, Count: 3, Hash: hash,
+			}, time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)); err != nil {
+				t.Fatalf("append anchor: %v", err)
+			}
+			if err := e.audits.RecordAnchorMeta(e.ctx, coreaudit.AnchorMeta{
+				Seq: lastID, HeadHash: hash,
+			}); err != nil {
+				t.Fatalf("record anchor meta: %v", err)
+			}
+			before := e.auditStatus(session)
+			if !before.OK || before.AnchorStatus != "ok" {
+				t.Fatalf("before truncation = %+v, want ok", before)
+			}
+			if err := remove(anchorPath); err != nil {
+				t.Fatalf("truncate anchor: %v", err)
+			}
+			after := e.auditStatus(session)
+			if after.OK || after.AnchorStatus != "mismatch" {
+				t.Fatalf("after truncation = %+v, want red with anchor mismatch", after)
+			}
+			if after.AnchorReason != "anchor_truncated" {
+				t.Fatalf("anchor reason = %q, want anchor_truncated", after.AnchorReason)
+			}
+		})
+	}
+}
 func TestAuditStatusAnchorE2E(t *testing.T) {
 	appendRows := func(t *testing.T, e *w2cEnv) {
 		t.Helper()
@@ -202,6 +274,11 @@ func TestAuditStatusAnchorE2E(t *testing.T) {
 			Seq: lastID, Count: 3, Hash: hash,
 		}, time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("append anchor: %v", err)
+		}
+		if err := e.audits.RecordAnchorMeta(e.ctx, coreaudit.AnchorMeta{
+			Seq: lastID, HeadHash: hash,
+		}); err != nil {
+			t.Fatalf("record anchor meta: %v", err)
 		}
 	}
 	tamper := func(t *testing.T, e *w2cEnv, statement string) {

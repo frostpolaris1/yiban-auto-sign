@@ -248,7 +248,7 @@ func appendAuditAt(t *testing.T, e *testEnv, ts time.Time, action coreaudit.Acti
 func TestAuditLogListE2E(t *testing.T) {
 	e := newEnv(t)
 	// 列表的排序与 actor 过滤必须有索引：缺索引时每页全表排序。
-	for _, index := range []string{"idx_audit_ts_id", "idx_audit_actor_label_ts"} {
+	for _, index := range []string{"idx_audit_ts_id", "idx_audit_actor_label_ts", "idx_audit_target_id_ts"} {
 		if n := e.scalarInt(
 			"SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1", index); n != 1 {
 			t.Fatalf("index %s missing (count=%d)", index, n)

@@ -175,6 +175,43 @@ func (r *AuditRepo) Head(ctx context.Context) (coreaudit.Anchor, bool, error) {
 	return coreaudit.Anchor{Seq: seq, Count: count, Hash: hash}, true, nil
 }
 
+// AnchorMeta 读取库内锚点高水位；无行返回 (nil, nil)。
+// 高水位只用于检出锚点文件被截断/改写，不参与链内复算。
+func (r *AuditRepo) AnchorMeta(ctx context.Context) (*coreaudit.AnchorMeta, error) {
+	var seq int64
+	var hash []byte
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT seq, head_hash FROM anchor_meta WHERE singleton`).Scan(&seq, &hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if len(hash) != 32 {
+		return nil, fmt.Errorf("pg: anchor meta hash has the wrong length")
+	}
+	return &coreaudit.AnchorMeta{Seq: seq, HeadHash: hash}, nil
+}
+
+// RecordAnchorMeta 覆盖写单行高水位。
+// 调用方负责保证 seq/head_hash 与锚点文件的最强行一致：
+// 本方法只落库，不读锚点文件。
+func (r *AuditRepo) RecordAnchorMeta(ctx context.Context, meta coreaudit.AnchorMeta) error {
+	if meta.Seq < 1 || len(meta.HeadHash) != 32 {
+		return validationError("invalid anchor meta")
+	}
+	_, err := r.db.q(ctx).Exec(ctx, `
+		INSERT INTO anchor_meta (singleton, seq, head_hash, updated_at)
+		VALUES (true, $1, $2, now())
+		ON CONFLICT (singleton) DO UPDATE
+		SET seq = EXCLUDED.seq,
+		    head_hash = EXCLUDED.head_hash,
+		    updated_at = EXCLUDED.updated_at`,
+		meta.Seq, meta.HeadHash)
+	return mapError(err)
+}
+
 // scanChainRows 把链行查询结果扫成 core 的 Row 切片。
 func scanChainRows(rows pgx.Rows) ([]coreaudit.Row, error) {
 	entries := make([]coreaudit.Row, 0, 64)

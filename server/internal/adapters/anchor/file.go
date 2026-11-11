@@ -18,7 +18,8 @@
 //
 // # 口径
 // 文件不存在返回 (nil, nil)：未配置锚点不是错误，调用方按现行为处理。
-// 文件存在但为空返回 ErrEmptyFile：空文件可能是截断，不得静默当成"从未写锚点"。
+// 文件存在但为空返回 core/audit.ErrAnchorEmpty（ErrEmptyFile 是它的别名）：
+// 空文件可能是截断，不得静默当成"从未写锚点"。
 // 任一行不可解析即返回错误：损坏的锚点文件不能继续追加，也不能被当成通过。
 // 本包**不**持有 HMAC 密钥、**不**校验审计链、**不**判断锚点是否与链一致。
 package anchor
@@ -42,7 +43,9 @@ import (
 const lineVersion = "v1"
 
 // ErrEmptyFile 表示锚点文件存在但没有任何非空行。
-var ErrEmptyFile = errors.New("anchor: file is empty")
+// 与 core/audit.ErrAnchorEmpty 是同一个值：app 层只依赖 core 的哨兵，
+// 不 import adapters；两个名字保留是为了调用点可读。
+var ErrEmptyFile = coreaudit.ErrAnchorEmpty
 
 // File 是一个锚点文件路径。
 type File struct {
@@ -62,6 +65,34 @@ func (f *File) Path() string { return f.path }
 // 任一行不可解析返回错误（含行号）。并列 seq 取靠后的行：
 // 合法重锚会追加同 seq 的新行，最新一行描述库内现状。
 func (f *File) Latest(ctx context.Context) (*coreaudit.Anchor, error) {
+	anchors, err := f.readAnchors(ctx)
+	if err != nil || anchors == nil {
+		return nil, err
+	}
+	best := anchors[0]
+	for _, anchor := range anchors[1:] {
+		if anchor.Seq >= best.Seq {
+			best = anchor
+		}
+	}
+	return best, nil
+}
+
+// Last 读取锚点文件的最后一条非空行（不按 seq 选最大）。
+//
+// 文件不存在返回 (nil, nil)；文件存在但为空返回 ErrEmptyFile。
+// CLI 追加后用它确认"刚写的那一行"确实落在文件末尾。
+func (f *File) Last(ctx context.Context) (*coreaudit.Anchor, error) {
+	anchors, err := f.readAnchors(ctx)
+	if err != nil || anchors == nil {
+		return nil, err
+	}
+	return anchors[len(anchors)-1], nil
+}
+
+// readAnchors 按文件顺序解析全部非空行。
+// 文件不存在返回 (nil, nil)；存在但为空返回 (nil, ErrEmptyFile)。
+func (f *File) readAnchors(ctx context.Context) ([]*coreaudit.Anchor, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -75,7 +106,7 @@ func (f *File) Latest(ctx context.Context) (*coreaudit.Anchor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("anchor: read %s: %w", f.path, err)
 	}
-	var best *coreaudit.Anchor
+	var anchors []*coreaudit.Anchor
 	for i, raw := range strings.Split(string(data), "\n") {
 		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
 		if line == "" {
@@ -85,14 +116,12 @@ func (f *File) Latest(ctx context.Context) (*coreaudit.Anchor, error) {
 		if err != nil {
 			return nil, fmt.Errorf("anchor: line %d: %w", i+1, err)
 		}
-		if best == nil || parsed.Seq >= best.Seq {
-			best = parsed
-		}
+		anchors = append(anchors, parsed)
 	}
-	if best == nil {
+	if len(anchors) == 0 {
 		return nil, ErrEmptyFile
 	}
-	return best, nil
+	return anchors, nil
 }
 
 // Append 追加一行锚点并 fsync。文件不存在时创建，权限 0600。
@@ -128,7 +157,12 @@ func (f *File) Append(ctx context.Context, a coreaudit.Anchor, ts time.Time) err
 	line := fmt.Sprintf("%s %s %d %d %s\n",
 		lineVersion, ts.UTC().Format(time.RFC3339Nano), a.Seq, a.Count,
 		hex.EncodeToString(a.Hash))
-	if _, err := file.WriteString(line); err != nil {
+	// 末行缺换行时先补一个：否则新行会拼在旧行尾部，两行一起不可解析。
+	prefix := ""
+	if data, err := os.ReadFile(f.path); err == nil && len(data) > 0 && data[len(data)-1] != '\n' {
+		prefix = "\n"
+	}
+	if _, err := file.WriteString(prefix + line); err != nil {
 		return fmt.Errorf("anchor: write %s: %w", f.path, err)
 	}
 	if err := file.Sync(); err != nil {

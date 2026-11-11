@@ -61,6 +61,11 @@ function AuditStatusDetail({ report }: { report: AuditStatusReport }) {
           {report.anchor_count === undefined ? '' : ` · ${report.anchor_count} 行`}
         </p>
       ) : null}
+      {report.anchor_status === 'missing' ? (
+        <Alert tone="warning" title="锚点未启用">
+          巡检仅链内自洽。
+        </Alert>
+      ) : null}
       {broken !== null ? (
         <Alert tone="danger" title="审计异常">
           {broken} 请保留现场并排查；本页不展示审计正文。

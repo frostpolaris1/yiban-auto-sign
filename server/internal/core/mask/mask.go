@@ -68,10 +68,11 @@ var (
 	// emailInText 覆盖常见地址：本地部与域名含 Unicode 字母、数字与组合记号。
 	// 域名可以没有点（a@b），但首尾必须是字母、数字或组合记号：
 	// 尾点与纯标点域名不是地址形状。
+	// 判定集对齐旧线邮箱口径：无点域、数字域、下划线截断（a@b_c 检出 a@b）、
+	// 点号本地部（1.2@build）都检出；Punycode TLD 由域名连字符覆盖。
 	// 只认 ASCII 会让非 ASCII 邮箱躲过审计 PII 守卫（N5）。
 	// \p{M} 收组合记号：分解形式的带音标字符由字母与记号组成。
-	// 已登记不覆盖：Punycode TLD（a@xn--fiqs8s）、
-	// 符号或 emoji 本地部（😀@example.com）。
+	// 已登记不覆盖：符号或 emoji 本地部（😀@example.com）。
 	emailInText = regexp.MustCompile(`[\p{L}\p{N}\p{M}._%+\-]+@[\p{L}\p{N}\p{M}](?:[\p{L}\p{N}\p{M}.\-]*[\p{L}\p{N}\p{M}])?`)
 )
 
@@ -247,7 +248,7 @@ func segmentsFitPhone(segs []segment) bool {
 // TextHasEmail 报告文本里是否还有未掩码的邮箱形态。
 // 已掩码（含 ***）的邮箱不算。
 // 覆盖非 ASCII 字母、数字与组合记号；符号更多的本地部不在此口径内。
-// 无点域（a@b）按地址形状检测；Punycode TLD 也不在；清单见 emailInText 注释。
+// 无点域（a@b）按地址形状检测；Punycode TLD 由域名连字符覆盖；清单见 emailInText 注释。
 // 检测口径宁缺勿冤，但不得对系统接受的字符类整体失明（N5）。
 func TextHasEmail(s string) bool {
 	for _, m := range emailInText.FindAllString(s, -1) {

@@ -191,17 +191,34 @@ func (r *PhotoRepo) List(ctx context.Context, scope corescope.Scope, cursor stri
 	return items, next, nil
 }
 
-// SoftDelete 软删一张图片。已软删时返回原行，不报错。
-func (r *PhotoRepo) SoftDelete(ctx context.Context, scope corescope.Scope, id string, now time.Time) (corephoto.Record, error) {
+// SoftDelete 软删一张图片。已软删时返回原行与 changed=false，不报错。
+// changed 只在本次调用真正写入 deleted_at 时为 true：幂等重放不重复审计。
+func (r *PhotoRepo) SoftDelete(ctx context.Context, scope corescope.Scope, id string, now time.Time) (corephoto.Record, bool, error) {
 	if scope.Kind() != corescope.KindUser {
-		return corephoto.Record{}, errs.ErrNotFound
+		return corephoto.Record{}, false, errs.ErrNotFound
 	}
 	row := r.db.q(ctx).QueryRow(ctx,
-		`UPDATE photos SET deleted_at = COALESCE(deleted_at, $3)
-		 WHERE id = $1::uuid AND owner_user_id = $2::uuid
+		`UPDATE photos SET deleted_at = $3
+		 WHERE id = $1::uuid AND owner_user_id = $2::uuid AND deleted_at IS NULL
 		 RETURNING `+photoColumns,
 		id, scope.UserID(), now)
-	return scanPhoto(row)
+	rec, err := scanPhoto(row)
+	if err == nil {
+		return rec, true, nil
+	}
+	if !errors.Is(err, errs.ErrNotFound) {
+		return corephoto.Record{}, false, err
+	}
+	// 已软删：读回原行，changed=false；不存在仍按 404。
+	row = r.db.q(ctx).QueryRow(ctx,
+		`SELECT `+photoColumns+` FROM photos
+		 WHERE id = $1::uuid AND owner_user_id = $2::uuid`,
+		id, scope.UserID())
+	rec, err = scanPhoto(row)
+	if err != nil {
+		return corephoto.Record{}, false, err
+	}
+	return rec, false, nil
 }
 
 // Retention 返回用户保留期；没有设置时返回 0，由用例补缺省。

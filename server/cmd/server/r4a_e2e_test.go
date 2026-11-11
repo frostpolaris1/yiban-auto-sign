@@ -112,10 +112,10 @@ func TestR4APhotoRetentionSweepsRowsAndBlobs(t *testing.T) {
 	// 软删 31 天前：删；软删 1 天前：留。
 	softOld := e.r4aPhotoRow(t, userA.ID, 4, softOldBlob, now.Add(-90*24*time.Hour))
 	softNew := e.r4aPhotoRow(t, userA.ID, 5, softNewBlob, now.Add(-90*24*time.Hour))
-	if _, err := e.photos.SoftDelete(e.ctx, corescope.User(userA.ID), softOld.ID, now.Add(-31*24*time.Hour)); err != nil {
+	if _, _, err := e.photos.SoftDelete(e.ctx, corescope.User(userA.ID), softOld.ID, now.Add(-31*24*time.Hour)); err != nil {
 		t.Fatalf("soft delete old: %v", err)
 	}
-	if _, err := e.photos.SoftDelete(e.ctx, corescope.User(userA.ID), softNew.ID, now.Add(-24*time.Hour)); err != nil {
+	if _, _, err := e.photos.SoftDelete(e.ctx, corescope.User(userA.ID), softNew.ID, now.Add(-24*time.Hour)); err != nil {
 		t.Fatalf("soft delete new: %v", err)
 	}
 

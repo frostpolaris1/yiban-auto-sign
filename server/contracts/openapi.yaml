@@ -2653,8 +2653,9 @@ paths:
           in: query
           required: false
           description: |
-            Exact target id filter (account or user id). Useful for
-            aggregating every row that touched one object.
+            Exact target id filter. The value is whatever the action records:
+            an account id, a user id, a settings/school word or a photo id.
+            Useful for aggregating every row that touched one object.
           schema: { type: string, maxLength: 128 }
         - name: from
           in: query

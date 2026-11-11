@@ -77,6 +77,7 @@
 #                         行数 manifest）——需要口令文件或 YIBAN_BACKUP_PASSPHRASE
 #     db-schema.txt       迁移前库名、goose 版本与 public 基表数（恢复后对账基线）
 #     env.backup          /etc/yiban/server.env 快照（0600；内含密钥与 DSN 原文）
+#     audit-anchor.log    库外审计锚点快照（YIBAN_AUDIT_ANCHOR_FILE；可选）
 #     photos.tar          照片目录快照（不跟随内部软链；照片不进数据库备份）
 #     bin/                当前已装的 server/cli（含仍在的旧 .bak 归档）
 #     SHA256SUMS          以上文件的 sha256（0600，写入后立即 -c 校验）
@@ -1097,6 +1098,17 @@ do_backup() {
         files+=("env.backup")
     else
         warn "cannot read $ENV_FILE; env snapshot SKIPPED"
+    fi
+
+    # 审计锚点文件：与 env 同批归档。恢复旧备份时锚点必须与库同批次，
+    # 否则锚点会指向已不存在的链头（合法回滚也会持续判红）。
+    anchor_file="${YIBAN_AUDIT_ANCHOR_FILE:-}"
+    if [ -n "$anchor_file" ] && [ -f "$anchor_file" ]; then
+        ( umask 077; install -m 0600 "$anchor_file" "$BACKUP_SET/audit-anchor.log" ) || return 1
+        files+=("audit-anchor.log")
+        note "backup: audit-anchor.log ($(wc -c < "$BACKUP_SET/audit-anchor.log" | tr -d ' ') bytes)"
+    elif [ -n "$anchor_file" ]; then
+        warn "audit anchor file does not exist: $anchor_file; anchor snapshot SKIPPED"
     fi
 
     # pg_dump -Fc：可 pg_restore 直接恢复到新库；umask 077 让转储从创建

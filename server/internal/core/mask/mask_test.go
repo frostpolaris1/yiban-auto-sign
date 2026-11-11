@@ -213,6 +213,28 @@ func TestTextHasEmailCoversDotlessDomain(t *testing.T) {
 	}
 }
 
+// 判定集对齐旧线邮箱口径：无点域、数字域、下划线截断、点号本地部与
+// Punycode TLD 都检出；空本地部/空域/域首连字符/已掩码不算。
+func TestTextHasEmailMatchesLegacyJudgmentSet(t *testing.T) {
+	for _, in := range []string{
+		"a@b",
+		"a@123",
+		"a@b_c",
+		"1.2@build",
+		"a@xn--fiqs8s",
+		"a@b.com",
+	} {
+		if !TextHasEmail(in) {
+			t.Fatalf("TextHasEmail(%q) = false; want true", in)
+		}
+	}
+	for _, in := range []string{"a@", "@b", "a@-b", "a***@b", "😀@example.com"} {
+		if TextHasEmail(in) {
+			t.Fatalf("TextHasEmail(%q) = true; want false", in)
+		}
+	}
+}
+
 // 时间戳的「秒.纳秒」会拼出 11 位数字：检测口径不得判为手机号。
 // 这是 P3-D 的 pii.absent 假阳性根因（SignedAt 的 RFC3339Nano）。
 func TestTextHasPhoneIgnoresTimestampFractions(t *testing.T) {

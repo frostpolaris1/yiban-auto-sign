@@ -285,9 +285,10 @@ const MaxReasonChars = 200
 
 // 落在本闭区间内的数字按手机号形状拒绝。
 // 11 位手机号与普通整数无法区分，故整段形状一律拒绝。
+// 与字符串规则 isElevenDigitOneShape 对齐：全部 1 开头的 11 位数字。
 const (
 	phoneNumberMin = 10000000000
-	phoneNumberMax = 14999999999
+	phoneNumberMax = 19999999999
 )
 
 // detailKeys 是允许的 detail 键全集，闭合不可扩展。
@@ -688,6 +689,13 @@ type AnchorResult struct {
 	Checked bool
 	OK      bool
 	Reason  string
+}
+
+// AnchorMeta 是库内锚点高水位：最后一次成功记录的锚点 seq 与链头哈希。
+// 它只用于检出锚点文件被截断/改写；链比对仍以锚点文件的最强行为准。
+type AnchorMeta struct {
+	Seq      int64
+	HeadHash []byte
 }
 
 // Status 汇总一次分窗链校验的结论。

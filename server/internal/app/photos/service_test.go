@@ -97,19 +97,20 @@ func (f *fakeStore) List(_ context.Context, scope corescope.Scope, _ string, _ i
 	return out, "", nil
 }
 
-func (f *fakeStore) SoftDelete(_ context.Context, scope corescope.Scope, id string, now time.Time) (corephoto.Record, error) {
+func (f *fakeStore) SoftDelete(_ context.Context, scope corescope.Scope, id string, now time.Time) (corephoto.Record, bool, error) {
 	if scope.Kind() != corescope.KindUser {
-		return corephoto.Record{}, errs.ErrNotFound
+		return corephoto.Record{}, false, errs.ErrNotFound
 	}
 	rec, ok := f.recs[id]
 	if !ok || rec.OwnerUserID != scope.UserID() {
-		return corephoto.Record{}, errs.ErrNotFound
+		return corephoto.Record{}, false, errs.ErrNotFound
 	}
 	if !rec.Deleted() {
 		rec.DeletedAt = &now
 		f.recs[id] = rec
+		return rec, true, nil
 	}
-	return rec, nil
+	return rec, false, nil
 }
 
 func (f *fakeStore) Retention(_ context.Context, userID string) (int, error) {
@@ -619,6 +620,9 @@ func TestGetScopesAndDelete(t *testing.T) {
 	again, err := svc.Delete(context.Background(), owner("u1"), rec.ID, actorOf("u1"))
 	if err != nil || again.ID != rec.ID {
 		t.Fatalf("重复删除应幂等: %v, %+v", err, again)
+	}
+	if len(audits.entries) != 2 {
+		t.Fatalf("幂等重放写了重复审计: %d rows, want 2 (upload + first delete)", len(audits.entries))
 	}
 	// 重新上传同字节应恢复同一行。
 	restored, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 5, 5))

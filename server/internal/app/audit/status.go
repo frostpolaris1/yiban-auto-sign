@@ -3,27 +3,30 @@
 // # 功能
 // 把仓储的分窗链校验结果翻成巡检结论：ok / empty / broken 三态，
 // 链头哈希转小写十六进制，并盖上本次巡检时刻。
-// 挂上 AnchorReader 时，同时比对库外锚点：删前缀、截尾、整表清空与
-// 链尾重签都会把结论翻成不健康。
+// 挂上 AnchorReader 与 AnchorMetaReader 时，同时比对库外锚点与库内高水位：
+// 删前缀、截尾、整表清空、链尾重签与锚点文件末行被删都会把结论翻成不健康。
 //
 // # 归属
 // app 层用例；端口 ChainVerifier 由 adapters/pg 实现，
-// AnchorReader 由 adapters/anchor 实现。链算法、编码与校验规则留在 core/audit，
-// 本文件不改它们。
+// AnchorReader 由 adapters/anchor 实现，AnchorMetaReader 由 adapters/pg 实现。
+// 链算法、编码与校验规则留在 core/audit，本文件不改它们。
 //
 // # 口径
 // 空链**不是通过**：零行什么都没证明（core 的 ErrEmptyChain 语义）。
 // 故 ok=false、empty=true；前端据此显示「暂无审计行」而不是「异常」。
 // 断链是巡检结论而不是错误：返回 ok=false + broken_at，调用方仍答 200。
 // 锚点不一致同样是结论：ok=false + anchor_status=mismatch，调用方仍答 200。
-// 锚点文件读不出/为空是错误结论：ok=false + anchor_status=error（不冒充健康）。
+// 锚点文件读不出/解析失败是错误结论：ok=false + anchor_status=error。
 // 未配置锚点路径时 anchor_status=disabled，行为与引入锚点前相同。
-// 锚点文件不存在时 anchor_status=missing，链本身照常判定。
+// 从未写过锚点（文件与高水位都缺）时 anchor_status=missing，链本身照常判定。
+// 文件有锚点但高水位缺失、或高水位读失败，是 error（无法检出截断）。
+// 锚点文件末行被删/文件消失而高水位还在，是 mismatch + anchor_truncated。
 // 响应只带行 id 与哈希，**不带审计正文、actor 或 detail**。
 // CheckedRows 数到第一个不符行（含）；LastHash 是最后一个通过复算的行。
 package audit
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -81,11 +84,17 @@ type AnchorReader interface {
 	Latest(ctx context.Context) (*coreaudit.Anchor, error)
 }
 
+// AnchorMetaReader 读取库内锚点高水位。无记录返回 (nil, nil)。
+type AnchorMetaReader interface {
+	AnchorMeta(ctx context.Context) (*coreaudit.AnchorMeta, error)
+}
+
 // Inspector 是审计链巡检用例。
 type Inspector struct {
-	chain   ChainVerifier
-	clock   clock.Clock
-	anchors AnchorReader
+	chain      ChainVerifier
+	clock      clock.Clock
+	anchors    AnchorReader
+	anchorMeta AnchorMetaReader
 }
 
 // NewInspector 构造巡检器。缺端口或时钟即失败。
@@ -105,17 +114,63 @@ func (i *Inspector) WithAnchor(reader AnchorReader) *Inspector {
 	return i
 }
 
+// WithAnchorMeta 挂上库内锚点高水位读取器。
+// 挂锚点文件时必须同时挂它：否则无法检出锚点文件末行被删。
+func (i *Inspector) WithAnchorMeta(reader AnchorMetaReader) *Inspector {
+	i.anchorMeta = reader
+	return i
+}
+
 // Status 执行一次巡检。
 // 数据源错误原样上抛；断链、空链与锚点不一致都作为结论返回，不当作错误。
 func (i *Inspector) Status(ctx context.Context) (ChainStatus, error) {
-	var anchor *coreaudit.Anchor
-	var anchorErr error
-	if i.anchors != nil {
-		anchor, anchorErr = i.anchors.Latest(ctx)
-		if errors.Is(anchorErr, coreaudit.ErrAnchorEmpty) {
-			anchor = nil
-		}
+	if i.anchors == nil {
+		return i.statusFromChain(ctx, nil, AnchorStatusDisabled, "")
 	}
+	anchor, anchorErr := i.anchors.Latest(ctx)
+	if i.anchorMeta == nil {
+		// 挂了锚点文件却没有高水位读取器：无法检出截断，失败关闭。
+		return i.statusFromChain(ctx, nil, AnchorStatusError, "anchor_meta_reader_missing")
+	}
+	meta, metaErr := i.anchorMeta.AnchorMeta(ctx)
+	switch {
+	case metaErr != nil:
+		return i.statusFromChain(ctx, nil, AnchorStatusError, "anchor_meta_read_failed")
+	case anchorErr == nil && anchor == nil:
+		// 文件不存在：有高水位说明曾经写过，是截断；没有则从未锚定。
+		if meta != nil {
+			return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_truncated")
+		}
+		return i.statusFromChain(ctx, nil, AnchorStatusMissing, "")
+	case errors.Is(anchorErr, coreaudit.ErrAnchorEmpty):
+		// 文件存在但为空：有高水位即截断；没有则从未锚定。
+		if meta != nil {
+			return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_truncated")
+		}
+		return i.statusFromChain(ctx, nil, AnchorStatusMissing, "")
+	case anchorErr != nil:
+		// 文件存在但读不出/解析失败：不得当成"没有锚点"。
+		return i.statusFromChain(ctx, nil, AnchorStatusError, "anchor_read_failed")
+	}
+	if meta == nil {
+		return i.statusFromChain(ctx, nil, AnchorStatusError, "anchor_meta_missing")
+	}
+	switch {
+	case anchor.Seq < meta.Seq:
+		return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_truncated")
+	case anchor.Seq == meta.Seq && !bytes.Equal(anchor.Hash, meta.HeadHash):
+		return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_truncated")
+	case anchor.Seq > meta.Seq:
+		// 文件比库内高水位更强：上一次 meta 写失败或有人追加了未登记行。
+		return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_unrecorded")
+	}
+	return i.statusFromChain(ctx, anchor, AnchorStatusOK, "")
+}
+
+// statusFromChain 跑链校验并装配结论。
+// anchor 为 nil 时只校验链；anchorStatus 决定锚点字段与最终 OK。
+func (i *Inspector) statusFromChain(ctx context.Context, anchor *coreaudit.Anchor,
+	anchorStatus AnchorStatus, anchorReason string) (ChainStatus, error) {
 	raw, err := i.chain.VerifyStatus(ctx, anchor)
 	if err != nil {
 		return ChainStatus{}, err
@@ -123,7 +178,12 @@ func (i *Inspector) Status(ctx context.Context) (ChainStatus, error) {
 	status := ChainStatus{
 		CheckedRows:  raw.CheckedRows,
 		CheckedAt:    i.clock.Now().UTC(),
-		AnchorStatus: AnchorStatusDisabled,
+		AnchorStatus: anchorStatus,
+		AnchorReason: anchorReason,
+	}
+	if anchor != nil {
+		status.AnchorSeq = anchor.Seq
+		status.AnchorCount = anchor.Count
 	}
 	if len(raw.LastHash) > 0 {
 		status.LastHash = hex.EncodeToString(raw.LastHash)
@@ -138,38 +198,31 @@ func (i *Inspector) Status(ctx context.Context) (ChainStatus, error) {
 	default:
 		status.OK = true
 	}
-	if i.anchors == nil {
-		return status, nil
-	}
-	switch {
-	case anchorErr != nil:
-		// 锚点文件存在但读不出/为空：不得当成"没有锚点"。
-		status.AnchorStatus = AnchorStatusError
-		status.AnchorReason = "锚点文件读取失败: " + anchorErr.Error()
+	switch anchorStatus {
+	case AnchorStatusDisabled, AnchorStatusMissing:
+		// 链结论照旧；锚点未参与判定。
+	case AnchorStatusMismatch, AnchorStatusError:
 		status.OK = false
-	case anchor == nil:
-		// 未写锚点：沿用引入锚点前的行为，只把状态如实报出。
-		status.AnchorStatus = AnchorStatusMissing
-	case raw.BrokenAt != 0:
-		// 断链本身已是更直接的结论；锚点比对没有执行。
-		status.AnchorStatus = AnchorStatusNotChecked
-	default:
-		status.AnchorSeq = anchor.Seq
-		status.AnchorCount = anchor.Count
+	case AnchorStatusOK:
+		if raw.BrokenAt != 0 {
+			// 断链本身已是更直接的结论；锚点比对没有执行。
+			status.AnchorStatus = AnchorStatusNotChecked
+			status.AnchorReason = ""
+			return status, nil
+		}
 		if !raw.Anchor.Checked {
 			status.AnchorStatus = AnchorStatusError
-			status.AnchorReason = "锚点比对未执行"
+			status.AnchorReason = "anchor_comparison_missing"
 			status.OK = false
 			return status, nil
 		}
 		if raw.Anchor.OK {
-			status.AnchorStatus = AnchorStatusOK
 			status.AnchorOK = true
-			return status, nil
+		} else {
+			status.AnchorStatus = AnchorStatusMismatch
+			status.AnchorReason = raw.Anchor.Reason
+			status.OK = false
 		}
-		status.AnchorStatus = AnchorStatusMismatch
-		status.AnchorReason = raw.Anchor.Reason
-		status.OK = false
 	}
 	return status, nil
 }

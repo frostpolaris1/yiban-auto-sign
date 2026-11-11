@@ -39,6 +39,8 @@ func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 		{"email after a word", map[string]any{"reason": "user@example.com"}, coreaudit.ErrDetailPII},
 		{"non-ASCII email", map[string]any{"reason": "退回 学生@example.com"}, coreaudit.ErrDetailPII},
 		{"integer phone", map[string]any{"count": int64(13800138000)}, coreaudit.ErrDetailPII},
+		{"integer phone 15", map[string]any{"count": int64(15000000000)}, coreaudit.ErrDetailPII},
+		{"integer phone 19", map[string]any{"count": int64(19999999999)}, coreaudit.ErrDetailPII},
 		{"float phone", map[string]any{"count": float64(13800138000)}, coreaudit.ErrDetailPII},
 		{"phone in rows", map[string]any{"rows": []int{1, 13800138000}}, coreaudit.ErrDetailPII},
 		{"phone in a nested map", map[string]any{"from": map[string]any{"v": "13800138000"}}, coreaudit.ErrDetailType},
@@ -396,7 +398,7 @@ func TestEncodeDetailAcceptsScheduleWritebackChanges(t *testing.T) {
 		}
 	}
 	// changes 的整数值同样要过手机号形状：映射形态不是绕过通用数值规则的通道。
-	for _, bad := range []any{13800138000, int64(13800138000)} {
+	for _, bad := range []any{13800138000, int64(13800138000), int64(15000000000), int64(19999999999)} {
 		if _, err := coreaudit.EncodeDetail(map[string]any{
 			"changes": map[string][2]any{"schedule.edge_back_sec": {nil, bad}},
 		}); !errors.Is(err, coreaudit.ErrDetailPII) {

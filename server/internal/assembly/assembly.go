@@ -1038,7 +1038,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	}
 	// 库外锚点：路径为空表示未配置，巡检端点不做比对（现行为）。
 	if auditAnchorFile != "" {
-		inspector.WithAnchor(anchoradapter.NewFile(auditAnchorFile))
+		inspector.WithAnchor(anchoradapter.NewFile(auditAnchorFile)).WithAnchorMeta(audits)
 	}
 
 	entries, err := config.Registry()
