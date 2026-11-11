@@ -704,3 +704,44 @@ func TestForgotPasswordDoesNotRevealExistence(t *testing.T) {
 		t.Fatalf("forgot-password wrote %d auth audit rows; the action is not in the vocabulary", got)
 	}
 }
+
+// --- 登录失败洪水不得锁死 forgot/restore --------------------------------
+
+// 模拟攻击者：用错误口令把登录账号桶打满。
+// 断言用户可见结果：同邮箱的 forgot 仍回 204，restore 仍走到用例（401），
+// 都不被登录桶的 429 连带锁死。
+func TestLoginFailureFloodDoesNotLockForgotOrRestore(t *testing.T) {
+	e := newAuthEnvWith(t, func(cfg *config.Config) {
+		cfg.RateLimitEnabled = true
+		cfg.RateIPPerMin = 1000
+		cfg.RateIPBurst = 1000
+		cfg.RateAccountPerMin = 1
+		cfg.RateAccountBurst = 1
+	}, nil)
+	e.createUser("flood@example.com", "correct-horse")
+
+	first, _ := e.login("flood@example.com", "wrong-password")
+	if first.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("first login = %d, want 401", first.StatusCode)
+	}
+	second, _ := e.login("flood@example.com", "wrong-password")
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second login = %d, want 429", second.StatusCode)
+	}
+
+	// forgot 有自己的桶：登录桶打满后仍应走到用例并回 204。
+	forgotResp, forgotPayload := e.do(http.MethodPost, "/api/auth/forgot-password",
+		map[string]string{"email": "flood@example.com"}, nil)
+	if forgotResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("forgot after login flood = %d, want 204; body=%q", forgotResp.StatusCode, forgotPayload)
+	}
+
+	// restore 也有自己的桶：活跃用户走「不存在」路径回 401，而不是 429。
+	restoreResp, restorePayload := e.do(http.MethodPost, "/api/me/restore",
+		map[string]string{"email": "flood@example.com", "password": "wrong-password"}, nil)
+	if restoreResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("restore after login flood = %d, want 401 (not 429); body=%q",
+			restoreResp.StatusCode, restorePayload)
+	}
+}
+

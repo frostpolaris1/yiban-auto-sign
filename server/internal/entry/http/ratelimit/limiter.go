@@ -155,12 +155,31 @@ func (g *Guard) AllowIP(remoteAddr string, forwarded []string) (bool, time.Durat
 	return g.IP.Allow(ClientIP(remoteAddr, forwarded, g.Trusted))
 }
 
-// AllowAccount 按账号标识判定。
+// defaultAccountDomain 是默认账号域的键前缀。
+// 默认域的键来自任意调用方（账号 id、手机号、令牌摘要）；
+// 不加前缀就可能与 auth.* 邮箱域键碰撞：路径里的账号 id 写成
+// "auth.forgot:<email>" 会命中同名的 forgot 桶。
+const defaultAccountDomain = "default:"
+
+// AllowAccount 按账号标识判定（默认域）。
 func (g *Guard) AllowAccount(key string) (bool, time.Duration) {
 	if g == nil {
 		return true, 0
 	}
-	return g.Account.Allow(key)
+	return g.Account.Allow(defaultAccountDomain + key)
+}
+
+// AllowAccountIn 按指定域判定。domain 为空表示默认域。
+// auth.* 域直接使用 "<domain>:<key>"，不经过默认域前缀，
+// 故默认域的任意键无法与它们碰撞。
+func (g *Guard) AllowAccountIn(domain, key string) (bool, time.Duration) {
+	if g == nil {
+		return true, 0
+	}
+	if domain == "" {
+		return g.Account.Allow(defaultAccountDomain + key)
+	}
+	return g.Account.Allow(domain + ":" + key)
 }
 
 // ErrNoTrustedProxy 是可信代理表解析失败的错误前缀。

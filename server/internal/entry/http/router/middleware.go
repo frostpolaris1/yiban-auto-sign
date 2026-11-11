@@ -232,13 +232,33 @@ func tooManyRequests(c *gin.Context, wait time.Duration) {
 	respond.Error(c.Writer, c.Request, errs.New(errs.CodeRateLimited, "too many requests"))
 }
 
-// accountLimit 在付出 KDF 之前按账号键判限流。
-// 键由调用方给出：登录用归一邮箱，重置用令牌摘要，改密用会话 userID，
-// 校验与签到用账号 id。这里统一小写：UUID 大小写不敏感，
-// 不归一就能用大小写变体把同一个账号拆成多个桶。
+// 账号限流域。同一邮箱在登录、忘记口令、恢复与注册之间**不共用桶**：
+// 攻击者用登录错误洪水不得锁死受害者的 forgot/restore。
+// 域前缀同时隔开注册的任意邮箱键与默认域的十六进制/UUID 键。
+const (
+	accountDomainLogin    = "auth.login"
+	accountDomainForgot   = "auth.forgot"
+	accountDomainRestore  = "auth.restore"
+	accountDomainRegister = "auth.register"
+)
+
+// accountLimit 在付出 KDF 之前按默认账号域判限流。
+// 键由调用方给出：重置用令牌摘要，改密用会话 userID，
+// 校验与签到用账号 id。默认域键不含冒号，与四个邮箱域互不碰撞。
 func (s *server) accountLimit(c *gin.Context, key string) bool {
+	return s.accountLimitFor(c, "", key)
+}
+
+// accountLimitFor 在指定域内按账号键判限流。
+// 这里统一小写：UUID 与邮箱大小写不敏感，
+// 不归一就能用大小写变体把同一个账号拆成多个桶。
+// domain 为空表示默认域（裸键）；非空时键形如 "<domain>:<key>"。
+func (s *server) accountLimitFor(c *gin.Context, domain, key string) bool {
 	key = strings.ToLower(strings.TrimSpace(key))
-	if ok, wait := s.rateLimit.AllowAccount(key); !ok {
+	if domain != "" {
+		key = domain + ":" + key
+	}
+	if ok, wait := s.rateLimit.AllowAccountIn(domain, key); !ok {
 		tooManyRequests(c, wait)
 		return false
 	}
