@@ -44,6 +44,7 @@ func selfcheckLookup(key string) string {
 // 服务用户的 POSIX 权限探针。目录判权复用 doctor 的 dirStatOf/userIdentityOf。
 func newSelfcheckDeps() selfcheck.Deps {
 	deps := selfcheck.DefaultDeps()
+	deps.FS = osFileSystem{}
 	deps.LookPath = exec.LookPath
 	deps.OpenDB = openSelfcheckDB
 	deps.EmbeddedVersion = pg.EmbeddedVersion

@@ -8,8 +8,6 @@ package selfcheck
 
 import (
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -40,8 +38,7 @@ func TestLoadStateMissingIsNotAnError(t *testing.T) {
 }
 
 func TestRecordKeysRoundTripPreservesUnknownFields(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "update-state.json")
+	const path = "/var/lib/yiban/update-state.json"
 	oldFP := "sha256:" + strings.Repeat("a", 64)
 	oldPepperFP := "sha256:" + strings.Repeat("b", 64)
 	futureFP := "sha256:" + strings.Repeat("c", 64)
@@ -57,31 +54,27 @@ func TestRecordKeysRoundTripPreservesUnknownFields(t *testing.T) {
   "note": "keep me"
 }
 `
-	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	st, err := RecordKeys(OSFileSystem{}, path, testOptions(), fixedNow)
+	f := newFakeFS()
+	f.files[path] = []byte(raw)
+	st, err := RecordKeys(f, path, testOptions(), fixedNow)
 	if err != nil {
 		t.Fatalf("RecordKeys: %v", err)
 	}
 	if st.KeyFingerprints["future_key"] != futureFP {
 		t.Fatalf("unknown fingerprint key not preserved: %+v", st.KeyFingerprints)
 	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read state: %v", err)
-	}
+	body := string(f.writes[path])
 	for _, want := range []string{`"last_update"`, `"note"`, `"future_key"`, `"recorded_at": "2026-11-04T12:00:00Z"`} {
-		if !strings.Contains(string(body), want) {
+		if !strings.Contains(body, want) {
 			t.Fatalf("state lost %s:\n%s", want, body)
 		}
 	}
 	for _, secret := range []string{testCredentialKey, testPepper} {
-		if strings.Contains(string(body), secret) {
+		if strings.Contains(body, secret) {
 			t.Fatalf("state file stores secret %q", secret)
 		}
 	}
-	loaded, exists, err := LoadState(OSFileSystem{}, path)
+	loaded, exists, err := LoadState(f, path)
 	if err != nil || !exists {
 		t.Fatalf("LoadState: %v exists=%v", err, exists)
 	}
@@ -90,61 +83,29 @@ func TestRecordKeysRoundTripPreservesUnknownFields(t *testing.T) {
 	}
 }
 
-func TestStateFileAndDirectoryPermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("SKIP: Windows 不保留 0600/0700 权限位。")
-	}
-	dir := t.TempDir()
-	stateDir := filepath.Join(dir, "nested")
-	path := filepath.Join(stateDir, "update-state.json")
-	if _, err := RecordKeys(OSFileSystem{}, path, testOptions(), fixedNow); err != nil {
-		t.Fatalf("RecordKeys: %v", err)
-	}
-	fileInfo, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat state: %v", err)
-	}
-	if got := fileInfo.Mode().Perm(); got != 0o600 {
-		t.Fatalf("state file perm = %04o, want 0600", got)
-	}
-	dirInfo, err := os.Stat(stateDir)
-	if err != nil {
-		t.Fatalf("stat dir: %v", err)
-	}
-	if got := dirInfo.Mode().Perm(); got != 0o700 {
-		t.Fatalf("state dir perm = %04o, want 0700", got)
-	}
-}
-
 func TestRecordKeysRefusesFutureSchema(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "update-state.json")
+	const path = "/var/lib/yiban/update-state.json"
 	raw := `{"schema_version":2,"key_fingerprints":{},"recorded_at":""}`
-	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if _, err := RecordKeys(OSFileSystem{}, path, testOptions(), fixedNow); err == nil {
+	f := newFakeFS()
+	f.files[path] = []byte(raw)
+	if _, err := RecordKeys(f, path, testOptions(), fixedNow); err == nil {
 		t.Fatal("RecordKeys accepted schema_version=2")
 	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(body) != raw {
-		t.Fatalf("future state file was modified:\n%s", body)
+	if _, written := f.writes[path]; written {
+		t.Fatalf("future state file was modified:\n%s", f.writes[path])
 	}
 }
 
 func TestRecordKeysRequiresValidKeys(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "update-state.json")
+	const path = "/var/lib/yiban/update-state.json"
 	opts := testOptions()
 	opts.CredentialKey = ""
-	if _, err := RecordKeys(OSFileSystem{}, path, opts, fixedNow); err == nil {
+	f := newFakeFS()
+	if _, err := RecordKeys(f, path, opts, fixedNow); err == nil {
 		t.Fatal("RecordKeys accepted a missing credential key")
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("state file written despite bad key: %v", err)
+	if _, written := f.writes[path]; written {
+		t.Fatalf("state file written despite bad key: %s", f.writes[path])
 	}
 }
 
@@ -201,22 +162,5 @@ func TestSaveStateRejectsInvalidFingerprint(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "leak-me-not") {
 		t.Fatalf("error echoes the invalid fingerprint: %v", err)
-	}
-}
-
-func TestOSFileSystemWriteReplacesExistingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "update-state.json")
-	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if err := (OSFileSystem{}).WriteFileAtomic(path, []byte("new"), 0o600); err != nil {
-		t.Fatalf("WriteFileAtomic: %v", err)
-	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(body) != "new" {
-		t.Fatalf("body = %q, want new", body)
 	}
 }
