@@ -164,6 +164,32 @@ func TestReauthenticateRejectsWrongAndUnknown(t *testing.T) {
 	wantReauthAudit(t, h, 2, "invalid", 2)
 }
 
+// 审计写失败即失败关闭：403/429 都不得在未留痕时返回。
+func TestReauthenticateFailsClosedWhenAuditWriteFails(t *testing.T) {
+	h := newHarness(t)
+	password := seedActiveUser(t, h, "u1")
+	auditErr := errors.New("audit down")
+
+	// 403 路径：注入 Append 失败，必须返回审计错误而不是 ErrReauthFailed。
+	h.audits.err = auditErr
+	if err := h.svc.Reauthenticate(t.Context(), "u1", "wrong-password-42"); !errors.Is(err, auditErr) {
+		t.Fatalf("wrong password with audit failure = %v, want the audit error", err)
+	}
+
+	// 429 路径：另一用户先正常累计到阈值，再让审计失败。
+	seedActiveUser(t, h, "u2")
+	h.audits.err = nil
+	for i := 0; i < appauth.ReauthFailureLimit; i++ {
+		if err := h.svc.Reauthenticate(t.Context(), "u2", "wrong-password-42"); err != appauth.ErrReauthFailed {
+			t.Fatalf("failure %d = %v, want ErrReauthFailed", i+1, err)
+		}
+	}
+	h.audits.err = auditErr
+	if err := h.svc.Reauthenticate(t.Context(), "u2", password); !errors.Is(err, auditErr) {
+		t.Fatalf("throttled with audit failure = %v, want the audit error", err)
+	}
+}
+
 // 窗口内第 6 次尝试 429，即使口令正确；窗口滑过之后恢复。
 func TestReauthenticateThrottlesAfterFiveFailures(t *testing.T) {
 	clk := newMutableClock()
