@@ -7,7 +7,7 @@
 本仓有**两套系统**，互不改写：
 
 - **新系统** = `server/`（Go 后端）+ `ui/`（React 前端）。新功能只写这里。
-- **旧系统** = `yiban/`、`web/`、`frontend/`、`tests/`。Python/Vue 旧栈，**冻结**。只在被指派的缺陷修复中改动。
+- **旧系统** = `yiban/`、`web/`、`frontend/`、`tests/` 里的旧 Python 测试。Python/Vue 旧栈，**冻结**。只在被指派的缺陷修复中改动。`tests/` 里另有仓库级门（结构、引用等），仍活跃。
 
 其余是文档、部署与过程稿。
 
@@ -17,48 +17,58 @@
 |---|---|---|
 | `server/` | Go 后端。契约、领域、适配器、HTTP 入口 | 新，活跃 |
 | `ui/` | React 前端。Adminator 视觉语言 | 新，活跃 |
-| `docs/` | 入库文档。架构、运行手册、重构记录 | 共用 |
+| `docs/` | 入库文档。架构、开发规范、运行手册 | 共用 |
 | `work/` | 过程稿：计划、交接、审查产物。**不入库** | 本地 |
 | `deploy/container/`、`deploy/baremetal/`、`deploy/README.md` | 新栈部署件：容器编排、裸机安装/升级、从零部署指南 | 新，活跃 |
+| `deploy/release.md` | 跨栈发布门清单：旧线版本源与 Go 线段（项 1b）并存 | 共用，活跃 |
 | `deploy/prod/`、`docker/`、`docker-compose.yml` | 旧 Python 栈部署件 | 旧，冻结 |
-| `scripts/` | 旧运维脚本 | 旧，冻结 |
+| `scripts/` | 运维脚本与门：`dev-verify.sh` 旧栈入口、`verify-stacks.sh` 新栈入口 | 共用 |
 | `yiban/` | Python 旧引擎：调度、领取、协议 | 旧，冻结 |
 | `web/` | Python 旧 Web 与静态资源 | 旧，冻结 |
 | `frontend/` | Vue 旧前端 | 旧，冻结 |
-| `tests/` | Python 旧测试 | 旧，冻结 |
-| `config/`、`data/`、`out/` | 运行期产物 | 忽略 |
+| `tests/` | Python 旧测试 + 仓库级门（结构、引用等） | 旧栈测试冻结；仓库门活跃 |
+| `config/` | 旧 Python 栈配置名册（`registry.json`） | 旧，冻结 |
+| `data/`、`out/` | 运行期产物 | 忽略 |
 
-规则：新代码不得写入旧系统目录。跨系统共享的东西只有 `docs/`。
+规则：新功能代码不得写入旧系统目录。跨系统共用的只有 `docs/`、`scripts/` 的入口脚本、`tests/` 里的仓库级门、`deploy/release.md` 发布门清单与 `.github/` CI 编排；这些地方只放文档与门，不放业务代码。
 
 ## 3. 后端 `server/`
 
 ```
 server/
-├── cmd/            进程入口
-│   ├── server/     主服务
-│   └── cli/        运维命令
-├── contracts/      OpenAPI 契约，唯一事实源
-├── migrations/     PostgreSQL 迁移，按编号排序
+├── cmd/              进程入口
+│   ├── server/       主服务
+│   ├── cli/          运维命令
+│   ├── bench/        基准测试
+│   └── probe-login/  平台登录探针
+├── contracts/        OpenAPI 契约，唯一事实源
+├── migrations/       PostgreSQL 迁移，按编号排序
 ├── internal/
-│   ├── core/       纯领域：无 IO、无框架、可单测
-│   ├── app/        用例与事务编排
-│   ├── adapters/   IO：数据库、会话、配置、审计、邮件
-│   ├── entry/      HTTP 入口：路由、处理器、生成代码
-│   └── signing/    签到 Provider 契约与实现
-├── tools/          门与代码生成
-├── scripts/        verify、generate
-└── canonical.tsv   单一事实源名册
+│   ├── core/         纯领域：无 IO、无框架、可单测
+│   ├── app/          用例与事务编排
+│   ├── adapters/     IO：数据库、会话、配置、邮件、Webhook、存储、旧栈导入
+│   ├── entry/        HTTP 入口：路由、处理器、生成代码
+│   ├── signing/      签到 Provider 契约与实现
+│   ├── assembly/     组合根：唯一装配点，只被 cmd 导入
+│   ├── buildinfo/    编译期版本身份
+│   └── configdata/   编译期嵌入的配置键名册
+├── tools/            门：gate、logfield、structure
+├── scripts/          verify、generate、build-release、license
+├── canonical.tsv     单一事实源名册
+└── structure.tsv     受管目录名册（结构门事实源）
 ```
 
-依赖方向只有一条：`entry → app → core`。`app` 只依赖 `core` 定义的接口。`adapters` 实现这些接口，由 `cmd` 装配注入。`app` 不得导入 `adapters`。反向导入由 `canonical.tsv` 的 `boundary.*` 门拦截。
+受管目录的机械名册以 `server/structure.tsv` 为事实源（结构门读它）；上面的树与 §3.1/§3.2 的清单是导读快照，两者不一致时以 tsv 为准。新增或改名目录先改 tsv，再改本文。
+
+依赖方向只有一条：`entry → app → core`。端口（仓储、外部设施接口）多数定义在 app 消费侧：实况 core 7 个接口声明、app 77 个；core 定义领域类型与少数跨域端口。`adapters` 实现这些端口，由 `cmd` 经 `internal/assembly` 装配注入。`app` 不得导入 `adapters`。反向导入由 `canonical.tsv` 的 `boundary.*` 门拦截。
 
 ### 3.1 域名单
 
-九个已建包的域（Go 与 UI 用同一套域词；目录名按各层复数约定）：
+机械名册的事实源是 `server/structure.tsv` 的 `server/internal/app` 行；本节是导读快照，两者不一致时以 tsv 为准。当前 **20 个 app 域目录**：
 
-`auth`、`user`、`school`、`account`、`schedule`、`signing`、`photo`、`audit`、`diagnostic`
+`account`、`audit`、`auth`、`calendar`、`diagnostic`、`egress`、`events`、`location`、`notify`、`photos`、`retention`、`schedule`、`school`、`schooladmin`、`selfcheck`、`settings`、`stats`、`timepref`、`user`、`worker`
 
-`notify` 尚未建包（通知计划见工单 `0v8`）；在它落地前不要建同名目录，结构门会红。
+`app` 是域目录的完整集合；`core` 与 `entry/http` 按需存在（如 `worker`、`retention`、`stats` 只在 app）。`notify` 已建包（core/app/entry 三层齐，迁移 00023–00026）。`signing` 不是 app 域目录，Provider 契约与实现住在 `internal/signing/`。UI 只覆盖其中一部分，见 §4。
 
 ### 3.2 每个域落在哪
 
@@ -66,15 +76,23 @@ server/
 |---|---|---|
 | 纯领域 | `internal/core/<域>/` | 值对象、规则、状态机。不碰数据库与 HTTP |
 | 用例 | `internal/app/<域>/` | 一个用户动作一个函数。开事务、调仓储、写审计 |
-| 适配器 | `internal/adapters/<设施>/` | 按**设施**分，不按域分：`pg`、`session`、`config`、`mail`、`storage`、`legacy` |
+| 适配器 | `internal/adapters/<设施>/` | 按**设施**分，不按域分：`pg`、`session`、`config`、`mail`、`webhook`、`storage`、`legacy`（事实源：`server/structure.tsv` 的 `server/internal/adapters` 行） |
 | HTTP | `internal/entry/http/<域>/` | 解析请求、调用用例、写响应 |
 | 生成 | `internal/entry/http/oapi/` | OpenAPI 生成物，不手改 |
 
 ### 3.3 后端命名
 
 1. 包目录：**单数、小写、无缩写**。`account`，不写 `acc`。
-   已登记例外：`photo` 域的 core 包是 `core/photo`（单数），app 与 entry 包是
-   `app/photos`、`entry/http/photos`（复数）。新建目录跟同层现状，不再造第三种写法。
+   已登记例外（2026-11-11 按 66416d48 实况逐名核实）：
+   - `photo` 域：core 是 `core/photo`（单数），app 与 entry 是 `app/photos`、
+     `entry/http/photos`（复数）。
+   - 其他复数：`errs`、`events`、`settings`、`stats`、`providers`。
+   - 缩写/合词：`fsperm`、`timepref`、`oapi`、`pg`、`buildinfo`、`configdata`、
+     `logfield`、`schooladmin`、`selfcheck`、`ratelimit`。
+   - 层名（`core`、`app`、`adapters`、`entry`、`http`）是结构术语；`cmd/` 下是进程名
+     （`cli`、`bench`、`probe-login`），都不按域包规则判定。
+   - `auth`、`admin`、`config` 是已通行的域词缩写，按现状保留。
+   新建目录跟同层现状，不再造第三种写法。
 2. 表名：**复数、下划线**。`accounts`、`password_resets`。
 3. 路由：`/api/<复数资源>`。`/api/accounts`。
 4. operationId：`<Domain><Verb>`。`AccountList`、`AccountCreate`。
@@ -87,13 +105,15 @@ server/
 ui/src/
 ├── app/            启动、路由、Provider、守卫
 ├── pages/          路由页，一页一文件，文件名以 Page 结尾
-├── features/       按域组织：auth / dashboard / design / user / schools / accounts / schedule / run / settings
+├── features/       按域组织：auth / dashboard / design / user / schools / accounts / schedule / run / settings / photos
 ├── components/
 │   ├── shell/      Sidebar / Topbar / Footer / AppShell
 │   └── ui/         无域原语：Button / Input / Card / Table / Modal / Tabs / Switch
-├── lib/            api / query / theme / format / cx / cursor / identity / roles / session / redirect / field-aria / showcase / showcase-mode
+├── lib/            api / query / theme / format / cx / cursor / identity / roles / session / redirect / field-aria / showcase / showcase-mode / version
 └── styles/         tokens.css / adminator.css / app.css
 ```
+
+`features/` 的机械名册以 `server/structure.tsv` 的 `ui/src/features` 行为事实源；本节是导读快照。
 
 依赖方向：`app → pages → features → components/ui → lib`。`app` 是装配层，其余各层不得反向导入它。
 
@@ -109,7 +129,7 @@ ui/src/
 4. 路径别名 `@/` 指向 `ui/src`。
 5. `lib/api` 按域拆文件：`auth.ts`、`school.ts`、`account.ts`。
 6. `features/` 目录按域的性质选形：
-   - **资源列表域**用复数：`accounts`、`schools`。
+   - **资源列表域**用复数：`accounts`、`schools`、`photos`。
    - **能力/页面域**用单数：`auth`、`dashboard`、`design`、`run`、`schedule`、`settings`、`user`。`user` 是历史命名，保持单数。
    新域先看它是不是资源列表，再选形；同一层内不要同时存在两种写法（`features/` 复数、`lib/api` 单数是分层约定）。
 
@@ -128,19 +148,19 @@ ui/src/
 
 ## 5. 「我要加一个功能」怎么放
 
-例：管理员暂停账号。
+例：管理员给账号加备注（假设新增 `AccountNote`，用来演示落点；已有的 `AccountPause` 按同样分层实现）。
 
 | 步骤 | 落点 |
 |---|---|
-| 契约 | `server/contracts/openapi.yaml` 加 `AccountPause` |
+| 契约 | `server/contracts/openapi.yaml` 加 `AccountNote` |
 | 生成 | 跑 `server/scripts/generate.sh` |
 | 领域规则 | `server/internal/core/account/` |
-| 用例 | `server/internal/app/account/pause.go` |
+| 用例 | `server/internal/app/account/note.go` |
 | 存储 | `server/internal/adapters/pg/account.go` |
-| HTTP | `server/internal/entry/http/account/pause.go` |
-| 迁移 | `server/migrations/postgres/000NN_account_pause.sql` |
+| HTTP | `server/internal/entry/http/account/note.go` |
+| 迁移 | `server/migrations/postgres/000NN_account_note.sql` |
 | 前端页 | 不改页面时只加 `ui/src/features/accounts/` 的按钮与 hook |
-| 契约测试 | `server/internal/entry/http/account/pause_test.go` |
+| 契约测试 | `server/internal/entry/http/account/note_test.go` |
 | 前端测试 | `ui/src/features/accounts/*.test.tsx` |
 
 ## 6. 门
@@ -148,7 +168,7 @@ ui/src/
 结构不能只靠自觉。`server/tools/structure` 读 `server/structure.tsv`：
 
 1. 顶层目录必须在名册内。
-2. `server/internal/*` 与 `ui/src/*` 的子目录必须在名册内。
+2. `server/internal/*`、`server/cmd/*`、`server/migrations/*` 与 `ui/src/*` 的子目录必须在名册内。
 3. 新增域必须登记，否则门红。
 4. **反向也查**：名册里登记的 token 必须真有对应目录，否则门红（死 token 会放行已删目录的重建）。
 5. 名册为空、作用域不存在、扫描集为空时门报错，不当绿。未到阶段的作用域用 `?` 标记；
