@@ -89,6 +89,13 @@ func TestAuditAnchorE2E(t *testing.T) {
 	if hash != hex.EncodeToString(got.Hash) {
 		t.Fatalf("anchor_meta hash = %q, want %x", hash, got.Hash)
 	}
+	lineHash, err := db.QueryString(ctx, "SELECT encode(line_hash, 'hex') FROM anchor_meta WHERE singleton")
+	if err != nil {
+		t.Fatalf("query anchor_meta line_hash: %v", err)
+	}
+	if lineHash != hex.EncodeToString(got.LineHash) {
+		t.Fatalf("anchor_meta line_hash = %q, want %x", lineHash, got.LineHash)
+	}
 
 	// 第二行：第二次追加取新链头，文件保留两行。
 	if err := db.InTx(ctx, func(ctx context.Context) error {
@@ -133,6 +140,34 @@ func TestAuditAnchorE2E(t *testing.T) {
 		if perm := info.Mode().Perm(); perm != 0o600 {
 			t.Fatalf("mode = %o, want 600", perm)
 		}
+	}
+
+	// 审查探针：文件截空后再正常跑 CLI，必须 exit 1 且不洗白 meta。
+	// CLI 先追加本次链头（文件变一行），随后发现 meta 记录的那一行
+	// （seq=2 的旧行）在文件中缺失，判 anchor_truncated 并拒写 meta。
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("truncate anchor file: %v", err)
+	}
+	out, code = runCLI(t, []string{"audit", "anchor", "--file", path})
+	if code != 1 {
+		t.Fatalf("truncated-file anchor code = %d, out=%s", code, out)
+	}
+	if !strings.Contains(out, "anchor_truncated") {
+		t.Fatalf("stderr must name anchor_truncated: %s", out)
+	}
+	seq, err = db.QueryInt64(ctx, "SELECT seq FROM anchor_meta WHERE singleton")
+	if err != nil {
+		t.Fatalf("query anchor_meta after truncation: %v", err)
+	}
+	if seq != 2 {
+		t.Fatalf("anchor_meta was whitewashed after truncation: seq=%d, want 2", seq)
+	}
+	body, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file after truncation: %v", err)
+	}
+	if lines := strings.Count(string(body), "\n"); lines != 1 {
+		t.Fatalf("anchor lines after failed run = %d, want 1 (only the new head)", lines)
 	}
 
 	// 未配置路径：用法错误 2，不连库也不写文件。

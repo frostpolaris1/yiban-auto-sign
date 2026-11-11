@@ -218,8 +218,12 @@ func TestAuditStatusAnchorTruncatedE2E(t *testing.T) {
 			}, time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)); err != nil {
 				t.Fatalf("append anchor: %v", err)
 			}
+			last, err := file.Last(e.ctx)
+			if err != nil {
+				t.Fatalf("read anchor last: %v", err)
+			}
 			if err := e.audits.RecordAnchorMeta(e.ctx, coreaudit.AnchorMeta{
-				Seq: lastID, HeadHash: hash,
+				Seq: last.Seq, HeadHash: last.Hash, LineHash: last.LineHash,
 			}); err != nil {
 				t.Fatalf("record anchor meta: %v", err)
 			}
@@ -238,6 +242,86 @@ func TestAuditStatusAnchorTruncatedE2E(t *testing.T) {
 				t.Fatalf("anchor reason = %q, want anchor_truncated", after.AnchorReason)
 			}
 		})
+	}
+}
+
+// 审查探针：文件锚点行的 count 被改写——链内哈希不变，但整行字节哈希
+// 与 anchor_meta 不符，巡检必须判 anchor_rewritten，不得放行。
+func TestAuditStatusAnchorCountRewriteE2E(t *testing.T) {
+	anchorPath := filepath.Join(t.TempDir(), "audit-anchor.log")
+	e := w2cNewEnvWithAnchor(t, anchorPath)
+	master := e.user("anchor-count-rewrite@example.com", coreauth.RoleMaster)
+	session := e.login(master)
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		for _, action := range []coreaudit.Action{
+			coreaudit.ActionUserCreate,
+			coreaudit.ActionSchoolCreate,
+			coreaudit.ActionAdminGrant,
+		} {
+			if _, err := e.audits.Append(ctx, appaudit.Entry{
+				TS:         time.Date(2026, 11, 8, 8, 0, 0, 0, time.UTC),
+				ActorLabel: "anchor-master",
+				Action:     action,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("append audit rows: %v", err)
+	}
+	lastID := e.scalarInt("SELECT id FROM audit_logs ORDER BY id DESC LIMIT 1")
+	hashHex := e.scalarString("SELECT encode(hash, 'hex') FROM audit_logs WHERE id = $1", lastID)
+	hash, err := hex.DecodeString(hashHex)
+	if err != nil || len(hash) != 32 {
+		t.Fatalf("decode head hash: %v", err)
+	}
+	file := anchoradapter.NewFile(anchorPath)
+	if err := file.Append(e.ctx, coreaudit.Anchor{
+		Seq: lastID, Count: 3, Hash: hash,
+	}, time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("append anchor: %v", err)
+	}
+	last, err := file.Last(e.ctx)
+	if err != nil {
+		t.Fatalf("read anchor last: %v", err)
+	}
+	if err := e.audits.RecordAnchorMeta(e.ctx, coreaudit.AnchorMeta{
+		Seq: last.Seq, HeadHash: last.Hash, LineHash: last.LineHash,
+	}); err != nil {
+		t.Fatalf("record anchor meta: %v", err)
+	}
+	before := e.auditStatus(session)
+	if !before.OK || before.AnchorStatus != "ok" {
+		t.Fatalf("before rewrite = %+v, want ok", before)
+	}
+
+	// 改写文件行里的 count（3→2）：链行本身未动，链内哈希仍自洽。
+	// 字段定长五段：v1/ts/seq/count/hash；只动第 4 段，seq 保持 3。
+	data, err := os.ReadFile(anchorPath)
+	if err != nil {
+		t.Fatalf("read anchor: %v", err)
+	}
+	line := strings.TrimSpace(string(data))
+	fields := strings.Fields(line)
+	if len(fields) != 5 || fields[3] != "3" {
+		t.Fatalf("unexpected anchor line: %q", line)
+	}
+	fields[3] = "2"
+	rewritten := strings.Join(fields, " ")
+	if rewritten == line {
+		t.Fatalf("count rewrite did not change the line: %q", line)
+	}
+	if err := os.WriteFile(anchorPath, []byte(rewritten+"\n"), 0o600); err != nil {
+		t.Fatalf("rewrite anchor: %v", err)
+	}
+
+	after := e.auditStatus(session)
+	if after.OK || after.AnchorStatus != "mismatch" {
+		t.Fatalf("after rewrite = %+v, want red with anchor mismatch", after)
+	}
+	if after.AnchorReason != "anchor_rewritten" {
+		t.Fatalf("anchor reason = %q, want anchor_rewritten", after.AnchorReason)
 	}
 }
 func TestAuditStatusAnchorE2E(t *testing.T) {
@@ -275,8 +359,12 @@ func TestAuditStatusAnchorE2E(t *testing.T) {
 		}, time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("append anchor: %v", err)
 		}
+		last, err := anchoradapter.NewFile(path).Last(e.ctx)
+		if err != nil {
+			t.Fatalf("read anchor last: %v", err)
+		}
 		if err := e.audits.RecordAnchorMeta(e.ctx, coreaudit.AnchorMeta{
-			Seq: lastID, HeadHash: hash,
+			Seq: last.Seq, HeadHash: last.Hash, LineHash: last.LineHash,
 		}); err != nil {
 			t.Fatalf("record anchor meta: %v", err)
 		}

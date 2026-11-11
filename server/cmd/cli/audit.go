@@ -2,9 +2,11 @@
 //
 // # 功能
 // `yiban-cli audit anchor` 读取 audit_logs 的链头（最后一行 id、截至该行的
-// 行数与存储哈希），追加一行到 YIBAN_AUDIT_ANCHOR_FILE（append-only，0600）。
-// 巡检端点 GET /api/admin/audit-status 在配置了同一路径时比对锚点：
-// 删前缀、截尾、整表清空与链尾重签都会翻红。
+// 行数与存储哈希），追加一行到 YIBAN_AUDIT_ANCHOR_FILE（append-only，0600），
+// 并把文件里的最强锚点（seq/head_hash/整行字节哈希）按棘轮写进 anchor_meta
+// （seq 只进不退）。巡检端点 GET /api/admin/audit-status 在配置了同一路径时
+// 比对锚点与高水位：删前缀、截尾、整表清空、链尾重签、锚点文件末行被删与
+// 文件行改写（含 count 改写）都会翻红。
 //
 // # 归属
 // cmd/cli 薄装配层。文件格式与读写住在 internal/adapters/anchor；
@@ -123,10 +125,42 @@ DSN 与 pepper 只从环境读：YIBAN_DATABASE_URL / YIBAN_HASH_PEPPER。
 		_, _ = fmt.Fprintf(stderr, "audit anchor: 最强锚点 seq=%d 小于本次链头 %d\n", strongest.Seq, head.Seq)
 		return 1
 	}
+	// meta 已有记录时先做一致性门（都失败关闭，不写 meta、不洗白）：
+	//   1. meta 记录的那一行必须还在文件里（按整行字节哈希找）；
+	//      缺失即文件被截断（含截空后重跑），判 anchor_truncated；
+	//   2. 文件最强锚点不得低于 meta；同 seq 但行字节不同即被改写。
+	if meta, err := audits.AnchorMeta(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "audit anchor: 读 anchor_meta 失败: %v\n", err)
+		return 1
+	} else if meta != nil {
+		present, err := anchorFile.ContainsLineHash(ctx, meta.LineHash)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "audit anchor: %v\n", err)
+			return 1
+		}
+		if !present {
+			_, _ = fmt.Fprintf(stderr,
+				"audit anchor: anchor_truncated——anchor_meta 记录的行（seq=%d）在文件中缺失，拒绝写 meta\n", meta.Seq)
+			return 1
+		}
+		if strongest.Seq < meta.Seq {
+			_, _ = fmt.Fprintf(stderr,
+				"audit anchor: anchor_truncated——文件最强 seq=%d 低于 anchor_meta 的 %d，拒绝写 meta\n",
+				strongest.Seq, meta.Seq)
+			return 1
+		}
+		if strongest.Seq == meta.Seq && !bytes.Equal(strongest.LineHash, meta.LineHash) {
+			_, _ = fmt.Fprintf(stderr,
+				"audit anchor: anchor_rewritten——文件最强行（seq=%d）与 anchor_meta 记录的行字节不符，拒绝写 meta\n",
+				strongest.Seq)
+			return 1
+		}
+	}
 	// 锚点文件与库内高水位两处一致才算锚定成功；写表失败即回报错。
+	// RecordAnchorMeta 内部再做棘轮（seq 只进不退），倒退写同样报错。
 	if err := db.InTx(ctx, func(ctx context.Context) error {
 		return audits.RecordAnchorMeta(ctx, coreaudit.AnchorMeta{
-			Seq: strongest.Seq, HeadHash: strongest.Hash,
+			Seq: strongest.Seq, HeadHash: strongest.Hash, LineHash: strongest.LineHash,
 		})
 	}); err != nil {
 		_, _ = fmt.Fprintf(stderr, "audit anchor: 写 anchor_meta 失败: %v\n", err)

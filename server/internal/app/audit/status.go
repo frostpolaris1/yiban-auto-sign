@@ -4,7 +4,8 @@
 // 把仓储的分窗链校验结果翻成巡检结论：ok / empty / broken 三态，
 // 链头哈希转小写十六进制，并盖上本次巡检时刻。
 // 挂上 AnchorReader 与 AnchorMetaReader 时，同时比对库外锚点与库内高水位：
-// 删前缀、截尾、整表清空、链尾重签与锚点文件末行被删都会把结论翻成不健康。
+// 删前缀、截尾、整表清空、链尾重签、锚点文件末行被删与文件行改写
+// （含 count 改写：整行字节哈希失配）都会把结论翻成不健康。
 //
 // # 归属
 // app 层用例；端口 ChainVerifier 由 adapters/pg 实现，
@@ -26,7 +27,6 @@
 package audit
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -72,9 +72,10 @@ type ChainStatus struct {
 
 // ChainVerifier 读取并校验审计链。
 // 实现必须自己持 HMAC 密钥，用例不接触密钥。
-// anchor 为 nil 时只校验链，不比对库外锚点。
+// anchor 为 nil 时只校验链，不比对库外锚点；
+// anchor 与 meta 都非 nil 时，core 同时比库内高水位（截断/count 改写/seq 倒退）。
 type ChainVerifier interface {
-	VerifyStatus(ctx context.Context, anchor *coreaudit.Anchor) (coreaudit.Status, error)
+	VerifyStatus(ctx context.Context, anchor *coreaudit.Anchor, meta *coreaudit.AnchorMeta) (coreaudit.Status, error)
 }
 
 // AnchorReader 读取库外锚点的最新一行。
@@ -115,7 +116,7 @@ func (i *Inspector) WithAnchor(reader AnchorReader) *Inspector {
 }
 
 // WithAnchorMeta 挂上库内锚点高水位读取器。
-// 挂锚点文件时必须同时挂它：否则无法检出锚点文件末行被删。
+// 挂锚点文件时必须同时挂它：否则无法检出锚点文件末行被删与 count 改写。
 func (i *Inspector) WithAnchorMeta(reader AnchorMetaReader) *Inspector {
 	i.anchorMeta = reader
 	return i
@@ -125,53 +126,46 @@ func (i *Inspector) WithAnchorMeta(reader AnchorMetaReader) *Inspector {
 // 数据源错误原样上抛；断链、空链与锚点不一致都作为结论返回，不当作错误。
 func (i *Inspector) Status(ctx context.Context) (ChainStatus, error) {
 	if i.anchors == nil {
-		return i.statusFromChain(ctx, nil, AnchorStatusDisabled, "")
+		return i.statusFromChain(ctx, nil, nil, AnchorStatusDisabled, "")
 	}
 	anchor, anchorErr := i.anchors.Latest(ctx)
 	if i.anchorMeta == nil {
-		// 挂了锚点文件却没有高水位读取器：无法检出截断，失败关闭。
-		return i.statusFromChain(ctx, nil, AnchorStatusError, "anchor_meta_reader_missing")
+		// 挂了锚点文件却没有高水位读取器：无法检出截断/count 改写，失败关闭。
+		return i.statusFromChain(ctx, nil, nil, AnchorStatusError, "anchor_meta_reader_missing")
 	}
 	meta, metaErr := i.anchorMeta.AnchorMeta(ctx)
 	switch {
 	case metaErr != nil:
-		return i.statusFromChain(ctx, nil, AnchorStatusError, "anchor_meta_read_failed")
+		return i.statusFromChain(ctx, nil, nil, AnchorStatusError, "anchor_meta_read_failed")
 	case anchorErr == nil && anchor == nil:
 		// 文件不存在：有高水位说明曾经写过，是截断；没有则从未锚定。
 		if meta != nil {
-			return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_truncated")
+			return i.statusFromChain(ctx, nil, nil, AnchorStatusMismatch, "anchor_truncated")
 		}
-		return i.statusFromChain(ctx, nil, AnchorStatusMissing, "")
+		return i.statusFromChain(ctx, nil, nil, AnchorStatusMissing, "")
 	case errors.Is(anchorErr, coreaudit.ErrAnchorEmpty):
 		// 文件存在但为空：有高水位即截断；没有则从未锚定。
 		if meta != nil {
-			return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_truncated")
+			return i.statusFromChain(ctx, nil, nil, AnchorStatusMismatch, "anchor_truncated")
 		}
-		return i.statusFromChain(ctx, nil, AnchorStatusMissing, "")
+		return i.statusFromChain(ctx, nil, nil, AnchorStatusMissing, "")
 	case anchorErr != nil:
 		// 文件存在但读不出/解析失败：不得当成"没有锚点"。
-		return i.statusFromChain(ctx, nil, AnchorStatusError, "anchor_read_failed")
+		return i.statusFromChain(ctx, nil, nil, AnchorStatusError, "anchor_read_failed")
 	}
 	if meta == nil {
-		return i.statusFromChain(ctx, nil, AnchorStatusError, "anchor_meta_missing")
+		return i.statusFromChain(ctx, nil, nil, AnchorStatusError, "anchor_meta_missing")
 	}
-	switch {
-	case anchor.Seq < meta.Seq:
-		return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_truncated")
-	case anchor.Seq == meta.Seq && !bytes.Equal(anchor.Hash, meta.HeadHash):
-		return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_truncated")
-	case anchor.Seq > meta.Seq:
-		// 文件比库内高水位更强：上一次 meta 写失败或有人追加了未登记行。
-		return i.statusFromChain(ctx, nil, AnchorStatusMismatch, "anchor_unrecorded")
-	}
-	return i.statusFromChain(ctx, anchor, AnchorStatusOK, "")
+	// 文件与高水位都在：交给 core 做三字段（seq/head_hash/line_hash）与
+	// 链内定点/行数比对；不一致的 reason 由 core 给出，这里只翻状态。
+	return i.statusFromChain(ctx, anchor, meta, AnchorStatusOK, "")
 }
 
 // statusFromChain 跑链校验并装配结论。
 // anchor 为 nil 时只校验链；anchorStatus 决定锚点字段与最终 OK。
 func (i *Inspector) statusFromChain(ctx context.Context, anchor *coreaudit.Anchor,
-	anchorStatus AnchorStatus, anchorReason string) (ChainStatus, error) {
-	raw, err := i.chain.VerifyStatus(ctx, anchor)
+	meta *coreaudit.AnchorMeta, anchorStatus AnchorStatus, anchorReason string) (ChainStatus, error) {
+	raw, err := i.chain.VerifyStatus(ctx, anchor, meta)
 	if err != nil {
 		return ChainStatus{}, err
 	}

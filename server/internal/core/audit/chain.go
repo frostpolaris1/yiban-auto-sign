@@ -22,6 +22,7 @@
 package audit
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
@@ -674,12 +675,15 @@ func Verify(key []byte, rows []Row) (Report, error) {
 
 // Anchor 是库外锚点文件的一行：链头行 id、截至该行的行数与链头哈希。
 // Seq 是锚点时刻最后一行（最大 id）的行 id；Count 是该行及之前的行数；
-// Hash 是该行存储哈希的 32 字节原值。
+// Hash 是该行存储哈希的 32 字节原值；LineHash 是锚点文件该**整行字节**的
+// SHA-256（对齐旧线 last_hash 语义）：文件里的 count 或任何字段被改写，
+// 行字节变化即 LineHash 不符，count 改写无法绕过比对。
 // 锚点只覆盖到 Seq：其后新增的行不在本次比对范围内。
 type Anchor struct {
-	Seq   int64
-	Count int64
-	Hash  []byte
+	Seq      int64
+	Count    int64
+	Hash     []byte
+	LineHash []byte
 }
 
 // AnchorResult 是一次锚点比对的结论。
@@ -691,11 +695,13 @@ type AnchorResult struct {
 	Reason  string
 }
 
-// AnchorMeta 是库内锚点高水位：最后一次成功记录的锚点 seq 与链头哈希。
-// 它只用于检出锚点文件被截断/改写；链比对仍以锚点文件的最强行为准。
+// AnchorMeta 是库内锚点高水位：最后一次成功记录的锚点 seq、链头哈希与
+// 锚点文件整行字节的 SHA-256。它用于检出锚点文件被截断或改写
+// （含 count 改写：行字节变化即 LineHash 不符）；链比对仍以锚点文件的最强行为准。
 type AnchorMeta struct {
 	Seq      int64
 	HeadHash []byte
+	LineHash []byte
 }
 
 // Status 汇总一次分窗链校验的结论。
@@ -733,22 +739,26 @@ type RowSource func(afterID int64, limit int) ([]Row, error)
 // 扫描在读到不足一窗时结束：其后追加的行不在本次结论内，
 // LastHash 是本次扫描到的链头，可作外部锚点。
 func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
-	return VerifyStreamWithAnchor(key, batchSize, next, nil)
+	return VerifyStreamWithAnchor(key, batchSize, next, nil, nil)
 }
 
 // VerifyStreamWithAnchor 在 VerifyStream 的链校验之外比对库外锚点。
 //
 // anchor 为 nil 时行为与 VerifyStream 完全相同。非 nil 时：
+//   - meta 非 nil：文件锚点行与库内高水位逐字段比对（seq/head_hash/line_hash），
+//     任何一项不符即判不符——count 改写改变行字节，LineHash 必然失配；
 //   - 链内零行：锚点记录的链头已消失，判不符；
 //   - 链头 id 小于锚点 Seq：锚点覆盖的尾部行被删除，判不符；
 //   - 锚点 Seq 那一行不存在：前缀或尾部被删除，判不符；
 //   - 该行哈希与锚点不符：链被改写或重签，判不符；
 //   - 该行及之前的行数与锚点 Count 不符：前缀被删除或改写，判不符。
 //
+// meta 只作文件完整性的高水位，不参与链内复算；meta 为 nil 时退回
+// 仅文件对链的比对口径。
 // 锚点只覆盖到 Seq：Seq 之后新增的行被删除不在本判据内（需要离机副本）。
 // 链已断时不做锚点比对（断链本身已是结论）；空链带锚点仍执行比对并判不符。
 // 锚点值非法（Seq/Count 非正、Count 大于 Seq、哈希长度不是 32 字节）返回错误。
-func VerifyStreamWithAnchor(key []byte, batchSize int, next RowSource, anchor *Anchor) (Status, error) {
+func VerifyStreamWithAnchor(key []byte, batchSize int, next RowSource, anchor *Anchor, meta *AnchorMeta) (Status, error) {
 	if batchSize < 1 {
 		return Status{}, fmt.Errorf("audit: batch size must be positive, got %d", batchSize)
 	}
@@ -759,6 +769,9 @@ func VerifyStreamWithAnchor(key []byte, batchSize int, next RowSource, anchor *A
 		if anchor.Seq < 1 || anchor.Count < 1 || anchor.Count > anchor.Seq ||
 			len(anchor.Hash) != sha256.Size {
 			return Status{}, errors.New("audit: invalid anchor")
+		}
+		if meta != nil && (len(meta.HeadHash) != sha256.Size || len(meta.LineHash) != sha256.Size) {
+			return Status{}, errors.New("audit: invalid anchor meta")
 		}
 	}
 	var status Status
@@ -774,7 +787,7 @@ func VerifyStreamWithAnchor(key []byte, batchSize int, next RowSource, anchor *A
 		}
 		if len(rows) == 0 {
 			status.Empty = status.CheckedRows == 0
-			applyAnchor(&status, anchor, anchorFound, anchorHash, anchorCount)
+			applyAnchor(&status, anchor, meta, anchorFound, anchorHash, anchorCount)
 			return status, nil
 		}
 		if len(rows) > batchSize {
@@ -824,7 +837,7 @@ func VerifyStreamWithAnchor(key []byte, batchSize int, next RowSource, anchor *A
 		prevHash = last
 		afterID = rows[len(rows)-1].ID
 		if len(rows) < batchSize {
-			applyAnchor(&status, anchor, anchorFound, anchorHash, anchorCount)
+			applyAnchor(&status, anchor, meta, anchorFound, anchorHash, anchorCount)
 			return status, nil
 		}
 	}
@@ -832,7 +845,9 @@ func VerifyStreamWithAnchor(key []byte, batchSize int, next RowSource, anchor *A
 
 // applyAnchor 把一次已完成的链扫描与锚点比对写入 status.Anchor。
 // 只在链未断的返回路径调用；断链时锚点比对没有意义。
-func applyAnchor(status *Status, anchor *Anchor, found bool, hash []byte, count int64) {
+// meta 非 nil 时先比文件锚点行与库内高水位（seq/head_hash/line_hash）：
+// count 改写改变行字节，LineHash 必然失配，绕不开这一层。
+func applyAnchor(status *Status, anchor *Anchor, meta *AnchorMeta, found bool, hash []byte, count int64) {
 	if anchor == nil {
 		return
 	}
@@ -841,6 +856,15 @@ func applyAnchor(status *Status, anchor *Anchor, found bool, hash []byte, count 
 	case status.Empty:
 		status.Anchor.Reason = fmt.Sprintf(
 			"审计链为空，但锚点记录曾有 %d 行（链头 id=%d）——疑似整表被清空", anchor.Count, anchor.Seq)
+	case meta != nil && anchor.Seq < meta.Seq:
+		status.Anchor.Reason = "anchor_truncated"
+	case meta != nil && anchor.Seq > meta.Seq:
+		status.Anchor.Reason = "anchor_unrecorded"
+	case meta != nil && !bytes.Equal(anchor.LineHash, meta.LineHash):
+		status.Anchor.Reason = "anchor_rewritten"
+	case meta != nil && !hmac.Equal(anchor.Hash, meta.HeadHash):
+		// LineHash 相等时 HeadHash 必然相等；走到这里属矛盾状态，失败关闭。
+		status.Anchor.Reason = "anchor_rewritten"
 	case status.LastID < anchor.Seq:
 		status.Anchor.Reason = fmt.Sprintf(
 			"链头 id=%d 小于锚点记录的 %d——锚点覆盖的尾部行被删除", status.LastID, anchor.Seq)

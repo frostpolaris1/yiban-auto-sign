@@ -24,11 +24,13 @@ type fakeChain struct {
 	err    error
 	called int
 	anchor *coreaudit.Anchor
+	meta   *coreaudit.AnchorMeta
 }
 
-func (f *fakeChain) VerifyStatus(_ context.Context, anchor *coreaudit.Anchor) (coreaudit.Status, error) {
+func (f *fakeChain) VerifyStatus(_ context.Context, anchor *coreaudit.Anchor, meta *coreaudit.AnchorMeta) (coreaudit.Status, error) {
 	f.called++
 	f.anchor = anchor
+	f.meta = meta
 	return f.status, f.err
 }
 
@@ -56,9 +58,9 @@ func (f *fakeAnchorMetaReader) AnchorMeta(context.Context) (*coreaudit.AnchorMet
 	return f.meta, f.err
 }
 
-// metaOf 用锚点造一条一致的库内高水位。
+// metaOf 用锚点造一条一致的库内高水位（三字段全等）。
 func metaOf(anchor *coreaudit.Anchor) *coreaudit.AnchorMeta {
-	return &coreaudit.AnchorMeta{Seq: anchor.Seq, HeadHash: anchor.Hash}
+	return &coreaudit.AnchorMeta{Seq: anchor.Seq, HeadHash: anchor.Hash, LineHash: anchor.LineHash}
 }
 
 var inspectAt = time.Date(2026, 11, 8, 9, 15, 30, 0, time.UTC)
@@ -234,19 +236,20 @@ func TestInspectorAnchorReadErrorTurnsRed(t *testing.T) {
 	}
 }
 
-// 删锚点末行/整文件：库内高水位还在，必须判 anchor_truncated。
+// 删锚点末行/整文件/文件最强低于 meta：库内高水位还在，必须判 anchor_truncated。
 func TestInspectorAnchorTruncated(t *testing.T) {
-	hash := make([]byte, 32)
-	meta := &coreaudit.AnchorMeta{Seq: 3, HeadHash: hash}
+	meta := &coreaudit.AnchorMeta{Seq: 3, HeadHash: make([]byte, 32), LineHash: make([]byte, 32)}
 	cases := map[string]*fakeAnchorReader{
 		"file missing":   {},
 		"file empty":     {err: coreaudit.ErrAnchorEmpty},
-		"seq below meta": {anchor: &coreaudit.Anchor{Seq: 2, Count: 2, Hash: make([]byte, 32)}},
-		"hash changed":   {anchor: &coreaudit.Anchor{Seq: 3, Count: 3, Hash: bytes.Repeat([]byte{0x11}, 32)}},
+		"seq below meta": {anchor: &coreaudit.Anchor{Seq: 2, Count: 2, Hash: make([]byte, 32), LineHash: make([]byte, 32)}},
 	}
+	// 链替身按 core 的口径返回失配结论：本测只钉 status.go 的状态映射。
+	chainStatus := coreaudit.Status{CheckedRows: 3, LastID: 3,
+		Anchor: coreaudit.AnchorResult{Checked: true, OK: false, Reason: "anchor_truncated"}}
 	for name, reader := range cases {
 		t.Run(name, func(t *testing.T) {
-			chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
+			chain := &fakeChain{status: chainStatus}
 			status, err := newInspector(t, chain).WithAnchor(reader).
 				WithAnchorMeta(&fakeAnchorMetaReader{meta: meta}).Status(context.Background())
 			if err != nil {
@@ -259,6 +262,26 @@ func TestInspectorAnchorTruncated(t *testing.T) {
 				t.Fatalf("anchor reason = %q, want anchor_truncated", status.AnchorReason)
 			}
 		})
+	}
+}
+
+// count 改写：文件行字节变了，LineHash 与 meta 不符（seq/head_hash 不变），
+// 必须判 anchor_rewritten——只比链内哈希时它绕得过比对。
+func TestInspectorAnchorCountRewrite(t *testing.T) {
+	anchor := &coreaudit.Anchor{Seq: 3, Count: 3, Hash: make([]byte, 32), LineHash: bytes.Repeat([]byte{0x2a}, 32)}
+	meta := &coreaudit.AnchorMeta{Seq: 3, HeadHash: anchor.Hash, LineHash: bytes.Repeat([]byte{0x2b}, 32)}
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3,
+		Anchor: coreaudit.AnchorResult{Checked: true, OK: false, Reason: "anchor_rewritten"}}}
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).
+		WithAnchorMeta(&fakeAnchorMetaReader{meta: meta}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OK || status.AnchorStatus != appaudit.AnchorStatusMismatch {
+		t.Fatalf("status = %+v, want red with anchor mismatch", status)
+	}
+	if status.AnchorReason != "anchor_rewritten" {
+		t.Fatalf("anchor reason = %q, want anchor_rewritten", status.AnchorReason)
 	}
 }
 
@@ -283,7 +306,8 @@ func TestInspectorAnchorMetaMissing(t *testing.T) {
 func TestInspectorAnchorUnrecorded(t *testing.T) {
 	anchor := &coreaudit.Anchor{Seq: 4, Count: 4, Hash: make([]byte, 32)}
 	meta := &coreaudit.AnchorMeta{Seq: 3, HeadHash: make([]byte, 32)}
-	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 4, LastID: 4}}
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 4, LastID: 4,
+		Anchor: coreaudit.AnchorResult{Checked: true, OK: false, Reason: "anchor_unrecorded"}}}
 	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).
 		WithAnchorMeta(&fakeAnchorMetaReader{meta: meta}).Status(context.Background())
 	if err != nil {

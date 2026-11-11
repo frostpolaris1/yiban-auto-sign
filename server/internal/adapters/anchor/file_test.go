@@ -1,6 +1,7 @@
 package anchor_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -163,5 +164,35 @@ func TestAppendRepairsMissingFinalNewline(t *testing.T) {
 	}
 	if latest.Seq != 2 {
 		t.Fatalf("latest seq = %d, want 2", latest.Seq)
+	}
+}
+
+// ContainsLineHash：meta 记录的整行字节哈希在文件里必须找得到；
+// 找不到即截断或改写（CLI 与巡检都靠它判 anchor_truncated）。
+func TestContainsLineHash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit-anchor.log")
+	file := anchor.NewFile(path)
+	first := testAnchor(3, 3)
+	if err := file.Append(context.Background(), first, testAnchorTime); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := file.Latest(context.Background())
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	present, err := file.ContainsLineHash(context.Background(), got.LineHash)
+	if err != nil || !present {
+		t.Fatalf("ContainsLineHash(own line) = (%v, %v), want (true, nil)", present, err)
+	}
+	missing, err := file.ContainsLineHash(context.Background(), bytes.Repeat([]byte{0x2c}, 32))
+	if err != nil || missing {
+		t.Fatalf("ContainsLineHash(other) = (%v, %v), want (false, nil)", missing, err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	present, err = file.ContainsLineHash(context.Background(), got.LineHash)
+	if err != nil || present {
+		t.Fatalf("ContainsLineHash(empty file) = (%v, %v), want (false, nil)", present, err)
 	}
 }

@@ -282,3 +282,4 @@ ui/scripts/tests/audit-status.test.mjs	uncovered=UI 单测文件自身即门（n
 server/cmd/cli/backup.go	uncovered=Go 包门 go test ./cmd/cli 真跑 manifest 表覆盖与备份/恢复 e2e
 server/internal/adapters/pg/photo_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./internal/adapters/pg 跑照片软删/清理 e2e）
 ui/package.json	uncovered=UI 测试入口清单；由 npm run test:unit 与 test-plan 单测消费
+server/internal/adapters/pg/anchor_meta_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./internal/adapters/pg 跑 anchor_meta 棘轮 e2e）

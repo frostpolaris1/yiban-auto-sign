@@ -133,8 +133,9 @@ const auditStatusBatchRows = 2000
 // 复算；窗与窗之间由 core 的 VerifyStream 比较首行 prev_hash 与上一窗
 // 末行哈希。空链、断链都作为结论返回（err == nil），只有读库错误上抛。
 // 读到不足一窗即结束：其后追加的行不在本次结论内。
-// anchor 非 nil 时同时比对库外锚点（删前缀/截尾/清空/链尾重签）。
-func (r *AuditRepo) VerifyStatus(ctx context.Context, anchor *coreaudit.Anchor) (coreaudit.Status, error) {
+// anchor 非 nil 时同时比对库外锚点（删前缀/截尾/清空/链尾重签）；
+// meta 非 nil 时再比库内高水位（截断/count 改写/seq 倒退）。
+func (r *AuditRepo) VerifyStatus(ctx context.Context, anchor *coreaudit.Anchor, meta *coreaudit.AnchorMeta) (coreaudit.Status, error) {
 	return coreaudit.VerifyStreamWithAnchor(r.key, auditStatusBatchRows,
 		func(afterID int64, limit int) ([]coreaudit.Row, error) {
 			rows, err := r.db.q(ctx).Query(ctx, `
@@ -150,7 +151,7 @@ func (r *AuditRepo) VerifyStatus(ctx context.Context, anchor *coreaudit.Anchor) 
 			}
 			defer rows.Close()
 			return scanChainRows(rows)
-		}, anchor)
+		}, anchor, meta)
 }
 
 // Head 读取当前链头：最后一行 id、截至该行的行数与存储哈希。
@@ -176,40 +177,54 @@ func (r *AuditRepo) Head(ctx context.Context) (coreaudit.Anchor, bool, error) {
 }
 
 // AnchorMeta 读取库内锚点高水位；无行返回 (nil, nil)。
-// 高水位只用于检出锚点文件被截断/改写，不参与链内复算。
+// 高水位只用于检出锚点文件被截断/改写（含 count 改写），不参与链内复算。
 func (r *AuditRepo) AnchorMeta(ctx context.Context) (*coreaudit.AnchorMeta, error) {
 	var seq int64
-	var hash []byte
+	var headHash, lineHash []byte
 	err := r.db.q(ctx).QueryRow(ctx,
-		`SELECT seq, head_hash FROM anchor_meta WHERE singleton`).Scan(&seq, &hash)
+		`SELECT seq, head_hash, line_hash FROM anchor_meta WHERE singleton`).
+		Scan(&seq, &headHash, &lineHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, mapError(err)
 	}
-	if len(hash) != 32 {
+	if len(headHash) != 32 || len(lineHash) != 32 {
 		return nil, fmt.Errorf("pg: anchor meta hash has the wrong length")
 	}
-	return &coreaudit.AnchorMeta{Seq: seq, HeadHash: hash}, nil
+	return &coreaudit.AnchorMeta{Seq: seq, HeadHash: headHash, LineHash: lineHash}, nil
 }
 
-// RecordAnchorMeta 覆盖写单行高水位。
-// 调用方负责保证 seq/head_hash 与锚点文件的最强行一致：
+// RecordAnchorMeta 按**棘轮**覆盖写单行高水位：seq 只进不退。
+// ON CONFLICT 的 WHERE 要求新 seq 不小于库内 seq；倒退写不更新任何列、
+// RETURNING 无行，本方法把它当错误返回（调用方已先行判截断，
+// 走到这里还倒退属于缺陷，不得静默吞掉）。
+// 调用方负责保证 seq/head_hash/line_hash 与锚点文件的最强行一致：
 // 本方法只落库，不读锚点文件。
 func (r *AuditRepo) RecordAnchorMeta(ctx context.Context, meta coreaudit.AnchorMeta) error {
-	if meta.Seq < 1 || len(meta.HeadHash) != 32 {
+	if meta.Seq < 1 || len(meta.HeadHash) != 32 || len(meta.LineHash) != 32 {
 		return validationError("invalid anchor meta")
 	}
-	_, err := r.db.q(ctx).Exec(ctx, `
-		INSERT INTO anchor_meta (singleton, seq, head_hash, updated_at)
-		VALUES (true, $1, $2, now())
+	var seq int64
+	err := r.db.q(ctx).QueryRow(ctx, `
+		INSERT INTO anchor_meta (singleton, seq, head_hash, line_hash, updated_at)
+		VALUES (true, $1, $2, $3, now())
 		ON CONFLICT (singleton) DO UPDATE
 		SET seq = EXCLUDED.seq,
 		    head_hash = EXCLUDED.head_hash,
-		    updated_at = EXCLUDED.updated_at`,
-		meta.Seq, meta.HeadHash)
-	return mapError(err)
+		    line_hash = EXCLUDED.line_hash,
+		    updated_at = EXCLUDED.updated_at
+		WHERE EXCLUDED.seq >= anchor_meta.seq
+		RETURNING seq`,
+		meta.Seq, meta.HeadHash, meta.LineHash).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return validationError("anchor meta ratchet rejected a lower seq")
+	}
+	if err != nil {
+		return mapError(err)
+	}
+	return nil
 }
 
 // scanChainRows 把链行查询结果扫成 core 的 Row 切片。

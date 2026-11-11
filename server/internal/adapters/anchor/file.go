@@ -8,13 +8,14 @@
 // seq 是锚点时刻最后一行（最大 id）的行 id，count 是该行及之前的行数，
 // hash 是该行存储哈希的 64 位小写十六进制。
 // Latest 取 seq 最大的行作为最强锚点；Append 追加一行并把文件权限收紧到 0600。
+// 每行解析时算 LineHash（整行字节的 SHA-256）：meta 用它检出截断与改写。
 //
 // # 归属
 // adapters 层文件设施。app/audit 只依赖 AnchorReader 端口；
 // CLI 的 `audit anchor` 与服务的巡检端点共用本实现。
 //
 // # 复用
-// File、NewFile、ErrEmptyFile。
+// File、NewFile、ErrEmptyFile、ContainsLineHash。
 //
 // # 口径
 // 文件不存在返回 (nil, nil)：未配置锚点不是错误，调用方按现行为处理。
@@ -25,6 +26,7 @@
 package anchor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -88,6 +90,28 @@ func (f *File) Last(ctx context.Context) (*coreaudit.Anchor, error) {
 		return nil, err
 	}
 	return anchors[len(anchors)-1], nil
+}
+
+// ContainsLineHash 报告文件里是否存在 line_hash 相符的行。
+// meta 记录的整行字节哈希在文件中找不到，即锚点文件被截断或该行被改写。
+// 文件不存在/为空返回 false（找不到即截断）；解析错误原样上抛。
+func (f *File) ContainsLineHash(ctx context.Context, lineHash []byte) (bool, error) {
+	anchors, err := f.readAnchors(ctx)
+	if err != nil {
+		if errors.Is(err, ErrEmptyFile) {
+			return false, nil
+		}
+		return false, err
+	}
+	if anchors == nil {
+		return false, nil
+	}
+	for _, anchor := range anchors {
+		if bytes.Equal(anchor.LineHash, lineHash) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // readAnchors 按文件顺序解析全部非空行。
@@ -172,6 +196,8 @@ func (f *File) Append(ctx context.Context, a coreaudit.Anchor, ts time.Time) err
 }
 
 // parseLine 解析一行锚点。字段固定五个，时间戳不含空格（RFC3339Nano）。
+// LineHash 是本行**去首尾空白后**全部字节的 SHA-256：CLI 与本包用同一
+// 格式写行，两侧算出的值一致；文件里任何字节被改写（含 count）都会改变它。
 func parseLine(line string) (*coreaudit.Anchor, error) {
 	parts := strings.Fields(line)
 	if len(parts) != 5 {
@@ -198,5 +224,6 @@ func parseLine(line string) (*coreaudit.Anchor, error) {
 	if err != nil || len(hash) != sha256.Size {
 		return nil, fmt.Errorf("invalid hash %q", parts[4])
 	}
-	return &coreaudit.Anchor{Seq: seq, Count: count, Hash: hash}, nil
+	lineSum := sha256.Sum256([]byte(line))
+	return &coreaudit.Anchor{Seq: seq, Count: count, Hash: hash, LineHash: lineSum[:]}, nil
 }

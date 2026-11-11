@@ -1530,11 +1530,12 @@ type AuditStatusReport struct {
 	// AnchorStatus Out-of-database anchor comparison state. disabled means no anchor
 	// path is configured; missing means the path is configured but the
 	// file does not exist yet (the chain verdict stands); ok means the
-	// anchor row, its hash and the row count all match; mismatch means
-	// the anchor row is gone, its hash changed, the count changed or the
-	// chain is empty; error means the anchor file exists but cannot be
-	// read or parsed (fail closed); not_checked means the chain was
-	// already broken, so the anchor comparison did not run.
+	// anchor row, its hash, the row count and the recorded line bytes
+	// (line_hash in anchor_meta) all match; mismatch means the anchor
+	// row is gone, its hash or recorded line bytes changed, the count
+	// changed or the chain is empty; error means the anchor file exists
+	// but cannot be read or parsed (fail closed); not_checked means the
+	// chain was already broken, so the anchor comparison did not run.
 	AnchorStatus *AuditStatusReportAnchorStatus `json:"anchor_status,omitempty"`
 
 	// BrokenAt Row id of the first mismatch; null when intact or empty.
@@ -1560,11 +1561,12 @@ type AuditStatusReport struct {
 // AuditStatusReportAnchorStatus Out-of-database anchor comparison state. disabled means no anchor
 // path is configured; missing means the path is configured but the
 // file does not exist yet (the chain verdict stands); ok means the
-// anchor row, its hash and the row count all match; mismatch means
-// the anchor row is gone, its hash changed, the count changed or the
-// chain is empty; error means the anchor file exists but cannot be
-// read or parsed (fail closed); not_checked means the chain was
-// already broken, so the anchor comparison did not run.
+// anchor row, its hash, the row count and the recorded line bytes
+// (line_hash in anchor_meta) all match; mismatch means the anchor
+// row is gone, its hash or recorded line bytes changed, the count
+// changed or the chain is empty; error means the anchor file exists
+// but cannot be read or parsed (fail closed); not_checked means the
+// chain was already broken, so the anchor comparison did not run.
 type AuditStatusReportAnchorStatus string
 
 // AutoApproveStatus defines model for AutoApproveStatus.

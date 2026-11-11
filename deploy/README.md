@@ -552,7 +552,13 @@ sudo systemctl restart yiban.service
    不要把 stdout 重定向到同一个锚点文件（日志的 `>>` 目标不是锚点文件）。
 3. 恢复旧备份或手工整表清理后，锚点会指向已不存在的链头并持续判红。
    这是预期：确认是合法回滚后，停服、移走旧锚点文件（保留取证），
-   重新跑一次 `yiban-cli audit anchor` 播种新基线并覆盖 `anchor_meta`，再起服务。
+   用 systemd 单元重新播种——单元自带 EnvironmentFile，root 读不到的
+   `server.env` 由它注入，`yiban` 直跑读不到：
+   ```bash
+   sudo systemctl start yiban-audit-anchor.service   # 播种新基线并覆盖 anchor_meta
+   journalctl -u yiban-audit-anchor.service -n 20
+   sudo systemctl start yiban.service                # 再起服务
+   ```
 
 容器形态另有两个编排层变量，不进 Go 名册，也不在镜像里：`POSTGRES_PASSWORD`
 （db 初始口令，同时是派生 `YIBAN_DATABASE_URL` 的唯一来源）与
