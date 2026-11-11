@@ -565,6 +565,8 @@ var additionalPropertiesExemptions = map[string][]string{
 	"AdminQuotaSettingsUpdate": {"请求对象；未知键由处理器显式 400，非静默忽略"},
 	// smtp4 SMTP 设置写回：同 sett2 形态，未知键由处理器显式 400。
 	"AdminMailSettingsUpdate": {"请求对象；未知键由处理器显式 400，非静默忽略"},
+	// abs R1 测试邮件二次口令：请求对象；未知字段被解码器忽略。
+	"AdminMailTestRequest": {"请求对象；未知字段被解码器忽略"},
 }
 
 // contractNoAdditionalProperties 匹配 YAML 映射里的一项 additionalProperties: false。

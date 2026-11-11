@@ -15,8 +15,9 @@
 //
 // # 口径
 // 业务日按 Input.Location 解析；窗口来源取 contract.WindowSource 三值。
-// 预览、建计划与写覆盖用实时窗口（先问平台）。
-// 只读报告（Report、ListWindows）默认只读缓存；Refresh 为真才重新发现（k0y-4）。
+// 建计划、写覆盖与 POST refresh 预览用实时窗口（先问平台）；
+// GET 预览与只读报告只读缓存，显式 Refresh 才重新发现
+// （k0y-4 / F5：GET 路径无平台副作用）。
 // 停用任务可预览，不可建计划与写覆盖：回 conflict（k0y-6）。
 package schedule
 
@@ -107,6 +108,9 @@ type Preview struct {
 	// Histogram 是 5 分钟片的落点计数，键为片号（相对有效窗口起点）。
 	Histogram map[int]int
 	Rows      []Row
+	// Note 是可选的人类可读回执（如周末门关闭导致 0 行）。
+	// 空串表示无附加说明；入口层据此决定响应是否带 note。
+	Note string
 }
 
 // Service 是计划用例服务。
@@ -148,17 +152,27 @@ func NewService(deps Deps) (*Service, error) {
 
 // Preview 只算不写：返回窗口解析结果与完整计划行。
 // 与 Build 同一解析口径（预览就是计划），故不节流；Refresh 不影响本方法。
+// **有平台发现**：入口只在 POST /api/schedule/preview/refresh 调用它。
 // 停用任务同样可预览（k0y-6）。
 func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
 	p, _, err := s.previewWithWindow(ctx, in, policyLive)
 	return p, err
 }
 
+// PreviewCached 是 GET /api/schedule/preview 的只读路径（F5 / D3）：
+// 覆盖 > 缓存 > 回退，**不**发现平台、不写库。无缓存时用回退窗口。
+// 强制刷新走 Preview（POST /api/schedule/preview/refresh）。
+func (s *Service) PreviewCached(ctx context.Context, in Input) (Preview, error) {
+	in.Refresh = false
+	p, _, err := s.previewWithWindow(ctx, in, policyCached)
+	return p, err
+}
+
 // Report 计算容量报告所需的计划指标（k0y-4）。
 //
-// 窗口解析默认只读缓存：有当日缓存时零平台调用。
-// 无缓存时发现一次并落缓存；Refresh 为真时也发现一次。
-// 两个只读端点对 refresh=true 行为一致：都做平台发现。
+// 窗口解析默认只读缓存：有当日缓存时零平台调用；无缓存时用回退窗口，
+// **不**自动发现。Refresh 为真时才做一次平台发现并落缓存
+// （POST /api/capacity/refresh）。
 // 存在合法覆盖时不写缓存（见 storeFresh）：缓存窗口保持覆盖行。
 // 报告采用的窗口仍以覆盖优先；与计划同一口径。
 // 停用任务同样可报告容量（k0y-6）。
@@ -388,8 +402,8 @@ func (s *Service) SelfContext(ctx context.Context, userID, day string) (coresche
 
 // ListWindows 返回作用域内各任务当日的窗口。
 // 没有缓存的任务也返回一行（Cached=false）：管理面要看到"未发现"。
-// 默认只读缓存（k0y-4）：有缓存的任务零平台调用。
-// 无缓存的任务发现一次并落缓存；refresh 为真时全部重新发现。
+// 默认只读缓存（k0y-4 / F5）：GET 路径零平台调用。
+// refresh 为真时全部重新发现（POST /api/schedule/windows/refresh）。
 func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day string, refresh bool) ([]coreschedule.WindowView, error) {
 	if err := requireScheduleScope(scope); err != nil {
 		return nil, err
@@ -401,10 +415,10 @@ func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day st
 	if err != nil {
 		return nil, err
 	}
+	if !refresh {
+		return views, nil
+	}
 	for i := range views {
-		if views[i].Cached && !refresh {
-			continue
-		}
 		if err := s.refreshView(ctx, &views[i], day); err != nil {
 			return nil, err
 		}
@@ -782,9 +796,9 @@ func (s *Service) previewWithWindow(ctx context.Context, in Input, policy window
 // 平台发现失败不算错误（来源如实标注）；缓存读取失败**只有**
 // errs.ErrNotFound 才算无缓存，其他错误上抛。
 // 人工覆盖存在且合法时优先：覆盖是运维对当日窗口的明确决定。
-// 何时问平台：policyLive 且无合法覆盖；policyCached 且无缓存或 Refresh。
-// policyCached 的刷新先于覆盖判定：两个只读端点对 refresh=true
-// 行为一致，都发现平台窗口；存在覆盖时调用方不改写缓存行。
+// 何时问平台：policyLive 且无合法覆盖；policyCached 且 Refresh 为真。
+// policyCached 的刷新先于覆盖判定：POST refresh 端点即使存在覆盖
+// 也完成一次发现；存在覆盖时调用方不改写缓存行。
 func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, loc *time.Location, policy windowPolicy) (windowResolution, error) {
 	var res windowResolution
 	cached, cacheErr := s.deps.Windows.GetWindow(ctx, in.SchoolTaskID, in.Day)
@@ -803,7 +817,9 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 
 	discover := false
 	if policy == policyCached {
-		discover = in.Refresh || !res.cacheOK
+		// GET 路径不得有平台副作用（F5）：只有显式 Refresh 才问平台。
+		// 无缓存时走回退窗口，不在读路径上自动发现。
+		discover = in.Refresh
 	} else {
 		discover = !res.overrideOK
 	}

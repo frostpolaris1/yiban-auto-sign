@@ -380,6 +380,15 @@ func (s *server) ScheduleWindows(c *gin.Context, params oapi.ScheduleWindowsPara
 	s.schedule.Windows(c, params)
 }
 
+// ScheduleWindowsRefresh 委托窗口强制刷新（POST）。未装配时仍是 501。
+func (s *server) ScheduleWindowsRefresh(c *gin.Context, params oapi.ScheduleWindowsRefreshParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.WindowsRefresh(c, params)
+}
+
 // SchedulePreview 委托计划处理器。未装配时仍是 501。
 func (s *server) SchedulePreview(c *gin.Context, params oapi.SchedulePreviewParams) {
 	if s.schedule == nil {
@@ -387,6 +396,15 @@ func (s *server) SchedulePreview(c *gin.Context, params oapi.SchedulePreviewPara
 		return
 	}
 	s.schedule.Preview(c, params)
+}
+
+// SchedulePreviewRefresh 委托预览强制刷新（POST）。未装配时仍是 501。
+func (s *server) SchedulePreviewRefresh(c *gin.Context, params oapi.SchedulePreviewRefreshParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.PreviewRefresh(c, params)
 }
 
 // SchedulePlan 委托计划处理器。未装配时仍是 501。
@@ -414,6 +432,15 @@ func (s *server) CapacityGet(c *gin.Context, params oapi.CapacityGetParams) {
 		return
 	}
 	s.schedule.CapacityReport(c, params)
+}
+
+// CapacityRefresh 委托容量强制刷新（POST）。未装配时仍是 501。
+func (s *server) CapacityRefresh(c *gin.Context, params oapi.CapacityRefreshParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.CapacityRefresh(c, params)
 }
 
 // SignStats 委托签到统计处理器。未装配时仍是 501。

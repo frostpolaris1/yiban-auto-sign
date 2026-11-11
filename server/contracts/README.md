@@ -116,6 +116,7 @@ either side drifts.
 | GET | `/api/schools` | master/admin/user | P1 |
 | POST | `/api/schools` | master | P1 |
 | PATCH | `/api/schools/:id` | master | P1 |
+|  |  |  | `status=disabled` 即停签：该校启用任务不进日切计划、活跃账号不进铺点、pending 任务行不被认领；既有数据仍可读。 |
 | GET | `/api/schools/:id/admins` | master | P1 |
 | POST | `/api/schools/:id/admins` | master | P1 |
 | DELETE | `/api/schools/:id/admins/:uid` | master | P1 |
@@ -144,7 +145,13 @@ either side drifts.
 | POST | `/api/accounts/:id/person-name` | master/admin/user | rufc |
 |  |  |  | 懒加载揭示平台姓名：与 verify 同型的平台认证，成功只回 `{person_name}` 单字段；姓名不落库、不进日志正文，审计 `account.person_name_reveal` 的 detail 只有字段名；user 只能取自己账号（越权 404）；平台失败统一 502 中性信封；限流与 verify/sign 同账号键桶，429 带 `Retry-After`。 |
 | GET | `/api/schedule/windows` | master/admin | P4 |
+|  |  |  | 只读当日窗口缓存：GET 不触发平台发现（`refresh` 查询参数保留仅为线兼容并忽略）；强制刷新走 `POST /api/schedule/windows/refresh`。 |
+| POST | `/api/schedule/windows/refresh` | master/admin | abs R1 |
+|  |  |  | 强制发现全部任务的平台窗口并落缓存；响应体与 GET 同 schema。 |
 | GET | `/api/schedule/preview` | master/admin | P4 |
+|  |  |  | 只读缓存/覆盖/回退窗口并返回与 Build 相同的计划行；GET 不触发平台发现；强制刷新走 `POST /api/schedule/preview/refresh`。 |
+| POST | `/api/schedule/preview/refresh` | master/admin | abs R1 |
+|  |  |  | 先发现平台窗口再预览；响应体与 GET 同 schema，仍不写库。 |
 | POST | `/api/schedule/plan` | master/admin | P4 |
 | POST | `/api/schedule/override` | master/admin | P4 |
 | GET | `/api/me/time-pref` | master/admin/user | P4 |
@@ -171,6 +178,9 @@ either side drifts.
 | POST | `/api/me/notifications/read-all` | master/admin | notify A |
 |  |  |  | 标记本人全部未读；重复调用幂等。 |
 | GET | `/api/capacity` | master/admin | P4 |
+|  |  |  | 只读缓存/覆盖/回退窗口的容量报告：GET 不触发平台发现（`refresh` 查询参数保留仅为线兼容并忽略）；强制刷新走 `POST /api/capacity/refresh`。 |
+| POST | `/api/capacity/refresh` | master/admin | abs R1 |
+|  |  |  | 先发现平台窗口并落缓存，再返回容量报告；响应体与 GET 同 schema。 |
 | GET | `/api/sign-stats` | master/admin | M8C |
 | GET | `/api/time-prefs/stats` | master/admin | M8C |
 | POST | `/api/accounts/:id/sign` | master/admin/user | P4 |

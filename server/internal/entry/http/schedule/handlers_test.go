@@ -39,13 +39,18 @@ type fakePlanner struct {
 
 	builds      int
 	reportCalls int
-	lastInput   appschedule.Input
-	lastActor   string
-	lastStart   time.Time
-	lastEnd     time.Time
-	lastReason  string
-	overrideErr error
-	lastRefresh bool
+	// overrides 数覆盖用例调用次数：周末门关闭时不得写覆盖。
+	overrides int
+	// previewCalls / previewCachedCalls 区分 GET 只读预览与 POST 强制刷新。
+	previewCalls       int
+	previewCachedCalls int
+	lastInput          appschedule.Input
+	lastActor          string
+	lastStart          time.Time
+	lastEnd            time.Time
+	lastReason         string
+	overrideErr        error
+	lastRefresh        bool
 
 	self       coreschedule.SelfContext
 	selfErr    error
@@ -72,6 +77,14 @@ func (f *fakePlanner) CachedWindow(_ context.Context, in appschedule.Input) (cor
 }
 
 func (f *fakePlanner) Preview(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
+	f.previewCalls++
+	f.lastInput = in
+	return f.preview, f.previewErr
+}
+
+// PreviewCached 是 GET 路径：只读缓存，不发现平台（F5）。
+func (f *fakePlanner) PreviewCached(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
+	f.previewCachedCalls++
 	f.lastInput = in
 	return f.preview, f.previewErr
 }
@@ -91,6 +104,7 @@ func (f *fakePlanner) Build(_ context.Context, in appschedule.Input) (appschedul
 
 func (f *fakePlanner) Override(_ context.Context, _ corescope.Scope, in appschedule.Input,
 	start, end time.Time, reason, actorID string) (appschedule.Preview, error) {
+	f.overrides++
 	f.lastInput, f.lastStart, f.lastEnd = in, start, end
 	f.lastReason, f.lastActor = reason, actorID
 	return f.preview, f.overrideErr
@@ -203,6 +217,16 @@ func newRouterWithStats(t *testing.T, scope corescope.Scope, planner schedulehtt
 func newRouterFull(t *testing.T, scope corescope.Scope, planner schedulehttp.Planner,
 	prefs schedulehttp.TimePrefs, stats schedulehttp.Stats, logger *slog.Logger) (http.Handler, coreauth.Issued) {
 	t.Helper()
+	return newRouterAt(t, scope, planner, prefs, stats, logger,
+		time.Date(2026, 10, 29, 8, 0, 0, 0, shanghai), nil)
+}
+
+// newRouterAt 用指定时钟与覆盖链构造路由：周末门与 sign_dist 的每请求
+// 解析需要可控的业务日与可注入的 Overrides。
+func newRouterAt(t *testing.T, scope corescope.Scope, planner schedulehttp.Planner,
+	prefs schedulehttp.TimePrefs, stats schedulehttp.Stats, logger *slog.Logger,
+	now time.Time, ov schedulehttp.ScheduleOverrides) (http.Handler, coreauth.Issued) {
+	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
 	issued, err := issuer.Issue(context.Background(), coreauth.User{
 		ID: "u1", Email: "boss@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
@@ -211,10 +235,11 @@ func newRouterFull(t *testing.T, scope corescope.Scope, planner schedulehttp.Pla
 		t.Fatalf("issue session: %v", err)
 	}
 	handler := schedulehttp.NewHandler(planner, prefs, &fakeAuthorizer{scope: scope}, schedulehttp.Config{
-		Location: shanghai, Clock: coreclock.Fixed{T: time.Date(2026, 10, 29, 8, 0, 0, 0, shanghai)}, Workers: 6, Avg: 3 * time.Second, Rate: 1.0, Util: 0.8,
+		Location: shanghai, Clock: coreclock.Fixed{T: now}, Workers: 6, Avg: 3 * time.Second, Rate: 1.0, Util: 0.8,
 		SlotsPerSlice: 10, SignDist: appschedule.SignDistFront, UsePrefs: true,
 		EdgeFront: 30 * time.Second, EdgeBack: 30 * time.Second,
-		Logger: logger,
+		Overrides: ov,
+		Logger:    logger,
 	})
 	if stats != nil {
 		handler = handler.WithStats(stats)
@@ -284,12 +309,21 @@ func TestWindowsList(t *testing.T) {
 	if planner.lastRefresh {
 		t.Fatal("缺省 refresh 必须为假：默认只读缓存")
 	}
+	// F5：GET 的 refresh 参数被忽略，不再触发平台发现。
 	rec = do(t, engine, issued, http.MethodGet, "/api/schedule/windows?day=2026-10-29&refresh=true", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("refresh status = %d: %s", rec.Code, rec.Body.String())
 	}
+	if planner.lastRefresh {
+		t.Fatal("GET refresh 必须被忽略：GET 路径不得触发平台发现")
+	}
+	// 强制刷新走 POST 变体。
+	rec = do(t, engine, issued, http.MethodPost, "/api/schedule/windows/refresh?day=2026-10-29", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST refresh status = %d: %s", rec.Code, rec.Body.String())
+	}
 	if !planner.lastRefresh {
-		t.Fatal("refresh=true 未透传到用例层")
+		t.Fatal("POST refresh 必须透传 refresh=true")
 	}
 }
 
@@ -326,6 +360,20 @@ func TestPreview(t *testing.T) {
 	}
 	if planner.lastInput.EdgeFront != 30*time.Second || !planner.lastInput.UsePrefs {
 		t.Fatalf("装配参数未传入: %+v", planner.lastInput)
+	}
+	// F5：GET 走只读预览，不触发平台发现。
+	if planner.previewCachedCalls != 1 || planner.previewCalls != 0 {
+		t.Fatalf("GET preview calls = cached %d / live %d, want 1/0",
+			planner.previewCachedCalls, planner.previewCalls)
+	}
+	// 强制刷新走 POST 变体：实时发现但仍不写库。
+	rec = do(t, engine, issued, http.MethodPost,
+		"/api/schedule/preview/refresh?day=2026-10-29&school_id=s1&task_id=t1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST refresh status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if planner.previewCalls != 1 {
+		t.Fatalf("POST refresh 未走实时预览：live calls = %d", planner.previewCalls)
 	}
 }
 
@@ -488,13 +536,22 @@ func TestCapacityReport(t *testing.T) {
 		t.Fatal("缺省 refresh 必须为假：默认只读缓存")
 	}
 
+	// F5：GET 的 refresh 参数被忽略；强制刷新走 POST 变体。
 	rec = do(t, engine, issued, http.MethodGet,
 		"/api/capacity?school_id=s1&task_id=t1&refresh=true", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("refresh status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if planner.reportCalls != 2 || !planner.lastInput.Refresh {
-		t.Fatalf("refresh 未透传：calls = %d refresh = %v",
+	if planner.lastInput.Refresh {
+		t.Fatal("GET refresh 必须被忽略：GET 路径不得触发平台发现")
+	}
+	rec = do(t, engine, issued, http.MethodPost,
+		"/api/capacity/refresh?school_id=s1&task_id=t1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST refresh status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !planner.lastInput.Refresh {
+		t.Fatalf("POST refresh 未透传：calls = %d refresh = %v",
 			planner.reportCalls, planner.lastInput.Refresh)
 	}
 
@@ -793,5 +850,154 @@ func TestOverrideUserForbidden(t *testing.T) {
 	}
 	if planner.lastReason != "" {
 		t.Fatal("无权重排后不得调用用例")
+	}
+}
+
+// fakeOverrides 是每请求覆盖链替身：周末门与 sign_dist 可注入。
+type fakeOverrides struct {
+	usePrefs      bool
+	front         time.Duration
+	back          time.Duration
+	signDist      appschedule.SignDist
+	signDistCalls int
+	weekend       map[string]bool
+	weekendCalls  []string
+}
+
+func (f *fakeOverrides) UsePrefs(context.Context) (bool, error) { return f.usePrefs, nil }
+
+func (f *fakeOverrides) Edges(context.Context) (time.Duration, time.Duration, error) {
+	return f.front, f.back, nil
+}
+
+func (f *fakeOverrides) SignDist(context.Context) (appschedule.SignDist, error) {
+	f.signDistCalls++
+	return f.signDist, nil
+}
+
+func (f *fakeOverrides) WeekendSign(_ context.Context, day time.Time) (bool, error) {
+	key := day.Format("2006-01-02")
+	f.weekendCalls = append(f.weekendCalls, key)
+	if v, ok := f.weekend[key]; ok {
+		return v, nil
+	}
+	return true, nil
+}
+
+// 周六门关闭：POST plan 成功但 0 行 + note，且不调用 Build（P1-2/P1-3）。
+func TestPlanWeekendGateClosedReturnsZeroRows(t *testing.T) {
+	planner := &fakePlanner{
+		preview: samplePreview(),
+		task:    coreschedule.TaskInfo{ID: "t1", SchoolID: "s1", Name: "晨签", Enabled: true},
+	}
+	ov := &fakeOverrides{weekend: map[string]bool{"2026-10-31": false}}
+	saturday := time.Date(2026, 10, 31, 8, 0, 0, 0, shanghai)
+	engine, issued := newRouterAt(t, corescope.Master(), planner, &fakeTimePrefs{}, nil, nil, saturday, ov)
+
+	rec := do(t, engine, issued, http.MethodPost, "/api/schedule/plan", map[string]string{
+		"day": "2026-10-31", "school_id": "s1", "task_id": "t1",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var body oapi.SchedulePlan
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Rows) != 0 || body.Demand != 0 || len(body.Histogram) != 0 {
+		t.Fatalf("周末门关闭必须 0 行: %+v", body)
+	}
+	if body.Note == nil || *body.Note == "" {
+		t.Fatalf("周末门关闭必须带说明回执: %+v", body)
+	}
+	if planner.builds != 0 {
+		t.Fatalf("周末门关闭仍调用了 Build %d 次", planner.builds)
+	}
+	if len(ov.weekendCalls) != 1 || ov.weekendCalls[0] != "2026-10-31" {
+		t.Fatalf("周末门解析日 = %v, want [2026-10-31]", ov.weekendCalls)
+	}
+}
+
+// 周末门开启：照常 Build；sign_dist 每请求从覆盖链读。
+func TestPlanUsesResolvedSignDist(t *testing.T) {
+	planner := &fakePlanner{
+		preview: samplePreview(),
+		task:    coreschedule.TaskInfo{ID: "t1", SchoolID: "s1", Name: "晨签", Enabled: true},
+	}
+	ov := &fakeOverrides{signDist: appschedule.SignDistUniform, weekend: map[string]bool{"2026-10-29": true}}
+	engine, issued := newRouterAt(t, corescope.Master(), planner, &fakeTimePrefs{}, nil, nil,
+		time.Date(2026, 10, 29, 8, 0, 0, 0, shanghai), ov)
+
+	rec := do(t, engine, issued, http.MethodPost, "/api/schedule/plan", map[string]string{
+		"day": "2026-10-29", "school_id": "s1", "task_id": "t1",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if planner.builds != 1 {
+		t.Fatalf("Build calls = %d, want 1", planner.builds)
+	}
+	if planner.lastInput.SignDist != appschedule.SignDistUniform {
+		t.Fatalf("SignDist = %v, want uniform（每请求读覆盖链）", planner.lastInput.SignDist)
+	}
+	if ov.signDistCalls != 1 {
+		t.Fatalf("sign_dist 解析次数 = %d, want 1", ov.signDistCalls)
+	}
+}
+
+// 周六门关闭：POST override 成功但 0 行 + note，且不写覆盖。
+func TestOverrideWeekendGateClosedSkipsWrite(t *testing.T) {
+	planner := &fakePlanner{
+		preview: samplePreview(),
+		task:    coreschedule.TaskInfo{ID: "t1", SchoolID: "s1", Name: "晨签", Enabled: true},
+	}
+	ov := &fakeOverrides{weekend: map[string]bool{"2026-10-31": false}}
+	engine, issued := newRouterAt(t, corescope.Master(), planner, &fakeTimePrefs{}, nil, nil,
+		time.Date(2026, 10, 31, 8, 0, 0, 0, shanghai), ov)
+
+	rec := do(t, engine, issued, http.MethodPost, "/api/schedule/override", map[string]string{
+		"day": "2026-10-31", "school_id": "s1", "task_id": "t1",
+		"start": "2026-10-31T09:00:00+08:00", "end": "2026-10-31T09:30:00+08:00",
+		"reason": "调整",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var body oapi.SchedulePlan
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Rows) != 0 || body.Note == nil || *body.Note == "" {
+		t.Fatalf("周末门关闭必须 0 行 + note: %+v", body)
+	}
+	if planner.overrides != 0 {
+		t.Fatalf("周末门关闭仍写了覆盖 %d 次", planner.overrides)
+	}
+}
+
+// 周六门关闭：GET 预览也回 0 行 + note，且不发现平台。
+func TestPreviewWeekendGateClosedReturnsZeroRows(t *testing.T) {
+	planner := &fakePlanner{
+		preview: samplePreview(),
+		task:    coreschedule.TaskInfo{ID: "t1", SchoolID: "s1", Name: "晨签", Enabled: true},
+	}
+	ov := &fakeOverrides{weekend: map[string]bool{"2026-10-31": false}}
+	engine, issued := newRouterAt(t, corescope.Master(), planner, &fakeTimePrefs{}, nil, nil,
+		time.Date(2026, 10, 31, 8, 0, 0, 0, shanghai), ov)
+
+	rec := do(t, engine, issued, http.MethodGet,
+		"/api/schedule/preview?day=2026-10-31&school_id=s1&task_id=t1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var body oapi.SchedulePlan
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Rows) != 0 || body.Note == nil || *body.Note == "" {
+		t.Fatalf("周末门关闭必须 0 行 + note: %+v", body)
+	}
+	if planner.previewCalls != 0 {
+		t.Fatalf("周末门关闭不得走实时预览: live calls = %d", planner.previewCalls)
 	}
 }

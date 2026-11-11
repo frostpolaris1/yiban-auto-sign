@@ -1327,6 +1327,13 @@ type AdminMailSettingsUpdate struct {
 	User *string `json:"user,omitempty"`
 }
 
+// AdminMailTestRequest defines model for AdminMailTestRequest.
+type AdminMailTestRequest struct {
+	// CurrentPassword The acting master's own login password. Required on every call:
+	// a missing or empty value answers 400, a wrong value 403.
+	CurrentPassword string `json:"current_password"`
+}
+
 // AdminQuotaSettingsUpdate Partial patch of the quota keys. Every field is optional: absent
 // leaves the key untouched, null deletes the override row, a value
 // upserts it. Unknown fields answer 400.
@@ -2130,8 +2137,13 @@ type SchedulePlan struct {
 
 	// Histogram Account count per five-minute slice, keyed by slice index.
 	Histogram map[string]int `json:"histogram"`
-	Rows      []ScheduleRow  `json:"rows"`
-	Shortfall int            `json:"shortfall"`
+
+	// Note Optional human-readable receipt. Present when the weekend gate
+	// is closed for the requested day: the request succeeds with zero
+	// rows and this note explains why. Absent otherwise.
+	Note      *string       `json:"note,omitempty"`
+	Rows      []ScheduleRow `json:"rows"`
+	Shortfall int           `json:"shortfall"`
 
 	// Source platform and cache come from discovery; fallback is the local
 	// default window; override is a master or admin replacement.
@@ -2206,10 +2218,15 @@ type School struct {
 	// PlatformUniversityId Platform university identifier bound by master for school matching.
 	// Absent until master sets it; a public school attribute that any
 	// reader of the school list may see.
-	PlatformUniversityId *string      `json:"platform_university_id,omitempty"`
-	Status               SchoolStatus `json:"status"`
-	Timezone             string       `json:"timezone"`
-	UpdatedAt            time.Time    `json:"updated_at"`
+	PlatformUniversityId *string `json:"platform_university_id,omitempty"`
+
+	// Status active schools participate in scheduling and signing. A disabled
+	// school stops signing: its enabled tasks are not planned, its active
+	// accounts are not scheduled, and pending task rows are not claimed.
+	// Existing data stays readable.
+	Status    SchoolStatus `json:"status"`
+	Timezone  string       `json:"timezone"`
+	UpdatedAt time.Time    `json:"updated_at"`
 }
 
 // SchoolAdmin defines model for SchoolAdmin.
@@ -2289,7 +2306,10 @@ type SchoolPage struct {
 	NextCursor string `json:"next_cursor"`
 }
 
-// SchoolStatus defines model for SchoolStatus.
+// SchoolStatus active schools participate in scheduling and signing. A disabled
+// school stops signing: its enabled tasks are not planned, its active
+// accounts are not scheduled, and pending task rows are not claimed.
+// Existing data stays readable.
 type SchoolStatus string
 
 // SchoolUpdate defines model for SchoolUpdate.
@@ -2298,9 +2318,14 @@ type SchoolUpdate struct {
 
 	// PlatformUniversityId Absent keeps the current binding; an empty string clears it;
 	// a value sets it.
-	PlatformUniversityId *string               `json:"platform_university_id,omitempty"`
-	Status               *SchoolStatus         `json:"status,omitempty"`
-	Timezone             *SchoolUpdateTimezone `json:"timezone,omitempty"`
+	PlatformUniversityId *string `json:"platform_university_id,omitempty"`
+
+	// Status active schools participate in scheduling and signing. A disabled
+	// school stops signing: its enabled tasks are not planned, its active
+	// accounts are not scheduled, and pending task rows are not claimed.
+	// Existing data stays readable.
+	Status   *SchoolStatus         `json:"status,omitempty"`
+	Timezone *SchoolUpdateTimezone `json:"timezone,omitempty"`
 }
 
 // SchoolUpdateTimezone defines model for SchoolUpdate.Timezone.
@@ -2880,6 +2905,9 @@ type NotFoundError = Error
 // PayloadTooLargeError defines model for PayloadTooLargeError.
 type PayloadTooLargeError = Error
 
+// ServiceUnavailableError defines model for ServiceUnavailableError.
+type ServiceUnavailableError = Error
+
 // TooManyRequestsError defines model for TooManyRequestsError.
 type TooManyRequestsError = Error
 
@@ -3219,10 +3247,25 @@ type CapacityGetParams struct {
 	// Day Business day YYYY-MM-DD; defaults to today in the server time zone.
 	Day *string `form:"day,omitempty" json:"day,omitempty"`
 
-	// Refresh Discover the platform window again and store the result. Default
-	// false reads the daily cache first. A valid override keeps the
-	// cached window unchanged (discovery still runs).
+	// Refresh Accepted for wire compatibility and ignored. The GET path never
+	// calls the platform; use POST /api/capacity/refresh.
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 	Refresh *bool `form:"refresh,omitempty" json:"refresh,omitempty"`
+}
+
+// CapacityRefreshParams defines parameters for CapacityRefresh.
+type CapacityRefreshParams struct {
+	SchoolId SchoolIDQuery `form:"school_id" json:"school_id"`
+
+	// TaskId School task id from GET /api/schedule/windows.
+	TaskId TaskIDQuery `form:"task_id" json:"task_id"`
+
+	// Day Business day YYYY-MM-DD; defaults to today in the server time zone.
+	Day *string `form:"day,omitempty" json:"day,omitempty"`
+
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
 // MyAccountDeleteParams defines parameters for MyAccountDelete.
@@ -3352,15 +3395,39 @@ type SchedulePreviewParams struct {
 	TaskId TaskIDQuery `form:"task_id" json:"task_id"`
 }
 
+// SchedulePreviewRefreshParams defines parameters for SchedulePreviewRefresh.
+type SchedulePreviewRefreshParams struct {
+	// Day Business day YYYY-MM-DD.
+	Day      string        `form:"day" json:"day"`
+	SchoolId SchoolIDQuery `form:"school_id" json:"school_id"`
+
+	// TaskId School task id from GET /api/schedule/windows.
+	TaskId TaskIDQuery `form:"task_id" json:"task_id"`
+
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // ScheduleWindowsParams defines parameters for ScheduleWindows.
 type ScheduleWindowsParams struct {
 	// Day Business day YYYY-MM-DD; defaults to today in the server time zone.
 	Day *string `form:"day,omitempty" json:"day,omitempty"`
 
-	// Refresh Discover the platform window again and store the result. Default
-	// false reads the daily cache first. A valid override keeps the
-	// cached window unchanged (discovery still runs).
+	// Refresh Accepted for wire compatibility and ignored. The GET path never
+	// calls the platform; use POST /api/schedule/windows/refresh.
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
 	Refresh *bool `form:"refresh,omitempty" json:"refresh,omitempty"`
+}
+
+// ScheduleWindowsRefreshParams defines parameters for ScheduleWindowsRefresh.
+type ScheduleWindowsRefreshParams struct {
+	// Day Business day YYYY-MM-DD; defaults to today in the server time zone.
+	Day *string `form:"day,omitempty" json:"day,omitempty"`
+
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
 // SchoolListParams defines parameters for SchoolList.
@@ -3579,6 +3646,9 @@ type AdminEnginePauseJSONRequestBody = EnginePauseUpdate
 
 // AdminMailSettingsSetJSONRequestBody defines body for AdminMailSettingsSet for application/json ContentType.
 type AdminMailSettingsSetJSONRequestBody = AdminMailSettingsUpdate
+
+// AdminMailTestJSONRequestBody defines body for AdminMailTest for application/json ContentType.
+type AdminMailTestJSONRequestBody = AdminMailTestRequest
 
 // AdminNotifySetJSONRequestBody defines body for AdminNotifySet for application/json ContentType.
 type AdminNotifySetJSONRequestBody = NotifyPrefsUpdate
@@ -3925,6 +3995,9 @@ type ServerInterface interface {
 	// CapacityGet Report capacity and demand for one school task.
 	// (GET /api/capacity)
 	CapacityGet(c *gin.Context, params CapacityGetParams)
+	// CapacityRefresh Report capacity after discovering the platform window.
+	// (POST /api/capacity/refresh)
+	CapacityRefresh(c *gin.Context, params CapacityRefreshParams)
 	// ChangelogGet Release notes as plain Markdown text.
 	// (GET /api/changelog)
 	ChangelogGet(c *gin.Context)
@@ -4003,9 +4076,15 @@ type ServerInterface interface {
 	// SchedulePreview Preview the plan for one school task and day.
 	// (GET /api/schedule/preview)
 	SchedulePreview(c *gin.Context, params SchedulePreviewParams)
+	// SchedulePreviewRefresh Preview the plan after discovering the platform window.
+	// (POST /api/schedule/preview/refresh)
+	SchedulePreviewRefresh(c *gin.Context, params SchedulePreviewRefreshParams)
 	// ScheduleWindows List task windows for a business day.
 	// (GET /api/schedule/windows)
 	ScheduleWindows(c *gin.Context, params ScheduleWindowsParams)
+	// ScheduleWindowsRefresh Discover and cache task windows for a business day.
+	// (POST /api/schedule/windows/refresh)
+	ScheduleWindowsRefresh(c *gin.Context, params ScheduleWindowsRefreshParams)
 	// SchoolList List schools with cursor pagination.
 	// (GET /api/schools)
 	SchoolList(c *gin.Context, params SchoolListParams)
@@ -6025,6 +6104,73 @@ func (siw *ServerInterfaceWrapper) CapacityGet(c *gin.Context) {
 	siw.Handler.CapacityGet(c, params)
 }
 
+// CapacityRefresh operation middleware
+func (siw *ServerInterfaceWrapper) CapacityRefresh(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CapacityRefreshParams
+
+	// ------------- Required query parameter "school_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "school_id", c.Request.URL.Query(), &params.SchoolId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter school_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Required query parameter "task_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "task_id", c.Request.URL.Query(), &params.TaskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter task_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "day" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "day", c.Request.URL.Query(), &params.Day, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter day: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CapacityRefresh(c, params)
+}
+
 // ChangelogGet operation middleware
 func (siw *ServerInterfaceWrapper) ChangelogGet(c *gin.Context) {
 
@@ -6894,6 +7040,73 @@ func (siw *ServerInterfaceWrapper) SchedulePreview(c *gin.Context) {
 	siw.Handler.SchedulePreview(c, params)
 }
 
+// SchedulePreviewRefresh operation middleware
+func (siw *ServerInterfaceWrapper) SchedulePreviewRefresh(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SchedulePreviewRefreshParams
+
+	// ------------- Required query parameter "day" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "day", c.Request.URL.Query(), &params.Day, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter day: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Required query parameter "school_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "school_id", c.Request.URL.Query(), &params.SchoolId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter school_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Required query parameter "task_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "task_id", c.Request.URL.Query(), &params.TaskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter task_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SchedulePreviewRefresh(c, params)
+}
+
 // ScheduleWindows operation middleware
 func (siw *ServerInterfaceWrapper) ScheduleWindows(c *gin.Context) {
 
@@ -6927,6 +7140,57 @@ func (siw *ServerInterfaceWrapper) ScheduleWindows(c *gin.Context) {
 	}
 
 	siw.Handler.ScheduleWindows(c, params)
+}
+
+// ScheduleWindowsRefresh operation middleware
+func (siw *ServerInterfaceWrapper) ScheduleWindowsRefresh(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ScheduleWindowsRefreshParams
+
+	// ------------- Optional query parameter "day" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "day", c.Request.URL.Query(), &params.Day, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter day: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ScheduleWindowsRefresh(c, params)
 }
 
 // SchoolList operation middleware
@@ -7964,7 +8228,9 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/me/sign-calendar", wrapper.SignCalendarGet)
 	router.GET(options.BaseURL+"/api/me/sign-calendar/:day", wrapper.SignCalendarDayGet)
 	router.GET(options.BaseURL+"/api/schedule/windows", wrapper.ScheduleWindows)
+	router.POST(options.BaseURL+"/api/schedule/windows/refresh", wrapper.ScheduleWindowsRefresh)
 	router.GET(options.BaseURL+"/api/schedule/preview", wrapper.SchedulePreview)
+	router.POST(options.BaseURL+"/api/schedule/preview/refresh", wrapper.SchedulePreviewRefresh)
 	router.POST(options.BaseURL+"/api/schedule/plan", wrapper.SchedulePlan)
 	router.POST(options.BaseURL+"/api/schedule/override", wrapper.ScheduleOverride)
 	router.GET(options.BaseURL+"/api/me/time-pref", wrapper.TimePrefGet)
@@ -7978,6 +8244,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/me/notifications/read", wrapper.NotificationMarkRead)
 	router.POST(options.BaseURL+"/api/me/notifications/read-all", wrapper.NotificationMarkAllRead)
 	router.GET(options.BaseURL+"/api/capacity", wrapper.CapacityGet)
+	router.POST(options.BaseURL+"/api/capacity/refresh", wrapper.CapacityRefresh)
 	router.GET(options.BaseURL+"/api/sign-stats", wrapper.SignStats)
 	router.GET(options.BaseURL+"/api/time-prefs/stats", wrapper.TimePrefStats)
 	router.GET(options.BaseURL+"/api/me/photos", wrapper.PhotoList)

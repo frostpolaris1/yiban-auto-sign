@@ -48,11 +48,14 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // Planner 是计划用例端口（实现为 app/schedule.Service）。
 type Planner interface {
 	Preview(ctx context.Context, in appschedule.Input) (appschedule.Preview, error)
+	// PreviewCached 只读缓存/覆盖/回退窗口，不发现平台（GET 路径）。
+	PreviewCached(ctx context.Context, in appschedule.Input) (appschedule.Preview, error)
 	Build(ctx context.Context, in appschedule.Input) (appschedule.Preview, error)
 	Override(ctx context.Context, scope corescope.Scope, in appschedule.Input,
 		start, end time.Time, reason, actorID string) (appschedule.Preview, error)
@@ -89,6 +92,11 @@ type ScheduleOverrides interface {
 	UsePrefs(ctx context.Context) (bool, error)
 	// Edges 解析窗口两端裁剪秒（schedule.edge_front_sec / edge_back_sec）。
 	Edges(ctx context.Context) (front, back time.Duration, err error)
+	// SignDist 解析铺点分布档（schedule.sign_dist，DB 覆盖缺省 front）。
+	SignDist(ctx context.Context) (appschedule.SignDist, error)
+	// WeekendSign 解析某业务日是否允许铺行（周日/周六门）。
+	// 非周末恒真；周末键缺行=false（对齐日切构建）。
+	WeekendSign(ctx context.Context, day time.Time) (bool, error)
 }
 
 // Config 是计划参数的装配值。Clock 为空时用系统墙钟。
@@ -102,8 +110,8 @@ type Config struct {
 	Rate          float64
 	Util          float64
 	SlotsPerSlice int
-	// SignDist 是手动预览/建计划的铺点分布档静态值（3c）。
-	// DB 写回只接日切构建（次日生效）；HTTP 面维持装配静态档（front）。
+	// SignDist 是覆盖链未接线时的静态兜底档（零值=front）。
+	// 接线后每请求经 Overrides.SignDist 解析，静态值不再生效。
 	SignDist  appschedule.SignDist
 	UsePrefs  bool
 	EdgeFront time.Duration
@@ -146,19 +154,33 @@ func (h *Handler) WithStats(stats Stats) *Handler {
 }
 
 // Windows 实现 GET /api/schedule/windows。
+// GET 只读缓存：refresh 查询参数保留仅为线兼容，**不再**触发平台发现
+// （F5 / D3：SameSite=Lax 顶层导航不得产生平台副作用）。
+// 强制刷新走 POST /api/schedule/windows/refresh。
 func (h *Handler) Windows(c *gin.Context, params oapi.ScheduleWindowsParams) {
+	h.windows(c, params.Day, false)
+}
+
+// WindowsRefresh 实现 POST /api/schedule/windows/refresh。
+// 强制发现全部任务的平台窗口并落缓存；响应体与 GET 同 schema。
+func (h *Handler) WindowsRefresh(c *gin.Context, params oapi.ScheduleWindowsRefreshParams) {
+	h.windows(c, params.Day, true)
+}
+
+// windows 是 GET 与 POST refresh 的共同实现：只有 refresh 决定是否问平台。
+func (h *Handler) windows(c *gin.Context, dayParam *string, refresh bool) {
 	scope, ok := h.principal(c)
 	if !ok {
 		return
 	}
 	day := ""
-	if params.Day != nil {
-		day = *params.Day
+	if dayParam != nil {
+		day = *dayParam
 	}
 	if day == "" {
 		day = h.today()
 	}
-	views, err := h.planner.ListWindows(c.Request.Context(), scope, day, refreshFlag(params.Refresh))
+	views, err := h.planner.ListWindows(c.Request.Context(), scope, day, refresh)
 	if err != nil {
 		fail(c, err)
 		return
@@ -171,26 +193,79 @@ func (h *Handler) Windows(c *gin.Context, params oapi.ScheduleWindowsParams) {
 }
 
 // Preview 实现 GET /api/schedule/preview。
+// GET 只读缓存：有缓存/覆盖时零平台调用，无缓存时用回退窗口。
+// 强制刷新走 POST /api/schedule/preview/refresh（F5 / D3）。
 func (h *Handler) Preview(c *gin.Context, params oapi.SchedulePreviewParams) {
+	h.preview(c, params.Day, string(params.SchoolId), string(params.TaskId), false)
+}
+
+// PreviewRefresh 实现 POST /api/schedule/preview/refresh。
+// 重新发现平台窗口后预览；响应体与 GET 同 schema，仍不写库。
+func (h *Handler) PreviewRefresh(c *gin.Context, params oapi.SchedulePreviewRefreshParams) {
+	h.preview(c, params.Day, string(params.SchoolId), string(params.TaskId), true)
+}
+
+// preview 是 GET 与 POST refresh 的共同实现：refresh 决定是否问平台。
+// GET 走 PreviewCached（零平台调用）；POST 走 Preview（实时发现）。
+func (h *Handler) preview(c *gin.Context, day, schoolID, taskID string, refresh bool) {
 	scope, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	task, ok := h.authorizeTask(c, scope, string(params.SchoolId), string(params.TaskId))
+	task, ok := h.authorizeTask(c, scope, schoolID, taskID)
 	if !ok {
 		return
 	}
-	in, err := h.input(c.Request.Context(), params.Day, string(params.SchoolId), string(params.TaskId))
+	in, err := h.input(c.Request.Context(), day, schoolID, taskID)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	p, err := h.planner.Preview(c.Request.Context(), in)
+	open, err := h.weekendOpen(c.Request.Context(), day)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !open {
+		p, err := h.closedByWeekend(c.Request.Context(), in, task.Enabled)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		respond.JSON(c.Writer, 200, planResponse(p, task.Enabled))
+		return
+	}
+	var p appschedule.Preview
+	if refresh {
+		p, err = h.planner.Preview(c.Request.Context(), in)
+	} else {
+		p, err = h.planner.PreviewCached(c.Request.Context(), in)
+	}
 	if err != nil {
 		fail(c, err)
 		return
 	}
 	respond.JSON(c.Writer, 200, planResponse(p, task.Enabled))
+}
+
+// weekendGateNote 是周末门关闭时的回执文案。
+// 成功但 0 行：旧线无此门，回 400 会破坏既有客户端语义，故用说明字段。
+const weekendGateNote = "weekend gate closed: no plan rows built for this day"
+
+// closedByWeekend 返回周末门关闭时的 0 行回执。
+// 窗口走只读缓存（不发现平台、不写库）；行/直方图/容量清零并带说明。
+func (h *Handler) closedByWeekend(ctx context.Context, in appschedule.Input, enabled bool) (appschedule.Preview, error) {
+	p, err := h.planner.PreviewCached(ctx, in)
+	if err != nil {
+		return appschedule.Preview{}, err
+	}
+	p.Rows = nil
+	p.Histogram = nil
+	p.Demand = 0
+	p.Capacity = 0
+	p.Shortfall = 0
+	p.Note = weekendGateNote
+	return p, nil
 }
 
 // Plan 实现 POST /api/schedule/plan。
@@ -220,6 +295,22 @@ func (h *Handler) Plan(c *gin.Context, _ oapi.SchedulePlanParams) {
 		fail(c, err)
 		return
 	}
+	// 周末门：与日切构建同源（settings 每请求读）。关闭时成功但 0 行，
+	// 不写库、不 400——旧线无此门，回 400 会破坏既有客户端语义。
+	open, err := h.weekendOpen(c.Request.Context(), body.Day)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !open {
+		p, err := h.closedByWeekend(c.Request.Context(), in, task.Enabled)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		respond.JSON(c.Writer, 200, planResponse(p, task.Enabled))
+		return
+	}
 	p, err := h.planner.Build(c.Request.Context(), in)
 	if err != nil {
 		fail(c, err)
@@ -244,6 +335,23 @@ func (h *Handler) Override(c *gin.Context, _ oapi.ScheduleOverrideParams) {
 		fail(c, err)
 		return
 	}
+	// 周末门：关闭时不写覆盖、不铺行；回执以请求窗口为准并带说明。
+	open, err := h.weekendOpen(c.Request.Context(), body.Day)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	if !open {
+		p, err := h.closedByWeekend(c.Request.Context(), in, true)
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		p.Source = contract.WindowOverride
+		p.WindowStart, p.WindowEnd = body.Start, body.End
+		respond.JSON(c.Writer, 200, planResponse(p, true))
+		return
+	}
 	p, err := h.planner.Override(c.Request.Context(), scope, in,
 		body.Start, body.End, body.Reason, user.ID)
 	if err != nil {
@@ -255,28 +363,40 @@ func (h *Handler) Override(c *gin.Context, _ oapi.ScheduleOverrideParams) {
 }
 
 // CapacityReport 实现 GET /api/capacity。
-// 默认只读缓存；refresh=true 才重新发现平台窗口（k0y-4）。
+// GET 只读缓存：refresh 查询参数保留仅为线兼容，**不再**触发平台发现
+// （F5 / D3）。强制刷新走 POST /api/capacity/refresh。
 func (h *Handler) CapacityReport(c *gin.Context, params oapi.CapacityGetParams) {
+	h.capacity(c, params.Day, string(params.SchoolId), string(params.TaskId), false)
+}
+
+// CapacityRefresh 实现 POST /api/capacity/refresh。
+// 重新发现平台窗口后报告容量；响应体与 GET 同 schema。
+func (h *Handler) CapacityRefresh(c *gin.Context, params oapi.CapacityRefreshParams) {
+	h.capacity(c, params.Day, string(params.SchoolId), string(params.TaskId), true)
+}
+
+// capacity 是 GET 与 POST refresh 的共同实现：refresh 决定是否问平台。
+func (h *Handler) capacity(c *gin.Context, dayParam *string, schoolID, taskID string, refresh bool) {
 	scope, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	if _, ok := h.authorizeTask(c, scope, string(params.SchoolId), string(params.TaskId)); !ok {
+	if _, ok := h.authorizeTask(c, scope, schoolID, taskID); !ok {
 		return
 	}
 	day := ""
-	if params.Day != nil {
-		day = *params.Day
+	if dayParam != nil {
+		day = *dayParam
 	}
 	if day == "" {
 		day = h.today()
 	}
-	in, err := h.input(c.Request.Context(), day, string(params.SchoolId), string(params.TaskId))
+	in, err := h.input(c.Request.Context(), day, schoolID, taskID)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	in.Refresh = refreshFlag(params.Refresh)
+	in.Refresh = refresh
 	p, err := h.planner.Report(c.Request.Context(), in)
 	if err != nil {
 		fail(c, err)
@@ -550,12 +670,12 @@ func (h *Handler) timePrefResponse(c *gin.Context, view apptimepref.View, userID
 	if !self.HasTask {
 		return out, self, nil
 	}
-	usePrefs, edgeFront, edgeBack, err := h.resolveOverrides(c.Request.Context())
+	ov, err := h.resolveOverrides(c.Request.Context())
 	if err != nil {
 		return out, self, err
 	}
 	window, err := h.planner.CachedWindow(c.Request.Context(),
-		h.inputWith(usePrefs, edgeFront, edgeBack, h.today(), self.SchoolID, self.TaskID))
+		h.inputWith(ov, h.today(), self.SchoolID, self.TaskID))
 	if err != nil {
 		return out, self, err
 	}
@@ -567,7 +687,7 @@ func (h *Handler) timePrefResponse(c *gin.Context, view apptimepref.View, userID
 		Start: window.Start.In(h.cfg.Location).Format("15:04"),
 		End:   window.End.In(h.cfg.Location).Format("15:04"),
 	}
-	slots := h.crowdedSlots(window.Start, window.End, counts, view.Allowed, edgeFront, edgeBack)
+	slots := h.crowdedSlots(window.Start, window.End, counts, view.Allowed, ov.front, ov.back)
 	out.Slots = &slots
 	return out, self, nil
 }
@@ -651,40 +771,49 @@ func (h *Handler) authorizeTask(c *gin.Context, scope corescope.Scope, schoolID,
 	return task, true
 }
 
-// refreshFlag 把可选的 refresh 查询参数折成布尔值。
-// 缺省即只读缓存：只有显式 refresh=true 才重新发现（k0y-4）。
-func refreshFlag(v *bool) bool {
-	return v != nil && *v
+// resolvedOverrides 是一次请求解析后的可写回参数。
+type resolvedOverrides struct {
+	usePrefs bool
+	front    time.Duration
+	back     time.Duration
+	signDist appschedule.SignDist
 }
 
 // resolveOverrides 是一次请求解析后的可写回参数。
 // 未接写回层时返回 Config 静态值；解析失败原样上抛（故障不是配置状态）。
-func (h *Handler) resolveOverrides(ctx context.Context) (usePrefs bool, front, back time.Duration, err error) {
-	usePrefs, front, back = h.cfg.UsePrefs, h.cfg.EdgeFront, h.cfg.EdgeBack
+func (h *Handler) resolveOverrides(ctx context.Context) (resolvedOverrides, error) {
+	out := resolvedOverrides{
+		usePrefs: h.cfg.UsePrefs, front: h.cfg.EdgeFront, back: h.cfg.EdgeBack,
+		signDist: h.cfg.SignDist,
+	}
 	if h.cfg.Overrides == nil {
-		return usePrefs, front, back, nil
+		return out, nil
 	}
-	if usePrefs, err = h.cfg.Overrides.UsePrefs(ctx); err != nil {
-		return false, 0, 0, err
+	var err error
+	if out.usePrefs, err = h.cfg.Overrides.UsePrefs(ctx); err != nil {
+		return resolvedOverrides{}, err
 	}
-	if front, back, err = h.cfg.Overrides.Edges(ctx); err != nil {
-		return false, 0, 0, err
+	if out.front, out.back, err = h.cfg.Overrides.Edges(ctx); err != nil {
+		return resolvedOverrides{}, err
 	}
-	return usePrefs, front, back, nil
+	if out.signDist, err = h.cfg.Overrides.SignDist(ctx); err != nil {
+		return resolvedOverrides{}, err
+	}
+	return out, nil
 }
 
 // input 组装计划输入。day 为空由调用方决定是否补今天。
 // 可写回键每请求解析：DB 覆盖 env（sett2）。
 func (h *Handler) input(ctx context.Context, day, schoolID, taskID string) (appschedule.Input, error) {
-	usePrefs, front, back, err := h.resolveOverrides(ctx)
+	ov, err := h.resolveOverrides(ctx)
 	if err != nil {
 		return appschedule.Input{}, err
 	}
-	return h.inputWith(usePrefs, front, back, day, schoolID, taskID), nil
+	return h.inputWith(ov, day, schoolID, taskID), nil
 }
 
 // inputWith 用已解析的覆盖值组装计划输入。
-func (h *Handler) inputWith(usePrefs bool, front, back time.Duration, day, schoolID, taskID string) appschedule.Input {
+func (h *Handler) inputWith(ov resolvedOverrides, day, schoolID, taskID string) appschedule.Input {
 	return appschedule.Input{
 		SchoolID:      schoolID,
 		SchoolTaskID:  taskID,
@@ -695,11 +824,25 @@ func (h *Handler) inputWith(usePrefs bool, front, back time.Duration, day, schoo
 		Rate:          h.cfg.Rate,
 		Util:          h.cfg.Util,
 		SlotsPerSlice: h.cfg.SlotsPerSlice,
-		SignDist:      h.cfg.SignDist,
-		UsePrefs:      usePrefs,
-		EdgeFront:     front,
-		EdgeBack:      back,
+		SignDist:      ov.signDist,
+		UsePrefs:      ov.usePrefs,
+		EdgeFront:     ov.front,
+		EdgeBack:      ov.back,
 	}
+}
+
+// weekendOpen 报告请求日是否允许铺行。
+// 未接写回层时恒真（与既有行为一致）；周末键缺行=false（对齐日切构建）。
+// 非周末不读库：只有周六/周日才解析对应键。
+func (h *Handler) weekendOpen(ctx context.Context, day string) (bool, error) {
+	if h.cfg.Overrides == nil {
+		return true, nil
+	}
+	d, err := time.ParseInLocation("2006-01-02", day, h.cfg.Location)
+	if err != nil {
+		return false, errs.New(errs.CodeValidation, "day must be YYYY-MM-DD")
+	}
+	return h.cfg.Overrides.WeekendSign(ctx, d)
 }
 
 // today 返回配置时区的业务日。
@@ -796,12 +939,17 @@ func planResponse(p appschedule.Preview, enabled bool) oapi.SchedulePlan {
 	for k, v := range p.Histogram {
 		hist[strconv.Itoa(k)] = v
 	}
-	return oapi.SchedulePlan{
+	out := oapi.SchedulePlan{
 		Day: p.Day, Enabled: enabled, Source: oapi.ScheduleWindowSource(p.Source),
 		WindowStart: p.WindowStart, WindowEnd: p.WindowEnd, Version: p.Version,
 		Capacity: p.Capacity, Demand: p.Demand, Shortfall: p.Shortfall,
 		Histogram: hist, Rows: rows,
 	}
+	if p.Note != "" {
+		note := p.Note
+		out.Note = &note
+	}
+	return out
 }
 
 // timePrefView 把自选读数转成基础传输形状。

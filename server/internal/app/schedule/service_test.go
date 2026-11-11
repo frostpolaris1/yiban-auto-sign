@@ -1197,6 +1197,96 @@ func TestListWindowsScope(t *testing.T) {
 	}
 }
 
+// F5 / D3：GET 路径零平台调用。ListWindows refresh=false 时即使无缓存
+// 也不发现；只有显式 refresh=true（POST 变体）才问平台。
+func TestListWindowsWithoutRefreshDoesNotDiscover(t *testing.T) {
+	w := &fakeWindowStore{views: []coreschedule.WindowView{{
+		SchoolID: "school-1", SchoolName: "一中", TaskID: "task-1", TaskName: "sign",
+		Day: "2026-10-29", Cached: false,
+	}}}
+	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
+	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{}, d)
+
+	if _, err := svc.ListWindows(context.Background(), corescope.Master(), "2026-10-29", false); err != nil {
+		t.Fatalf("ListWindows: %v", err)
+	}
+	if d.calls != 0 {
+		t.Fatalf("GET 路径平台发现 = %d, want 0", d.calls)
+	}
+	if _, err := svc.ListWindows(context.Background(), corescope.Master(), "2026-10-29", true); err != nil {
+		t.Fatalf("ListWindows refresh: %v", err)
+	}
+	if d.calls != 1 {
+		t.Fatalf("refresh 平台发现 = %d, want 1", d.calls)
+	}
+}
+
+// F5 / D3：Report 无 Refresh 时无缓存也不发现，用回退窗口；
+// Refresh=true（POST /api/capacity/refresh）才问平台并落缓存。
+func TestReportWithoutRefreshDoesNotDiscover(t *testing.T) {
+	w := &fakeWindowStore{}
+	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
+	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}}, d)
+	in := baseInput()
+
+	prev, err := svc.Report(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if d.calls != 0 {
+		t.Fatalf("GET 路径平台发现 = %d, want 0", d.calls)
+	}
+	if prev.Source != contract.WindowFallback {
+		t.Fatalf("无缓存 GET 来源 = %s, want fallback", prev.Source)
+	}
+
+	in.Refresh = true
+	prev, err = svc.Report(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Report refresh: %v", err)
+	}
+	if d.calls != 1 {
+		t.Fatalf("refresh 平台发现 = %d, want 1", d.calls)
+	}
+	if prev.Source != contract.WindowPlatform {
+		t.Fatalf("refresh 来源 = %s, want platform", prev.Source)
+	}
+	if w.saves != 1 {
+		t.Fatalf("refresh 应落缓存一次: saves = %d", w.saves)
+	}
+}
+
+// F5 / D3：GET 预览走 PreviewCached（零平台调用）；Preview 保持实时，
+// 供 POST /api/schedule/preview/refresh 使用。
+func TestPreviewCachedDoesNotDiscover(t *testing.T) {
+	w := &fakeWindowStore{}
+	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
+	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}}, d)
+	in := baseInput()
+
+	prev, err := svc.PreviewCached(context.Background(), in)
+	if err != nil {
+		t.Fatalf("PreviewCached: %v", err)
+	}
+	if d.calls != 0 {
+		t.Fatalf("GET 预览平台发现 = %d, want 0", d.calls)
+	}
+	if prev.Source != contract.WindowFallback {
+		t.Fatalf("无缓存 GET 预览来源 = %s, want fallback", prev.Source)
+	}
+
+	prev, err = svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if d.calls != 1 {
+		t.Fatalf("POST refresh 预览平台发现 = %d, want 1", d.calls)
+	}
+	if prev.Source != contract.WindowPlatform {
+		t.Fatalf("POST refresh 预览来源 = %s, want platform", prev.Source)
+	}
+}
+
 // Report 带 Refresh 且存在合法覆盖：发现照做，缓存行不改写。
 // 依据：缓存行是 worker 的窗口判据（只读缓存）；改写它会让覆盖失效。
 func TestReportRefreshKeepsOverrideCache(t *testing.T) {

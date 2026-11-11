@@ -151,6 +151,10 @@ func (e2ePlanner) Preview(context.Context, appschedule.Input) (appschedule.Previ
 	return appschedule.Preview{}, nil
 }
 
+func (e2ePlanner) PreviewCached(context.Context, appschedule.Input) (appschedule.Preview, error) {
+	return appschedule.Preview{}, nil
+}
+
 func (e2ePlanner) Build(context.Context, appschedule.Input) (appschedule.Preview, error) {
 	return appschedule.Preview{}, nil
 }
@@ -235,6 +239,28 @@ func (a settingsOverrideAdapter) Edges(ctx context.Context) (time.Duration, time
 		return 0, 0, err
 	}
 	return time.Duration(front) * time.Second, time.Duration(back) * time.Second, nil
+}
+
+func (a settingsOverrideAdapter) SignDist(ctx context.Context) (appschedule.SignDist, error) {
+	value, err := a.resolver.ResolveSignDist(ctx, appsettings.SignDistFront)
+	if err != nil {
+		return appschedule.SignDistFront, err
+	}
+	if value == appsettings.SignDistUniform {
+		return appschedule.SignDistUniform, nil
+	}
+	return appschedule.SignDistFront, nil
+}
+
+func (a settingsOverrideAdapter) WeekendSign(ctx context.Context, day time.Time) (bool, error) {
+	switch day.Weekday() {
+	case time.Sunday:
+		return a.resolver.ResolveBool(ctx, appsettings.KeyScheduleSundaySign, false)
+	case time.Saturday:
+		return a.resolver.ResolveBool(ctx, appsettings.KeyScheduleSaturdaySign, false)
+	default:
+		return true, nil
+	}
 }
 
 // newScheduleSettingsEngine 构造真用例链的完整路由引擎。

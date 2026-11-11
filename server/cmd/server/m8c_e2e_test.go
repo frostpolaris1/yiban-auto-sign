@@ -325,6 +325,12 @@ func TestM8CTimePrefSlotBoundary(t *testing.T) {
 	e.windows[long] = contract.Window{Start: base, End: base.Add(121 * time.Minute), Source: contract.WindowPlatform}
 	e.windows[tiny] = contract.Window{Start: base, End: base.Add(4 * time.Minute), Source: contract.WindowPlatform}
 	session := e.login(master)
+	// F5：GET stats 只读缓存，不发现平台。先用 POST refresh 把三个窗口落缓存。
+	for _, task := range []string{short, long, tiny} {
+		rec := e.do(http.MethodPost,
+			"/api/capacity/refresh?school_id="+school.ID+"&task_id="+task, nil, session)
+		w2cWantStatus(t, rec, http.StatusOK)
+	}
 
 	for _, tc := range []struct {
 		task  string

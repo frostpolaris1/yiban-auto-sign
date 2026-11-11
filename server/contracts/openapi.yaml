@@ -1293,7 +1293,9 @@ paths:
         (non-UUID) id is a per-item validation_failed — the same answer the
         single-item endpoint gives — an account that is not active is a
         per-item conflict, and queueing itself reuses the worker request with
-        its stable codes: already_signed, sign_running, window_closed. When
+        its stable codes: already_signed, sign_running, window_closed, and
+        capacity_exceeded with the message "engine is paused" while the
+        global engine pause is in effect. When
         several tasks apply, the worker picks one at random. An ok item only
         queues today's task row and carries its task_id; the caller does not
         wait for execution. Items keep the request order; one failing item
@@ -1356,7 +1358,8 @@ paths:
         itself never leaves the server. A platform failure answers 502 with
         a neutral envelope; missing phone or password answers 400. The
         request is rate limited per client IP and per submitted phone; a
-        429 carries Retry-After.
+        429 carries Retry-After. While the global engine pause is in effect
+        the request answers 503 (capacity_exceeded with the message "engine is paused") and makes no platform call.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -1379,6 +1382,7 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         '502': { $ref: '#/components/responses/DefaultError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
@@ -1564,6 +1568,8 @@ paths:
         login password (the device identity is a credential): a missing
         value answers 400, a wrong value 403, and repeated failures answer
         429. A rejected reauthentication writes nothing.
+        While the global engine pause is in effect the request answers 503 (capacity_exceeded with the message
+        "engine is paused") and makes no platform call.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -1592,6 +1598,7 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         '502': { $ref: '#/components/responses/DefaultError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/restore:
     post:
@@ -1692,6 +1699,8 @@ paths:
         their scope; a user only their own account, and an out-of-scope
         account answers 404.
         Rate limited per client IP and per account id; a 429 carries Retry-After.
+        While the global engine pause is in effect the request answers 503 (capacity_exceeded with the message
+        "engine is paused") and makes no platform call.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -1708,6 +1717,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '502': { $ref: '#/components/responses/DefaultError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/person-name:
     post:
@@ -1724,7 +1734,9 @@ paths:
         account answers 404. A platform failure answers 502 with a neutral
         envelope; platform text never reaches the response. The request
         shares the per-account rate-limit bucket with verify and sign; a 429
-        carries Retry-After.
+        carries Retry-After. While the global engine pause is in effect the
+        request answers 503 (capacity_exceeded with the message
+        "engine is paused") and makes no platform call.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -1741,6 +1753,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         '502': { $ref: '#/components/responses/DefaultError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/sign:
     post:
@@ -1765,6 +1778,8 @@ paths:
         paused_user, credential_error) returns 409 conflict and queues
         nothing.
         Cross-scope accounts return 404 for every role.
+        While the global engine pause is in effect the request answers 503 (capacity_exceeded with the message
+        "engine is paused") and queues nothing.
         Rate limited per client IP and per account id; a 429 carries Retry-After.
       x-roles: [master, admin, user]
       parameters:
@@ -1782,6 +1797,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/DefaultError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailableError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/location:
     get:
@@ -2412,16 +2428,19 @@ paths:
       description: |
         Master only. Sends one plain-text message through the configured
         SMTP delivery path to the signed-in account's own email address.
-        The request body is empty and ignored, so the client can never pick
-        the recipient. Delivery is synchronous: a 200 means the SMTP server
-        accepted the message (DATA was acknowledged), not that the mailbox
-        received it. Mail delivery disabled (SMTP is off) answers 409 with a
-        distinct message; a master whose account has no email address also
-        answers 409. A delivery failure answers 502 with no SMTP reply,
-        relay host, address or credential detail. At most one test-mail
-        attempt per master per 60 seconds; a request inside that window
-        answers 429 with Retry-After. The cooldown is process-local and
-        resets when the server restarts.
+        The request body carries current_password, the acting master's own
+        login password: a missing or empty value answers 400, a wrong value
+        403, and repeated failures answer 429. A rejected reauthentication
+        sends nothing. The recipient is always the signed-in account; the
+        client can never pick it. Delivery is synchronous: a 200 means the
+        SMTP server accepted the message (DATA was acknowledged), not that
+        the mailbox received it. Mail delivery disabled (SMTP is off)
+        answers 409 with a distinct message; a master whose account has no
+        email address also answers 409. A delivery failure answers 502 with
+        no SMTP reply, relay host, address or credential detail. At most one
+        test-mail attempt per master per 60 seconds; a request inside that
+        window answers 429 with Retry-After. The cooldown is process-local
+        and resets when the server restarts.
         Every send attempt, success or failure, appends one
         settings.mail_test audit row whose detail holds only the result and
         the coarse delivery class; it never holds the SMTP reply, address,
@@ -2429,6 +2448,12 @@ paths:
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminMailTestRequest'
       responses:
         '200':
           description: The SMTP server accepted the test message.
@@ -2436,9 +2461,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MailTestResult'
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         '502': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -2816,11 +2843,10 @@ paths:
       summary: List task windows for a business day.
       description: |
         master sees every school; admin sees bound schools only.
-        A day without a cached window is discovered once and then cached, so
-        the default request costs at most one platform call per task. When the
-        cache already holds the day, the default request makes no platform
-        call. Set refresh=true to discover again.
+        The GET path reads the daily cache only and makes no platform call.
         A task whose platform reports no window keeps null start and end.
+        The refresh query parameter is accepted for wire compatibility but
+        ignored: force discovery with POST /api/schedule/windows/refresh.
       x-roles: [master, admin]
       parameters:
         - name: day
@@ -2831,11 +2857,41 @@ paths:
         - name: refresh
           in: query
           required: false
+          deprecated: true
           description: |
-            Discover the platform window again and store the result. Default
-            false reads the daily cache first. A valid override keeps the
-            cached window unchanged (discovery still runs).
+            Accepted for wire compatibility and ignored. The GET path never
+            calls the platform; use POST /api/schedule/windows/refresh.
           schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Task window list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleWindowList'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schedule/windows/refresh:
+    post:
+      tags: [schedule]
+      operationId: ScheduleWindowsRefresh
+      summary: Discover and cache task windows for a business day.
+      description: |
+        Same roles and response schema as GET /api/schedule/windows, but
+        discovers every task's platform window and stores the result before
+        answering. This is the explicit refresh path: the GET endpoint never
+        calls the platform. A valid override keeps the cached window
+        unchanged (discovery still runs).
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: day
+          in: query
+          required: false
+          description: Business day YYYY-MM-DD; defaults to today in the server time zone.
+          schema: { type: string }
       responses:
         '200':
           description: Task window list.
@@ -2853,12 +2909,48 @@ paths:
       operationId: SchedulePreview
       summary: Preview the plan for one school task and day.
       description: |
-        Reads the window from the platform, then the cache, then the fallback,
-        and returns the exact rows Build would persist. Preview writes nothing.
+        Reads the override, then the cache, then the fallback, and returns
+        the exact rows Build would persist. The GET path makes no platform
+        call and writes nothing. Force platform discovery with
+        POST /api/schedule/preview/refresh.
         A disabled task can be previewed: enabled is false and the window is
         still reported. Build and override reject a disabled task.
+        A closed weekend gate (schedule.sunday_sign / schedule.saturday_sign)
+        returns zero rows with note and makes no platform call.
       x-roles: [master, admin]
       parameters:
+        - name: day
+          in: query
+          required: true
+          description: Business day YYYY-MM-DD.
+          schema: { type: string }
+        - $ref: '#/components/parameters/SchoolIDQuery'
+        - $ref: '#/components/parameters/TaskIDQuery'
+      responses:
+        '200':
+          description: Plan preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulePlan'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schedule/preview/refresh:
+    post:
+      tags: [schedule]
+      operationId: SchedulePreviewRefresh
+      summary: Preview the plan after discovering the platform window.
+      description: |
+        Same roles and response schema as GET /api/schedule/preview, but
+        discovers the platform window first. This is the explicit refresh
+        path: the GET endpoint never calls the platform. Preview still writes
+        nothing.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
         - name: day
           in: query
           required: true
@@ -2889,6 +2981,9 @@ paths:
         terminal rows are never moved. A disabled task returns 409 conflict
         and writes nothing. Only the current business day is accepted; any
         other day is 400 validation_failed.
+
+        A closed weekend gate (schedule.sunday_sign / schedule.saturday_sign)
+        succeeds with zero rows and a note; nothing is written.
 
         Capacity shortfall no longer returns 409 capacity_shortfall: the
         plan is built against the available capacity and the request
@@ -2931,6 +3026,8 @@ paths:
         its recorded reason. Pending rows are rearranged immediately; running
         and terminal rows are never moved. A disabled task returns 409 conflict
         and stores no override.
+        A closed weekend gate (schedule.sunday_sign / schedule.saturday_sign)
+        succeeds with zero rows and a note; the override is not stored.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -3296,9 +3393,10 @@ paths:
         bottleneck and suggested_workers is absent.
         Raising concurrency is a restart-level configuration change; the
         report never changes it.
-        The window is read from the daily cache by default: a cached day makes
-        no platform call, a missing day is discovered once and then cached.
-        Set refresh=true to discover again. An override still wins over both.
+        The GET path reads the daily cache only and makes no platform call;
+        a missing day uses the fallback window. The refresh query parameter
+        is accepted for wire compatibility but ignored: force discovery with
+        POST /api/capacity/refresh. An override still wins over both.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/SchoolIDQuery'
@@ -3311,11 +3409,44 @@ paths:
         - name: refresh
           in: query
           required: false
+          deprecated: true
           description: |
-            Discover the platform window again and store the result. Default
-            false reads the daily cache first. A valid override keeps the
-            cached window unchanged (discovery still runs).
+            Accepted for wire compatibility and ignored. The GET path never
+            calls the platform; use POST /api/capacity/refresh.
           schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Capacity report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapacityReport'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/capacity/refresh:
+    post:
+      tags: [schedule]
+      operationId: CapacityRefresh
+      summary: Report capacity after discovering the platform window.
+      description: |
+        Same roles and response schema as GET /api/capacity, but discovers
+        the platform window and stores it before answering. This is the
+        explicit refresh path: the GET endpoint never calls the platform.
+        A valid override keeps the cached window unchanged (discovery still
+        runs).
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/SchoolIDQuery'
+        - $ref: '#/components/parameters/TaskIDQuery'
+        - name: day
+          in: query
+          required: false
+          description: Business day YYYY-MM-DD; defaults to today in the server time zone.
+          schema: { type: string }
       responses:
         '200':
           description: Capacity report.
@@ -3714,6 +3845,23 @@ components:
             $ref: '#/components/schemas/Error'
     PayloadTooLargeError:
       description: Request body exceeds the entry limit; the code stays validation_failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServiceUnavailableError:
+      description: |
+        The global engine pause (settings row engine.paused) is in effect.
+        The request made no platform call and changed nothing; retry after
+        the pause is lifted. The envelope code stays in the existing closed
+        set: capacity_exceeded with the message "engine is paused". The
+        status is 503, not 429, so clients treat it as temporarily
+        unavailable. Retry-After is optional and omitted when the server
+        cannot estimate the wait.
+      headers:
+        Retry-After:
+          description: Optional seconds to wait before retrying; at least 1 when present.
+          schema: { type: integer, minimum: 1 }
       content:
         application/json:
           schema:
@@ -4129,6 +4277,16 @@ components:
             The acting master's own login password, used to re-authenticate
             this dangerous write. Missing or empty answers 400; a wrong
             password answers 403; both leave zero writes and zero audit rows.
+    AdminMailTestRequest:
+      type: object
+      additionalProperties: false
+      required: [current_password]
+      properties:
+        current_password:
+          type: string
+          description: |
+            The acting master's own login password. Required on every call:
+            a missing or empty value answers 400, a wrong value 403.
     MailTestResult:
       type: object
       required: [message]
@@ -4654,6 +4812,11 @@ components:
             $ref: '#/components/schemas/UserBatchItem'
     SchoolStatus:
       type: string
+      description: |
+        active schools participate in scheduling and signing. A disabled
+        school stops signing: its enabled tasks are not planned, its active
+        accounts are not scheduled, and pending task rows are not claimed.
+        Existing data stays readable.
       enum: [active, disabled]
     School:
       type: object
@@ -5179,6 +5342,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ScheduleRow'
+        note:
+          type: string
+          description: |
+            Optional human-readable receipt. Present when the weekend gate
+            is closed for the requested day: the request succeeds with zero
+            rows and this note explains why. Absent otherwise.
     ScheduleRow:
       type: object
       required: [account_id, run_at]
