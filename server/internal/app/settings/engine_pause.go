@@ -85,13 +85,13 @@ func (s *Service) SetEnginePaused(ctx context.Context, scope corescope.Scope, ac
 }
 
 // EnginePaused 读全局暂停开关的生效值。
-// 缺行=false；坏行按覆盖链口径回退缺省并出声一次；存储故障原样上抛——
-// 故障不是「未暂停」，急停面不得因故障误放行。
+// 缺行=false；坏行 fail-closed（视为暂停）并出声一次；存储故障原样上抛——
+// 故障不是「未暂停」，急停面不得因故障或坏值误放行。
 // 读面不需要角色门：唯一的消费方（worker 步进与执行监视快照）
 // 已在各自的入口层收窄到 master/admin。
 func (s *Service) EnginePaused(ctx context.Context) (bool, error) {
 	if s.deps.Resolver == nil {
 		return false, coreerrs.New(coreerrs.CodeInternal, "settings resolver is not configured")
 	}
-	return s.deps.Resolver.ResolveBool(ctx, KeyEnginePaused, false)
+	return s.deps.Resolver.ResolveEnginePaused(ctx)
 }

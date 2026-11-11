@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
@@ -98,7 +99,7 @@ func (s *Service) Detect(ctx context.Context, scope corescope.Scope, in DetectIn
 		},
 	})
 	if err != nil {
-		return DetectResult{}, errs.New(errs.CodeUpstream, "platform detection failed")
+		return DetectResult{}, platformCallFailure(err, "platform detection failed")
 	}
 	// 平台身份是外部数据：空白、非 ASCII 标识与超长值都按平台异常处理，
 	// 统一中性 502，不让它们落到本地 400 或撞审计形状规则。
@@ -113,7 +114,7 @@ func (s *Service) Detect(ctx context.Context, scope corescope.Scope, in DetectIn
 		Password: in.Password,
 	})
 	if err != nil {
-		return DetectResult{}, errs.New(errs.CodeUpstream, "platform detection failed")
+		return DetectResult{}, platformCallFailure(err, "platform detection failed")
 	}
 
 	school, err := s.deps.SchoolProjection.EnsurePlatformSchool(ctx, universityID, universityName)
@@ -138,6 +139,18 @@ func (s *Service) Detect(ctx context.Context, scope corescope.Scope, in DetectIn
 func detectSessionRef(phone string) string {
 	sum := sha256.Sum256([]byte("detect:" + phone))
 	return "detect:" + hex.EncodeToString(sum[:16])
+}
+
+// platformCallFailure 把平台端口错误映射成中性 upstream。
+// 只按类型放行宿主急停（*errs.PausedError）：入口据此回 503。
+// 其余错误（含带平台原文的 *errs.Error）一律折叠成中性文案，
+// 平台原文不出本层。
+func platformCallFailure(err error, message string) error {
+	var paused *errs.PausedError
+	if errors.As(err, &paused) {
+		return err
+	}
+	return errs.New(errs.CodeUpstream, message)
 }
 
 // validPlatformUniversityID 与审计 detail 的 university_id 形状同口径：

@@ -240,6 +240,18 @@ export async function mockScheduleApi(
       })
     }
 
+    if (url.pathname === '/api/schedule/windows/refresh' && request.method() === 'POST') {
+      if (!(await requireManager(route))) return
+      if (options.windowsError) {
+        const error = options.windowsError
+        return fail(route, error.status, error.code, error.message)
+      }
+      return json(route, {
+        day: url.searchParams.get('day') ?? SCHEDULE_DAY,
+        items: windows,
+      })
+    }
+
     if (url.pathname === '/api/schedule/preview' && request.method() === 'GET') {
       if (!(await requireManager(route))) return
       if (options.previewError) {
@@ -301,7 +313,17 @@ export function scheduleCalls(api: FakeScheduleApi): ScheduleApiCall[] {
 }
 
 export function windowsCalls(api: FakeScheduleApi): ScheduleApiCall[] {
-  return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/schedule/windows')
+  return api.calls.filter(
+    (call) =>
+      (call.method === 'GET' && call.path === '/api/schedule/windows') ||
+      (call.method === 'POST' && call.path === '/api/schedule/windows/refresh'),
+  )
+}
+
+export function windowsRefreshCalls(api: FakeScheduleApi): ScheduleApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'POST' && call.path === '/api/schedule/windows/refresh',
+  )
 }
 
 export function lastWindowsCall(api: FakeScheduleApi): ScheduleApiCall | undefined {

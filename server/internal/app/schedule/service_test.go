@@ -221,6 +221,19 @@ func newServiceWithPrefs(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a f
 	return svc
 }
 
+// newServiceWithPaused 注入显式手动面的急停端口。
+func newServiceWithPaused(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a fakeAccounts,
+	d *fakeDiscover, paused func(context.Context) (bool, error)) *appschedule.Service {
+	t.Helper()
+	svc, err := appschedule.NewService(appschedule.Deps{
+		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: &fakeTx{}, Paused: paused,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
 // 预览就是计划：行、直方图、落库行三者逐值相等。
 func TestPreviewEqualsBuild(t *testing.T) {
 	w := &fakeWindowStore{task: enabledTask()}
@@ -1197,6 +1210,96 @@ func TestListWindowsScope(t *testing.T) {
 	}
 }
 
+// F5 / D3：GET 路径零平台调用。ListWindows refresh=false 时即使无缓存
+// 也不发现；只有显式 refresh=true（POST 变体）才问平台。
+func TestListWindowsWithoutRefreshDoesNotDiscover(t *testing.T) {
+	w := &fakeWindowStore{views: []coreschedule.WindowView{{
+		SchoolID: "school-1", SchoolName: "一中", TaskID: "task-1", TaskName: "sign",
+		Day: "2026-10-29", Cached: false,
+	}}}
+	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
+	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{}, d)
+
+	if _, err := svc.ListWindows(context.Background(), corescope.Master(), "2026-10-29", false); err != nil {
+		t.Fatalf("ListWindows: %v", err)
+	}
+	if d.calls != 0 {
+		t.Fatalf("GET 路径平台发现 = %d, want 0", d.calls)
+	}
+	if _, err := svc.ListWindows(context.Background(), corescope.Master(), "2026-10-29", true); err != nil {
+		t.Fatalf("ListWindows refresh: %v", err)
+	}
+	if d.calls != 1 {
+		t.Fatalf("refresh 平台发现 = %d, want 1", d.calls)
+	}
+}
+
+// F5 / D3：Report 无 Refresh 时无缓存也不发现，用回退窗口；
+// Refresh=true（POST /api/capacity/refresh）才问平台并落缓存。
+func TestReportWithoutRefreshDoesNotDiscover(t *testing.T) {
+	w := &fakeWindowStore{}
+	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
+	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}}, d)
+	in := baseInput()
+
+	prev, err := svc.Report(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if d.calls != 0 {
+		t.Fatalf("GET 路径平台发现 = %d, want 0", d.calls)
+	}
+	if prev.Source != contract.WindowFallback {
+		t.Fatalf("无缓存 GET 来源 = %s, want fallback", prev.Source)
+	}
+
+	in.Refresh = true
+	prev, err = svc.Report(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Report refresh: %v", err)
+	}
+	if d.calls != 1 {
+		t.Fatalf("refresh 平台发现 = %d, want 1", d.calls)
+	}
+	if prev.Source != contract.WindowPlatform {
+		t.Fatalf("refresh 来源 = %s, want platform", prev.Source)
+	}
+	if w.saves != 1 {
+		t.Fatalf("refresh 应落缓存一次: saves = %d", w.saves)
+	}
+}
+
+// F5 / D3：GET 预览走 PreviewCached（零平台调用）；Preview 保持实时，
+// 供 POST /api/schedule/preview/refresh 使用。
+func TestPreviewCachedDoesNotDiscover(t *testing.T) {
+	w := &fakeWindowStore{}
+	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
+	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}}, d)
+	in := baseInput()
+
+	prev, err := svc.PreviewCached(context.Background(), in)
+	if err != nil {
+		t.Fatalf("PreviewCached: %v", err)
+	}
+	if d.calls != 0 {
+		t.Fatalf("GET 预览平台发现 = %d, want 0", d.calls)
+	}
+	if prev.Source != contract.WindowFallback {
+		t.Fatalf("无缓存 GET 预览来源 = %s, want fallback", prev.Source)
+	}
+
+	prev, err = svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if d.calls != 1 {
+		t.Fatalf("POST refresh 预览平台发现 = %d, want 1", d.calls)
+	}
+	if prev.Source != contract.WindowPlatform {
+		t.Fatalf("POST refresh 预览来源 = %s, want platform", prev.Source)
+	}
+}
+
 // Report 带 Refresh 且存在合法覆盖：发现照做，缓存行不改写。
 // 依据：缓存行是 worker 的窗口判据（只读缓存）；改写它会让覆盖失效。
 func TestReportRefreshKeepsOverrideCache(t *testing.T) {
@@ -1415,5 +1518,179 @@ func TestCachedWindowCacheOnly(t *testing.T) {
 				t.Fatalf("CachedWindow 不得写计划行：%v", p.inserted)
 			}
 		})
+	}
+}
+
+// 周末门关闭不吞既有校验：停用任务仍 409，跨校/坏窗仍 400。
+func TestWeekendClosedStillValidates(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 10, 31, 9, 0, 0, 0, shanghai)
+	end := start.Add(30 * time.Minute)
+
+	// 停用任务：Build 先过 requireEnabled，再短路周末门。
+	w := &fakeWindowStore{task: coreschedule.TaskInfo{ID: "task-1", SchoolID: "school-1", Enabled: false}}
+	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}}, &fakeDiscover{})
+	in := baseInput()
+	in.Day = "2026-10-31"
+	in.WeekendClosed = true
+	if _, err := svc.Build(ctx, in); coreerrs.From(err).Code != coreerrs.CodeConflict {
+		t.Fatalf("停用任务 Build err = %v, want conflict", err)
+	}
+	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", "u1"); coreerrs.From(err).Code != coreerrs.CodeConflict {
+		t.Fatalf("停用任务 Override err = %v, want conflict", err)
+	}
+
+	// 跨校：任务属于 school-1，请求声明 school-2。
+	w = &fakeWindowStore{task: enabledTask()}
+	svc = newService(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}}, &fakeDiscover{})
+	cross := in
+	cross.SchoolID = "school-2"
+	if _, err := svc.Override(ctx, corescope.Master(), cross, start, end, "调整", "u1"); err == nil {
+		t.Fatal("跨校 Override 应 400")
+	}
+
+	// 坏 reason / 坏窗口：仍 400。
+	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "", "u1"); err == nil {
+		t.Fatal("空 reason 应 400")
+	}
+	if _, err := svc.Override(ctx, corescope.Master(), in, end, start, "调整", "u1"); err == nil {
+		t.Fatal("倒挂窗口应 400")
+	}
+
+	// 合法输入 + 门关：0 行、来源 weekend_closed、不写覆盖。
+	p, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", "u1")
+	if err != nil {
+		t.Fatalf("合法 Override: %v", err)
+	}
+	if len(p.Rows) != 0 || p.Note != appschedule.WeekendGateNote {
+		t.Fatalf("门关回执 = %+v, want 0 行 + note", p)
+	}
+	if p.Source != contract.WindowWeekendClosed {
+		t.Fatalf("来源 = %s, want weekend_closed", p.Source)
+	}
+	if w.overrideOK {
+		t.Fatal("门关不得写覆盖")
+	}
+}
+
+// 周末门关闭不吞日期校验：坏 day 仍 400。
+func TestPreviewWeekendClosedValidatesDay(t *testing.T) {
+	svc := newService(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
+		fakeAccounts{ids: []string{"a1"}}, &fakeDiscover{})
+	in := baseInput()
+	in.Day = "2026/10/31"
+	in.WeekendClosed = true
+	if _, err := svc.PreviewCached(context.Background(), in); err == nil {
+		t.Fatal("坏 day 应 400")
+	}
+}
+
+// 显式手动面遇急停上抛；自动兜底（Explicit=false）继续回退。
+func TestExplicitDiscoveryPropagatesPaused(t *testing.T) {
+	ctx := context.Background()
+	paused := coreerrs.NewPaused()
+	w := &fakeWindowStore{
+		task:  enabledTask(),
+		views: []coreschedule.WindowView{{SchoolID: "school-1", TaskID: "task-1", Cached: false}},
+	}
+	d := &fakeDiscover{err: paused}
+	svc := newServiceWithPaused(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}}, d,
+		func(context.Context) (bool, error) { return true, nil })
+	in := baseInput()
+	in.Explicit = true
+
+	if _, err := svc.ListWindows(ctx, corescope.Master(), in.Day, true); !isPaused(err) {
+		t.Fatalf("windows refresh err = %v, want paused", err)
+	}
+	in.Refresh = true
+	if _, err := svc.Report(ctx, in); !isPaused(err) {
+		t.Fatalf("capacity refresh err = %v, want paused", err)
+	}
+	if _, err := svc.Preview(ctx, in); !isPaused(err) {
+		t.Fatalf("preview refresh err = %v, want paused", err)
+	}
+	if _, err := svc.Build(ctx, in); !isPaused(err) {
+		t.Fatalf("plan err = %v, want paused", err)
+	}
+	start := time.Date(2026, 10, 29, 9, 0, 0, 0, shanghai)
+	if _, err := svc.Override(ctx, corescope.Master(), in, start, start.Add(30*time.Minute), "调整", "u1"); !isPaused(err) {
+		t.Fatalf("override err = %v, want paused", err)
+	}
+
+	// 自动兜底：日切路径 Explicit=false，急停只回退不报错。
+	auto := baseInput()
+	p, err := svc.Build(ctx, auto)
+	if err != nil {
+		t.Fatalf("自动 Build 应回退: %v", err)
+	}
+	if p.Source != contract.WindowFallback {
+		t.Fatalf("自动 Build 来源 = %s, want fallback", p.Source)
+	}
+}
+
+// isPaused 报告错误是否为急停类型。
+func isPaused(err error) bool {
+	var paused *coreerrs.PausedError
+	return errors.As(err, &paused)
+}
+
+// 急停优先于周末门与既有覆盖：显式路径先判 paused，再短路。
+// 三条正是审查实测红：paused×weekend×Override、paused×weekend×Preview、
+// paused×既有覆盖×Preview。
+func TestPausedWinsOverWeekendAndOverride(t *testing.T) {
+	ctx := context.Background()
+	paused := func(context.Context) (bool, error) { return true, nil }
+	start := time.Date(2026, 10, 31, 9, 0, 0, 0, shanghai)
+	end := start.Add(30 * time.Minute)
+
+	// paused × weekend-closed × Override：503 码，且不写覆盖。
+	w := &fakeWindowStore{task: enabledTask()}
+	svc := newServiceWithPaused(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}},
+		&fakeDiscover{}, paused)
+	in := baseInput()
+	in.Day = "2026-10-31"
+	in.WeekendClosed = true
+	in.Explicit = true
+	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", "u1"); !isPaused(err) {
+		t.Fatalf("paused×weekend×Override err = %v, want paused", err)
+	}
+	if w.overrideOK {
+		t.Fatal("paused×weekend×Override 不得写覆盖")
+	}
+
+	// paused × weekend-closed × Preview：503 码。
+	if _, err := svc.Preview(ctx, in); !isPaused(err) {
+		t.Fatalf("paused×weekend×Preview err = %v, want paused", err)
+	}
+
+	// paused × 既有合法覆盖 × Preview：503 码（覆盖短路不得吞急停）。
+	w = &fakeWindowStore{
+		task: enabledTask(),
+		override: coreschedule.WindowOverride{
+			SchoolTaskID: "task-1", Day: "2026-10-29",
+			Start:  time.Date(2026, 10, 29, 9, 0, 0, 0, shanghai),
+			End:    time.Date(2026, 10, 29, 9, 30, 0, 0, shanghai),
+			Reason: "既有覆盖", CreatedBy: "u1",
+		},
+		overrideOK: true,
+	}
+	svc = newServiceWithPaused(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}},
+		&fakeDiscover{}, paused)
+	withOverride := baseInput()
+	withOverride.Explicit = true
+	if _, err := svc.Preview(ctx, withOverride); !isPaused(err) {
+		t.Fatalf("paused×既有覆盖×Preview err = %v, want paused", err)
+	}
+
+	// 对侧：GET 只读预览（Explicit=false）不判急停，周末门仍回 0 行。
+	read := baseInput()
+	read.Day = "2026-10-31"
+	read.WeekendClosed = true
+	p, err := svc.PreviewCached(ctx, read)
+	if err != nil {
+		t.Fatalf("GET 只读预览不应判急停: %v", err)
+	}
+	if len(p.Rows) != 0 || p.Note != appschedule.WeekendGateNote {
+		t.Fatalf("GET 只读周末回执 = %+v", p)
 	}
 }

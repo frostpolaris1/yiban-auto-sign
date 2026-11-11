@@ -10,7 +10,8 @@
  * 只渲染无权限卡片；导航项由 `nav.ts` 的角色元数据隐藏。
  * 本页动作没有页面级置灰：能进页面的角色都能落库与覆盖。
  * 日期写入查询串；缺省取上海日历的今天（应用统一按 Asia/Shanghai 渲染）。
- * 「重新发现」只对这一次请求追加 refresh=true，不改变后续默认读缓存。
+ * 「重新发现」走 POST /api/schedule/windows/refresh，只对这一次请求生效，
+ * 不改变后续默认读缓存。
  * 预览只读；落库与覆盖都要先过确认弹窗，确认前不发写请求。
  * 写操作成功的反馈走 toast；错误反馈留在确认层内，可回看。
  * Esc 只关最上层弹窗，关哪层由本页状态决定，不依赖 Radix 的层栈。
@@ -31,6 +32,7 @@ import {
   listScheduleWindows,
   overrideScheduleWindow,
   previewSchedule,
+  refreshScheduleWindows,
   type ScheduleOverrideRequest,
   type SchedulePlanRequest,
   type ScheduleWindow,
@@ -74,7 +76,9 @@ export function ScheduleView({ day, onDayChange }: ScheduleViewProps) {
       if (SHOWCASE) return Promise.resolve(showcaseWindows(activeDay))
       const refresh = refreshRef.current
       refreshRef.current = false
-      return listScheduleWindows(refresh ? { day: activeDay, refresh: true } : { day: activeDay })
+      return refresh
+        ? refreshScheduleWindows({ day: activeDay })
+        : listScheduleWindows({ day: activeDay })
     },
   })
 

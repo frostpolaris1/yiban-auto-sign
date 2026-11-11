@@ -3,3 +3,8 @@
 response-property-enum-value-added	get	/api/admin/notify	kqa #2d 三渠道矩阵（响应枚举扩 webhook，仓内消费面同批钉）
 response-property-enum-value-added	put	/api/admin/notify	kqa #2d 三渠道矩阵（同上）
 response-property-enum-value-added	get	/api/admin/settings	sett2 #批2 设置写回（SettingSource 枚举扩 db，读链 DB 覆盖 env，仓内消费面同批钉）
+request-body-added-required	post	/api/admin/mail/test	abs R1 mail/test 二次口令（决策已定：缺 current_password 400，master-only 端点破坏面小）
+response-property-enum-value-added	get	/api/capacity	abs R1 weekend_closed 回执来源（0 行 receipt，非平台/缓存来源）
+response-property-enum-value-added	post	/api/schedule/override	abs R1 weekend_closed 回执来源（同上）
+response-property-enum-value-added	post	/api/schedule/plan	abs R1 weekend_closed 回执来源（同上）
+response-property-enum-value-added	get	/api/schedule/preview	abs R1 weekend_closed 回执来源（同上）

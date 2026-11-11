@@ -12,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 )
 
@@ -127,5 +129,43 @@ func TestNewServiceRequiresPauseGate(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("nil pause gate must fail construction")
+	}
+}
+
+// 暂停时手动 Request 回 503 码（决策 D2）：不再静默排队。
+// 判据咬在 Request 的第一道门：暂停下不读任务、不建行、不重开。
+func TestRequestPausedReturnsPaused(t *testing.T) {
+	st := &claimCountStore{fakeStore: newStore()}
+	st.dayTasks = []string{"st-1"}
+	svc := newPauseGateService(t, st, func(context.Context) (bool, error) {
+		return true, nil
+	})
+	_, err := svc.Request(context.Background(), "acc-1", appaudit.Actor{UserID: "u-1"})
+	if err == nil {
+		t.Fatal("paused Request must fail")
+	}
+	var paused *coreerrs.PausedError
+	if !errors.As(err, &paused) {
+		t.Fatalf("paused Request err = %v, want PausedError", err)
+	}
+	if len(st.tasks) != 0 {
+		t.Fatalf("paused Request created %d task rows, want 0", len(st.tasks))
+	}
+}
+
+// 暂停查询故障上抛：故障不是「未暂停」，手动签到不得放行。
+func TestRequestPauseQueryErrorPropagates(t *testing.T) {
+	st := &claimCountStore{fakeStore: newStore()}
+	st.dayTasks = []string{"st-1"}
+	gateErr := errors.New("settings store down")
+	svc := newPauseGateService(t, st, func(context.Context) (bool, error) {
+		return false, gateErr
+	})
+	_, err := svc.Request(context.Background(), "acc-1", appaudit.Actor{UserID: "u-1"})
+	if !errors.Is(err, gateErr) {
+		t.Fatalf("Request err = %v, want the gate error", err)
+	}
+	if len(st.tasks) != 0 {
+		t.Fatalf("故障轮创建了 %d 行, want 0", len(st.tasks))
 	}
 }

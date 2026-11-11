@@ -436,6 +436,16 @@ func openWindow() coreschedule.WindowRecord {
 	}
 }
 
+// closedWindow 是已过终点的窗口：testNow 在终点之后。
+func closedWindow() coreschedule.WindowRecord {
+	return coreschedule.WindowRecord{
+		SchoolTaskID: "st-1", Day: "2026-10-29",
+		Start:  time.Date(2026, 10, 29, 5, 0, 0, 0, loc),
+		End:    time.Date(2026, 10, 29, 6, 0, 0, 0, loc),
+		Source: "platform",
+	}
+}
+
 func newService(t *testing.T, st *fakeStore, signer *fakeSigner, limiter fakeLimiter) *appworker.Service {
 	t.Helper()
 	return newServiceLogged(t, st, signer, limiter, nil)
@@ -546,6 +556,67 @@ func TestRequestResolvesTaskFromTodayRows(t *testing.T) {
 	}
 	if picked {
 		t.Fatal("零候选不应调用 picker")
+	}
+}
+
+// P3-21：多任务时优先在「窗口未关」的任务里选；全关才 409。
+func TestRequestPrefersOpenWindowTask(t *testing.T) {
+	ctx := context.Background()
+	actor := appaudit.Actor{UserID: "u1"}
+
+	st := newStore()
+	st.dayTasks = []string{"st-closed", "st-open"}
+	st.windows["st-closed|2026-10-29"] = closedWindow()
+	st.windows["st-open|2026-10-29"] = openWindow()
+	var candidates []string
+	svc := newServiceWithPicker(t, st, defaultSigner(), fakeLimiter{allow: true},
+		func(c []string) string {
+			candidates = append([]string(nil), c...)
+			return c[0]
+		})
+	if _, err := svc.Request(ctx, "acct-1", actor); err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0] != "st-open" {
+		t.Fatalf("候选 = %v, want [st-open]（已关窗任务不得入选）", candidates)
+	}
+	if got := st.tasks[0].SchoolTaskID; got != "st-open" {
+		t.Fatalf("入队任务 = %q, want st-open", got)
+	}
+}
+
+// P3-21：全部任务已关窗才回 window_closed，且不建行。
+func TestRequestAllWindowsClosedReturnsWindowClosed(t *testing.T) {
+	ctx := context.Background()
+	actor := appaudit.Actor{UserID: "u1"}
+	st := newStore()
+	st.dayTasks = []string{"st-a", "st-b"}
+	st.windows["st-a|2026-10-29"] = closedWindow()
+	st.windows["st-b|2026-10-29"] = closedWindow()
+	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	_, err := svc.Request(ctx, "acct-1", actor)
+	if !errors.Is(err, appworker.ErrWindowClosed) {
+		t.Fatalf("Request err = %v, want window_closed", err)
+	}
+	if len(st.tasks) != 0 {
+		t.Fatalf("全关窗仍建了 %d 行, want 0", len(st.tasks))
+	}
+}
+
+// P3-21：未发现窗口的任务排在已关窗之前，Request 回 404（可重试）。
+func TestRequestPrefersUndiscoveredWindowOverClosed(t *testing.T) {
+	ctx := context.Background()
+	actor := appaudit.Actor{UserID: "u1"}
+	st := newStore()
+	st.dayTasks = []string{"st-closed", "st-missing"}
+	st.windows["st-closed|2026-10-29"] = closedWindow()
+	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	_, err := svc.Request(ctx, "acct-1", actor)
+	if coreerrs.From(err).Code != coreerrs.CodeNotFound {
+		t.Fatalf("Request err = %v, want not_found（窗口未发现）", err)
+	}
+	if len(st.tasks) != 0 {
+		t.Fatalf("窗口未发现仍建了 %d 行, want 0", len(st.tasks))
 	}
 }
 

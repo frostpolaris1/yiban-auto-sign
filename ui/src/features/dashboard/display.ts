@@ -132,6 +132,7 @@ export const CAPACITY_SOURCE_LABELS: Record<ScheduleWindowSource, string> = {
   cache: '缓存',
   fallback: '回退',
   override: '覆盖',
+  weekend_closed: '周末停签',
 }
 
 const CAPACITY_SOURCE_TONES: Record<ScheduleWindowSource, Tone> = {
@@ -139,6 +140,7 @@ const CAPACITY_SOURCE_TONES: Record<ScheduleWindowSource, Tone> = {
   cache: 'info',
   fallback: 'warning',
   override: 'purple',
+  weekend_closed: 'warning',
 }
 
 export function capacitySourceLabel(source: ScheduleWindowSource): string {

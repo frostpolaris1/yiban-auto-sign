@@ -3,7 +3,11 @@ import test from 'node:test'
 
 import { NAV_LEAVES, visibleNav } from '../../src/components/shell/nav.ts'
 import { ApiError } from '../../src/lib/api/client.ts'
-import { schedulePreviewSearch, scheduleWindowsSearch } from '../../src/lib/api/schedule.ts'
+import {
+  schedulePreviewSearch,
+  scheduleWindowsRefreshSearch,
+  scheduleWindowsSearch,
+} from '../../src/lib/api/schedule.ts'
 import { dayOf, formatClock, isoToShanghaiInput, parseDay, shanghaiInputToRfc3339 } from '../../src/lib/format.ts'
 import { SCHEDULE_VIEW_ROLES } from '../../src/lib/roles.ts'
 import {
@@ -31,7 +35,7 @@ import {
 /**
  * 时间片域纯逻辑的不变式。
  *
- * 查询串：day 必带；refresh 只在重新发现时出现。
+ * 查询串：day 必带；「重新发现」走独立的 POST 查询串。
  * 日期：只认 YYYY-MM-DD 且必须是真实日历日；上海时区固定 +08:00。
  * 直方图：按切片号数字升序；柱高是 count 与最大值的比例。
  * 覆盖草稿：reason 1..200；end 必须严格晚于 start；请求体只含契约六字段。
@@ -55,10 +59,9 @@ const PLAN = {
   rows: [],
 }
 
-test('the windows query carries day and only adds refresh on demand', () => {
+test('the windows query carries day; refresh is a POST path', () => {
   assert.equal(scheduleWindowsSearch({ day: DAY }), `?day=${DAY}`)
-  assert.equal(scheduleWindowsSearch({ day: DAY, refresh: true }), `?day=${DAY}&refresh=true`)
-  assert.equal(scheduleWindowsSearch({ day: DAY, refresh: false }), `?day=${DAY}`)
+  assert.equal(scheduleWindowsRefreshSearch({ day: DAY }), `?day=${DAY}`)
 })
 
 test('the preview query carries the three row coordinates and escapes them', () => {
@@ -235,9 +238,11 @@ test('schedule labels come from the contract enums', () => {
     cache: '缓存',
     fallback: '回退',
     override: '覆盖',
+    weekend_closed: '周末停签',
   })
   assert.equal(sourceLabel('platform'), '平台')
   assert.equal(sourceLabel('override'), '覆盖')
+  assert.equal(sourceLabel('weekend_closed'), '周末停签')
   assert.equal(sourceLabel(null), '—')
   assert.equal(sourceLabel('new-source'), 'new-source', 'contract drift stays visible')
   assert.equal(enabledLabel(true), '已启用')

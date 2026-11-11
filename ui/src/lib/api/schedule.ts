@@ -7,8 +7,8 @@
  *
  * **口径**
  * 类型来自生成的 `schema.d.ts`，不手工重写契约形状。
- * `refresh` 只在重新发现时为 `true`；缺省不出现该参数。
- * 预览只读；写操作只有 `POST plan` 与 `POST override` 两个端点。
+ * 窗口一览默认读缓存；「重新发现」走 POST /api/schedule/windows/refresh。
+ * 预览只读；写操作有 POST plan、POST override 与 POST windows/refresh。
  * 时间偏好只对 user 开放：`GET/PUT /api/me/time-pref`，master/admin 收到 403。
  */
 
@@ -30,6 +30,7 @@ export type CapacityReport = Schemas['CapacityReport']
 
 export const SCHEDULE_PATHS = {
   windows: '/api/schedule/windows',
+  windowsRefresh: '/api/schedule/windows/refresh',
   preview: '/api/schedule/preview',
   plan: '/api/schedule/plan',
   override: '/api/schedule/override',
@@ -37,15 +38,18 @@ export const SCHEDULE_PATHS = {
   timePref: '/api/me/time-pref',
 } as const
 
-export type WindowsQuery = { day: string; refresh?: boolean }
+export type WindowsQuery = { day: string }
 export type PreviewQuery = { day: string; schoolId: string; taskId: string }
-export type CapacityQuery = { day: string; schoolId: string; taskId: string; refresh?: boolean }
+export type CapacityQuery = { day: string; schoolId: string; taskId: string }
 
-/** 窗口一览的查询串。`refresh` 缺省不写，服务端按缓存读。 */
+/** 窗口一览的查询串。GET 只读缓存，不带 refresh。 */
 export function scheduleWindowsSearch(query: WindowsQuery): string {
-  const params = new URLSearchParams({ day: query.day })
-  if (query.refresh) params.set('refresh', 'true')
-  return `?${params.toString()}`
+  return `?${new URLSearchParams({ day: query.day }).toString()}`
+}
+
+/** 强制发现的查询串：POST /api/schedule/windows/refresh。 */
+export function scheduleWindowsRefreshSearch(query: WindowsQuery): string {
+  return `?${new URLSearchParams({ day: query.day }).toString()}`
 }
 
 /** 预览的查询串。三个参数都是定位一行窗口的坐标。 */
@@ -60,7 +64,7 @@ export function schedulePreviewSearch(query: PreviewQuery): string {
 
 /**
  * 容量查询串。`school_id` 与 `task_id` 是契约必填；`day` 由调用方给，
- * 使看板与窗口列表读同一个业务日。`refresh` 缺省不写。
+ * 使看板与窗口列表读同一个业务日。GET 只读缓存。
  */
 export function capacitySearch(query: CapacityQuery): string {
   const params = new URLSearchParams({
@@ -68,13 +72,20 @@ export function capacitySearch(query: CapacityQuery): string {
     task_id: query.taskId,
     day: query.day,
   })
-  if (query.refresh) params.set('refresh', 'true')
   return `?${params.toString()}`
 }
 
 export function listScheduleWindows(query: WindowsQuery): Promise<ScheduleWindowList> {
   return apiRequest<ScheduleWindowList>(
     `${SCHEDULE_PATHS.windows}${scheduleWindowsSearch(query)}`,
+  )
+}
+
+/** 强制发现：POST 变体，响应与 GET 同 schema。 */
+export function refreshScheduleWindows(query: WindowsQuery): Promise<ScheduleWindowList> {
+  return apiRequest<ScheduleWindowList>(
+    `${SCHEDULE_PATHS.windowsRefresh}${scheduleWindowsRefreshSearch(query)}`,
+    { method: 'POST' },
   )
 }
 

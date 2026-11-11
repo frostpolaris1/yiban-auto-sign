@@ -263,3 +263,19 @@ func TestJSONWithETagMarshalErrorUsesEnvelope(t *testing.T) {
 		t.Fatalf("code = %q, want %q", env.Error.Code, errs.CodeInternal)
 	}
 }
+
+// 急停：HTTP 503，信封 code 沿用既有 capacity_exceeded（不扩枚举）。
+func TestErrorPausedMapsServiceUnavailable(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Error(rec, httptest.NewRequest(http.MethodPost, "/x", nil), errs.NewPaused())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	env := decode(t, rec.Body.Bytes())
+	if env.Error.Code != string(errs.CodeCapacity) {
+		t.Fatalf("code = %q, want %q（既有闭集）", env.Error.Code, errs.CodeCapacity)
+	}
+	if env.Error.Message != "engine is paused" {
+		t.Fatalf("message = %q", env.Error.Message)
+	}
+}

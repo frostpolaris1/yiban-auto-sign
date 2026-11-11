@@ -35,6 +35,10 @@ var (
 	ErrAlreadySigned = coreerrs.New(coreerrs.CodeAlreadySigned, "already signed")
 	// ErrWindowClosed 表示窗口已关闭。
 	ErrWindowClosed = coreerrs.New(coreerrs.CodeWindowClosed, "window is closed")
+	// ErrPaused 表示全局急停生效：手动签到不再静默排队。
+	// 急停语义与执行面一致——暂停期间不产生任何平台动作或队列变化。
+	// 线缆 code 沿用 capacity_exceeded，入口层映射 503。
+	ErrPaused = coreerrs.NewPaused()
 )
 
 // 内部等待原因（写入 sign_tasks.result）。
@@ -783,6 +787,15 @@ func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.
 	if accountID == "" {
 		return "", coreerrs.New(coreerrs.CodeValidation, "account is required")
 	}
+	// 急停门先于一切：paused 时手动签到不再静默排队（决策 D2）。
+	// 查询故障上抛，不读成「未暂停」。
+	paused, err := s.deps.Paused(ctx)
+	if err != nil {
+		return "", err
+	}
+	if paused {
+		return "", ErrPaused
+	}
 	now := s.deps.Clock.Now()
 	day := now.In(s.deps.Location).Format("2006-01-02")
 	schoolTaskID, err := s.resolveTask(ctx, accountID, day)
@@ -828,21 +841,18 @@ func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.
 // resolveTask 决定手动签到作用于哪个学校任务。
 //
 // 判据顺序：
-//  1. 当日 sign_tasks 恰好一行 → 就是它（计划是当日真相）；
-//  2. 当日多行 → 随机选一个（多点位等价）；
-//  3. 当日无行 → 学校启用任务恰好一条 → 就是它；
-//  4. 学校启用任务多条 → 随机选一个；没有 → not_found。
+//  1. 当日 sign_tasks 有行 → 先在「窗口未关」的行里随机选；
+//     没有未关行时，有窗口未发现的行则优先选它（保留 404 语义），
+//     全部已关才回 409 window_closed（P3-21：不再随机选中已关窗任务）。
+//  2. 当日无行 → 学校启用任务恰好一条 → 就是它；
+//  3. 学校启用任务多条 → 随机选一个；没有 → not_found。
 func (s *Service) resolveTask(ctx context.Context, accountID, day string) (string, error) {
 	dayTasks, err := s.deps.Store.DayTasks(ctx, accountID, day)
 	if err != nil {
 		return "", err
 	}
-	switch len(dayTasks) {
-	case 1:
-		return dayTasks[0], nil
-	case 0:
-	default:
-		return s.deps.Picker.Pick(dayTasks), nil
+	if len(dayTasks) > 0 {
+		return s.pickOpenTask(ctx, dayTasks, day)
 	}
 	enabled, err := s.deps.Store.AccountEnabledTasks(ctx, accountID)
 	if err != nil {
@@ -856,6 +866,38 @@ func (s *Service) resolveTask(ctx context.Context, accountID, day string) (strin
 		return "", coreerrs.New(coreerrs.CodeNotFound, "no enabled task for this account")
 	default:
 		return s.deps.Picker.Pick(enabled), nil
+	}
+}
+
+// pickOpenTask 在当日任务行里优先选窗口未关的一个。
+// 窗口未发现的行排在已关行之前：选中它由 Request 回 404（可重试），
+// 比直接报 window_closed 更接近真实原因。
+// 全部已关才回 ErrWindowClosed。
+func (s *Service) pickOpenTask(ctx context.Context, taskIDs []string, day string) (string, error) {
+	now := s.deps.Clock.Now()
+	open := make([]string, 0, len(taskIDs))
+	missing := make([]string, 0, len(taskIDs))
+	for _, id := range taskIDs {
+		rec, err := s.deps.Store.GetWindow(ctx, id, day)
+		if err != nil {
+			if isNotFound(err) {
+				missing = append(missing, id)
+				continue
+			}
+			return "", err
+		}
+		win := corewindow.Window{Start: rec.Start, End: rec.End}
+		if !win.Closed(now) {
+			open = append(open, id)
+		}
+	}
+	switch {
+	case len(open) > 0:
+		return s.deps.Picker.Pick(open), nil
+	case len(missing) > 0:
+		return s.deps.Picker.Pick(missing), nil
+	default:
+		return "", ErrWindowClosed
 	}
 }
 

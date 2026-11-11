@@ -560,3 +560,31 @@ func (e *w2cEnv) plan(t *testing.T, issued *coreauth.Issued, day, schoolID, task
 	e.decode(rec, &plan)
 	return plan
 }
+
+// D5（2026-11-11 拍板：挡新不挡旧）：禁校后手动 plan 不铺新行。
+// 已铺 pending 行照常认领执行由 pg e2e 的 ClaimDue 判据覆盖。
+func TestDisabledSchoolPlanBuildsNoNewRows(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("d5-plan-master@example.com", coreauth.RoleMaster)
+	issued := e.login(master)
+	school := e.school("d5-plan")
+	task := e.schoolTask(school.ID, "晨签")
+	acct := e.account(school.ID, master.ID, "13800138037")
+	e.activateAccount(acct)
+	loc := p4Location(t)
+	day := clock.BusinessDay(clock.System{}.Now(), loc)
+	start, end := windowAt(day, loc, [2]int{6, 30}, [2]int{7, 50})
+	e.windows[task] = contract.Window{Start: start, End: end, Source: contract.WindowPlatform}
+
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE schools SET status = 'disabled' WHERE id = $1::uuid", school.ID); err != nil {
+		t.Fatalf("disable school: %v", err)
+	}
+	plan := e.plan(t, issued, day, school.ID, task)
+	if len(plan.Rows) != 0 {
+		t.Fatalf("禁校 plan 铺了 %d 行, want 0", len(plan.Rows))
+	}
+	if n := e.scalarInt("SELECT count(*) FROM sign_tasks"); n != 0 {
+		t.Fatalf("禁校 plan 落库 %d 行, want 0", n)
+	}
+}

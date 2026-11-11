@@ -15,8 +15,9 @@
 //
 // # 口径
 // 业务日按 Input.Location 解析；窗口来源取 contract.WindowSource 三值。
-// 预览、建计划与写覆盖用实时窗口（先问平台）。
-// 只读报告（Report、ListWindows）默认只读缓存；Refresh 为真才重新发现（k0y-4）。
+// 建计划、写覆盖与 POST refresh 预览用实时窗口（先问平台）；
+// GET 预览与只读报告只读缓存，显式 Refresh 才重新发现
+// （k0y-4 / F5：GET 路径无平台副作用）。
 // 停用任务可预览，不可建计划与写覆盖：回 conflict（k0y-6）。
 package schedule
 
@@ -78,9 +79,17 @@ type Input struct {
 	EdgeFront time.Duration
 	EdgeBack  time.Duration
 	// Refresh 要求重新发现平台窗口（k0y-4）。
-	// 只对只读报告生效：Report 由入口按 refresh 查询参数置位。
-	// Preview 与 Build 恒查平台，忽略本字段。
+	// 只对只读报告与预览生效：入口按 refresh 查询参数置位。
+	// Build 与 Override 恒查平台，忽略本字段。
 	Refresh bool
+	// WeekendClosed 表示请求日的周末门关闭：既有校验照跑，
+	// 写阶段跳过，回执 0 行 + note，来源 weekend_closed。
+	WeekendClosed bool
+	// Explicit 表示显式发现/写库的 HTTP 手动面：
+	// POST refresh、POST plan、POST override。GET 只读路径为 false。
+	// 显式路径在写库/发现前先判急停（PausedError → 入口 503）；
+	// 日切与自动兜底（Explicit=false）保持容忍回退。
+	Explicit bool
 }
 
 // Row 是一行计划落点。
@@ -107,6 +116,9 @@ type Preview struct {
 	// Histogram 是 5 分钟片的落点计数，键为片号（相对有效窗口起点）。
 	Histogram map[int]int
 	Rows      []Row
+	// Note 是可选的人类可读回执（如周末门关闭导致 0 行）。
+	// 空串表示无附加说明；入口层据此决定响应是否带 note。
+	Note string
 }
 
 // Service 是计划用例服务。
@@ -148,17 +160,46 @@ func NewService(deps Deps) (*Service, error) {
 
 // Preview 只算不写：返回窗口解析结果与完整计划行。
 // 与 Build 同一解析口径（预览就是计划），故不节流；Refresh 不影响本方法。
+// **有平台发现**：入口只在 POST /api/schedule/preview/refresh 调用它。
+// 显式路径先判急停：paused 优先于周末门与既有覆盖，回 503。
+// 周末门关闭时校验照跑，回执 0 行 + note（不发现平台）。
 // 停用任务同样可预览（k0y-6）。
 func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
+	if err := validateInput(in); err != nil {
+		return Preview{}, err
+	}
+	if in.Explicit {
+		if err := s.requireNotPaused(ctx); err != nil {
+			return Preview{}, err
+		}
+	}
+	if in.WeekendClosed {
+		return s.closedPreview(ctx, in)
+	}
 	p, _, err := s.previewWithWindow(ctx, in, policyLive)
+	return p, err
+}
+
+// PreviewCached 是 GET /api/schedule/preview 的只读路径（F5 / D3）：
+// 覆盖 > 缓存 > 回退，**不**发现平台、不写库。无缓存时用回退窗口。
+// 强制刷新走 Preview（POST /api/schedule/preview/refresh）。
+func (s *Service) PreviewCached(ctx context.Context, in Input) (Preview, error) {
+	if err := validateInput(in); err != nil {
+		return Preview{}, err
+	}
+	in.Refresh = false
+	if in.WeekendClosed {
+		return s.closedPreview(ctx, in)
+	}
+	p, _, err := s.previewWithWindow(ctx, in, policyCached)
 	return p, err
 }
 
 // Report 计算容量报告所需的计划指标（k0y-4）。
 //
-// 窗口解析默认只读缓存：有当日缓存时零平台调用。
-// 无缓存时发现一次并落缓存；Refresh 为真时也发现一次。
-// 两个只读端点对 refresh=true 行为一致：都做平台发现。
+// 窗口解析默认只读缓存：有当日缓存时零平台调用；无缓存时用回退窗口，
+// **不**自动发现。Refresh 为真时才做一次平台发现并落缓存
+// （POST /api/capacity/refresh）。
 // 存在合法覆盖时不写缓存（见 storeFresh）：缓存窗口保持覆盖行。
 // 报告采用的窗口仍以覆盖优先；与计划同一口径。
 // 停用任务同样可报告容量（k0y-6）。
@@ -208,12 +249,21 @@ func (s *Service) storeFresh(ctx context.Context, res windowResolution) (int, er
 // 容量缺口自然降级：按可用容量落库并照常成功，不做运行期自适应；
 // 缺口事件与管理员通知在落库后发出（见 publishCapacity）。
 // 停用任务拒建计划（k0y-6）：回 conflict，且在发现平台窗口之前拒绝。
+// 周末门关闭：停用/参数校验先跑，之后回 0 行 + note，不写库。
 func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
 	if err := validateInput(in); err != nil {
 		return Preview{}, err
 	}
 	if err := s.requireEnabled(ctx, in.SchoolTaskID); err != nil {
 		return Preview{}, err
+	}
+	if in.Explicit {
+		if err := s.requireNotPaused(ctx); err != nil {
+			return Preview{}, err
+		}
+	}
+	if in.WeekendClosed {
+		return s.closedPreview(ctx, in)
 	}
 	p, changed, err := s.buildOnce(ctx, in)
 	if errors.Is(err, coreschedule.ErrWindowStale) {
@@ -226,6 +276,22 @@ func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
 	s.publishWindow(ctx, in, p, changed)
 	s.publishCapacity(ctx, in, p)
 	return p, nil
+}
+
+// requireNotPaused 在显式手动面写库前判急停：暂停时零写入并回 PausedError。
+// 未接暂停端口（测试/旧装配）时不判；查询故障原样上抛（故障不是未暂停）。
+func (s *Service) requireNotPaused(ctx context.Context) error {
+	if s.deps.Paused == nil {
+		return nil
+	}
+	paused, err := s.deps.Paused(ctx)
+	if err != nil {
+		return err
+	}
+	if paused {
+		return coreerrs.NewPaused()
+	}
+	return nil
 }
 
 // requireEnabled 读任务并拒绝停用任务。
@@ -388,8 +454,8 @@ func (s *Service) SelfContext(ctx context.Context, userID, day string) (coresche
 
 // ListWindows 返回作用域内各任务当日的窗口。
 // 没有缓存的任务也返回一行（Cached=false）：管理面要看到"未发现"。
-// 默认只读缓存（k0y-4）：有缓存的任务零平台调用。
-// 无缓存的任务发现一次并落缓存；refresh 为真时全部重新发现。
+// 默认只读缓存（k0y-4 / F5）：GET 路径零平台调用。
+// refresh 为真时全部重新发现（POST /api/schedule/windows/refresh）。
 func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day string, refresh bool) ([]coreschedule.WindowView, error) {
 	if err := requireScheduleScope(scope); err != nil {
 		return nil, err
@@ -401,10 +467,10 @@ func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day st
 	if err != nil {
 		return nil, err
 	}
+	if !refresh {
+		return views, nil
+	}
 	for i := range views {
-		if views[i].Cached && !refresh {
-			continue
-		}
 		if err := s.refreshView(ctx, &views[i], day); err != nil {
 			return nil, err
 		}
@@ -421,6 +487,11 @@ func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day st
 func (s *Service) refreshView(ctx context.Context, v *coreschedule.WindowView, day string) error {
 	found, err := s.deps.Discover.DiscoverWindow(ctx, v.TaskID)
 	if err != nil {
+		// 显式刷新（POST /api/schedule/windows/refresh）遇急停回 503；
+		// 平台其它失败保持原口径：保留旧行，不把读面变红。
+		if isPausedError(err) {
+			return err
+		}
 		return nil
 	}
 	if corewindow.Validate(corewindow.Window{Start: found.Start, End: found.End}) != nil {
@@ -505,6 +576,17 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	}
 	if !sameBusinessDay(start, in.Day, in.Location) || !sameBusinessDay(end, in.Day, in.Location) {
 		return Preview{}, validation("override start and end must fall on the business day")
+	}
+	// 显式手动面先判急停：paused 优先于周末门与既有覆盖，零写入回 503。
+	if in.Explicit {
+		if err := s.requireNotPaused(ctx); err != nil {
+			return Preview{}, err
+		}
+	}
+	// 周末门关闭：全部既有校验已通过，仅在写阶段跳过。
+	// 覆盖不落库，回执来源 weekend_closed，不回显请求窗口为生效值。
+	if in.WeekendClosed {
+		return s.closedPreview(ctx, in)
 	}
 	if err := s.deps.Windows.PutOverride(ctx, coreschedule.WindowOverride{
 		SchoolTaskID: in.SchoolTaskID,
@@ -778,13 +860,51 @@ func (s *Service) previewWithWindow(ctx context.Context, in Input, policy window
 	return p, res, nil
 }
 
+// closedPreview 返回周末门关闭时的 0 行回执。
+// 窗口走只读缓存/覆盖/回退（不发现平台、不写库）；来源标 weekend_closed，
+// 不把请求里的覆盖窗口冒充成生效值。
+func (s *Service) closedPreview(ctx context.Context, in Input) (Preview, error) {
+	loc := in.Location
+	dayDate, err := time.ParseInLocation("2006-01-02", in.Day, loc)
+	if err != nil {
+		return Preview{}, validation("day must be YYYY-MM-DD")
+	}
+	in.Refresh = false
+	res, err := s.resolveWindow(ctx, in, dayDate, loc, policyCached)
+	if err != nil {
+		return Preview{}, err
+	}
+	eff, _ := corewindow.Window{Start: res.effective.Start, End: res.effective.End}.
+		Effective(in.EdgeFront, in.EdgeBack)
+	if err := corewindow.Validate(eff); err != nil {
+		return Preview{}, validation("window has no positive span: " + err.Error())
+	}
+	return Preview{
+		Day:         in.Day,
+		Source:      contract.WindowWeekendClosed,
+		WindowStart: eff.Start,
+		WindowEnd:   eff.End,
+		Version:     res.version(),
+		Note:        WeekendGateNote,
+	}, nil
+}
+
+// WeekendGateNote 是周末门关闭时的回执文案（入口与用例共用）。
+const WeekendGateNote = "weekend gate closed: no plan rows built for this day"
+
+// isPausedError 报告发现错误是否为急停（宿主自产）。
+func isPausedError(err error) bool {
+	var paused *coreerrs.PausedError
+	return errors.As(err, &paused)
+}
+
 // resolveWindow 按覆盖 > 平台 > 缓存 > 回退解析当日窗口。
 // 平台发现失败不算错误（来源如实标注）；缓存读取失败**只有**
 // errs.ErrNotFound 才算无缓存，其他错误上抛。
 // 人工覆盖存在且合法时优先：覆盖是运维对当日窗口的明确决定。
-// 何时问平台：policyLive 且无合法覆盖；policyCached 且无缓存或 Refresh。
-// policyCached 的刷新先于覆盖判定：两个只读端点对 refresh=true
-// 行为一致，都发现平台窗口；存在覆盖时调用方不改写缓存行。
+// 何时问平台：policyLive 且无合法覆盖；policyCached 且 Refresh 为真。
+// policyCached 的刷新先于覆盖判定：POST refresh 端点即使存在覆盖
+// 也完成一次发现；存在覆盖时调用方不改写缓存行。
 func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, loc *time.Location, policy windowPolicy) (windowResolution, error) {
 	var res windowResolution
 	cached, cacheErr := s.deps.Windows.GetWindow(ctx, in.SchoolTaskID, in.Day)
@@ -803,7 +923,9 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 
 	discover := false
 	if policy == policyCached {
-		discover = in.Refresh || !res.cacheOK
+		// GET 路径不得有平台副作用（F5）：只有显式 Refresh 才问平台。
+		// 无缓存时走回退窗口，不在读路径上自动发现。
+		discover = in.Refresh
 	} else {
 		discover = !res.overrideOK
 	}
@@ -821,6 +943,12 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 				s.logWindowFailure(ctx, in, "", mask.MaskText(verr.Error()))
 			}
 		} else {
+			// 显式手动面（HTTP）遇急停原样上抛：入口回 503。
+			// 日切/自动兜底（Explicit=false）继续记日志并回退，
+			// 避免一次暂停让整日构建失败。
+			if in.Explicit && isPausedError(discoverErr) {
+				return res, discoverErr
+			}
 			outcome, reason := windowFailure(discoverErr)
 			s.logWindowFailure(ctx, in, outcome, reason)
 		}

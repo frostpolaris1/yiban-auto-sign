@@ -11,6 +11,7 @@ import {
   timePrefGetCalls,
   timePrefPutCalls,
   windowsCalls,
+  windowsRefreshCalls,
 } from './support/fake-schedule-api'
 
 /**
@@ -18,7 +19,7 @@ import {
  *
  * 1. 角色：master/admin 见导航与列表；user 无导航项，直接访问只有无权限卡片，
  *    且零 schedule 请求。
- * 2. 窗口一览：日期改写请求 day；「重新发现」追加 refresh=true；
+ * 2. 窗口一览：日期改写请求 day；「重新发现」改发 POST windows/refresh；
  *    null 窗口行禁用「查看计划」。
  * 3. 预览：打开即发 preview，参数与所点行一致；停用任务显示提示且两个写动作禁用。
  * 4. Build：确认前零 POST；确认体只含契约三字段；409 文案如实；成功后列表刷新。
@@ -98,8 +99,10 @@ test('invariant 2: the day rides the request and refresh re-discovers', async ({
 
   const before = windowsCalls(api).length
   await page.getByRole('button', { name: '重新发现', exact: true }).click()
-  await expect.poll(() => windowsCalls(api).length).toBeGreaterThan(before)
-  expect(lastWindowsCall(api)?.params.refresh).toBe('true')
+  await expect.poll(() => windowsRefreshCalls(api).length).toBe(1)
+  expect(windowsCalls(api).length).toBeGreaterThan(before)
+  expect(lastWindowsCall(api)?.method).toBe('POST')
+  expect(lastWindowsCall(api)?.path).toBe('/api/schedule/windows/refresh')
   expect(lastWindowsCall(api)?.params.day).toBe('2026-11-02')
 })
 

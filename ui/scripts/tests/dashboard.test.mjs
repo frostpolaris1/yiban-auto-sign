@@ -323,14 +323,10 @@ test('capacity options keep enabled rows with a reported window only', () => {
   assert.deepEqual(capacityOptions([]), [])
 })
 
-test('the capacity query carries both ids and the day, refresh only on demand', () => {
+test('the capacity query carries both ids and the day', () => {
   assert.equal(
     capacitySearch({ day: DAY, schoolId: 'school-alpha', taskId: 'task-daily' }),
     `?school_id=school-alpha&task_id=task-daily&day=${DAY}`,
-  )
-  assert.equal(
-    capacitySearch({ day: DAY, schoolId: 'school-alpha', taskId: 'task-daily', refresh: true }),
-    `?school_id=school-alpha&task_id=task-daily&day=${DAY}&refresh=true`,
   )
   assert.match(
     capacitySearch({ day: DAY, schoolId: 'a b', taskId: 't&x' }),
@@ -340,7 +336,7 @@ test('the capacity query carries both ids and the day, refresh only on demand', 
 
 test('the capacity card names window sources exactly like the schedule page', () => {
   assert.deepEqual(CAPACITY_SOURCE_LABELS, SOURCE_LABELS)
-  for (const source of ['platform', 'cache', 'fallback', 'override']) {
+  for (const source of ['platform', 'cache', 'fallback', 'override', 'weekend_closed']) {
     assert.equal(capacitySourceTone(source), sourceTone(source), `${source} tone must match`)
   }
 })

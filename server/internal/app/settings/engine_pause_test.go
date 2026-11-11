@@ -285,7 +285,7 @@ func TestEnginePauseFailsClosedWithoutStore(t *testing.T) {
 	}
 }
 
-// 读面：缺行=false；行值生效；存储故障上抛；坏行按解析器口径回退 false。
+// 读面：缺行=false；行值生效；存储故障上抛；坏行 fail-closed（视为暂停）。
 func TestEnginePausedRead(t *testing.T) {
 	actors := newPauseActors()
 	ctx := context.Background()
@@ -317,7 +317,8 @@ func TestEnginePausedRead(t *testing.T) {
 		t.Fatal("store failure must propagate, not read as not-paused")
 	}
 
-	// 坏行：解析器口径回退 false 并出声（不是故障、不是崩溃）。
+	// 坏行：engine.paused 专用解析 fail-closed（视为暂停）并出声一次。
+	// 急停键的坏值不得读成「未暂停」放行执行面与交互面平台调用。
 	bad := newPauseStore()
 	bad.boolRows[appsettings.KeyEnginePaused] = "TRUE"
 	svc, err = appsettings.NewService(appsettings.Deps{
@@ -327,7 +328,7 @@ func TestEnginePausedRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService(bad): %v", err)
 	}
-	if paused, err := svc.EnginePaused(ctx); err != nil || paused {
-		t.Fatalf("bad row = (%v, %v), want (false, nil)", paused, err)
+	if paused, err := svc.EnginePaused(ctx); err != nil || !paused {
+		t.Fatalf("bad row = (%v, %v), want (true, nil)（fail-closed）", paused, err)
 	}
 }

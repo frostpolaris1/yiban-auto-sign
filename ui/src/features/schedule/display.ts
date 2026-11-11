@@ -6,7 +6,8 @@
  * `features/schedule` 展示层：纯函数，无 React、无网络。
  *
  * **口径**
- * 来源值只取自契约 `ScheduleWindowSource`：`platform | cache | fallback | override`。
+ * 来源值只取自契约 `ScheduleWindowSource`：
+ * `platform | cache | fallback | override | weekend_closed`。
  * 契约漂移时原样显示未知值，不静默改写。
  * 启停来自 `ScheduleWindow.enabled`。
  * 标签是全仓唯一一份。时间格式化在 `lib/format`。
@@ -21,6 +22,7 @@ const CONTRACT_SOURCES: readonly ScheduleWindowSource[] = [
   'cache',
   'fallback',
   'override',
+  'weekend_closed',
 ]
 
 export const SOURCE_LABELS: Record<ScheduleWindowSource, string> = {
@@ -28,6 +30,7 @@ export const SOURCE_LABELS: Record<ScheduleWindowSource, string> = {
   cache: '缓存',
   fallback: '回退',
   override: '覆盖',
+  weekend_closed: '周末停签',
 }
 
 const SOURCE_TONES: Record<ScheduleWindowSource, Tone> = {
@@ -35,6 +38,7 @@ const SOURCE_TONES: Record<ScheduleWindowSource, Tone> = {
   cache: 'info',
   fallback: 'warning',
   override: 'purple',
+  weekend_closed: 'warning',
 }
 
 function knownSource(source: string | null): ScheduleWindowSource | null {

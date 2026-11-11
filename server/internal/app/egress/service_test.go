@@ -297,6 +297,58 @@ func (e *errStore) AssignOrGet(context.Context, string, string) (string, error) 
 	return "", e.err
 }
 
+// 匿名出口：同一 key 确定性命中同一出口，且不写账号绑定。
+// detect 没有账号行，不能走 AssignOrGet（FK 会拒）；它仍要落在
+// 真实出口的同一令牌桶上，与 worker 共用预算。
+func TestAssignAnonymousDeterministicWithoutBinding(t *testing.T) {
+	st := newFakeStore("e1", "e2", "e3")
+	svc := newService(t, st)
+	first, err := svc.AssignAnonymous(context.Background(), "detect:abc")
+	if err != nil {
+		t.Fatalf("AssignAnonymous: %v", err)
+	}
+	second, err := svc.AssignAnonymous(context.Background(), "detect:abc")
+	if err != nil {
+		t.Fatalf("AssignAnonymous again: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("同一 key 漂移: %s vs %s", first.ID, second.ID)
+	}
+	if len(st.assigned) != 0 {
+		t.Fatalf("匿名选择写了账号绑定: %v", st.assigned)
+	}
+	// 另一实例同 key 仍命中同一出口（确定性不依赖进程态）。
+	other, err := newService(t, newFakeStore("e1", "e2", "e3")).
+		AssignAnonymous(context.Background(), "detect:abc")
+	if err != nil {
+		t.Fatalf("AssignAnonymous other: %v", err)
+	}
+	if other.ID != first.ID {
+		t.Fatalf("跨实例漂移: %s vs %s", other.ID, first.ID)
+	}
+}
+
+// 匿名出口：无启用出口回 capacity；不健康出口对新 key 跳过。
+func TestAssignAnonymousNoEnabledEgress(t *testing.T) {
+	svc := newService(t, newFakeStore())
+	if _, err := svc.AssignAnonymous(context.Background(), "detect:x"); coreerrs.From(err).Code != coreerrs.CodeCapacity {
+		t.Fatalf("err = %v, want capacity", err)
+	}
+
+	st := newFakeStore("e1", "e2")
+	svc = newService(t, st)
+	svc.MarkFailed("e1", testNow.Add(time.Hour))
+	for i := 0; i < 20; i++ {
+		got, err := svc.AssignAnonymous(context.Background(), "detect:"+string(rune('a'+i)))
+		if err != nil {
+			t.Fatalf("AssignAnonymous %d: %v", i, err)
+		}
+		if got.ID == "e1" {
+			t.Fatalf("匿名选择命中不健康出口: %s", got.ID)
+		}
+	}
+}
+
 // 停用绑定的 Identity 必须仍可取：粘性不因运维停用而失效。
 func TestBoundDisabledEgressKeepsIdentity(t *testing.T) {
 	st := newFakeStore("e1", "e2")

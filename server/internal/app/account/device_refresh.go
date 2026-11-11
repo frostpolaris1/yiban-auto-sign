@@ -25,7 +25,6 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
@@ -73,7 +72,8 @@ func (s *Service) DeviceRefresh(ctx context.Context, scope corescope.Scope, id s
 	state, err := s.deps.Device.DeviceState(ctx, id, credential)
 	if err != nil {
 		// 平台侧细节（WAF 文案、状态码）不出本层：统一一个信封。
-		return DeviceRefreshResult{}, errs.New(errs.CodeUpstream, "device refresh failed")
+		// 急停/容量这类宿主自产错误原样上抛，入口层才能回 503/429。
+		return DeviceRefreshResult{}, platformCallFailure(err, "device refresh failed")
 	}
 	effective := DeviceRefreshResult{
 		DeviceCode: credential.DeviceCode,

@@ -309,12 +309,13 @@ func (r *ScheduleRepo) RearrangePlan(ctx context.Context, schoolTaskID, day stri
 
 // ActiveAccounts 返回某校的活跃账号及其所有者，按手机号升序
 // （稳定顺序即铺点行序号）。只取 active 且未软删的行：
-// 暂停/待审账号不占计划位。
+// 暂停/待审账号不占计划位。学校 disabled 时返回空：禁校不铺新号（D5 挡新）。
 func (r *ScheduleRepo) ActiveAccounts(ctx context.Context, schoolID string) ([]coreschedule.AccountRef, error) {
 	rows, err := r.db.q(ctx).Query(ctx,
-		`SELECT id::text, owner_user_id::text FROM accounts
-		 WHERE school_id = $1::uuid AND status = 'active' AND deleted_at IS NULL
-		 ORDER BY phone, id`,
+		`SELECT a.id::text, a.owner_user_id::text FROM accounts a
+		 WHERE a.school_id = $1::uuid AND a.status = 'active' AND a.deleted_at IS NULL
+		   AND EXISTS (SELECT 1 FROM schools sc WHERE sc.id = a.school_id AND sc.status = 'active')
+		 ORDER BY a.phone, a.id`,
 		schoolID)
 	if err != nil {
 		return nil, mapError(err)
@@ -419,6 +420,7 @@ func (r *ScheduleRepo) Task(ctx context.Context, taskID string) (coreschedule.Ta
 // ClaimDue 认领到期任务：单条 UPDATE 批量领取。
 // 判据全在 SQL：pending、run_at 已到、账号活跃未删、任务启用、
 // 同账号当前无 running（I-7 的查询面，库层唯一索引仍是最终兜底）。
+// **不按学校状态过滤**（D5 挡新不挡旧）：禁校前已铺的 pending 行照常执行。
 // FOR UPDATE SKIP LOCKED 让多 worker 不互等。
 // 外层 state='pending' 是第二道闸：READ COMMITTED 下 CTE 快照与行锁之间
 // 存在窗口，并发语句可能在快照后改状态；该谓词把这类行排除。
@@ -637,10 +639,13 @@ func (r *ScheduleRepo) ReclaimExpired(ctx context.Context, now time.Time, limit 
 }
 
 // EnabledTasks 列出全部启用任务，供日切构建。
+// 学校 disabled 的任务不出现：禁校不铺新计划（D5 挡新）。
 func (r *ScheduleRepo) EnabledTasks(ctx context.Context) ([]coreschedule.TaskInfo, error) {
 	rows, err := r.db.q(ctx).Query(ctx,
-		`SELECT id::text, school_id::text, name, enabled
-		   FROM school_tasks WHERE enabled ORDER BY school_id, id`)
+		`SELECT st.id::text, st.school_id::text, st.name, st.enabled
+		   FROM school_tasks st
+		   JOIN schools sc ON sc.id = st.school_id AND sc.status = 'active'
+		  WHERE st.enabled ORDER BY st.school_id, st.id`)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -760,6 +765,7 @@ func (r *ScheduleRepo) DayTaskRows(ctx context.Context, accountID, day string) (
 // DayTasks 返回账号当日已有任务行的启用任务 ID（按名称序）。
 // 只算启用任务：停用任务的行永远不会被 ClaimDue 认领，
 // 拿它当手动签到的目标只会入队一条死行。
+// **不按学校状态过滤**（D5 挡新不挡旧）：禁校前已铺的行照常可手动签到。
 // 零行是正常结论（当日还没建计划），返回空列表与 nil。
 func (r *ScheduleRepo) DayTasks(ctx context.Context, accountID, day string) ([]string, error) {
 	return r.taskIDs(ctx, `
@@ -773,12 +779,14 @@ func (r *ScheduleRepo) DayTasks(ctx context.Context, accountID, day string) ([]s
 }
 
 // AccountEnabledTasks 返回账号所属学校的全部启用任务 ID（按名称序）。
-// 零行表示账号不可用（停用、软删、不存在）或学校没有启用任务；
-// 调用方对两者都给 404，故不再区分。
+// 零行表示账号不可用（停用、软删、不存在）、学校 disabled 或学校没有
+// 启用任务；调用方对两者都给 404，故不再区分。
+// 学校 disabled 时为空：手动签到不得为禁校新建任务行（D5 挡新）。
 func (r *ScheduleRepo) AccountEnabledTasks(ctx context.Context, accountID string) ([]string, error) {
 	return r.taskIDs(ctx, `
 		SELECT st.id::text FROM accounts a
 		  JOIN school_tasks st ON st.school_id = a.school_id AND st.enabled
+		  JOIN schools sc ON sc.id = a.school_id AND sc.status = 'active'
 		 WHERE a.id = $1::uuid AND a.status = 'active' AND a.deleted_at IS NULL
 		 ORDER BY st.name, st.id`, accountID)
 }

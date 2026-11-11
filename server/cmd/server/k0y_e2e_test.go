@@ -168,25 +168,46 @@ func TestK0y4DiscoveryThrottled(t *testing.T) {
 
 	capacityPath := "/api/capacity?school_id=" + school.ID + "&task_id=" + task + "&day=" + day
 	windowsPath := "/api/schedule/windows?day=" + day
+	capacityPathRefresh := "/api/capacity/refresh?school_id=" + school.ID + "&task_id=" + task + "&day=" + day
+	windowsPathRefresh := "/api/schedule/windows/refresh?day=" + day
 
-	// ① 无缓存：首次默认 GET 发现一次，并把窗口落进当日缓存。
+	// ① 无缓存：GET 只读缓存，零平台调用，来源回退；
+	// 强制刷新走 POST /api/capacity/refresh，发现一次并落缓存。
 	base := e.discover.count()
 	rec := e.do(http.MethodGet, capacityPath, nil, issued)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("capacity status = %d: %s", rec.Code, rec.Body.String())
 	}
+	if got := e.discover.count() - base; got != 0 {
+		t.Fatalf("无缓存 GET 平台调用 = %d, want 0（GET 无平台副作用）", got)
+	}
+	if n := e.scalarInt(
+		"SELECT count(*) FROM window_cache WHERE school_task_id = $1::uuid AND day = $2::date",
+		task, day); n != 0 {
+		t.Fatalf("无缓存 GET 后缓存行数 = %d, want 0", n)
+	}
+	var report oapi.CapacityReport
+	e.decode(rec, &report)
+	if report.Source != "fallback" {
+		t.Fatalf("无缓存 GET 来源 = %s, want fallback", report.Source)
+	}
+
+	base = e.discover.count()
+	rec = e.do(http.MethodPost, capacityPathRefresh, nil, issued)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capacity refresh status = %d: %s", rec.Code, rec.Body.String())
+	}
 	if got := e.discover.count() - base; got != 1 {
-		t.Fatalf("无缓存首次 GET 平台调用 = %d, want 1", got)
+		t.Fatalf("POST capacity/refresh 平台调用 = %d, want 1", got)
 	}
 	if n := e.scalarInt(
 		"SELECT count(*) FROM window_cache WHERE school_task_id = $1::uuid AND day = $2::date",
 		task, day); n != 1 {
-		t.Fatalf("首次 GET 后缓存行数 = %d, want 1", n)
+		t.Fatalf("POST refresh 后缓存行数 = %d, want 1", n)
 	}
-	var report oapi.CapacityReport
 	e.decode(rec, &report)
 	if report.Source != "platform" {
-		t.Fatalf("首次报告来源 = %s, want platform", report.Source)
+		t.Fatalf("POST refresh 报告来源 = %s, want platform", report.Source)
 	}
 
 	// ② 有缓存：连续两次默认 GET（两个端点各一次）平台调用零增量。
@@ -201,21 +222,21 @@ func TestK0y4DiscoveryThrottled(t *testing.T) {
 		t.Fatalf("有缓存时两次默认 GET 平台调用 = %d, want 0", got)
 	}
 
-	// ③ refresh=true 触发发现：两个端点各 +1。
+	// ③ POST refresh 触发发现：两个端点各 +1。
 	base = e.discover.count()
-	if rec := e.do(http.MethodGet, capacityPath+"&refresh=true", nil, issued); rec.Code != http.StatusOK {
+	if rec := e.do(http.MethodPost, capacityPathRefresh, nil, issued); rec.Code != http.StatusOK {
 		t.Fatalf("capacity refresh status = %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := e.discover.count() - base; got != 1 {
-		t.Fatalf("capacity refresh=true 平台调用 = %d, want 1", got)
+		t.Fatalf("POST capacity/refresh 平台调用 = %d, want 1", got)
 	}
 	base = e.discover.count()
-	rec = e.do(http.MethodGet, windowsPath+"&refresh=true", nil, issued)
+	rec = e.do(http.MethodPost, windowsPathRefresh, nil, issued)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("windows refresh status = %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := e.discover.count() - base; got != 1 {
-		t.Fatalf("windows refresh=true 平台调用 = %d, want 1", got)
+		t.Fatalf("POST windows/refresh 平台调用 = %d, want 1", got)
 	}
 	var list oapi.ScheduleWindowList
 	e.decode(rec, &list)
@@ -246,17 +267,17 @@ func TestK0y4DiscoveryThrottled(t *testing.T) {
 		t.Fatalf("覆盖后报告 = source %s start %v", report.Source, report.WindowStart)
 	}
 
-	// ⑤ 覆盖存在时 refresh=true 仍发现平台窗口，但不改写缓存行。
+	// ⑤ 覆盖存在时 POST refresh 仍发现平台窗口，但不改写缓存行。
 	// 依据：缓存行是 worker 的窗口判据（只读缓存）。改写它会让覆盖失效，
 	// pending 行可能按平台窗口判终态（skipped），当日不可恢复。
-	// 报告与计划仍以覆盖为准；两个只读端点的 refresh 行为一致。
+	// 报告与计划仍以覆盖为准。
 	base = e.discover.count()
-	rec = e.do(http.MethodGet, capacityPath+"&refresh=true", nil, issued)
+	rec = e.do(http.MethodPost, capacityPathRefresh, nil, issued)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("覆盖态 refresh status = %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := e.discover.count() - base; got != 1 {
-		t.Fatalf("覆盖态 refresh=true 平台调用 = %d, want 1", got)
+		t.Fatalf("覆盖态 POST refresh 平台调用 = %d, want 1", got)
 	}
 	if src := e.scalarString(
 		"SELECT source FROM window_cache WHERE school_task_id = $1::uuid AND day = $2::date",
@@ -269,14 +290,14 @@ func TestK0y4DiscoveryThrottled(t *testing.T) {
 			report.Source, report.WindowStart, report.WindowEnd, ovStart, ovEnd)
 	}
 
-	// 窗口列表的 refresh 同判据：发现照做，缓存行不改写。
+	// 窗口列表的 POST refresh 同判据：发现照做，缓存行不改写。
 	base = e.discover.count()
-	rec = e.do(http.MethodGet, windowsPath+"&refresh=true", nil, issued)
+	rec = e.do(http.MethodPost, windowsPathRefresh, nil, issued)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("覆盖态 windows refresh status = %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := e.discover.count() - base; got != 1 {
-		t.Fatalf("覆盖态 windows refresh=true 平台调用 = %d, want 1", got)
+		t.Fatalf("覆盖态 POST windows/refresh 平台调用 = %d, want 1", got)
 	}
 	if src := e.scalarString(
 		"SELECT source FROM window_cache WHERE school_task_id = $1::uuid AND day = $2::date",
