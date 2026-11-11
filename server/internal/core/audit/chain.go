@@ -299,7 +299,8 @@ var (
 	// wordShape 是状态或原因码。
 	wordShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	// universityIDShape 是平台院校标识：UUID 形状或纯数字/字母 ID，
-	// 1..128 字符，无空格与自由文本标点。它是公开院校标识，不是 PII。
+	// 1..128 字符，无空格与自由文本标点。它是公开院校标识，不是 PII；
+	// 11 位、1 开头的纯数字串按手机号形状拒绝（见 validateDetailString）。
 	universityIDShape = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$`)
 	// uuidShape 匹配小写 UUID。学校默认图只记照片 id。
 	uuidShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -309,7 +310,8 @@ var (
 	settingsKeyShape = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,63}$`)
 	// hostShape 匹配 SMTP 主机名或 IP 字面量：字母、数字、点、冒号、连字符。
 	// 首字符允许冒号以容纳 IPv6 字面量（::1）；无空白、@、引号与路径分隔符，
-	// 故不是自由文本通道。只服务 settings.mail_writeback 的 mail.smtp_host 字面值。
+	// 故不是自由文本通道。纯数字串与手机号形状另行拒绝（见 validateDetailValue）：
+	// 数字串是号码的通道，不是主机名。只服务 settings.mail_writeback 的 mail.smtp_host 字面值。
 	hostShape = regexp.MustCompile(`^[A-Za-z0-9:][A-Za-z0-9.:-]{0,252}$`)
 )
 
@@ -471,12 +473,29 @@ func validateDetailValue(key string, value any) error {
 			}
 			for _, item := range pair {
 				switch value := item.(type) {
-				case nil, bool, int, int64:
+				case nil, bool:
+				case int:
+					// 整数值同样要过手机号形状：changes 是键→[旧,新]对，
+					// 不能因为值住在映射里就绕过通用数值规则。
+					if err := validateDetailNumber(float64(value)); err != nil {
+						return err
+					}
+				case int64:
+					if err := validateDetailNumber(float64(value)); err != nil {
+						return err
+					}
 				case string:
 					// 主机名形状只放行 mail.smtp_host 一个键位：
 					// 其它 changes 键仍只收状态词，不因本批放宽。
-					if !wordShape.MatchString(value) &&
-						(name != "mail.smtp_host" || !hostShape.MatchString(value)) {
+					// 纯数字串与手机号形状一律拒绝：主机名不是号码的通道。
+					if name == "mail.smtp_host" {
+						if !hostShape.MatchString(value) || isAllDigits(value) ||
+							mask.TextHasPhone(value) {
+							return fmt.Errorf("%w: changes %q value has the wrong value shape", ErrDetailShape, name)
+						}
+						continue
+					}
+					if !wordShape.MatchString(value) {
 						return fmt.Errorf("%w: changes %q value has the wrong value shape", ErrDetailShape, name)
 					}
 				default:
@@ -527,7 +546,7 @@ func validateDetailString(key, text string) error {
 		}
 		return nil
 	case "university_id":
-		if !universityIDShape.MatchString(text) {
+		if !universityIDShape.MatchString(text) || isElevenDigitOneShape(text) {
 			return fmt.Errorf("%w: %q has the wrong university id shape", ErrDetailShape, key)
 		}
 		return nil
@@ -553,6 +572,25 @@ func validateDetailNumber(value float64) error {
 		return fmt.Errorf("%w: numeric phone shape", ErrDetailPII)
 	}
 	return nil
+}
+
+// isAllDigits 报告 s 非空且全为 ASCII 十进制数字。
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isElevenDigitOneShape 报告 s 是 11 位、1 开头的纯数字串。
+// 手机号与普通整数无法区分，故整段形状一律拒绝。
+func isElevenDigitOneShape(s string) bool {
+	return len(s) == 11 && s[0] == '1' && isAllDigits(s)
 }
 
 // validateDetailNumberWithLimits 是数值族的公共入口：先按按键限幅（crop_* 限

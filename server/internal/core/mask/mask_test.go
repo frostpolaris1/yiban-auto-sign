@@ -198,6 +198,21 @@ func TestTextHasPhoneIgnoresNonMobileNumbers(t *testing.T) {
 	}
 }
 
+// 无点域也是系统接受的地址形状：检测与掩码都不得对它失明。
+func TestTextHasEmailCoversDotlessDomain(t *testing.T) {
+	for _, in := range []string{"a@b", "联系人 a@b", "a@b-c"} {
+		if !TextHasEmail(in) {
+			t.Fatalf("TextHasEmail(%q) = false; want true", in)
+		}
+	}
+	if got, want := MaskText("a@b"), "a***@b"; got != want {
+		t.Fatalf("MaskText = %q, want %q", got, want)
+	}
+	if TextHasEmail(MaskText("a@b")) {
+		t.Fatal("掩码后的无点域地址仍被判为未掩码")
+	}
+}
+
 // 时间戳的「秒.纳秒」会拼出 11 位数字：检测口径不得判为手机号。
 // 这是 P3-D 的 pii.absent 假阳性根因（SignedAt 的 RFC3339Nano）。
 func TestTextHasPhoneIgnoresTimestampFractions(t *testing.T) {

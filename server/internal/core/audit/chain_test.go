@@ -35,6 +35,7 @@ func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 		{"phone after a word", map[string]any{"reason": "user13800138000"}, coreaudit.ErrDetailPII},
 		{"phone before a word", map[string]any{"reason": "13800138000abc"}, coreaudit.ErrDetailPII},
 		{"bare email", map[string]any{"reason": "a@b.com"}, coreaudit.ErrDetailPII},
+		{"dotless email", map[string]any{"reason": "a@b"}, coreaudit.ErrDetailPII},
 		{"email after a word", map[string]any{"reason": "user@example.com"}, coreaudit.ErrDetailPII},
 		{"non-ASCII email", map[string]any{"reason": "退回 学生@example.com"}, coreaudit.ErrDetailPII},
 		{"integer phone", map[string]any{"count": int64(13800138000)}, coreaudit.ErrDetailPII},
@@ -290,7 +291,7 @@ func TestEncodeDetailAcceptsUniversityID(t *testing.T) {
 			t.Fatalf("university_id %q 被拒绝: %v", id, err)
 		}
 	}
-	for _, bad := range []string{"", " has space", "a/b", strings.Repeat("a", 129)} {
+	for _, bad := range []string{"", " has space", "a/b", strings.Repeat("a", 129), "13800138000"} {
 		if _, err := coreaudit.EncodeDetail(map[string]any{"university_id": bad}); err == nil {
 			t.Fatalf("university_id %q 未被拒绝", bad)
 		}
@@ -385,12 +386,21 @@ func TestEncodeDetailAcceptsScheduleWritebackChanges(t *testing.T) {
 	}); err == nil {
 		t.Fatal("非 mail.smtp_host 键接受了主机名形状")
 	}
-	// 主机名形状本身仍拒绝空白、@ 与路径分隔符。
-	for _, bad := range []string{"a b", "a@b", "smtp/example", "smtp.example.com "} {
+	// 主机名形状本身仍拒绝空白、@ 与路径分隔符；纯数字串与手机号形状
+	// 也不得借主机名键位进链。
+	for _, bad := range []string{"a b", "a@b", "smtp/example", "smtp.example.com ", "12345", "13800138000"} {
 		if _, err := coreaudit.EncodeDetail(map[string]any{
 			"changes": map[string][2]any{"mail.smtp_host": {nil, bad}},
 		}); err == nil {
 			t.Fatalf("mail.smtp_host 接受了非法字面值 %q", bad)
+		}
+	}
+	// changes 的整数值同样要过手机号形状：映射形态不是绕过通用数值规则的通道。
+	for _, bad := range []any{13800138000, int64(13800138000)} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{
+			"changes": map[string][2]any{"schedule.edge_back_sec": {nil, bad}},
+		}); !errors.Is(err, coreaudit.ErrDetailPII) {
+			t.Fatalf("changes 整数值 %v（%T）err = %v, want ErrDetailPII", bad, bad, err)
 		}
 	}
 	// 键形状越界（大写/空/超长/非法字符）不得通过。
