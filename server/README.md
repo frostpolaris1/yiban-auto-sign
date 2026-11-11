@@ -341,6 +341,10 @@ password hash. Other 429 answers (time-preference cooldown, capacity) may omit
 `Retry-After`. The reset flow checks the one-time token before hashing the new
 password.
 
+The admin event stream (`GET /api/admin/events`) has a process-wide cap of 10
+concurrent streams. The 11th connection gets 429 `rate_limited` with
+`Retry-After`; a slot is released as soon as any stream ends.
+
 A plan build does not refuse a capacity shortfall. When the demand exceeds
 what the window can carry at the configured concurrency, average duration and
 egress rate, the build degrades: it persists only the rows that fit and the
