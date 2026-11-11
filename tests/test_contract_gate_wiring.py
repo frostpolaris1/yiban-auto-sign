@@ -18,8 +18,9 @@
    oasdiff 按 `v1.35.0` 安装；`npm ci` 带 `--ignore-scripts`（阻断
    postinstall 联网）。
 7. 入口脚本的行为：非注释行真的跑 spectral（`--fail-severity warn`）与
-   oasdiff（`--fail-on ERR`）；缺工具 exit 2；无底本时打印显性 SKIP；
-   破坏性变更的退出码原样传出。
+   oasdiff（`--format json` ＋ allowlist 过滤）；缺工具 exit 2；无底本时
+   打印显性 SKIP；破坏性变更的退出码原样传出；allowlist 过期行失效
+   （过期/缺列都回到红）。
 
 # 归属
 
@@ -483,6 +484,54 @@ class EntryScriptBehaviorTest(unittest.TestCase):
     def test_breaking_exit_is_propagated(self):
         rc, out = self._run("--base", "HEAD", STUB_OASDIFF_RC="1")
         self.assertEqual(rc, 1, out)
+
+    def _write_allowlist(self, *rows):
+        """写临时豁免名册（每行一个字符串），返回 MSYS 友好路径。"""
+        path = os.path.join(self.tmp.name, "allow.tsv")
+        with io.open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("# test allowlist\n")
+            for row in rows:
+                f.write(row + "\n")
+        return path.replace("\\", "/")
+
+    def _write_err_oasdiff(self):
+        """写一个产出 ERR 级 finding 的 oasdiff stub。"""
+        path = self.tmp.name.replace("\\", "/") + "/oasdiff-err"
+        _write_stub(path,
+                    "#!/usr/bin/env bash\n"
+                    "echo '[{\"id\":\"stub-check\",\"operation\":\"GET\",\"path\":\"/stub\","
+                    "\"level\":3,\"text\":\"breaking-stub\"}]'\n")
+        return path
+
+    def test_expired_allowlist_row_does_not_exempt(self):
+        # 过期行必须失效：finding 回到红，进程非零。
+        allow = self._write_allowlist(
+            "stub-check\tget\t/stub\tbatch\t2000-01-01")
+        rc, out = self._run("--base", "HEAD",
+                            BREAKS_ALLOWLIST=allow,
+                            OASDIFF=self._write_err_oasdiff())
+        self.assertEqual(rc, 1, out)
+        self.assertIn("EXPIRED", out)
+        self.assertIn("breaking-stub", out)
+
+    def test_future_allowlist_row_still_exempts(self):
+        # 正向对照：未过期行仍放行，证明过期判据不是恒红。
+        allow = self._write_allowlist(
+            "stub-check\tget\t/stub\tbatch\t2999-12-31")
+        rc, out = self._run("--base", "HEAD",
+                            BREAKS_ALLOWLIST=allow,
+                            OASDIFF=self._write_err_oasdiff())
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ALLOWED", out)
+
+    def test_allowlist_row_without_expiry_is_invalid(self):
+        # 缺过期列按失效处理：新增行不能绕过到期评审。
+        allow = self._write_allowlist("stub-check\tget\t/stub\tbatch")
+        rc, out = self._run("--base", "HEAD",
+                            BREAKS_ALLOWLIST=allow,
+                            OASDIFF=self._write_err_oasdiff())
+        self.assertEqual(rc, 1, out)
+        self.assertIn("INVALID", out)
 
     def test_missing_spectral_is_an_environment_error(self):
         rc, out = self._run(SPECTRAL=self.tmp.name.replace("\\", "/") + "/absent")
