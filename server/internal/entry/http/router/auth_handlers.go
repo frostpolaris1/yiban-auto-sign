@@ -77,7 +77,8 @@ func (s *server) AuthLogin(c *gin.Context) {
 		return
 	}
 	// 账号面在付出 KDF 之前判：归一邮箱与用例同口径，大小写变体共用一个桶。
-	if !s.accountLimit(c, coreuser.NormalizeEmail(string(req.Email))) {
+	// 登录域独立：登录失败洪水不得挤占 forgot/restore 的额度。
+	if !s.accountLimitFor(c, accountDomainLogin, coreuser.NormalizeEmail(string(req.Email))) {
 		return
 	}
 	issued, err := s.auth.Login(c.Request.Context(), string(req.Email), req.Password)
@@ -157,6 +158,10 @@ func (s *server) AuthForgotPassword(c *gin.Context) {
 	var req oapi.AuthForgotPasswordJSONRequestBody
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindError(c, err)
+		return
+	}
+	// 忘记口令有独立域：登录失败洪水不得锁死受害者找回口令。
+	if !s.accountLimitFor(c, accountDomainForgot, coreuser.NormalizeEmail(string(req.Email))) {
 		return
 	}
 	if err := s.auth.ForgotPassword(c.Request.Context(), string(req.Email)); err != nil {
@@ -271,7 +276,8 @@ func (s *server) MeRestore(c *gin.Context) {
 		bindError(c, err)
 		return
 	}
-	if !s.accountLimit(c, coreuser.NormalizeEmail(string(req.Email))) {
+	// 恢复有独立域：登录失败洪水不得锁死受害者恢复账号。
+	if !s.accountLimitFor(c, accountDomainRestore, coreuser.NormalizeEmail(string(req.Email))) {
 		return
 	}
 	if err := s.auth.RestoreSelf(c.Request.Context(), string(req.Email), req.Password); err != nil {
@@ -327,7 +333,8 @@ func (s *server) AuthRegister(c *gin.Context) {
 		return
 	}
 	// 账号面按归一邮箱判：重复提交与变体邮箱共用一个桶。
-	if !s.accountLimit(c, coreuser.NormalizeEmail(string(req.Email))) {
+	// 注册域独立：注册请求不得挤占登录/忘记/恢复的额度。
+	if !s.accountLimitFor(c, accountDomainRegister, coreuser.NormalizeEmail(string(req.Email))) {
 		return
 	}
 	issued, err := s.auth.Register(c.Request.Context(), appauth.RegisterInput{
@@ -443,11 +450,7 @@ func (s *server) requestScheme(c *gin.Context) string {
 	if c.Request.TLS != nil {
 		return "https"
 	}
-	trusted := s.trustedProxies
-	if len(trusted) == 0 && s.rateLimit != nil {
-		trusted = s.rateLimit.Trusted
-	}
-	if ratelimit.IsTrustedPeer(c.Request.RemoteAddr, trusted) {
+	if ratelimit.IsTrustedPeer(c.Request.RemoteAddr, s.trustedProxyPrefixes()) {
 		raw := c.GetHeader("X-Forwarded-Proto")
 		if i := strings.IndexByte(raw, ','); i >= 0 {
 			raw = raw[:i]

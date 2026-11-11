@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -524,6 +526,54 @@ func TestNewSessionEvictsTheOldestBeyondTheCap(t *testing.T) {
 	}
 }
 
+// 签发会话时把请求来源的 HMAC 摘要写入会话行；无来源时保持 NULL。
+func TestSessionIssuerRecordsClientMetadata(t *testing.T) {
+	e := newEnv(t)
+	user := e.createUser("session-meta@example.com")
+	now := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	issuer, err := pg.NewSessionIssuer(e.ses, e.audits, testPepper, coreclock.Fixed{T: now})
+	mustNotError(t, err, "new session issuer")
+
+	ctx := coreauth.WithClientMeta(e.ctx, coreauth.ClientMeta{
+		IP:        "203.0.113.9",
+		UserAgent: "yiban-test-agent",
+	})
+	issued, err := issuer.Issue(ctx, coreauth.User{
+		ID: user.ID, Email: user.Email, Role: coreauth.RoleUser, Status: coreauth.StatusActive,
+	})
+	mustNotError(t, err, "issue session")
+
+	wantIP, err := coreauth.HashIP(testPepper, "203.0.113.9")
+	mustNotError(t, err, "hash ip")
+	wantUA, err := coreauth.HashUserAgent(testPepper, "yiban-test-agent")
+	mustNotError(t, err, "hash user agent")
+	if got := e.scalarString("SELECT ip_hash FROM sessions WHERE user_id = $1", user.ID); got != wantIP.String() {
+		t.Fatalf("ip_hash = %q, want %q", got, wantIP.String())
+	}
+	if got := e.scalarString("SELECT user_agent_hash FROM sessions WHERE user_id = $1", user.ID); got != wantUA.String() {
+		t.Fatalf("user_agent_hash = %q, want %q", got, wantUA.String())
+	}
+
+	// revoke 路径回归：撤销后会话不可解析，摘要列不被改写。
+	mustNotError(t, issuer.Revoke(ctx, issued.Token), "revoke session")
+	if _, err := issuer.Resolve(ctx, issued.Token); !errors.Is(err, coreauth.ErrNoSession) {
+		t.Fatalf("revoked session resolved: %v", err)
+	}
+	if got := e.scalarString("SELECT ip_hash FROM sessions WHERE user_id = $1", user.ID); got != wantIP.String() {
+		t.Fatalf("ip_hash changed on revoke: %q", got)
+	}
+
+	// 无来源信息时两列保持 NULL，而不是空串的摘要。
+	if _, err := issuer.Issue(e.ctx, coreauth.User{
+		ID: user.ID, Email: user.Email, Role: coreauth.RoleUser, Status: coreauth.StatusActive,
+	}); err != nil {
+		t.Fatalf("issue session without metadata: %v", err)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM sessions WHERE user_id = $1 AND ip_hash IS NULL AND user_agent_hash IS NULL", user.ID); got != 1 {
+		t.Fatalf("sessions without metadata with NULL hashes = %d, want 1", got)
+	}
+}
+
 // --- 密码重置 -------------------------------------------------------------
 
 func TestPasswordResetTokenIsSingleUse(t *testing.T) {
@@ -566,6 +616,138 @@ func TestPasswordResetTokenIsSingleUse(t *testing.T) {
 	}
 	if _, err := e.resets.Consume(e.ctx, tokenHash("reset-expired"), now); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("an expired reset token was accepted: %v", err)
+	}
+}
+
+// 消费一个令牌时，同用户其余未用令牌一并失效；别的用户的令牌不受影响。
+func TestPasswordResetConsumeInvalidatesSiblings(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("reset-siblings@example.com")
+	other := e.createUser("reset-other@example.com")
+	now := time.Now().UTC()
+
+	create := func(userID, token string) {
+		t.Helper()
+		if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+			_, err := e.resets.Create(ctx, coreauthNewReset{
+				UserID:    userID,
+				TokenHash: tokenHash(token),
+				Now:       now,
+				ExpiresAt: now.Add(time.Hour),
+			})
+			return err
+		}); err != nil {
+			t.Fatalf("create reset token %s: %v", token, err)
+		}
+	}
+	create(owner.ID, "sibling-a")
+	create(owner.ID, "sibling-b")
+	create(other.ID, "other-c")
+
+	used, err := e.resets.Consume(e.ctx, tokenHash("sibling-a"), now.Add(time.Minute))
+	mustNotError(t, err, "consume sibling-a")
+	if used.UserID != owner.ID {
+		t.Fatalf("consumed user = %s, want %s", used.UserID, owner.ID)
+	}
+
+	// 兄弟令牌已随消费失效：Peek 与 Consume 都不再接受它。
+	if _, err := e.resets.Peek(e.ctx, tokenHash("sibling-b"), now.Add(2*time.Minute)); codeOf(t, err) != errs.CodeNotFound {
+		t.Fatalf("sibling token was still readable: %v", err)
+	}
+	if _, err := e.resets.Consume(e.ctx, tokenHash("sibling-b"), now.Add(2*time.Minute)); codeOf(t, err) != errs.CodeNotFound {
+		t.Fatalf("sibling token was still accepted: %v", err)
+	}
+
+	// 边界：另一个用户的令牌不受影响。
+	if _, err := e.resets.Consume(e.ctx, tokenHash("other-c"), now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("another user's token was invalidated: %v", err)
+	}
+
+	// 失效是批量置位：owner 的两行都有 used_at。
+	if got := e.scalarInt("SELECT count(*) FROM password_resets WHERE user_id = $1 AND used_at IS NOT NULL", owner.ID); got != 2 {
+		t.Fatalf("used rows for owner = %d, want 2", got)
+	}
+}
+
+// 消费令牌只锁未过期兄弟：过期行不置位、不加锁，
+// 与保留期清理（按 expires_at 升序删）的行集不相交，避免反向锁序死锁。
+func TestPasswordResetConsumeSkipsExpiredSiblings(t *testing.T) {
+	e := newEnv(t)
+	now := time.Now().UTC()
+
+	create := func(userID, token string, createdAt, expiresAt time.Time) {
+		t.Helper()
+		if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+			_, err := e.resets.Create(ctx, coreauthNewReset{
+				UserID:    userID,
+				TokenHash: tokenHash(token),
+				Now:       createdAt,
+				ExpiresAt: expiresAt,
+			})
+			return err
+		}); err != nil {
+			t.Fatalf("create reset token %s: %v", token, err)
+		}
+	}
+	// 过期兄弟的 created_at 升序与 expires_at 升序相反：
+	// 旧实现按 user 索引（created_at DESC）锁过期行，清理按 expires_at ASC 删。
+	const expired = 20
+	seedExpired := func(userID, prefix string) {
+		t.Helper()
+		for i := 0; i < expired; i++ {
+			create(userID, fmt.Sprintf("%s-%02d", prefix, i),
+				now.Add(-2*time.Hour+time.Duration(i)*time.Minute),
+				now.Add(-time.Hour+time.Duration(i)*time.Minute))
+		}
+	}
+
+	owner := e.createUser("reset-expired-siblings@example.com")
+	seedExpired(owner.ID, "expired")
+	create(owner.ID, "live-target", now, now.Add(time.Hour))
+
+	used, err := e.resets.Consume(e.ctx, tokenHash("live-target"), now.Add(time.Minute))
+	mustNotError(t, err, "consume live target")
+	if used.UserID != owner.ID {
+		t.Fatalf("consumed user = %s, want %s", used.UserID, owner.ID)
+	}
+	// 过期兄弟一行都不应被置位：与清理的行集不相交。
+	if got := e.scalarInt(
+		"SELECT count(*) FROM password_resets WHERE user_id = $1 AND expires_at < $2 AND used_at IS NOT NULL",
+		owner.ID, now); got != 0 {
+		t.Fatalf("expired siblings marked used = %d, want 0", got)
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM password_resets WHERE user_id = $1 AND expires_at > $2 AND used_at IS NOT NULL",
+		owner.ID, now); got != 1 {
+		t.Fatalf("live used rows = %d, want 1", got)
+	}
+
+	// 双连接并发：Consume 与过期清理同时跑，不得报死锁。
+	other := e.createUser("reset-expired-cleanup@example.com")
+	seedExpired(other.ID, "cleanup-expired")
+	create(other.ID, "cleanup-target", now, now.Add(time.Hour))
+	maintenance := pg.NewMaintenanceRepo(e.db)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, errs[0] = e.resets.Consume(e.ctx, tokenHash("cleanup-target"), now.Add(time.Minute))
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, errs[1] = maintenance.DeleteExpiredPasswordResets(e.ctx, now, 1000)
+	}()
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent consume/cleanup %d: %v", i, err)
+		}
 	}
 }
 

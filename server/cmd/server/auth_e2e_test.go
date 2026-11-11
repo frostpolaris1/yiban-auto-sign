@@ -474,6 +474,74 @@ func TestE24ResetTokenIsSingleUse(t *testing.T) {
 	}
 }
 
+// --- 重置令牌互斥：消费一个令牌即失效同用户其余令牌 --------------------
+
+// 模拟真实用户：同一账号先后拿到两个重置令牌。
+// 断言用户可见结果：第一个改密成功；第二个按既有失效语义回 401，
+// 且没有改掉第一个令牌写入的口令。
+// 另一账号的令牌不受影响；弱口令失败的回滚不消耗令牌。
+func TestResetTokenInvalidatesSiblings(t *testing.T) {
+	e := newAuthEnv(t)
+	owner := e.createUser("sibling-owner@example.com", "correct-horse")
+	other := e.createUser("sibling-other@example.com", "correct-horse")
+	now := time.Now().UTC()
+
+	create := func(userID, token string) {
+		t.Helper()
+		if _, err := e.resets.Create(e.ctx, coreauth.NewPasswordReset{
+			UserID:    userID,
+			TokenHash: coreauth.HashToken(token),
+			Now:       now,
+			ExpiresAt: now.Add(30 * time.Minute),
+		}); err != nil {
+			t.Fatalf("create reset token %s: %v", token, err)
+		}
+	}
+	create(owner.ID, "sibling-first-token")
+	create(owner.ID, "sibling-second-token")
+	create(other.ID, "other-only-token")
+
+	firstResp, firstPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "sibling-first-token", "new_password": "first-new-password"}, nil)
+	if firstResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first reset = %d, want 204; body=%q", firstResp.StatusCode, firstPayload)
+	}
+	hashAfterFirst := e.scalarString("SELECT password_hash FROM users WHERE id = $1", owner.ID)
+
+	secondResp, secondPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "sibling-second-token", "new_password": "second-new-password"}, nil)
+	if secondResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("sibling reset = %d, want 401; body=%q", secondResp.StatusCode, secondPayload)
+	}
+	if code, _ := errorCode(t, secondPayload); code != "unauthorized" {
+		t.Fatalf("sibling reset code = %q, want unauthorized", code)
+	}
+	if got := e.scalarString("SELECT password_hash FROM users WHERE id = $1", owner.ID); got != hashAfterFirst {
+		t.Fatal("a sibling reset token changed the password")
+	}
+
+	// 边界：另一个用户的令牌仍可用。
+	otherResp, otherPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "other-only-token", "new_password": "other-new-password"}, nil)
+	if otherResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("another user's reset = %d, want 204; body=%q", otherResp.StatusCode, otherPayload)
+	}
+
+	// 弱口令失败整体回滚：令牌不被消费，随后仍可用。
+	weakUser := e.createUser("sibling-weak@example.com", "correct-horse")
+	create(weakUser.ID, "weak-token")
+	weakResp, weakPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "weak-token", "new_password": "short"}, nil)
+	if weakResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("weak reset = %d, want 400; body=%q", weakResp.StatusCode, weakPayload)
+	}
+	retryResp, retryPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "weak-token", "new_password": "strong-enough-password"}, nil)
+	if retryResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("retry after weak reset = %d, want 204; body=%q", retryResp.StatusCode, retryPayload)
+	}
+}
+
 // --- E-25：旧 scrypt 用户登录后透明升级 --------------------------------
 
 // 模拟真实用户：旧库用户用原口令登录。
@@ -634,5 +702,93 @@ func TestForgotPasswordDoesNotRevealExistence(t *testing.T) {
 	}
 	if got := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action LIKE 'auth.%'"); got != 0 {
 		t.Fatalf("forgot-password wrote %d auth audit rows; the action is not in the vocabulary", got)
+	}
+}
+
+// --- 登录失败洪水不得锁死 forgot/restore --------------------------------
+
+// 模拟攻击者：用错误口令把登录账号桶打满。
+// 断言用户可见结果：同邮箱的 forgot 仍回 204，restore 仍走到用例（401），
+// 都不被登录桶的 429 连带锁死。
+func TestLoginFailureFloodDoesNotLockForgotOrRestore(t *testing.T) {
+	e := newAuthEnvWith(t, func(cfg *config.Config) {
+		cfg.RateLimitEnabled = true
+		cfg.RateIPPerMin = 1000
+		cfg.RateIPBurst = 1000
+		cfg.RateAccountPerMin = 1
+		cfg.RateAccountBurst = 1
+	}, nil)
+	e.createUser("flood@example.com", "correct-horse")
+
+	first, _ := e.login("flood@example.com", "wrong-password")
+	if first.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("first login = %d, want 401", first.StatusCode)
+	}
+	second, _ := e.login("flood@example.com", "wrong-password")
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second login = %d, want 429", second.StatusCode)
+	}
+
+	// forgot 有自己的桶：登录桶打满后仍应走到用例并回 204。
+	forgotResp, forgotPayload := e.do(http.MethodPost, "/api/auth/forgot-password",
+		map[string]string{"email": "flood@example.com"}, nil)
+	if forgotResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("forgot after login flood = %d, want 204; body=%q", forgotResp.StatusCode, forgotPayload)
+	}
+
+	// restore 也有自己的桶：活跃用户走「不存在」路径回 401，而不是 429。
+	restoreResp, restorePayload := e.do(http.MethodPost, "/api/me/restore",
+		map[string]string{"email": "flood@example.com", "password": "wrong-password"}, nil)
+	if restoreResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("restore after login flood = %d, want 401 (not 429); body=%q",
+			restoreResp.StatusCode, restorePayload)
+	}
+}
+
+// --- 会话记录客户端来源摘要 --------------------------------------------
+
+// 模拟真实用户：带自定义 User-Agent 登录，然后登出。
+// 断言用户可见结果：会话行的 ip_hash/user_agent_hash 非 NULL 且与预期摘要一致；
+// 登出撤销后摘要列不被改写。
+func TestLoginRecordsSessionClientMetadata(t *testing.T) {
+	e := newAuthEnv(t)
+	user := e.createUser("client-meta@example.com", "correct-horse")
+
+	resp, payload := e.do(http.MethodPost, "/api/auth/login",
+		map[string]string{"email": "client-meta@example.com", "password": "correct-horse"},
+		map[string]string{"User-Agent": "yiban-e2e-agent"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+	var body sessionUserBody
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatalf("decode login body: %v; body=%q", err, payload)
+	}
+
+	wantIP, err := coreauth.HashIP(authTestPepper, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("HashIP: %v", err)
+	}
+	wantUA, err := coreauth.HashUserAgent(authTestPepper, "yiban-e2e-agent")
+	if err != nil {
+		t.Fatalf("HashUserAgent: %v", err)
+	}
+	if got := e.scalarString("SELECT ip_hash FROM sessions WHERE user_id = $1", user.ID); got != wantIP.String() {
+		t.Fatalf("ip_hash = %q, want %q", got, wantIP.String())
+	}
+	if got := e.scalarString("SELECT user_agent_hash FROM sessions WHERE user_id = $1", user.ID); got != wantUA.String() {
+		t.Fatalf("user_agent_hash = %q, want %q", got, wantUA.String())
+	}
+
+	logoutResp, logoutPayload := e.do(http.MethodPost, "/api/auth/logout", nil,
+		map[string]string{"X-CSRF-Token": body.CSRFToken})
+	if logoutResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout = %d, want 204; body=%q", logoutResp.StatusCode, logoutPayload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM sessions WHERE user_id = $1 AND revoked_at IS NOT NULL", user.ID); got != 1 {
+		t.Fatalf("revoked sessions = %d, want 1", got)
+	}
+	if got := e.scalarString("SELECT ip_hash FROM sessions WHERE user_id = $1", user.ID); got != wantIP.String() {
+		t.Fatalf("ip_hash changed on logout: %q", got)
 	}
 }
