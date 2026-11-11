@@ -3,7 +3,7 @@ package main
 // 审计键派生的单元测试。
 //
 // # 功能
-// 钉住 deriveAuditKey 的确定性、与 pepper 的区分、与 CSRF 派生的域分隔。
+// 钉住 core/audit.DeriveKey 的确定性、与 pepper 的区分、与 CSRF 派生的域分隔。
 // 本文件**不**连数据库，**不**启动服务。
 //
 // # 口径
@@ -16,20 +16,20 @@ import (
 	"crypto/sha256"
 	"testing"
 
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 )
 
-func TestDeriveAuditKey(t *testing.T) {
+func TestDeriveKey(t *testing.T) {
 	pepper := []byte("0123456789abcdef0123456789abcdef")
 
-	first, err := assembly.DeriveAuditKey(pepper)
+	first, err := coreaudit.DeriveKey(pepper)
 	if err != nil {
-		t.Fatalf("DeriveAuditKey: %v", err)
+		t.Fatalf("DeriveKey: %v", err)
 	}
-	second, err := assembly.DeriveAuditKey(pepper)
+	second, err := coreaudit.DeriveKey(pepper)
 	if err != nil {
-		t.Fatalf("DeriveAuditKey(second): %v", err)
+		t.Fatalf("DeriveKey(second): %v", err)
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatal("two derivations of the same pepper differ; old chains would stop verifying")
@@ -52,7 +52,7 @@ func TestDeriveAuditKey(t *testing.T) {
 	if string(first) == coreauth.CSRFToken(pepper, "yiban.audit.key.v1") {
 		t.Fatal("audit key collides with the CSRF derivation")
 	}
-	if _, err := assembly.DeriveAuditKey(nil); err == nil {
-		t.Fatal("DeriveAuditKey accepted an empty pepper")
+	if _, err := coreaudit.DeriveKey(nil); err == nil {
+		t.Fatal("DeriveKey accepted an empty pepper")
 	}
 }

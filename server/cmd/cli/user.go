@@ -21,6 +21,7 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
@@ -100,7 +101,7 @@ func runUser(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
-	auditKey, err := assembly.DeriveAuditKey([]byte(pep))
+	auditKey, err := coreaudit.DeriveKey([]byte(pep))
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "user create-master: %v\n", err)
 		return 2
