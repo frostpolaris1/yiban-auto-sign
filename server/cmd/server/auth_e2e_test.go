@@ -474,6 +474,74 @@ func TestE24ResetTokenIsSingleUse(t *testing.T) {
 	}
 }
 
+// --- 重置令牌互斥：消费一个令牌即失效同用户其余令牌 --------------------
+
+// 模拟真实用户：同一账号先后拿到两个重置令牌。
+// 断言用户可见结果：第一个改密成功；第二个按既有失效语义回 401，
+// 且没有改掉第一个令牌写入的口令。
+// 另一账号的令牌不受影响；弱口令失败的回滚不消耗令牌。
+func TestResetTokenInvalidatesSiblings(t *testing.T) {
+	e := newAuthEnv(t)
+	owner := e.createUser("sibling-owner@example.com", "correct-horse")
+	other := e.createUser("sibling-other@example.com", "correct-horse")
+	now := time.Now().UTC()
+
+	create := func(userID, token string) {
+		t.Helper()
+		if _, err := e.resets.Create(e.ctx, coreauth.NewPasswordReset{
+			UserID:    userID,
+			TokenHash: coreauth.HashToken(token),
+			Now:       now,
+			ExpiresAt: now.Add(30 * time.Minute),
+		}); err != nil {
+			t.Fatalf("create reset token %s: %v", token, err)
+		}
+	}
+	create(owner.ID, "sibling-first-token")
+	create(owner.ID, "sibling-second-token")
+	create(other.ID, "other-only-token")
+
+	firstResp, firstPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "sibling-first-token", "new_password": "first-new-password"}, nil)
+	if firstResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first reset = %d, want 204; body=%q", firstResp.StatusCode, firstPayload)
+	}
+	hashAfterFirst := e.scalarString("SELECT password_hash FROM users WHERE id = $1", owner.ID)
+
+	secondResp, secondPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "sibling-second-token", "new_password": "second-new-password"}, nil)
+	if secondResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("sibling reset = %d, want 401; body=%q", secondResp.StatusCode, secondPayload)
+	}
+	if code, _ := errorCode(t, secondPayload); code != "unauthorized" {
+		t.Fatalf("sibling reset code = %q, want unauthorized", code)
+	}
+	if got := e.scalarString("SELECT password_hash FROM users WHERE id = $1", owner.ID); got != hashAfterFirst {
+		t.Fatal("a sibling reset token changed the password")
+	}
+
+	// 边界：另一个用户的令牌仍可用。
+	otherResp, otherPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "other-only-token", "new_password": "other-new-password"}, nil)
+	if otherResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("another user's reset = %d, want 204; body=%q", otherResp.StatusCode, otherPayload)
+	}
+
+	// 弱口令失败整体回滚：令牌不被消费，随后仍可用。
+	weakUser := e.createUser("sibling-weak@example.com", "correct-horse")
+	create(weakUser.ID, "weak-token")
+	weakResp, weakPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "weak-token", "new_password": "short"}, nil)
+	if weakResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("weak reset = %d, want 400; body=%q", weakResp.StatusCode, weakPayload)
+	}
+	retryResp, retryPayload := e.do(http.MethodPost, "/api/auth/reset-password",
+		map[string]string{"token": "weak-token", "new_password": "strong-enough-password"}, nil)
+	if retryResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("retry after weak reset = %d, want 204; body=%q", retryResp.StatusCode, retryPayload)
+	}
+}
+
 // --- E-25：旧 scrypt 用户登录后透明升级 --------------------------------
 
 // 模拟真实用户：旧库用户用原口令登录。

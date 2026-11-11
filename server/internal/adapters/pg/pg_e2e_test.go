@@ -569,6 +569,56 @@ func TestPasswordResetTokenIsSingleUse(t *testing.T) {
 	}
 }
 
+// 消费一个令牌时，同用户其余未用令牌一并失效；别的用户的令牌不受影响。
+func TestPasswordResetConsumeInvalidatesSiblings(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("reset-siblings@example.com")
+	other := e.createUser("reset-other@example.com")
+	now := time.Now().UTC()
+
+	create := func(userID, token string) {
+		t.Helper()
+		if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+			_, err := e.resets.Create(ctx, coreauthNewReset{
+				UserID:    userID,
+				TokenHash: tokenHash(token),
+				Now:       now,
+				ExpiresAt: now.Add(time.Hour),
+			})
+			return err
+		}); err != nil {
+			t.Fatalf("create reset token %s: %v", token, err)
+		}
+	}
+	create(owner.ID, "sibling-a")
+	create(owner.ID, "sibling-b")
+	create(other.ID, "other-c")
+
+	used, err := e.resets.Consume(e.ctx, tokenHash("sibling-a"), now.Add(time.Minute))
+	mustNotError(t, err, "consume sibling-a")
+	if used.UserID != owner.ID {
+		t.Fatalf("consumed user = %s, want %s", used.UserID, owner.ID)
+	}
+
+	// 兄弟令牌已随消费失效：Peek 与 Consume 都不再接受它。
+	if _, err := e.resets.Peek(e.ctx, tokenHash("sibling-b"), now.Add(2*time.Minute)); codeOf(t, err) != errs.CodeNotFound {
+		t.Fatalf("sibling token was still readable: %v", err)
+	}
+	if _, err := e.resets.Consume(e.ctx, tokenHash("sibling-b"), now.Add(2*time.Minute)); codeOf(t, err) != errs.CodeNotFound {
+		t.Fatalf("sibling token was still accepted: %v", err)
+	}
+
+	// 边界：另一个用户的令牌不受影响。
+	if _, err := e.resets.Consume(e.ctx, tokenHash("other-c"), now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("another user's token was invalidated: %v", err)
+	}
+
+	// 失效是批量置位：owner 的两行都有 used_at。
+	if got := e.scalarInt("SELECT count(*) FROM password_resets WHERE user_id = $1 AND used_at IS NOT NULL", owner.ID); got != 2 {
+		t.Fatalf("used rows for owner = %d, want 2", got)
+	}
+}
+
 // --- 账号 -----------------------------------------------------------------
 
 func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
