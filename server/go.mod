@@ -2,7 +2,7 @@ module github.com/frostpolaris1/yiban-auto-sign/server
 
 go 1.27.2
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
