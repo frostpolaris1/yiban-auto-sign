@@ -40,6 +40,12 @@ type resyncData struct {
 // errStreamingUnsupported 是写入器不支持流式的哨兵。
 var errStreamingUnsupported = errors.New("events: streaming writer unsupported")
 
+// MaxConcurrentStreams 是进程内同时打开的 SSE 连接上限。
+// 口径对齐 docs/dev/api-contract.md §1.6 的管理员流默认 10：
+// 超限直接回 429，不排队；任一连接断开即释放槽位。
+// 一个进程只装配一个 Handler，故计数就是全局并发数。
+const MaxConcurrentStreams = 10
+
 // AdminEvents 实现 GET /api/admin/events（master/admin）。
 // master 订阅全部院校（schools 传 nil）；admin 按绑定校过滤，
 // 过滤在总线侧完成，不是客户端过滤。
@@ -56,6 +62,15 @@ func (h *Handler) AdminEvents(c *gin.Context, params oapi.AdminEventsParams) {
 		fail(c, err)
 		return
 	}
+	// 连接预算：先占槽再订阅。超限请求不碰总线，也不写流式响应头。
+	// 429 与限流中间件同码（rate_limited），Retry-After 给客户端一个重试节奏。
+	if n := h.activeStreams.Add(1); n > MaxConcurrentStreams {
+		h.activeStreams.Add(-1)
+		c.Header("Retry-After", "5")
+		fail(c, errs.New(errs.CodeRateLimited, "too many concurrent event streams"))
+		return
+	}
+	defer h.activeStreams.Add(-1)
 	var schools []string
 	if scope.Kind() == corescope.KindAdmin {
 		schools = scope.SchoolIDs()
