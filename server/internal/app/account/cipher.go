@@ -79,6 +79,9 @@ func (c *Cipher) KID() string { return c.kid }
 
 // Seal 加密一次凭据。Version 固定为 1，由仓储自增。
 func (c *Cipher) Seal(schoolID, accountID string, payload CredentialPayload) (coreaccount.Credential, error) {
+	if err := c.ready(); err != nil {
+		return coreaccount.Credential{}, err
+	}
 	plain, err := json.Marshal(payload)
 	if err != nil {
 		return coreaccount.Credential{}, fmt.Errorf("account: encode credential: %w", err)
@@ -103,6 +106,9 @@ func (c *Cipher) Seal(schoolID, accountID string, payload CredentialPayload) (co
 // Open 用行内 kid 校验并解密。
 // kid 不是本钥即失败：**绝不静默返回空负载**。
 func (c *Cipher) Open(cred coreaccount.Credential) (CredentialPayload, error) {
+	if err := c.ready(); err != nil {
+		return CredentialPayload{}, err
+	}
 	if cred.KID != c.kid {
 		return CredentialPayload{}, errors.New("account: credential key id is not available")
 	}

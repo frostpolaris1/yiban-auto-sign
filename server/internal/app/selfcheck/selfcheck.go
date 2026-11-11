@@ -203,12 +203,12 @@ type Options struct {
 	ServiceUser string
 }
 
-// DefaultDeps 返回只读自检的最小依赖：真实时钟与 OS 文件系统。
-// 其余探针必须由装配层补齐；缺失时对应检查显性 SKIP。
+// DefaultDeps 返回只读自检的最小依赖：真实时钟。
+// 文件系统与其余探针必须由装配层补齐；缺失时对应检查显性 SKIP
+// 或 Run 直接失败（FS 为 nil）。
 func DefaultDeps() Deps {
 	return Deps{
 		Now: coreclock.System{}.Now,
-		FS:  OSFileSystem{},
 		Build: BuildInfo{
 			Version: "dev", Commit: "unknown", BuildTime: "unknown",
 		},

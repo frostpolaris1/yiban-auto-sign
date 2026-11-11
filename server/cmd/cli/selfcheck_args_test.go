@@ -62,6 +62,7 @@ func newSelfcheckFixture(t *testing.T, dbVersion int64) *selfcheckFixture {
 		t.Fatalf("write index: %v", err)
 	}
 	deps := selfcheck.DefaultDeps()
+	deps.FS = osFileSystem{}
 	deps.Now = func() time.Time { return time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC) }
 	deps.LookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
 	deps.OpenDB = func(context.Context, string) (selfcheck.DB, error) {

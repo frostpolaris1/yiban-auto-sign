@@ -278,6 +278,95 @@ func TestSSEHeaders(t *testing.T) {
 	}
 }
 
+// tryStream 发一次事件流请求，返回原始响应与取消函数。
+// 它不要求 200：连接预算用例要观察 429。
+func tryStream(base string, issued coreauth.Issued) (*http.Response, context.CancelFunc, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/admin/events", nil)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return resp, cancel, nil
+}
+
+// 连接预算：达到全局上限后新连接回 429（rate_limited + Retry-After），
+// 断开一条后槽位释放，新连接恢复 200。
+func TestSSEConcurrentStreamCap(t *testing.T) {
+	broker := appevents.NewBroker()
+	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker,
+		newFakeTimer(newFakeClock(diagNowTime)))
+
+	clients := make([]*streamClient, 0, eventshttp.MaxConcurrentStreams)
+	for i := 0; i < eventshttp.MaxConcurrentStreams; i++ {
+		clients = append(clients, newStreamClient(t, srv.URL, issued, ""))
+	}
+	defer func() {
+		for _, sc := range clients {
+			sc.close()
+		}
+	}()
+
+	resp, cancel, err := tryStream(srv.URL, issued)
+	if err != nil {
+		t.Fatalf("超限请求: %v", err)
+	}
+	defer cancel()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		_ = resp.Body.Close()
+		t.Fatalf("超限状态 = %d, want 429", resp.StatusCode)
+	}
+	if ra := resp.Header.Get("Retry-After"); ra == "" {
+		_ = resp.Body.Close()
+		t.Fatal("超限 429 缺 Retry-After")
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		_ = resp.Body.Close()
+		t.Fatalf("429 信封不是 JSON: %v", err)
+	}
+	_ = resp.Body.Close()
+	if envelope.Error.Code != "rate_limited" {
+		t.Fatalf("429 code = %q, want rate_limited", envelope.Error.Code)
+	}
+
+	// 断开一条：服务端处理协程退出后槽位释放。
+	clients[0].close()
+	clients = clients[1:]
+	const maxAttempts = 500 // 500 × 10ms = 5s 上限；不用墙钟，避免 canonical clock.now
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		resp, cancel, err := tryStream(srv.URL, issued)
+		if err != nil {
+			t.Fatalf("释放后重连: %v", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			sc := &streamClient{
+				resp:   resp,
+				frames: make(chan frame, 32),
+				errs:   make(chan error, 1),
+				cancel: cancel,
+			}
+			go sc.readLoop()
+			clients = append(clients, sc)
+			return
+		}
+		_ = resp.Body.Close()
+		cancel()
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("断开一条后 5s 内槽位未释放")
+}
+
 // 心跳与空闲：15s 心跳帧；60s 无事件 → end 帧并关闭。
 func TestSSEHeartbeatAndIdleEnd(t *testing.T) {
 	clk := newFakeClock(diagNowTime)
