@@ -745,3 +745,50 @@ func TestLoginFailureFloodDoesNotLockForgotOrRestore(t *testing.T) {
 	}
 }
 
+// --- 会话记录客户端来源摘要 --------------------------------------------
+
+// 模拟真实用户：带自定义 User-Agent 登录，然后登出。
+// 断言用户可见结果：会话行的 ip_hash/user_agent_hash 非 NULL 且与预期摘要一致；
+// 登出撤销后摘要列不被改写。
+func TestLoginRecordsSessionClientMetadata(t *testing.T) {
+	e := newAuthEnv(t)
+	user := e.createUser("client-meta@example.com", "correct-horse")
+
+	resp, payload := e.do(http.MethodPost, "/api/auth/login",
+		map[string]string{"email": "client-meta@example.com", "password": "correct-horse"},
+		map[string]string{"User-Agent": "yiban-e2e-agent"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+	var body sessionUserBody
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatalf("decode login body: %v; body=%q", err, payload)
+	}
+
+	wantIP, err := coreauth.HashIP(authTestPepper, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("HashIP: %v", err)
+	}
+	wantUA, err := coreauth.HashUserAgent(authTestPepper, "yiban-e2e-agent")
+	if err != nil {
+		t.Fatalf("HashUserAgent: %v", err)
+	}
+	if got := e.scalarString("SELECT ip_hash FROM sessions WHERE user_id = $1", user.ID); got != wantIP.String() {
+		t.Fatalf("ip_hash = %q, want %q", got, wantIP.String())
+	}
+	if got := e.scalarString("SELECT user_agent_hash FROM sessions WHERE user_id = $1", user.ID); got != wantUA.String() {
+		t.Fatalf("user_agent_hash = %q, want %q", got, wantUA.String())
+	}
+
+	logoutResp, logoutPayload := e.do(http.MethodPost, "/api/auth/logout", nil,
+		map[string]string{"X-CSRF-Token": body.CSRFToken})
+	if logoutResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout = %d, want 204; body=%q", logoutResp.StatusCode, logoutPayload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM sessions WHERE user_id = $1 AND revoked_at IS NOT NULL", user.ID); got != 1 {
+		t.Fatalf("revoked sessions = %d, want 1", got)
+	}
+	if got := e.scalarString("SELECT ip_hash FROM sessions WHERE user_id = $1", user.ID); got != wantIP.String() {
+		t.Fatalf("ip_hash changed on logout: %q", got)
+	}
+}

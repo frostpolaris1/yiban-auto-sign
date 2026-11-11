@@ -14,6 +14,8 @@ package pg
 // 令牌 32 字节随机，库内只存 SHA-256。
 // 空闲 30 分钟滑动、绝对 12 小时、单用户 20 条，全部取自 core/auth。
 // CSRF 令牌每次解析时重新派生，**不落盘**。
+// 签发时把 context 携带的客户端 IP 与 User-Agent 写成 HMAC 摘要；
+// 只记录，不据此强制绑定或踢线（移动网络与隐私取舍见报告）。
 
 import (
 	"context"
@@ -78,6 +80,10 @@ func (s *SessionIssuer) Issue(ctx context.Context, user coreauth.User) (coreauth
 		return coreauth.Issued{}, fmt.Errorf("pg: new session token: %w", err)
 	}
 	now := s.clock.Now().UTC()
+	ipHash, uaHash, err := s.clientHashes(ctx)
+	if err != nil {
+		return coreauth.Issued{}, err
+	}
 	var issued coreauth.Issued
 	err = s.db.InTx(ctx, func(ctx context.Context) error {
 		row, err := s.sessions.Create(ctx, coreauth.NewSessionRow{
@@ -87,6 +93,8 @@ func (s *SessionIssuer) Issue(ctx context.Context, user coreauth.User) (coreauth
 			Now:           now,
 			IdleExpiresAt: now.Add(coreauth.SessionIdleWindow),
 			ExpiresAt:     now.Add(coreauth.SessionAbsoluteWindow),
+			IPHash:        ipHash,
+			UserAgentHash: uaHash,
 		})
 		if err != nil {
 			return err
@@ -115,6 +123,27 @@ func (s *SessionIssuer) Issue(ctx context.Context, user coreauth.User) (coreauth
 		return coreauth.Issued{}, err
 	}
 	return issued, nil
+}
+
+// clientHashes 把 context 携带的客户端 IP 与 User-Agent 转成 HMAC 摘要。
+// 空值保持零值，存储侧写成 NULL：不把「缺失」伪装成空串的摘要。
+// secret 同时是 CSRF 派生密钥与 HashPepper（装配层传入同一值）。
+func (s *SessionIssuer) clientHashes(ctx context.Context) (coreauth.IPHash, coreauth.UserAgentHash, error) {
+	meta, _ := coreauth.ClientMetaFromContext(ctx)
+	var ipHash coreauth.IPHash
+	var uaHash coreauth.UserAgentHash
+	var err error
+	if meta.IP != "" {
+		if ipHash, err = coreauth.HashIP(s.secret, meta.IP); err != nil {
+			return coreauth.IPHash{}, coreauth.UserAgentHash{}, fmt.Errorf("pg: hash client ip: %w", err)
+		}
+	}
+	if meta.UserAgent != "" {
+		if uaHash, err = coreauth.HashUserAgent(s.secret, meta.UserAgent); err != nil {
+			return coreauth.IPHash{}, coreauth.UserAgentHash{}, fmt.Errorf("pg: hash client user agent: %w", err)
+		}
+	}
+	return ipHash, uaHash, nil
 }
 
 // Resolve 返回 token 对应的会话，并滑动空闲窗口。

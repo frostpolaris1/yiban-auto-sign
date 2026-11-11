@@ -16,6 +16,7 @@
 // IPHash、UserAgentHash 及 HashIP、HashUserAgent、HashValue、FromStored 系列；
 // CSRFToken；Role、Status；User、Session、Issued；
 // SessionRow、NewSessionRow、ResolvedSession、PasswordReset、NewPasswordReset；
+// ClientMeta 及 WithClientMeta、ClientMetaFromContext；
 // SessionIssuer 接口与 WithSession、FromContext。
 //
 // # 口径
@@ -301,6 +302,28 @@ type SessionIssuer interface {
 	Resolve(ctx context.Context, token string) (Session, error)
 	Revoke(ctx context.Context, token string) error
 	RevokeAllForUser(ctx context.Context, userID string) error
+}
+
+// ClientMeta 是签发会话时可用的请求来源。
+// IP 与 UserAgent 是原始值，只在进程内传递；
+// 存储侧只落 HashIP、HashUserAgent 的 HMAC 摘要。
+// 会话签发**只记录**这两个摘要，不据此强制绑定或踢线。
+type ClientMeta struct {
+	IP        string
+	UserAgent string
+}
+
+type clientMetaKey struct{}
+
+// WithClientMeta 返回携带请求来源的 context。
+func WithClientMeta(ctx context.Context, meta ClientMeta) context.Context {
+	return context.WithValue(ctx, clientMetaKey{}, meta)
+}
+
+// ClientMetaFromContext 返回 ctx 携带的请求来源。第二个返回值报告是否存在。
+func ClientMetaFromContext(ctx context.Context) (ClientMeta, bool) {
+	meta, ok := ctx.Value(clientMetaKey{}).(ClientMeta)
+	return meta, ok
 }
 
 type contextKey struct{}

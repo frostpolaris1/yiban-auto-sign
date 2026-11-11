@@ -19,6 +19,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
+	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 )
 
@@ -201,6 +202,32 @@ var rateLimitedPaths = map[string]struct{}{
 	"/api/accounts/:id/person-name": {},
 	"/api/accounts/:id/sign":        {},
 	"/api/accounts/batch/sign":      {},
+}
+
+// trustedProxyPrefixes 返回判定客户端 IP 与转发头用的可信代理表。
+// Options.TrustedProxies 优先；限流开关关闭时仍能判登录来源。
+func (s *server) trustedProxyPrefixes() []ratelimit.Prefix {
+	if len(s.trustedProxies) > 0 {
+		return s.trustedProxies
+	}
+	if s.rateLimit != nil {
+		return s.rateLimit.Trusted
+	}
+	return nil
+}
+
+// clientMeta 把客户端 IP 与 User-Agent 放进请求 context。
+// 会话签发只记录两者的 HMAC 摘要；本中间件不做任何判定。
+func (s *server) clientMeta() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ip := ratelimit.ClientIP(c.Request.RemoteAddr,
+			c.Request.Header.Values("X-Forwarded-For"), s.trustedProxyPrefixes())
+		c.Request = c.Request.WithContext(auth.WithClientMeta(c.Request.Context(), auth.ClientMeta{
+			IP:        ip,
+			UserAgent: c.Request.UserAgent(),
+		}))
+		c.Next()
+	}
 }
 
 // rateLimitInbound 在解析会话之前按客户端 IP 限流。

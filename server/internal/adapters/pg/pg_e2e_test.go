@@ -14,6 +14,7 @@ import (
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -521,6 +522,54 @@ func TestNewSessionEvictsTheOldestBeyondTheCap(t *testing.T) {
 	}
 	if _, err := e.ses.Resolve(e.ctx, tokenHash("cap-20"), now.Add(25*time.Minute), 30*time.Minute); err != nil {
 		t.Fatalf("newest session was evicted: %v", err)
+	}
+}
+
+// 签发会话时把请求来源的 HMAC 摘要写入会话行；无来源时保持 NULL。
+func TestSessionIssuerRecordsClientMetadata(t *testing.T) {
+	e := newEnv(t)
+	user := e.createUser("session-meta@example.com")
+	now := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	issuer, err := pg.NewSessionIssuer(e.ses, e.audits, testPepper, coreclock.Fixed{T: now})
+	mustNotError(t, err, "new session issuer")
+
+	ctx := coreauth.WithClientMeta(e.ctx, coreauth.ClientMeta{
+		IP:        "203.0.113.9",
+		UserAgent: "yiban-test-agent",
+	})
+	issued, err := issuer.Issue(ctx, coreauth.User{
+		ID: user.ID, Email: user.Email, Role: coreauth.RoleUser, Status: coreauth.StatusActive,
+	})
+	mustNotError(t, err, "issue session")
+
+	wantIP, err := coreauth.HashIP(testPepper, "203.0.113.9")
+	mustNotError(t, err, "hash ip")
+	wantUA, err := coreauth.HashUserAgent(testPepper, "yiban-test-agent")
+	mustNotError(t, err, "hash user agent")
+	if got := e.scalarString("SELECT ip_hash FROM sessions WHERE user_id = $1", user.ID); got != wantIP.String() {
+		t.Fatalf("ip_hash = %q, want %q", got, wantIP.String())
+	}
+	if got := e.scalarString("SELECT user_agent_hash FROM sessions WHERE user_id = $1", user.ID); got != wantUA.String() {
+		t.Fatalf("user_agent_hash = %q, want %q", got, wantUA.String())
+	}
+
+	// revoke 路径回归：撤销后会话不可解析，摘要列不被改写。
+	mustNotError(t, issuer.Revoke(ctx, issued.Token), "revoke session")
+	if _, err := issuer.Resolve(ctx, issued.Token); !errors.Is(err, coreauth.ErrNoSession) {
+		t.Fatalf("revoked session resolved: %v", err)
+	}
+	if got := e.scalarString("SELECT ip_hash FROM sessions WHERE user_id = $1", user.ID); got != wantIP.String() {
+		t.Fatalf("ip_hash changed on revoke: %q", got)
+	}
+
+	// 无来源信息时两列保持 NULL，而不是空串的摘要。
+	if _, err := issuer.Issue(e.ctx, coreauth.User{
+		ID: user.ID, Email: user.Email, Role: coreauth.RoleUser, Status: coreauth.StatusActive,
+	}); err != nil {
+		t.Fatalf("issue session without metadata: %v", err)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM sessions WHERE user_id = $1 AND ip_hash IS NULL AND user_agent_hash IS NULL", user.ID); got != 1 {
+		t.Fatalf("sessions without metadata with NULL hashes = %d, want 1", got)
 	}
 }
 
