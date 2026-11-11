@@ -807,7 +807,9 @@ export interface paths {
          *     (non-UUID) id is a per-item validation_failed — the same answer the
          *     single-item endpoint gives — an account that is not active is a
          *     per-item conflict, and queueing itself reuses the worker request with
-         *     its stable codes: already_signed, sign_running, window_closed. When
+         *     its stable codes: already_signed, sign_running, window_closed, and
+         *     capacity_exceeded with the message "engine is paused" while the
+         *     global engine pause is in effect. When
          *     several tasks apply, the worker picks one at random. An ok item only
          *     queues today's task row and carries its task_id; the caller does not
          *     wait for execution. Items keep the request order; one failing item
@@ -861,7 +863,8 @@ export interface paths {
          *     itself never leaves the server. A platform failure answers 502 with
          *     a neutral envelope; missing phone or password answers 400. The
          *     request is rate limited per client IP and per submitted phone; a
-         *     429 carries Retry-After.
+         *     429 carries Retry-After. While the global engine pause is in effect
+         *     the request answers 503 (capacity_exceeded with the message "engine is paused") and makes no platform call.
          */
         post: operations["AccountDetect"];
         delete?: never;
@@ -987,6 +990,8 @@ export interface paths {
          *     login password (the device identity is a credential): a missing
          *     value answers 400, a wrong value 403, and repeated failures answer
          *     429. A rejected reauthentication writes nothing.
+         *     While the global engine pause is in effect the request answers 503 (capacity_exceeded with the message
+         *     "engine is paused") and makes no platform call.
          */
         post: operations["AccountDeviceRefresh"];
         delete?: never;
@@ -1072,6 +1077,8 @@ export interface paths {
          *     their scope; a user only their own account, and an out-of-scope
          *     account answers 404.
          *     Rate limited per client IP and per account id; a 429 carries Retry-After.
+         *     While the global engine pause is in effect the request answers 503 (capacity_exceeded with the message
+         *     "engine is paused") and makes no platform call.
          */
         post: operations["AccountVerify"];
         delete?: never;
@@ -1100,7 +1107,9 @@ export interface paths {
          *     account answers 404. A platform failure answers 502 with a neutral
          *     envelope; platform text never reaches the response. The request
          *     shares the per-account rate-limit bucket with verify and sign; a 429
-         *     carries Retry-After.
+         *     carries Retry-After. While the global engine pause is in effect the
+         *     request answers 503 (capacity_exceeded with the message
+         *     "engine is paused") and makes no platform call.
          */
         post: operations["AccountPersonName"];
         delete?: never;
@@ -1137,6 +1146,8 @@ export interface paths {
          *     paused_user, credential_error) returns 409 conflict and queues
          *     nothing.
          *     Cross-scope accounts return 404 for every role.
+         *     While the global engine pause is in effect the request answers 503 (capacity_exceeded with the message
+         *     "engine is paused") and queues nothing.
          *     Rate limited per client IP and per account id; a 429 carries Retry-After.
          */
         post: operations["AccountSign"];
@@ -1620,16 +1631,19 @@ export interface paths {
          * Send a test email to the signed-in master.
          * @description Master only. Sends one plain-text message through the configured
          *     SMTP delivery path to the signed-in account's own email address.
-         *     The request body is empty and ignored, so the client can never pick
-         *     the recipient. Delivery is synchronous: a 200 means the SMTP server
-         *     accepted the message (DATA was acknowledged), not that the mailbox
-         *     received it. Mail delivery disabled (SMTP is off) answers 409 with a
-         *     distinct message; a master whose account has no email address also
-         *     answers 409. A delivery failure answers 502 with no SMTP reply,
-         *     relay host, address or credential detail. At most one test-mail
-         *     attempt per master per 60 seconds; a request inside that window
-         *     answers 429 with Retry-After. The cooldown is process-local and
-         *     resets when the server restarts.
+         *     The request body carries current_password, the acting master's own
+         *     login password: a missing or empty value answers 400, a wrong value
+         *     403, and repeated failures answer 429. A rejected reauthentication
+         *     sends nothing. The recipient is always the signed-in account; the
+         *     client can never pick it. Delivery is synchronous: a 200 means the
+         *     SMTP server accepted the message (DATA was acknowledged), not that
+         *     the mailbox received it. Mail delivery disabled (SMTP is off)
+         *     answers 409 with a distinct message; a master whose account has no
+         *     email address also answers 409. A delivery failure answers 502 with
+         *     no SMTP reply, relay host, address or credential detail. At most one
+         *     test-mail attempt per master per 60 seconds; a request inside that
+         *     window answers 429 with Retry-After. The cooldown is process-local
+         *     and resets when the server restarts.
          *     Every send attempt, success or failure, appends one
          *     settings.mail_test audit row whose detail holds only the result and
          *     the coarse delivery class; it never holds the SMTP reply, address,
@@ -1957,15 +1971,39 @@ export interface paths {
         /**
          * List task windows for a business day.
          * @description master sees every school; admin sees bound schools only.
-         *     A day without a cached window is discovered once and then cached, so
-         *     the default request costs at most one platform call per task. When the
-         *     cache already holds the day, the default request makes no platform
-         *     call. Set refresh=true to discover again.
+         *     The GET path reads the daily cache only and makes no platform call.
          *     A task whose platform reports no window keeps null start and end.
+         *     The refresh query parameter is accepted for wire compatibility but
+         *     ignored: force discovery with POST /api/schedule/windows/refresh.
          */
         get: operations["ScheduleWindows"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/schedule/windows/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Discover and cache task windows for a business day.
+         * @description Same roles and response schema as GET /api/schedule/windows, but
+         *     discovers every task's platform window and stores the result before
+         *     answering. This is the explicit refresh path: the GET endpoint never
+         *     calls the platform. A valid override keeps the cached window
+         *     unchanged (discovery still runs). While the global engine pause is
+         *     in effect the request answers 503 and makes no platform call.
+         */
+        post: operations["ScheduleWindowsRefresh"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1981,14 +2019,42 @@ export interface paths {
         };
         /**
          * Preview the plan for one school task and day.
-         * @description Reads the window from the platform, then the cache, then the fallback,
-         *     and returns the exact rows Build would persist. Preview writes nothing.
+         * @description Reads the override, then the cache, then the fallback, and returns
+         *     the exact rows Build would persist. The GET path makes no platform
+         *     call and writes nothing. Force platform discovery with
+         *     POST /api/schedule/preview/refresh.
          *     A disabled task can be previewed: enabled is false and the window is
          *     still reported. Build and override reject a disabled task.
+         *     A closed weekend gate (schedule.sunday_sign / schedule.saturday_sign)
+         *     returns zero rows with note and makes no platform call.
          */
         get: operations["SchedulePreview"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/schedule/preview/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview the plan after discovering the platform window.
+         * @description Same roles and response schema as GET /api/schedule/preview, but
+         *     discovers the platform window first. This is the explicit refresh
+         *     path: the GET endpoint never calls the platform. Preview still writes
+         *     nothing. While the global engine pause is in effect the request
+         *     answers 503 and makes no platform call.
+         */
+        post: operations["SchedulePreviewRefresh"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2011,6 +2077,11 @@ export interface paths {
          *     terminal rows are never moved. A disabled task returns 409 conflict
          *     and writes nothing. Only the current business day is accepted; any
          *     other day is 400 validation_failed.
+         *
+         *     A closed weekend gate (schedule.sunday_sign / schedule.saturday_sign)
+         *     succeeds with zero rows and a note; nothing is written. While the
+         *     global engine pause is in effect the request answers 503 and writes
+         *     nothing.
          *
          *     Capacity shortfall no longer returns 409 capacity_shortfall: the
          *     plan is built against the available capacity and the request
@@ -2043,6 +2114,10 @@ export interface paths {
          *     its recorded reason. Pending rows are rearranged immediately; running
          *     and terminal rows are never moved. A disabled task returns 409 conflict
          *     and stores no override.
+         *     A closed weekend gate (schedule.sunday_sign / schedule.saturday_sign)
+         *     succeeds with zero rows and a note; the override is not stored. While
+         *     the global engine pause is in effect the request answers 503 and
+         *     stores nothing.
          */
         post: operations["ScheduleOverride"];
         delete?: never;
@@ -2330,13 +2405,39 @@ export interface paths {
          *     bottleneck and suggested_workers is absent.
          *     Raising concurrency is a restart-level configuration change; the
          *     report never changes it.
-         *     The window is read from the daily cache by default: a cached day makes
-         *     no platform call, a missing day is discovered once and then cached.
-         *     Set refresh=true to discover again. An override still wins over both.
+         *     The GET path reads the daily cache only and makes no platform call;
+         *     a missing day uses the fallback window. The refresh query parameter
+         *     is accepted for wire compatibility but ignored: force discovery with
+         *     POST /api/capacity/refresh. An override still wins over both.
          */
         get: operations["CapacityGet"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/capacity/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report capacity after discovering the platform window.
+         * @description Same roles and response schema as GET /api/capacity, but discovers
+         *     the platform window and stores it before answering. This is the
+         *     explicit refresh path: the GET endpoint never calls the platform.
+         *     A valid override keeps the cached window unchanged (discovery still
+         *     runs). While the global engine pause is in effect the request answers
+         *     503 and makes no platform call.
+         */
+        post: operations["CapacityRefresh"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2817,6 +2918,13 @@ export interface components {
              */
             current_password: string;
         };
+        AdminMailTestRequest: {
+            /**
+             * @description The acting master's own login password. Required on every call:
+             *     a missing or empty value answers 400, a wrong value 403.
+             */
+            current_password: string;
+        };
         MailTestResult: {
             /**
              * @description User-safe confirmation. It never carries the SMTP reply, the
@@ -3157,7 +3265,17 @@ export interface components {
             /** @description One entry per request id, in the request order. */
             items: components["schemas"]["UserBatchItem"][];
         };
-        /** @enum {string} */
+        /**
+         * @description active schools participate in scheduling and signing. A disabled
+         *     school stops new signing work: its enabled tasks are not planned,
+         *     its active accounts are not scheduled, and new manual sign
+         *     candidates are not offered. Pending task rows created before the
+         *     school was disabled are still claimed and executed (D5 blocks new
+         *     work, not existing work). Management read and window discovery
+         *     surfaces stay available for inspection. Existing data stays
+         *     readable.
+         * @enum {string}
+         */
         SchoolStatus: "active" | "disabled";
         School: {
             id: string;
@@ -3493,9 +3611,12 @@ export interface components {
         /**
          * @description platform and cache come from discovery; fallback is the local
          *     default window; override is a master or admin replacement.
+         *     weekend_closed is a host-produced receipt source: the weekend gate
+         *     is closed, the answer carries zero rows and a note, and nothing is
+         *     written.
          * @enum {string}
          */
-        ScheduleWindowSource: "platform" | "cache" | "fallback" | "override";
+        ScheduleWindowSource: "platform" | "cache" | "fallback" | "override" | "weekend_closed";
         ScheduleWindow: {
             school_id: string;
             school_name: string;
@@ -3559,6 +3680,12 @@ export interface components {
                 [key: string]: number;
             };
             rows: components["schemas"]["ScheduleRow"][];
+            /**
+             * @description Optional human-readable receipt. Present when the weekend gate
+             *     is closed for the requested day: the request succeeds with zero
+             *     rows and this note explains why. Absent otherwise.
+             */
+            note?: string;
         };
         ScheduleRow: {
             account_id: string;
@@ -4103,8 +4230,14 @@ export interface components {
                 start: string;
                 /** Format: date-time */
                 end: string;
-                /** @enum {string} */
-                source: "platform" | "cache" | "fallback" | "override";
+                /**
+                 * @description Window cache source. weekend_closed is a plan receipt
+                 *     source and never appears in diagnostics; it is listed
+                 *     here because the shared WindowSource vocabulary is one
+                 *     closed set.
+                 * @enum {string}
+                 */
+                source: "platform" | "cache" | "fallback" | "override" | "weekend_closed";
                 version: number;
             } | null;
             /** @description The account's sticky egress label; null when not assigned yet. */
@@ -4249,6 +4382,25 @@ export interface components {
         /** @description Request body exceeds the entry limit; the code stays validation_failed. */
         PayloadTooLargeError: {
             headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /**
+         * @description The global engine pause (settings row engine.paused) is in effect.
+         *     The request made no platform call and changed nothing; retry after
+         *     the pause is lifted. The envelope code stays in the existing closed
+         *     set: capacity_exceeded with the message "engine is paused". The
+         *     status is 503, not 429, so clients treat it as temporarily
+         *     unavailable. Retry-After is optional and omitted when the server
+         *     cannot estimate the wait.
+         */
+        ServiceUnavailableError: {
+            headers: {
+                /** @description Optional seconds to wait before retrying; at least 1 when present. */
+                "Retry-After"?: number;
                 [name: string]: unknown;
             };
             content: {
@@ -5554,6 +5706,7 @@ export interface operations {
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             502: components["responses"]["DefaultError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -5784,6 +5937,7 @@ export interface operations {
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             502: components["responses"]["DefaultError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -5906,6 +6060,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             429: components["responses"]["TooManyRequestsError"];
             502: components["responses"]["DefaultError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -5940,6 +6095,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             429: components["responses"]["TooManyRequestsError"];
             502: components["responses"]["DefaultError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -5974,6 +6130,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["DefaultError"];
             429: components["responses"]["TooManyRequestsError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -6485,7 +6642,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminMailTestRequest"];
+            };
+        };
         responses: {
             /** @description The SMTP server accepted the test message. */
             200: {
@@ -6496,9 +6657,11 @@ export interface operations {
                     "application/json": components["schemas"]["MailTestResult"];
                 };
             };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             502: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
@@ -6848,9 +7011,9 @@ export interface operations {
                 /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
                 day?: string;
                 /**
-                 * @description Discover the platform window again and store the result. Default
-                 *     false reads the daily cache first. A valid override keeps the
-                 *     cached window unchanged (discovery still runs).
+                 * @deprecated
+                 * @description Accepted for wire compatibility and ignored. The GET path never
+                 *     calls the platform; use POST /api/schedule/windows/refresh.
                  */
                 refresh?: boolean;
             };
@@ -6872,6 +7035,40 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    ScheduleWindowsRefresh: {
+        parameters: {
+            query?: {
+                /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
+                day?: string;
+            };
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task window list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleWindowList"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -6903,6 +7100,44 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    SchedulePreviewRefresh: {
+        parameters: {
+            query: {
+                /** @description Business day YYYY-MM-DD. */
+                day: string;
+                school_id: components["parameters"]["SchoolIDQuery"];
+                /** @description School task id from GET /api/schedule/windows. */
+                task_id: components["parameters"]["TaskIDQuery"];
+            };
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Plan preview. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulePlan"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -6940,6 +7175,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -6977,6 +7213,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -7304,9 +7541,9 @@ export interface operations {
                 /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
                 day?: string;
                 /**
-                 * @description Discover the platform window again and store the result. Default
-                 *     false reads the daily cache first. A valid override keeps the
-                 *     cached window unchanged (discovery still runs).
+                 * @deprecated
+                 * @description Accepted for wire compatibility and ignored. The GET path never
+                 *     calls the platform; use POST /api/capacity/refresh.
                  */
                 refresh?: boolean;
             };
@@ -7329,6 +7566,44 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    CapacityRefresh: {
+        parameters: {
+            query: {
+                school_id: components["parameters"]["SchoolIDQuery"];
+                /** @description School task id from GET /api/schedule/windows. */
+                task_id: components["parameters"]["TaskIDQuery"];
+                /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
+                day?: string;
+            };
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capacity report. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapacityReport"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            503: components["responses"]["ServiceUnavailableError"];
             default: components["responses"]["DefaultError"];
         };
     };
