@@ -56,4 +56,15 @@
 // deleted_at 与 created_at 迁移语义）。凭据封装走 Sealer 缝：实现在是
 // app/account 的 Cipher，由 cmd/cli 装配注入——boundary 门禁止 adapters
 // 导入 app，本包不重写 AES-GCM。
+//
+// # 删除条件
+// 本包不随服务运行，只在迁移窗口由 CLI 显式调用。满足以下两条后整包删除
+// （连同 cmd/cli 的 migrate-legacy / backfill-time-prefs 子命令与
+// docs/ops/legacy-import.md 的导入流程）：
+//  1. 旧库已完成迁移，生产不再保留可导入的旧导出物；
+//  2. 连续两次发布周期内没有 migrate-legacy / backfill-time-prefs 的调用
+//     （发布记录与 CLI 日志均无使用）。
+//
+// 刻意**不**用 build tag 隔离：tag 会让 `go test ./...` 的编译面随 tag 变化，
+// 未带 tag 的 CI 不再编译本包，回归会静默漏掉。删除是整包动作，不是开关。
 package legacy

@@ -467,6 +467,10 @@ dropdb --if-exists <新库名>
   `audit.jsonl`，不续接新审计链。
 - 旧自选时间片需要补录时，见
   [`docs/dev/time-prefs-backfill.md`](../dev/time-prefs-backfill.md)。
+- 导入器是一次性迁移件，不随服务运行。退役条件见
+  `server/internal/adapters/legacy/doc.go` 的「删除条件」：旧库完成迁移且
+  连续两次发布周期无 `migrate-legacy` / `backfill-time-prefs` 调用后整包删除。
+  不使用 build tag：tag 会让 `go test ./...` 的编译面随 tag 变化，回归会静默漏掉。
 - 全部账号挂 `--school-id`；本流程不做多学校分配。旧库没有学校表，
   `schools.jsonl` 必须为空。
 - summary 只出计数。行级错误对合法 11 位手机与完整邮箱输出掩码；
