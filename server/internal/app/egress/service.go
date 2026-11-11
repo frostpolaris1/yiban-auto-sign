@@ -76,6 +76,20 @@ func (s *Service) Assign(ctx context.Context, accountID string) (Egress, error) 
 	return bound, nil
 }
 
+// AssignAnonymous 返回一个启用且健康的出口，**不写账号绑定**。
+// 用于尚无账号的平台调用（detect 只有手机号）：key 参与确定性选择，
+// 同一 key 稳定命中同一出口，从而与绑定该出口的 worker 流量共用令牌桶。
+func (s *Service) AssignAnonymous(ctx context.Context, key string) (Egress, error) {
+	enabled, err := s.deps.Store.ListEnabled(ctx)
+	if err != nil {
+		return Egress{}, err
+	}
+	if len(enabled) == 0 {
+		return Egress{}, coreerrs.New(coreerrs.CodeCapacity, "no enabled egress")
+	}
+	return s.pick(enabled, key, s.deps.Clock.Now()), nil
+}
+
 // MarkFailed 把出口标为不健康直到 until：新账号不再选它，
 // 已绑定账号不迁移（隔离而不是漂移）。
 func (s *Service) MarkFailed(egressID string, until time.Time) {

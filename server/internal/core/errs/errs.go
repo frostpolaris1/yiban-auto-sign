@@ -60,6 +60,26 @@ func (e *Error) Error() string {
 	return string(e.Code) + ": " + e.Message
 }
 
+// PausedError 表示全局急停生效：执行面与交互面平台调用一律拒绝。
+//
+// 线缆上的 code 沿用既有闭集 capacity_exceeded（急停＝可用容量为零），
+// 入口层据本类型把 HTTP 状态映射为 503；它不是容量耗尽，
+// 单独类型避免调用方把它当 429 重试。
+type PausedError struct {
+	Err *Error
+}
+
+// NewPaused 构造急停错误：code=capacity_exceeded，消息固定。
+func NewPaused() *PausedError {
+	return &PausedError{Err: New(CodeCapacity, "engine is paused")}
+}
+
+// Error 实现 error。
+func (e *PausedError) Error() string { return e.Err.Error() }
+
+// Unwrap 让 errors.As 能取回内嵌的 *Error（稳定码与消息）。
+func (e *PausedError) Unwrap() error { return e.Err }
+
 // From 返回 err 对应的稳定错误。
 // 未知错误变为 internal_error，**原始实现错误不进响应体**。
 func From(err error) *Error {

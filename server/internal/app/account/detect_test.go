@@ -7,6 +7,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,33 @@ func TestDetectDisabledSchoolReturnsNull(t *testing.T) {
 	}
 	if result.School != nil {
 		t.Fatalf("disabled school = %+v, want null", result.School)
+	}
+}
+
+// 急停门错误必须原样上抛：detect 入口据此回 503，不得伪装成平台故障。
+func TestDetectPassesThroughPausedGate(t *testing.T) {
+	identity := &fakeIdentity{err: errs.NewPaused()}
+	svc, _ := newDetectService(t, identity, &fakeProjector{}, &fakeDeviceReader{})
+
+	_, err := svc.Detect(context.Background(), corescope.Master(), DetectInput{
+		Phone: "13800138036", Password: "platform-secret",
+	})
+	var paused *errs.PausedError
+	if err == nil || !errors.As(err, &paused) {
+		t.Fatalf("error = %v, want paused", err)
+	}
+
+	// 设备读回同样透传：认证成功但设备阶段被急停拒绝。
+	identity = &fakeIdentity{profile: contract.Profile{
+		DisplayName: "测*生", SchoolName: "示例大学", UniversityID: "0000000031",
+	}}
+	device := &fakeDeviceReader{err: errs.NewPaused()}
+	svc, _ = newDetectService(t, identity, &fakeProjector{}, device)
+	_, err = svc.Detect(context.Background(), corescope.Master(), DetectInput{
+		Phone: "13800138037", Password: "platform-secret",
+	})
+	if err == nil || !errors.As(err, &paused) {
+		t.Fatalf("device error = %v, want paused", err)
 	}
 }
 

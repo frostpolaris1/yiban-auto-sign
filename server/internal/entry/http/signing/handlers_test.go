@@ -256,6 +256,29 @@ func TestVerifyUpstreamFailure(t *testing.T) {
 	}
 }
 
+// 急停：verify 回 503 paused 信封，不得被中性 502 吞掉（批 abs R1 / F2）。
+func TestVerifyPausedGate(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	verifier := &fakeVerifier{err: errs.NewPaused()}
+	engine, issued := newTestRouter(t, &fakeAuthorizer{scope: corescope.Master()}, svc, verifier)
+
+	rec := callVerify(t, engine, issued, true)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+	if envelope.Error.Code != "capacity_exceeded" {
+		t.Fatalf("error code = %q, body=%s", envelope.Error.Code, rec.Body.String())
+	}
+}
+
 func TestVerifyRequiresSession(t *testing.T) {
 	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
 	engine, _ := newTestRouter(t, &fakeAuthorizer{scope: corescope.Master()}, svc, &fakeVerifier{})
@@ -1017,6 +1040,17 @@ func TestPersonNamePlatformFailureIs502(t *testing.T) {
 		if strings.Contains(rec.Body.String(), "reject 138") {
 			t.Fatalf("%s: response leaked platform text: %q", name, rec.Body.String())
 		}
+	}
+}
+
+// 急停：person-name 回 503 paused，不得被中性 502 吞掉（批 abs R1 / F2）。
+func TestPersonNamePausedGate(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	engine, issued := newPersonNameRouter(t, &fakeAuthorizer{scope: corescope.Master()},
+		svc, &fakeVerifier{err: errs.NewPaused()}, &fakeRevealAuditor{})
+	rec := callPersonName(t, engine, issued)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

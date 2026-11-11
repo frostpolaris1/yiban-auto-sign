@@ -312,6 +312,25 @@ func (r *Resolver) ResolveBool(ctx context.Context, key string, envValue bool) (
 	return value, nil
 }
 
+// ResolveEnginePaused 读全局暂停开关，坏行 fail-closed（视为暂停）。
+// 与通用 ResolveBool 的差别只在坏行方向：急停键的坏值不得读成「未暂停」
+// 放行执行面与交互面平台调用。缺行=false 保持不变（新库默认不暂停）；
+// 存储故障原样上抛（故障不是「未暂停」）。
+func (r *Resolver) ResolveEnginePaused(ctx context.Context) (bool, error) {
+	value, found, err := r.store.BoolOverride(ctx, KeyEnginePaused)
+	if err != nil {
+		if isSettingValueInvalid(err) {
+			r.warnOnce(KeyEnginePaused, "bool")
+			return true, nil
+		}
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	return value, nil
+}
+
 // Lookup 是名册视图的覆盖读数（接受名册键或 settings 行键）：
 // found=true 时 value 是 int 或 bool。坏行按未覆盖处理（found=false），
 // 但保留 Warn 一次的口径。存储故障原样上抛。

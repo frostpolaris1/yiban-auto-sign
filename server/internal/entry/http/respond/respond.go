@@ -46,12 +46,19 @@ type Body struct {
 }
 
 // Error 把 err 写成稳定 JSON 信封。
+// 急停（*errs.PausedError）映射 503：code 仍是既有 capacity_exceeded，
+// 状态码单独抬成「暂时不可用」，调用方按重试处理。
 func Error(w http.ResponseWriter, r *http.Request, err error) {
 	e := errs.From(err)
 	if e == nil {
 		e = errs.New(errs.CodeInternal, "internal error")
 	}
-	writeJSON(w, statusFor(e.Code), Envelope{Error: bodyOf(e, r)})
+	status := statusFor(e.Code)
+	var paused *errs.PausedError
+	if errors.As(err, &paused) {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, Envelope{Error: bodyOf(e, r)})
 }
 
 // NotImplemented 为「契约保留、本阶段未实现」的端点

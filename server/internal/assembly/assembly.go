@@ -587,6 +587,30 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 一个 provider 同时服务"凭据校验"、"设备刷新"与"执行循环"：
 		// 三者必须走同一六请求链实现，避免校验用一套、签到用另一套的漂移。
 		provider := yiban.NewProvider(yiban.New(yiban.Config{Clock: clk}))
+		// 出口分配与限速器先于交互面装配：worker 与交互面共用同一实例，
+		// 交互端点因此与执行循环同闸同预算（批 abs R1 / F2）。
+		egressSvc, err := appegress.NewService(appegress.Deps{
+			Store: pg.NewEgressRepo(db), Clock: clk,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: egress service: %w", err)
+		}
+		egressLimiter := buildEgressGate(cfg)
+		// 急停门只此一个闭包：worker Step 与交互面平台调用读同一口径。
+		// 坏行 fail-closed（视为暂停），见 appsettings.Resolver.ResolveEnginePaused。
+		pausedGate := func(ctx context.Context) (bool, error) {
+			return settingsResolver.ResolveEnginePaused(ctx)
+		}
+		platformGate := newEgressGate(egressSvc, egressLimiter, clk, pausedGate)
+		if platformGate == nil {
+			closeFn()
+			return nil, errors.New("assembly: platform egress gate is not wired")
+		}
+		// 交互面 provider：detect/verify/person-name/device-refresh/
+		// auto-approve/窗口发现都经它，先过急停与出口闸再发平台请求。
+		// worker 仍收裸 provider：它有自己的 Step 门与限速，避免双重排队。
+		gated := gatedProvider{inner: provider, gate: platformGate}
 		accountSvc, err := appaccount.NewService(appaccount.Deps{
 			Accounts:         pg.NewAccountRepo(db),
 			Schools:          schoolRepo,
@@ -595,9 +619,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Clock:            clk,
 			Cipher:           cipher,
 			Owner:            userRepo,
-			Device:           accountDeviceReader{provider: provider},
+			Device:           accountDeviceReader{provider: gated},
 			Settings:         settingsRepo,
-			Identity:         provider,
+			Identity:         gated,
 			SchoolProjection: schoolSvc,
 			Quota:            settingsResolver,
 			ReviewAlerts:     notificationDispatcher,
@@ -637,19 +661,13 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		accounts = accounthttp.NewHandler(accountSvc, adminSvc, guard).WithReauth(authSvc)
 		users = userhttp.NewHandler(userSvc, adminSvc).WithReauth(authSvc)
 		// 姓名揭示审计与凭据读取是同一个账号用例实例：揭示行由它追加。
-		signing = signinghttp.NewHandler(accountSvc, adminSvc, provider).WithRevealAudit(accountSvc)
+		// verifier 用交互面 gated provider：person-name 与 verify 同过急停/出口闸。
+		signing = signinghttp.NewHandler(accountSvc, adminSvc, gated).WithRevealAudit(accountSvc)
 
 		// 事件总线先于 worker 与计划装配：两者的发布端口引用同一实例。
 		broker := appevents.NewBroker()
 		// 执行循环：手动签到入队 + 进程启动时回收无租约或租约过期的 running 行。
-		// 限速与出口参数暂用模块缺省；配置面（名册键）随 P4-F 收口统一接入。
-		egressSvc, err := appegress.NewService(appegress.Deps{
-			Store: pg.NewEgressRepo(db), Clock: clk,
-		})
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("assembly: egress service: %w", err)
-		}
+		// 出口服务与限速器已在交互面之前装配，两者共用同一实例。
 		// 图片库先于执行循环装配：worker 的选图端口引用同一实例。
 		// loc 已在通知投递装配处加载（首个使用者），此处直接复用。
 		blobs, err := storage.NewFS(cfg.PhotoDir)
@@ -749,10 +767,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			// 结论原因进日志（OCR M1）。
 			logger: logger,
 			// 3a 全局暂停门：每轮 Step 前查 settings 行 engine.paused 的
-			// 覆盖链生效值（DB>缺行 false）。故障上抛不认领，见 worker.Step。
-			paused: func(ctx context.Context) (bool, error) {
-				return settingsResolver.ResolveBool(ctx, appsettings.KeyEnginePaused, false)
-			},
+			// 覆盖链生效值（DB>缺行 false，坏行 fail-closed）。
+			// 与交互面 gated provider 共用同一闭包。
+			paused: pausedGate,
+			// 与交互面共用同一限速器实例：同闸同预算（批 abs R1 / F2）。
+			limiter: egressLimiter,
 		}))
 		if err != nil {
 			closeFn()
@@ -787,7 +806,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Windows:  scheduleRepo,
 			Plans:    scheduleRepo,
 			Accounts: scheduleRepo,
-			Discover: scheduleDiscoverer{provider: provider, accounts: accountSvc, tasks: scheduleRepo},
+			Discover: scheduleDiscoverer{provider: gated, accounts: accountSvc, tasks: scheduleRepo},
 			Prefs:    prefRepo,
 			// 用户自选读面的当日账号/任务解析：与计划仓储同源。
 			Self: scheduleRepo,
@@ -834,9 +853,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		planning = schedulehttp.NewHandler(scheduleSvc, prefSvc, adminSvc, schedulehttp.Config{
 			Location: loc, Clock: clk, Workers: cfg.Workers, Avg: cfg.AvgAttempt,
 			Rate: cfg.EgressRate, Util: corecapacity.UtilDefault,
-			SlotsPerSlice: slots, SignDist: appschedule.SignDistFront, UsePrefs: cfg.AllowTimePref,
+			// SignDist 不再持静态副本：每请求经 Overrides 读 DB（缺行=front）。
+			SlotsPerSlice: slots, UsePrefs: cfg.AllowTimePref,
 			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
-			// sett2：可写回键每请求解析（DB 覆盖 env）；静态值仍是 env 兜底。
+			// sett2/3c：可写回键每请求解析（DB 覆盖 env）；静态值仍是 env 兜底。
 			Overrides: settingsOverrides{resolver: settingsResolver, cfg: cfg},
 			Logger:    logger,
 		}).WithStats(statsSvc)
@@ -1127,6 +1147,8 @@ const egressBurst = 6
 // workerDeps 是执行循环除限速器之外的依赖。
 // 单列出来是为了让 buildWorkerDeps 可以脱离装配被测试：
 // 限速器的速率必须与计划容量公式同源，判据要咬住接线那一行。
+// limiter 是可选共享实例：装配层传入交互面同款限速器（同闸同预算）；
+// 为空时 buildWorkerDeps 按配置派生，保持单测可独立构造。
 type workerDeps struct {
 	store     appworker.Store
 	creds     appworker.Credentials
@@ -1141,19 +1163,24 @@ type workerDeps struct {
 	picker    appworker.TaskPicker
 	logger    *slog.Logger
 	paused    func(ctx context.Context) (bool, error)
+	limiter   *corerate.Limiter
 }
 
-// buildWorkerDeps 装配执行循环的依赖，限速器由 buildEgressGate 派生。
+// buildWorkerDeps 装配执行循环的依赖，限速器默认由 buildEgressGate 派生。
 //
 // 速率必须与计划容量公式取**同一字段**：两处不同源时，缺口门会用
 // 调大的 YIBAN_EGRESS_RATE 放行一份执行面跑不完的计划（OCR C2 P1）。
 func buildWorkerDeps(cfg *config.Config, d workerDeps) appworker.Deps {
+	limiter := d.limiter
+	if limiter == nil {
+		limiter = buildEgressGate(cfg)
+	}
 	return appworker.Deps{
 		Store:     d.store,
 		Creds:     d.creds,
 		Signer:    d.signer,
 		Egress:    d.egress,
-		Limiter:   buildEgressGate(cfg),
+		Limiter:   limiter,
 		Clock:     d.clock,
 		Location:  d.location,
 		Locations: d.locations,
@@ -1219,8 +1246,9 @@ func (w workerCredentials) KID() string { return w.kid }
 // 适配只在此一处（同 workerCredentials 口径）：app/account 不依赖
 // signing 类型；adapters 不得 import providers，故实现在组合根。
 // provider 指针在装配时注入；六个请求链的会话缓存由 provider 自持。
+// 注入的是交互面 gated provider：设备读回与认证同过急停/出口闸。
 type accountDeviceReader struct {
-	provider *yiban.Provider
+	provider deviceStateReader
 }
 
 var _ appaccount.DeviceReader = accountDeviceReader{}
@@ -1250,7 +1278,7 @@ func (r accountDeviceReader) DeviceState(ctx context.Context, accountID string, 
 // 该校没有可用账号时返回 not_found，计划层按缓存或回退窗口继续，
 // 不把"没有可借用账号"当成平台故障。
 type scheduleDiscoverer struct {
-	provider *yiban.Provider
+	provider windowDiscoverer
 	accounts *appaccount.Service
 	tasks    *pg.ScheduleRepo
 }
@@ -1407,6 +1435,29 @@ func (o settingsOverrides) Edges(ctx context.Context) (time.Duration, time.Durat
 		return 0, 0, err
 	}
 	return time.Duration(front) * time.Second, time.Duration(back) * time.Second, nil
+}
+
+// SignDist 解析铺点分布档：DB 行存在且在词表内用行值，否则缺省 front。
+// 与日切构建同一解析口径（buildScheduleOverrides 复用同一映射）。
+func (o settingsOverrides) SignDist(ctx context.Context) (appschedule.SignDist, error) {
+	value, err := o.resolver.ResolveSignDist(ctx, appsettings.SignDistFront)
+	if err != nil {
+		return appschedule.SignDistFront, err
+	}
+	return scheduleSignDistOf(value), nil
+}
+
+// WeekendSign 解析某业务日是否允许铺行：周六/周日读对应 DB-only 键，
+// 缺行=false（对齐日切构建）；非周末恒真且不读库。
+func (o settingsOverrides) WeekendSign(ctx context.Context, day time.Time) (bool, error) {
+	switch day.Weekday() {
+	case time.Sunday:
+		return o.resolver.ResolveBool(ctx, appsettings.KeyScheduleSundaySign, false)
+	case time.Saturday:
+		return o.resolver.ResolveBool(ctx, appsettings.KeyScheduleSaturdaySign, false)
+	default:
+		return true, nil
+	}
 }
 
 // buildScheduleOverrides 组装日切构建的可写回键读数。

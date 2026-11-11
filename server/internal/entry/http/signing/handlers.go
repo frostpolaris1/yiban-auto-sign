@@ -325,6 +325,12 @@ func (h *Handler) Verify(c *gin.Context, id oapi.AccountID, _ oapi.AccountVerify
 		},
 	})
 	if err != nil {
+		// 宿主自产错误（急停 503、出口容量 429）原样回信封；
+		// 平台结论与传输失败仍走下面的中性映射。
+		if isAppError(err) {
+			fail(c, err)
+			return
+		}
 		if result, ok := verifyConclusion(err); ok {
 			respond.JSON(c.Writer, http.StatusOK, result)
 			return
@@ -384,6 +390,10 @@ func (h *Handler) PersonName(c *gin.Context, id oapi.AccountID, _ oapi.AccountPe
 		},
 	})
 	if err != nil {
+		if isAppError(err) {
+			fail(c, err)
+			return
+		}
 		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUpstream, "person name lookup failed"))
 		return
 	}
@@ -393,6 +403,15 @@ func (h *Handler) PersonName(c *gin.Context, id oapi.AccountID, _ oapi.AccountPe
 		return
 	}
 	respond.JSON(c.Writer, http.StatusOK, oapi.AccountPersonNameResult{PersonName: profile.DisplayName})
+}
+
+// isAppError 报告 err 是否宿主自产的出口/急停错误。
+// 只放行 capacity_exceeded（含 PausedError 的内嵌码）：急停回 503、
+// 无出口回 429。其余 *errs.Error（尤其带平台原文的 upstream）仍走中性 502，
+// 平台文本不得借稳定码通道外泄。
+func isAppError(err error) bool {
+	var appErr *errs.Error
+	return errors.As(err, &appErr) && appErr.Code == errs.CodeCapacity
 }
 
 // verifyConclusion 把 provider 错误映射成中性结论。

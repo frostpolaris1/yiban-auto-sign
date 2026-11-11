@@ -6,7 +6,7 @@ package assembly
 // 2. 搬运镜像：buildWorkerDeps 必须把每个字段原样带进 Deps。
 // 只做第 1 条不够——删掉一行赋值时字段仍在，编译通过且无人会红；
 // 漏传可选端口是静默降级（选图缺失 → photo_missing 跳过，通知缺失 → 事件不发）。
-// Limiter 由 buildWorkerDeps 派生，故两处都豁免。
+// Limiter 由 buildWorkerDeps 派生（或由 limiter 共享实例传入），故两处都豁免。
 
 import (
 	"context"
@@ -19,6 +19,7 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
+	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 )
 
 func TestWorkerDepsMirrorsDeps(t *testing.T) {
@@ -44,6 +45,11 @@ func TestWorkerDepsMirrorsDeps(t *testing.T) {
 	}
 	for i := 0; i < wdT.NumField(); i++ {
 		name := wdT.Field(i).Name
+		// limiter 是共享限速器的可选注入位：Deps.Limiter 由 buildWorkerDeps
+		// 从它派生（为空时按配置新建），故不参与字段镜像。
+		if name == "limiter" {
+			continue
+		}
 		exported := strings.ToUpper(name[:1]) + name[1:]
 		if !mirrored[exported] {
 			t.Errorf("workerDeps.%s 在 appworker.Deps 里没有对应字段", name)
@@ -69,6 +75,7 @@ func TestWorkerDepsPassesEveryFieldThrough(t *testing.T) {
 		picker:    &fakePickerSentinel{},
 		logger:    logger,
 		paused:    pauseGateSentinel,
+		limiter:   corerate.NewLimiter(1, 1),
 	}
 	got := buildWorkerDeps(&config.Config{}, want)
 
@@ -113,6 +120,10 @@ func TestWorkerDepsPassesEveryFieldThrough(t *testing.T) {
 	}
 	if got.Limiter == nil {
 		t.Error("Limiter 未派生")
+	}
+	// 共享实例必须原样搬运：交互面与 worker 同闸同预算（批 abs R1 / F2）。
+	if got.Limiter != want.limiter {
+		t.Error("Limiter 未原样搬运共享实例")
 	}
 	// 覆盖率判据：want 必须为 workerDeps 的每个字段设哨兵，
 	// 且每个哨兵必须原样出现在 Deps 里。新增字段漏进本判据即红——
