@@ -36,7 +36,7 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 )
 
 // manifestMarker 是转储尾部的行数清单标记行前缀。
@@ -734,7 +734,7 @@ func verifyAuditChain(ctx context.Context, dsn string) (int, error) {
 	if pepper == "" {
 		return 0, errors.New("YIBAN_HASH_PEPPER 缺失，无法校验审计链")
 	}
-	key, err := assembly.DeriveAuditKey([]byte(pepper))
+	key, err := coreaudit.DeriveKey([]byte(pepper))
 	if err != nil {
 		return 0, err
 	}

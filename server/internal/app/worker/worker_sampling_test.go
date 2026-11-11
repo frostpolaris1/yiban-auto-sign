@@ -32,10 +32,10 @@ func TestAutoLocationSamplesInsideFence(t *testing.T) {
 	if loc.Mode != contract.LocationAuto {
 		t.Fatalf("Mode = %q, want auto", loc.Mode)
 	}
-	if !corelocation.PointInPolygon(loc.Lng, loc.Lat, target.Polygon) {
+	if !corelocation.PointInPolygon(loc.Lng, loc.Lat, corePolygon(target.Polygon)) {
 		t.Fatalf("提交点在围栏外: %+v", loc)
 	}
-	want, ok := corelocation.SamplePoint(target.Polygon, signer.requests[0].AttemptID)
+	want, ok := corelocation.SamplePoint(corePolygon(target.Polygon), signer.requests[0].AttemptID)
 	if !ok || loc.Lng != want.Lng || loc.Lat != want.Lat {
 		t.Fatalf("提交点 = (%v,%v)，按 AttemptID 复算 = (%v,%v,%v)",
 			loc.Lng, loc.Lat, want.Lng, want.Lat, ok)

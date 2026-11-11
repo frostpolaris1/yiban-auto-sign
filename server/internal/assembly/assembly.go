@@ -17,7 +17,7 @@
 // 保证它只被 cmd 引用，不成为新的横向依赖通道。
 //
 // # 复用
-// Config、Stack、Build、NewServer、Run、DeriveAuditKey；
+// Config、Stack、Build、NewServer、Run；
 // WorkerNotifier、ScheduleNotifier（事件总线适配，测试复用同一形状）。
 //
 // # 口径
@@ -28,8 +28,6 @@ package assembly
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -65,11 +63,10 @@ import (
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
-	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
-	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreimage "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/image"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
@@ -369,7 +366,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		closeFn = db.Close
 
-		auditKey, err := DeriveAuditKey(cfg.HashPepper)
+		auditKey, err := coreaudit.DeriveKey(cfg.HashPepper)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -1200,24 +1197,9 @@ func buildEgressGate(cfg *config.Config) *corerate.Limiter {
 	return corerate.NewLimiter(cfg.EgressRate, egressBurst)
 }
 
-// DeriveAuditKey 从服务器 pepper 派生审计链密钥。
-//
-// P1 没有独立的 YIBAN_AUDIT_KEY；派生值稳定，重启后仍可校验旧链。
-// 轮换 pepper 会让旧链无法再校验，需要一次迁移口径。
-// 域标签把本用途与 CSRF、IP 摘要隔开：三者消息不同。
-// 凭据加密钥**不**在此派生：它由 YIBAN_CREDENTIAL_KEY 独立注入。
-// doctor 的审计链体检复用本函数，保证两侧派生口径只有一份。
-func DeriveAuditKey(pepper []byte) ([]byte, error) {
-	if len(pepper) == 0 {
-		return nil, errors.New("assembly: YIBAN_HASH_PEPPER is required to derive the audit key")
-	}
-	mac := hmac.New(sha256.New, pepper)
-	mac.Write([]byte("yiban.audit.key.v1"))
-	return mac.Sum(nil), nil
-}
-
 // workerCredentials 把账号用例的明文凭据适配成 signing 契约的形状。
 //
+// 组合根适配：只做 app/account 明文凭据 → signing 契约的形状转换。
 // 适配只在此一处：app/account 不依赖 signing 契约，worker 也不直接读库。
 // 作用域用 master：执行循环是系统动作，不属于任何管理员的可见面。
 type workerCredentials struct {
@@ -1245,6 +1227,7 @@ func (w workerCredentials) KID() string { return w.kid }
 
 // accountDeviceReader 把 provider 的设备读回适配成账号用例的设备端口。
 //
+// 组合根适配：只做 provider 设备读回 → app/account 端口的形状转换。
 // 适配只在此一处（同 workerCredentials 口径）：app/account 不依赖
 // signing 类型；adapters 不得 import providers，故实现在组合根。
 // provider 指针在装配时注入；六个请求链的会话缓存由 provider 自持。
@@ -1277,8 +1260,9 @@ func (r accountDeviceReader) DeviceState(ctx context.Context, accountID string, 
 // scheduleDiscoverer 用同校一个活跃账号读取平台窗口。
 //
 // 窗口属于任务，平台调用却需要登录凭据：借首个活跃账号的登录态。
-// 该校没有可用账号时返回 not_found，计划层按缓存或回退窗口继续，
-// 不把"没有可借用账号"当成平台故障。
+// 账号选择策略在 app/account.FirstActiveForSchool；本类型只做接线：
+// 读任务、取凭据、调 provider。该校没有可用账号时返回 not_found，
+// 计划层按缓存或回退窗口继续，不把"没有可借用账号"当成平台故障。
 type scheduleDiscoverer struct {
 	provider windowDiscoverer
 	accounts *appaccount.Service
@@ -1291,17 +1275,10 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 	if err != nil {
 		return contract.Window{}, err
 	}
-	page, err := d.accounts.List(ctx, corescope.Master(), appaccount.ListFilter{
-		SchoolID: task.SchoolID, Status: coreaccount.StatusActive,
-	}, "", 1)
+	acct, err := d.accounts.FirstActiveForSchool(ctx, task.SchoolID)
 	if err != nil {
 		return contract.Window{}, err
 	}
-	if len(page.Items) == 0 {
-		return contract.Window{}, coreerrs.New(coreerrs.CodeNotFound,
-			"no active account for window discovery")
-	}
-	acct := page.Items[0]
 	cred, err := d.accounts.SigningCredential(ctx, corescope.Master(), acct.ID)
 	if err != nil {
 		return contract.Window{}, err
@@ -1318,6 +1295,7 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 }
 
 // WorkerNotifier 把执行循环的任务事件转成总线事件。
+// 组合根适配：只做执行循环事件 → 进程内总线的形状转换。
 // Publish 永不阻塞；失败只丢事件。At 取进程时钟。
 // 字段导出：e2e 直接构造同形适配器（w2c 套件）。
 type WorkerNotifier struct {
@@ -1334,6 +1312,7 @@ func (n WorkerNotifier) TaskEvent(_ context.Context, schoolID, taskID, day, kind
 }
 
 // ScheduleNotifier 把计划事件转成总线事件。
+// 组合根适配：只做计划事件 → 进程内总线的形状转换。
 type ScheduleNotifier struct {
 	Broker *appevents.Broker
 	Clock  clock.Clock

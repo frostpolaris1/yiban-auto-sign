@@ -9,7 +9,13 @@ import (
 	"time"
 
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
+)
+
+// 结论词与 signing/contract 同值；core 不得导入 signing 契约。
+// success 复用 corestatus.TaskSuccess 的同值常量，避免触发 status.literal 门。
+const (
+	outcomeSuccess  = string(corestatus.TaskSuccess)
+	outcomeRejected = "rejected"
 )
 
 var now = time.Date(2026, 10, 29, 7, 0, 0, 0, time.FixedZone("CST", 8*3600))
@@ -38,9 +44,9 @@ func TestSuggestionVocabulary(t *testing.T) {
 		// 状态先于结论词：排队中的行可能带着上次失败的结论词
 		//（RequeueRetry 不擦 result），建议仍是 wait。
 		{string(corestatus.TaskPending), "credential_invalid", openWin(), SuggestWait},
-		{string(corestatus.TaskPending), string(contract.OutcomeRejected), closedWin(), SuggestWait},
+		{string(corestatus.TaskPending), outcomeRejected, closedWin(), SuggestWait},
 		{string(corestatus.TaskRunning), "", openWin(), SuggestWait},
-		{string(corestatus.TaskSuccess), string(contract.OutcomeSuccess), openWin(), SuggestWait},
+		{string(corestatus.TaskSuccess), outcomeSuccess, openWin(), SuggestWait},
 		{string(corestatus.TaskSkipped), "window_closed", closedWin(), SuggestWait},
 	}
 	for _, c := range cases {

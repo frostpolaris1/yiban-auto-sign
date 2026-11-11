@@ -9,8 +9,6 @@ package location
 import (
 	"hash/fnv"
 	"math"
-
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // maxSampleTries 是一次采样的最大投点数。
@@ -21,15 +19,15 @@ const maxSampleTries = 256
 //
 // 前置：poly 至少 3 点且坐标有限；不满足即返回 false。
 // 返回 true 时点必然满足 PointInPolygon，边界语义与判定一致。
-func SamplePoint(poly []contract.Point, seed string) (contract.Point, bool) {
+func SamplePoint(poly []Point, seed string) (Point, bool) {
 	if len(poly) < 3 {
-		return contract.Point{}, false
+		return Point{}, false
 	}
 	minLng, maxLng := poly[0].Lng, poly[0].Lng
 	minLat, maxLat := poly[0].Lat, poly[0].Lat
 	for _, p := range poly {
 		if !finite(p.Lng) || !finite(p.Lat) {
-			return contract.Point{}, false
+			return Point{}, false
 		}
 		minLng = math.Min(minLng, p.Lng)
 		maxLng = math.Max(maxLng, p.Lng)
@@ -38,17 +36,17 @@ func SamplePoint(poly []contract.Point, seed string) (contract.Point, bool) {
 	}
 	// 零面积包围盒采不到内部点：直接拒绝，不浪费投点。
 	if maxLng <= minLng || maxLat <= minLat {
-		return contract.Point{}, false
+		return Point{}, false
 	}
 	g := &splitmix64{state: seedHash(seed)}
 	for i := 0; i < maxSampleTries; i++ {
 		lng := minLng + (maxLng-minLng)*g.unit()
 		lat := minLat + (maxLat-minLat)*g.unit()
 		if PointInPolygon(lng, lat, poly) {
-			return contract.Point{Lng: lng, Lat: lat}, true
+			return Point{Lng: lng, Lat: lat}, true
 		}
 	}
-	return contract.Point{}, false
+	return Point{}, false
 }
 
 // finite 报告 v 是有限数。

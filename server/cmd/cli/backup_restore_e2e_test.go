@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
@@ -77,7 +76,7 @@ func TestBackupRestoreRoundTripReconciles(t *testing.T) {
 	defer db.Close()
 	users := pg.NewUserRepo(db)
 	const pepper = "e2e-pepper-0123456789abcdef"
-	key, err := assembly.DeriveAuditKey([]byte(pepper))
+	key, err := coreaudit.DeriveKey([]byte(pepper))
 	if err != nil {
 		t.Fatalf("derive audit key: %v", err)
 	}

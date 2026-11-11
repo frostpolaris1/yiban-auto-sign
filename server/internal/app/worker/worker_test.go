@@ -15,10 +15,37 @@ import (
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/egress"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
+
+// corePolygon/coreTarget/coreLocation 把契约形状裁成 core/location 的几何子集。
+// 生产代码在 worker.go 里做同样的转换；测试复算采样点时用同一口径。
+func corePolygon(points []contract.Point) []corelocation.Point {
+	out := make([]corelocation.Point, len(points))
+	for i, point := range points {
+		out[i] = corelocation.Point{Lng: point.Lng, Lat: point.Lat}
+	}
+	return out
+}
+
+func coreTarget(target contract.Target) corelocation.Target {
+	return corelocation.Target{
+		Polygon: corePolygon(target.Polygon),
+		Center:  corelocation.Point{Lng: target.Center.Lng, Lat: target.Center.Lat},
+		RadiusM: target.RadiusM,
+	}
+}
+
+func coreLocation(loc contract.Location) corelocation.Location {
+	return corelocation.Location{
+		Mode: corelocation.LocationMode(loc.Mode),
+		Lng:  loc.Lng,
+		Lat:  loc.Lat,
+	}
+}
 
 // ---- 替身 ----
 //

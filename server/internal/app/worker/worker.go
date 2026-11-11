@@ -335,7 +335,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	// 故同一尝试恒得同一点。采样不成立（无多边形/退化/用尽投点）时
 	// 保持零坐标，提供方回退上游中心点。固定点由用户指定，不参与采样。
 	if location.Mode != contract.LocationFixed {
-		if point, ok := corelocation.SamplePoint(target.Polygon, attemptID(task)); ok {
+		if point, ok := corelocation.SamplePoint(corePolygon(target.Polygon), attemptID(task)); ok {
 			location.Lng, location.Lat = point.Lng, point.Lat
 		}
 	}
@@ -632,13 +632,43 @@ func pickTarget(targets []contract.Target, attempts int, loc contract.Location) 
 	if loc.Reason != "" {
 		return targets[start], true
 	}
+	coreLoc := coreLocation(loc)
 	for i := 0; i < len(targets); i++ {
 		candidate := targets[(start+i)%len(targets)]
-		if corelocation.Resolve(candidate, loc) {
+		if corelocation.Resolve(coreTarget(candidate), coreLoc) {
 			return candidate, true
 		}
 	}
 	return contract.Target{}, false
+}
+
+// corePolygon 把契约多边形裁成 core/location 的几何点。
+// 转换只在调用侧：core 不依赖 signing 契约（boundary.core.contract）。
+func corePolygon(points []contract.Point) []corelocation.Point {
+	out := make([]corelocation.Point, len(points))
+	for i, point := range points {
+		out[i] = corelocation.Point{Lng: point.Lng, Lat: point.Lat}
+	}
+	return out
+}
+
+// coreTarget 把契约目标裁成围栏判定实际消费的字段子集。
+func coreTarget(target contract.Target) corelocation.Target {
+	return corelocation.Target{
+		Polygon: corePolygon(target.Polygon),
+		Center:  corelocation.Point{Lng: target.Center.Lng, Lat: target.Center.Lat},
+		RadiusM: target.RadiusM,
+	}
+}
+
+// coreLocation 把契约定位策略裁成围栏判定实际消费的字段子集。
+// Reason 留在 app：它是"跳过围栏过滤"的用例判据，不是几何输入。
+func coreLocation(loc contract.Location) corelocation.Location {
+	return corelocation.Location{
+		Mode: corelocation.LocationMode(loc.Mode),
+		Lng:  loc.Lng,
+		Lat:  loc.Lat,
+	}
 }
 
 // attemptID 生成"按尝试唯一"的幂等键。

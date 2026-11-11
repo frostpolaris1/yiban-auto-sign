@@ -232,6 +232,22 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, filter ListFi
 	return Page{Items: items, NextCursor: next}, nil
 }
 
+// FirstActiveForSchool 返回学校首个活跃账号，供平台窗口发现借用登录态。
+// 内部复用 List：master 作用域、active 状态、按存储稳定序取第一条。
+// 空列表返回 not_found；文案沿用发现调用方的既有日志口径。
+func (s *Service) FirstActiveForSchool(ctx context.Context, schoolID string) (Record, error) {
+	page, err := s.List(ctx, corescope.Master(), ListFilter{
+		SchoolID: schoolID, Status: StatusActive,
+	}, "", 1)
+	if err != nil {
+		return Record{}, err
+	}
+	if len(page.Items) == 0 {
+		return Record{}, errs.New(errs.CodeNotFound, "no active account for window discovery")
+	}
+	return page.Items[0], nil
+}
+
 // Get 在作用域内读一个账号。跨校或已软删返回 404。
 func (s *Service) Get(ctx context.Context, scope corescope.Scope, id string) (Record, error) {
 	if err := app.RequireScope(scope); err != nil {
