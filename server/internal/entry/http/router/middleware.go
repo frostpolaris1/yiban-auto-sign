@@ -277,14 +277,12 @@ func (s *server) accountLimit(c *gin.Context, key string) bool {
 }
 
 // accountLimitFor 在指定域内按账号键判限流。
-// 这里统一小写：UUID 与邮箱大小写不敏感，
+// 键先经 NormalizeAccountKey 归一：UUID 与邮箱大小写不敏感，
 // 不归一就能用大小写变体把同一个账号拆成多个桶。
-// domain 为空表示默认域（裸键）；非空时键形如 "<domain>:<key>"。
+// 域前缀的唯一来源是 AllowAccountIn：本函数只传裸键，
+// 不在这里拼 "<domain>:<key>"，否则会落成双前缀桶。
 func (s *server) accountLimitFor(c *gin.Context, domain, key string) bool {
 	key = ratelimit.NormalizeAccountKey(key)
-	if domain != "" {
-		key = domain + ":" + key
-	}
 	if ok, wait := s.rateLimit.AllowAccountIn(domain, key); !ok {
 		tooManyRequests(c, wait)
 		return false

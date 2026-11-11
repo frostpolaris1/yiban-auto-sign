@@ -102,3 +102,28 @@ func TestAccountLimitNormalizesUUIDForms(t *testing.T) {
 		t.Fatal("urn 形式必须与规范形共用一桶")
 	}
 }
+
+// 域前缀只加一次：桶键恰为 "<domain>:<key>"，不是双前缀。
+func TestAccountLimitForUsesSingleDomainPrefix(t *testing.T) {
+	limiter, err := ratelimit.NewThrottle(ratelimit.Quota{PerMinute: 1, Burst: 1})
+	if err != nil {
+		t.Fatalf("NewThrottle: %v", err)
+	}
+	gin.SetMode(gin.TestMode)
+	s := &server{rateLimit: &ratelimit.Guard{Account: limiter}}
+
+	const email = "victim@example.com"
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/api/auth/login", nil)
+	if !s.accountLimitFor(c, accountDomainLogin, email) {
+		t.Fatal("首次必须放行")
+	}
+	// 预期桶键已被消费：直接放同一键必须被拒。
+	if ok, _ := limiter.Allow(accountDomainLogin + ":" + email); ok {
+		t.Fatal("桶键不是 auth.login:<key>")
+	}
+	// 双前缀键不得被消费。
+	if ok, _ := limiter.Allow(accountDomainLogin + ":" + accountDomainLogin + ":" + email); !ok {
+		t.Fatal("双前缀键被误消费")
+	}
+}
