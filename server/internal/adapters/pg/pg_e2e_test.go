@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -665,6 +666,88 @@ func TestPasswordResetConsumeInvalidatesSiblings(t *testing.T) {
 	// 失效是批量置位：owner 的两行都有 used_at。
 	if got := e.scalarInt("SELECT count(*) FROM password_resets WHERE user_id = $1 AND used_at IS NOT NULL", owner.ID); got != 2 {
 		t.Fatalf("used rows for owner = %d, want 2", got)
+	}
+}
+
+// 消费令牌只锁未过期兄弟：过期行不置位、不加锁，
+// 与保留期清理（按 expires_at 升序删）的行集不相交，避免反向锁序死锁。
+func TestPasswordResetConsumeSkipsExpiredSiblings(t *testing.T) {
+	e := newEnv(t)
+	now := time.Now().UTC()
+
+	create := func(userID, token string, createdAt, expiresAt time.Time) {
+		t.Helper()
+		if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+			_, err := e.resets.Create(ctx, coreauthNewReset{
+				UserID:    userID,
+				TokenHash: tokenHash(token),
+				Now:       createdAt,
+				ExpiresAt: expiresAt,
+			})
+			return err
+		}); err != nil {
+			t.Fatalf("create reset token %s: %v", token, err)
+		}
+	}
+	// 过期兄弟的 created_at 升序与 expires_at 升序相反：
+	// 旧实现按 user 索引（created_at DESC）锁过期行，清理按 expires_at ASC 删。
+	const expired = 20
+	seedExpired := func(userID, prefix string) {
+		t.Helper()
+		for i := 0; i < expired; i++ {
+			create(userID, fmt.Sprintf("%s-%02d", prefix, i),
+				now.Add(-2*time.Hour+time.Duration(i)*time.Minute),
+				now.Add(-time.Hour+time.Duration(i)*time.Minute))
+		}
+	}
+
+	owner := e.createUser("reset-expired-siblings@example.com")
+	seedExpired(owner.ID, "expired")
+	create(owner.ID, "live-target", now, now.Add(time.Hour))
+
+	used, err := e.resets.Consume(e.ctx, tokenHash("live-target"), now.Add(time.Minute))
+	mustNotError(t, err, "consume live target")
+	if used.UserID != owner.ID {
+		t.Fatalf("consumed user = %s, want %s", used.UserID, owner.ID)
+	}
+	// 过期兄弟一行都不应被置位：与清理的行集不相交。
+	if got := e.scalarInt(
+		"SELECT count(*) FROM password_resets WHERE user_id = $1 AND expires_at < $2 AND used_at IS NOT NULL",
+		owner.ID, now); got != 0 {
+		t.Fatalf("expired siblings marked used = %d, want 0", got)
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM password_resets WHERE user_id = $1 AND expires_at > $2 AND used_at IS NOT NULL",
+		owner.ID, now); got != 1 {
+		t.Fatalf("live used rows = %d, want 1", got)
+	}
+
+	// 双连接并发：Consume 与过期清理同时跑，不得报死锁。
+	other := e.createUser("reset-expired-cleanup@example.com")
+	seedExpired(other.ID, "cleanup-expired")
+	create(other.ID, "cleanup-target", now, now.Add(time.Hour))
+	maintenance := pg.NewMaintenanceRepo(e.db)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, errs[0] = e.resets.Consume(e.ctx, tokenHash("cleanup-target"), now.Add(time.Minute))
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, errs[1] = maintenance.DeleteExpiredPasswordResets(e.ctx, now, 1000)
+	}()
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent consume/cleanup %d: %v", i, err)
+		}
 	}
 }
 

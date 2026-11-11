@@ -66,10 +66,13 @@ func (r *PasswordResetRepo) Peek(ctx context.Context, tokenHash coreauth.TokenHa
 	return recordOrNotFound(record, err)
 }
 
-// Consume 把令牌标记为已用，并失效同用户其余未用令牌，返回被消费的行。
+// Consume 把令牌标记为已用，并失效同用户其余未用且未过期的令牌，
+// 返回被消费的行。
 //
 // 这条 UPDATE 就是**单次使用判据**：只有未用且未过期的目标令牌会命中；
-// 同一语句同时把该用户其余 used_at IS NULL 的行一并置位。
+// 同一语句同时把该用户其余 used_at IS NULL 且未过期的行一并置位。
+// 已过期的兄弟令牌本就不可用，**不置位也不加锁**：保留期清理按
+// expires_at 升序删过期行，本语句若锁过期行会形成反向锁序而死锁。
 // 第二次调用、已过期令牌、未知令牌一律 not_found。
 //
 // 一条语句完成两件事，故并发消费同一用户的不同令牌时行锁顺序一致，
@@ -89,6 +92,7 @@ func (r *PasswordResetRepo) Consume(ctx context.Context, tokenHash coreauth.Toke
 			   SET used_at = $2
 			 WHERE user_id = (SELECT user_id FROM target)
 			   AND used_at IS NULL
+			   AND expires_at > $2
 			RETURNING `+resetColumns+`
 		)
 		SELECT `+resetColumns+` FROM updated WHERE token_hash = $1`,
