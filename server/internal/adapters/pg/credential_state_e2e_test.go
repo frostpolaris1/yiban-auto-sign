@@ -191,7 +191,7 @@ func TestCredentialErrorAccountIsNotClaimedNextDay(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("insert next-day plan: %v", err)
 	}
-	claimed, err := e.sched.ClaimDue(e.ctx, nextDay.Add(time.Minute), 10)
+	claimed, err := e.sched.ClaimDue(e.ctx, nextDay.Add(time.Minute), nextDay.Format("2006-01-02"), 10)
 	if err != nil {
 		t.Fatalf("claim next day: %v", err)
 	}

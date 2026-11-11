@@ -163,14 +163,37 @@ func (f *fakeTimePrefs) Set(_ context.Context, userID string, offset *int) (appt
 type fakeStats struct {
 	counts map[int]int
 	err    error
+	// taskCalls 记录任务级端口被调用次数；旧全校端口保留为兼容回退。
+	taskCalls int
+	lastTask  string
+	lastDay   string
 }
 
 func (f *fakeStats) SignStats(context.Context, corescope.Scope, string, string) (appstats.Report, error) {
 	return appstats.Report{}, nil
 }
 
+func (f *fakeStats) OffsetCountsForTask(_ context.Context, _, taskID, day string) (map[int]int, error) {
+	f.taskCalls++
+	f.lastTask, f.lastDay = taskID, day
+	return f.counts, f.err
+}
+
 func (f *fakeStats) OffsetCounts(context.Context, string) (map[int]int, error) {
 	return f.counts, f.err
+}
+
+// legacyStats 只实现旧全校端口：验证回退路径与 warn-once（M4）。
+type legacyStats struct {
+	counts map[int]int
+}
+
+func (legacyStats) SignStats(context.Context, corescope.Scope, string, string) (appstats.Report, error) {
+	return appstats.Report{}, nil
+}
+
+func (f legacyStats) OffsetCounts(context.Context, string) (map[int]int, error) {
+	return f.counts, nil
 }
 
 type fakeAuthorizer struct {
@@ -703,6 +726,11 @@ func TestTimePrefGetEnrichesCrowdingAndEstimate(t *testing.T) {
 	if slots[len(slots)-1].EdgeNote != "结尾 0.5 分钟保留" {
 		t.Fatalf("末槽 edge_note = %q", slots[len(slots)-1].EdgeNote)
 	}
+	// 拥挤度必须走任务级端口，并带上选中任务与业务日（P2-13）。
+	if stats.taskCalls != 1 || stats.lastTask != "task-secret" || stats.lastDay != "2026-10-29" {
+		t.Fatalf("任务级拥挤度 = calls %d task %q day %q, want 1/task-secret/2026-10-29",
+			stats.taskCalls, stats.lastTask, stats.lastDay)
+	}
 	if got.Estimated == nil || *got.Estimated != "06:42" {
 		t.Fatalf("estimated = %v, want 06:42", got.Estimated)
 	}
@@ -722,6 +750,35 @@ func TestTimePrefGetEnrichesCrowdingAndEstimate(t *testing.T) {
 	}
 	if planner.selfUserID != "u1" || planner.selfDay != "2026-10-29" {
 		t.Fatalf("self 输入 = %q %q", planner.selfUserID, planner.selfDay)
+	}
+}
+
+// 旧全校拥挤度回退只告警一次，不刷屏（M4）。
+func TestTimePrefLegacyStatsWarnsOnce(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	planner := &fakePlanner{
+		self: coreschedule.SelfContext{
+			HasAccount: true, SchoolID: "s1", HasTask: true, TaskID: "task-secret",
+		},
+		cached: coreschedule.WindowRecord{
+			SchoolTaskID: "task-secret", Day: "2026-10-29",
+			Start:  time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai),
+			End:    time.Date(2026, 10, 29, 7, 50, 0, 0, shanghai),
+			Source: "platform", Version: 1,
+		},
+	}
+	prefs := &fakeTimePrefs{view: apptimepref.View{Allowed: true}}
+	engine, issued := newRouterFull(t, corescope.User("u1"), planner, prefs,
+		legacyStats{counts: map[int]int{0: 1}}, logger)
+	for i := 0; i < 2; i++ {
+		rec := do(t, engine, issued, http.MethodGet, "/api/me/time-pref", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get %d status = %d: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if got := strings.Count(logs.String(), "stats.legacy_offset_counts"); got != 1 {
+		t.Fatalf("回退告警次数 = %d, want 1（warn-once）: %s", got, logs.String())
 	}
 }
 

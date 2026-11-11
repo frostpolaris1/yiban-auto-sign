@@ -444,7 +444,7 @@ func TestDisabledSchoolStopsNewSigning(t *testing.T) {
 	if err != nil || len(accounts) != 1 || accounts[0].ID != acctID {
 		t.Fatalf("停校前 ActiveAccounts = %+v, %v", accounts, err)
 	}
-	claimed, err := e.sched.ClaimDue(e.ctx, now, 10)
+	claimed, err := e.sched.ClaimDue(e.ctx, now, day, 10)
 	if err != nil || len(claimed) != 1 || claimed[0].AccountID != acctID {
 		t.Fatalf("停校前 ClaimDue = %+v, %v", claimed, err)
 	}
@@ -482,7 +482,7 @@ func TestDisabledSchoolStopsNewSigning(t *testing.T) {
 	if err != nil || len(dayTasks) != 1 || dayTasks[0] != taskID {
 		t.Fatalf("停校后 DayTasks = %v, %v, want [%s]", dayTasks, err, taskID)
 	}
-	claimed, err = e.sched.ClaimDue(e.ctx, now, 10)
+	claimed, err = e.sched.ClaimDue(e.ctx, now, day, 10)
 	if err != nil || len(claimed) != 1 || claimed[0].AccountID != acctID {
 		t.Fatalf("停校后 ClaimDue = %+v, %v, want the existing pending row", claimed, err)
 	}

@@ -50,7 +50,7 @@ func TestClaimDueClaimsOnlyPendingRows(t *testing.T) {
 	pendingRowID := e.taskRowID(pendingAccount, taskID, day)
 
 	now := due.Add(time.Minute)
-	claimed, err := e.sched.ClaimDue(e.ctx, now, 10)
+	claimed, err := e.sched.ClaimDue(e.ctx, now, day, 10)
 	if err != nil {
 		t.Fatalf("claim due: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestRequeueRetryCountsEveryAttempt(t *testing.T) {
 
 	claim := func(at time.Time) {
 		t.Helper()
-		claimed, err := e.sched.ClaimDue(e.ctx, at, 10)
+		claimed, err := e.sched.ClaimDue(e.ctx, at, day, 10)
 		if err != nil {
 			t.Fatalf("claim due at %s: %v", at, err)
 		}

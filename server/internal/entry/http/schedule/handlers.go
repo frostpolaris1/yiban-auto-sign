@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -74,8 +75,19 @@ type TimePrefs interface {
 }
 
 // Stats 是看板聚合端口（实现为 app/stats.Service）。
+// 拥挤度读取是可选能力：TaskStats 按选中任务过滤（生产实现），
+// LegacyStats 保留全校口径（旧装配/测试替身）。两者都没有时回 500。
 type Stats interface {
 	SignStats(ctx context.Context, scope corescope.Scope, from, to string) (appstats.Report, error)
+}
+
+// TaskStats 是按选中任务与业务日读取拥挤度的端口（P2-13）。
+type TaskStats interface {
+	OffsetCountsForTask(ctx context.Context, schoolID, taskID, day string) (map[int]int, error)
+}
+
+// LegacyStats 是全校口径的拥挤度端口：只服务未接任务过滤的旧装配与测试替身。
+type LegacyStats interface {
 	OffsetCounts(ctx context.Context, schoolID string) (map[int]int, error)
 }
 
@@ -129,6 +141,8 @@ type Handler struct {
 	authz   Authorizer
 	cfg     Config
 	log     *slog.Logger
+	// legacyWarn 让「旧全校拥挤度回退」只告警一次，不刷屏。
+	legacyWarn sync.Once
 }
 
 // NewHandler 构造处理器。缺少 Location 时按 UTC；服务层仍会校验。
@@ -471,7 +485,7 @@ func (h *Handler) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams)
 		fail(c, err)
 		return
 	}
-	counts, err := h.stats.OffsetCounts(c.Request.Context(), schoolID)
+	counts, err := h.offsetCounts(c.Request.Context(), schoolID, taskID, day)
 	if err != nil {
 		fail(c, err)
 		return
@@ -498,6 +512,23 @@ func (h *Handler) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams)
 		WindowEnd:   window.WindowEnd,
 		Slots:       slots,
 	})
+}
+
+// offsetCounts 读拥挤度：优先任务级端口（P2-13），回退旧全校端口。
+// 回退保留给旧装配与测试替身；只告警一次，避免每请求刷屏。
+// 两者都没有是装配错误，回 500，不把空 map 当「没人选」。
+func (h *Handler) offsetCounts(ctx context.Context, schoolID, taskID, day string) (map[int]int, error) {
+	if stats, ok := h.stats.(TaskStats); ok {
+		return stats.OffsetCountsForTask(ctx, schoolID, taskID, day)
+	}
+	if stats, ok := h.stats.(LegacyStats); ok {
+		h.legacyWarn.Do(func() {
+			h.log.Warn("schedule: stats service has no task-scoped crowding; using school-wide fallback",
+				logfield.KeyEvent, "stats.legacy_offset_counts")
+		})
+		return stats.OffsetCounts(ctx, schoolID)
+	}
+	return nil, errs.New(errs.CodeInternal, "stats service has no offset counts")
 }
 
 // prefSlotFrame 是一个 5 分钟槽的传输前形状：管理端统计与用户读面共用。
@@ -640,7 +671,7 @@ func (h *Handler) timePrefResponse(c *gin.Context, view apptimepref.View, userID
 	if err != nil {
 		return out, self, err
 	}
-	counts, err := h.stats.OffsetCounts(c.Request.Context(), self.SchoolID)
+	counts, err := h.offsetCounts(c.Request.Context(), self.SchoolID, self.TaskID, h.today())
 	if err != nil {
 		return out, self, err
 	}

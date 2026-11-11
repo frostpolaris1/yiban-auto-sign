@@ -100,20 +100,47 @@ type fakePlanStore struct {
 	inserted   [][]coreschedule.PlanRow
 	rearranged [][]coreschedule.PlanRow
 	existing   map[string]bool
+	// pending 模拟库内 pending 行：InsertPlan 落入、RearrangePlan 改写、
+	// SkipPlanRows 移出。几何对比与容量释放的判据都读它。
+	pending map[string]coreschedule.PlanRow
+	// pendingResult 模拟 pending 行的 result 列：新行与复活行都是空串，
+	// 与真实库 NOT NULL DEFAULT '' 同口径（N3）。
+	pendingResult map[string]string
+	// skipped 记录被跳过的行（planKey）→ result 词；skippedRows 保留行形状，
+	// 供容量回升时 revive 回 pending。
+	skipped     map[string]string
+	skippedRows map[string]coreschedule.PlanRow
+	// insertErr 注入落库失败（Override 同事务回滚判据用）。
+	insertErr error
+}
+
+func planKey(r coreschedule.PlanRow) string {
+	return r.AccountID + "|" + r.SchoolTaskID + "|" + r.Day
 }
 
 func (f *fakePlanStore) InsertPlan(_ context.Context, rows []coreschedule.PlanRow) (int64, error) {
 	f.inserted = append(f.inserted, rows)
+	if f.insertErr != nil {
+		return 0, f.insertErr
+	}
 	if f.existing == nil {
 		f.existing = map[string]bool{}
 	}
+	if f.pending == nil {
+		f.pending = map[string]coreschedule.PlanRow{}
+	}
+	if f.pendingResult == nil {
+		f.pendingResult = map[string]string{}
+	}
 	var n int64
 	for _, r := range rows {
-		key := r.AccountID + "|" + r.SchoolTaskID + "|" + r.Day
+		key := planKey(r)
 		if f.existing[key] {
 			continue
 		}
 		f.existing[key] = true
+		f.pending[key] = r
+		f.pendingResult[key] = ""
 		n++
 	}
 	return n, nil
@@ -121,7 +148,97 @@ func (f *fakePlanStore) InsertPlan(_ context.Context, rows []coreschedule.PlanRo
 
 func (f *fakePlanStore) RearrangePlan(_ context.Context, taskID, day string, rows []coreschedule.PlanRow) (int64, error) {
 	f.rearranged = append(f.rearranged, rows)
-	return int64(len(rows)), nil
+	if f.pending == nil {
+		f.pending = map[string]coreschedule.PlanRow{}
+	}
+	var n int64
+	for _, r := range rows {
+		key := planKey(r)
+		if _, ok := f.pending[key]; ok {
+			f.pending[key] = r
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakePlanStore) PendingPlan(_ context.Context, taskID, day string) ([]coreschedule.PlanRow, error) {
+	out := make([]coreschedule.PlanRow, 0, len(f.pending))
+	for _, r := range f.pending {
+		if r.SchoolTaskID == taskID && r.Day == day {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakePlanStore) SkipPlanRows(_ context.Context, taskID, day string, accountIDs []string, result string) (int64, error) {
+	if f.skipped == nil {
+		f.skipped = map[string]string{}
+	}
+	if f.skippedRows == nil {
+		f.skippedRows = map[string]coreschedule.PlanRow{}
+	}
+	var n int64
+	for _, id := range accountIDs {
+		key := id + "|" + taskID + "|" + day
+		row, ok := f.pending[key]
+		if !ok {
+			continue
+		}
+		delete(f.pending, key)
+		delete(f.pendingResult, key)
+		f.skipped[key] = result
+		f.skippedRows[key] = row
+		n++
+	}
+	return n, nil
+}
+
+// ReviveCapacityReleased 只复活 result='capacity_released' 的行：
+// window_closed 等其他 skipped 结论保持原状（H1 的等值匹配判据）。
+func (f *fakePlanStore) ReviveCapacityReleased(_ context.Context, taskID, day string) (int64, error) {
+	if f.skippedRows == nil {
+		return 0, nil
+	}
+	if f.pendingResult == nil {
+		f.pendingResult = map[string]string{}
+	}
+	var n int64
+	for key, row := range f.skippedRows {
+		if row.SchoolTaskID != taskID || row.Day != day {
+			continue
+		}
+		if f.skipped[key] != "capacity_released" {
+			continue
+		}
+		f.pending[key] = row
+		f.pendingResult[key] = "" // 与真实 SQL 的 result='' 同语义（N3）。
+		delete(f.skippedRows, key)
+		delete(f.skipped, key)
+		n++
+	}
+	return n, nil
+}
+
+func (f *fakePlanStore) SkipStalePending(_ context.Context, beforeDay, result string) (int64, error) {
+	if f.skipped == nil {
+		f.skipped = map[string]string{}
+	}
+	if f.skippedRows == nil {
+		f.skippedRows = map[string]coreschedule.PlanRow{}
+	}
+	var n int64
+	for key, r := range f.pending {
+		if r.Day < beforeDay {
+			delete(f.pending, key)
+			delete(f.pendingResult, key)
+			f.skipped[key] = result
+			f.skippedRows[key] = r
+			n++
+		}
+	}
+	return n, nil
 }
 
 type fakeAccounts struct {
@@ -611,6 +728,227 @@ func TestBuildDegradesCapacityShortfall(t *testing.T) {
 	}
 	if histSum != 64 {
 		t.Fatalf("直方图总数 = %d, want 64", histSum)
+	}
+}
+
+// 容量缩容重建：超出容量的 pending 行落 skipped(capacity_released)，
+// 不物理删除；容量内的行保持 pending。P0-1。
+func TestBuildCapacityShrinkReleasesExcessPending(t *testing.T) {
+	ids := make([]string, 64)
+	for i := range ids {
+		ids[i] = "acct-" + strconv.Itoa(i)
+	}
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	svc := newService(t, ws, ps, fakeAccounts{ids: ids},
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 60 * time.Second
+	in.Rate = 1.0
+	in.Util = 1.0 // 80 分钟窗、60s/次：容量 80，需求 64，无缺口
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("首次构建: %v", err)
+	}
+	if got := len(ps.pending); got != 64 {
+		t.Fatalf("首次 pending = %d, want 64", got)
+	}
+	in.Util = 0.4 // 容量 32：32 行超容量
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("缩容重建: %v", err)
+	}
+	if got := len(ps.pending); got != 32 {
+		t.Fatalf("缩容后 pending = %d, want 32（超容量行必须落结论）", got)
+	}
+	if len(ps.skipped) != 32 {
+		t.Fatalf("容量释放行数 = %d, want 32", len(ps.skipped))
+	}
+	for key, result := range ps.skipped {
+		if result != "capacity_released" {
+			t.Fatalf("行 %s 的 result = %q, want capacity_released", key, result)
+		}
+	}
+}
+
+// 容量回升（64→32→64）：被释放的行必须复活并重排，不能永久 skipped（H1）。
+func TestBuildCapacityRecoveryRevivesReleasedRows(t *testing.T) {
+	ids := make([]string, 64)
+	for i := range ids {
+		ids[i] = "acct-" + strconv.Itoa(i)
+	}
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	svc := newService(t, ws, ps, fakeAccounts{ids: ids},
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 60 * time.Second
+	in.Rate = 1.0
+	in.Util = 1.0 // 容量 80
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("首次构建: %v", err)
+	}
+	in.Util = 0.4 // 容量 32：32 行被释放
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("缩容重建: %v", err)
+	}
+	if len(ps.pending) != 32 || len(ps.skipped) != 32 {
+		t.Fatalf("缩容后 pending/skipped = %d/%d, want 32/32", len(ps.pending), len(ps.skipped))
+	}
+	in.Util = 1.0 // 容量回到 64：全部复活
+	built, err := svc.Build(context.Background(), in)
+	if err != nil {
+		t.Fatalf("回升重建: %v", err)
+	}
+	if len(ps.pending) != 64 {
+		t.Fatalf("回升后 pending = %d, want 64（被释放行必须复活）", len(ps.pending))
+	}
+	if len(ps.skipped) != 0 {
+		t.Fatalf("回升后 skipped = %d, want 0", len(ps.skipped))
+	}
+	want := make(map[string]time.Time, len(built.Rows))
+	for _, r := range built.Rows {
+		want[r.AccountID] = r.RunAt
+	}
+	for key, row := range ps.pending {
+		at, ok := want[row.AccountID]
+		if !ok || !at.Equal(row.RunAt) {
+			t.Fatalf("行 %s 落点 = %v, want %v（复活后必须统一重排）", key, row.RunAt, at)
+		}
+		if got := ps.pendingResult[key]; got != "" {
+			t.Fatalf("复活行 %s 的 result = %q, want 空串（N3）", key, got)
+		}
+	}
+}
+
+// 容量回升只复活 capacity_released；window_closed 等其他 skipped 词绝不复活（H1）。
+func TestBuildCapacityRecoveryKeepsWindowClosedSkipped(t *testing.T) {
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	svc := newService(t, ws, ps, fakeAccounts{ids: []string{"x"}},
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 60 * time.Second
+	in.Rate = 1.0
+	in.Util = 1.0
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("首次构建: %v", err)
+	}
+	key := "x|task-1|2026-10-29"
+	if _, err := ps.SkipPlanRows(context.Background(), "task-1", "2026-10-29",
+		[]string{"x"}, "window_closed"); err != nil {
+		t.Fatalf("seed window_closed: %v", err)
+	}
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("回升重建: %v", err)
+	}
+	if _, ok := ps.pending[key]; ok {
+		t.Fatal("window_closed 行被 revive 误捞回 pending")
+	}
+	if got := ps.skipped[key]; got != "window_closed" {
+		t.Fatalf("window_closed 行 result = %q, want window_closed", got)
+	}
+}
+
+// 容量截断按 run_at 排序：偏好用户的早槽不能被账号序切掉（P1-7）。
+func TestBuildCapacityTruncatesByRunAt(t *testing.T) {
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	accts := fakeAccounts{
+		ids:    []string{"a1", "a2"},
+		owners: map[string]string{"a1": "u1", "a2": "u2"},
+	}
+	prefs := &fakePrefs{offsets: map[string]int{"u2": 0}}
+	svc := newServiceWithPrefs(t, ws, ps, accts,
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)}, prefs)
+	in := baseInput()
+	in.UsePrefs = true
+	in.Workers = 1
+	in.Avg = 80 * time.Minute // 80 分钟窗、80 分钟/次：容量 1
+	in.Rate = 1.0
+	in.Util = 1.0
+
+	built, err := svc.Build(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(built.Rows) != 1 {
+		t.Fatalf("保留行数 = %d, want 1", len(built.Rows))
+	}
+	// a2 的偏好槽是窗口起点（run_at 06:30:00）；a1 顺延到 06:30:30。
+	// 账号序是 [a1, a2]，按账号序截尾会丢掉更早的 a2。
+	if built.Rows[0].AccountID != "a2" {
+		t.Fatalf("保留账号 = %s, want a2（run_at 更早的偏好行）", built.Rows[0].AccountID)
+	}
+	if !built.Rows[0].RunAt.Equal(built.WindowStart) {
+		t.Fatalf("保留行 run_at = %v, want 窗口起点 %v", built.Rows[0].RunAt, built.WindowStart)
+	}
+	if _, ok := ps.pending["a2|task-1|2026-10-29"]; !ok {
+		t.Fatal("a2 必须落库为 pending")
+	}
+	if _, ok := ps.pending["a1|task-1|2026-10-29"]; ok {
+		t.Fatal("a1 超容量，不得落库为 pending")
+	}
+}
+
+// newServiceWithAccounts 注入可变账号源：名册变化测试需要两次构建看到不同名册。
+func newServiceWithAccounts(t *testing.T, w *fakeWindowStore, p *fakePlanStore,
+	a appschedule.Accounts, d *fakeDiscover) *appschedule.Service {
+	t.Helper()
+	svc, err := appschedule.NewService(appschedule.Deps{
+		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: &fakeTx{},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+// mutableAccounts 是可在两次构建之间改名的账号源。
+type mutableAccounts struct{ ids []string }
+
+func (m *mutableAccounts) ActiveAccounts(context.Context, string) ([]appschedule.AccountRef, error) {
+	out := make([]appschedule.AccountRef, len(m.ids))
+	for i, id := range m.ids {
+		out[i] = appschedule.AccountRef{ID: id}
+	}
+	return out, nil
+}
+
+// 名册变化（更小手机号账号加入）必须触发重排：窗口未变也要按新几何落点，
+// 否则旧行留在原片、新行插进同片，片容量被突破（P1-8）。
+func TestBuildRosterChangeRearrangesPlan(t *testing.T) {
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	accts := &mutableAccounts{ids: []string{"b", "c"}}
+	svc := newServiceWithAccounts(t, ws, ps, accts,
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.SlotsPerSlice = 1 // 每片 1 槽：不重排就会在 0 号片叠两行
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("首次构建: %v", err)
+	}
+	accts.ids = []string{"a", "b", "c"} // 更小手机号账号加入，名册整体前移
+	built, err := svc.Build(context.Background(), in)
+	if err != nil {
+		t.Fatalf("名册变化重建: %v", err)
+	}
+	if len(ps.rearranged) != 2 {
+		t.Fatalf("重排次数 = %d, want 2（首次 + 名册变化）", len(ps.rearranged))
+	}
+	if built.Histogram[0] != 1 || built.Histogram[1] != 1 || built.Histogram[2] != 1 {
+		t.Fatalf("直方图 = %v, want 0/1/2 号片各 1 行（片容量不得突破）", built.Histogram)
+	}
+	seen := map[time.Time]bool{}
+	for _, r := range ps.pending {
+		if seen[r.RunAt] {
+			t.Fatalf("落点重复: %v（片容量被突破）", r.RunAt)
+		}
+		seen[r.RunAt] = true
+	}
+	if len(ps.pending) != 3 {
+		t.Fatalf("pending 行数 = %d, want 3", len(ps.pending))
 	}
 }
 

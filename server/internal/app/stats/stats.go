@@ -38,11 +38,11 @@ const maxWindowDays = 90
 //
 // SignStats 按作用域读 [from, to] 的日/状态计数；
 // 只返回库里出现过的日期，缺失日期由用例层补齐。
-// OffsetCounts 按偏移返回在该校有活跃账号的用户数；
-// 同一用户在该校有多个账号只计一次。
+// OffsetCounts 按选中任务与业务日返回自选偏移人数：只计在该任务当日
+// 有计划行的活跃账号，两个任务的窗口不同也不互相混算（P2-13）。
 type Store interface {
 	SignStats(ctx context.Context, scope corescope.Scope, from, to string) (coreschedule.SignStats, error)
-	OffsetCounts(ctx context.Context, schoolID string) (map[int]int, error)
+	OffsetCounts(ctx context.Context, schoolID, taskID, day string) (map[int]int, error)
 }
 
 // Service 是看板聚合服务。
@@ -116,11 +116,18 @@ func (s *Service) SignStats(ctx context.Context, scope corescope.Scope, from, to
 	return report, nil
 }
 
-// OffsetCounts 读某校自选偏移的人数分布。
-// schoolID 为空或全是空白回 400。
-func (s *Service) OffsetCounts(ctx context.Context, schoolID string) (map[int]int, error) {
+// OffsetCountsForTask 读某校某任务某业务日的自选偏移人数分布。
+// schoolID/taskID 为空或 day 非法回 400。
+// 只计在该任务当日有计划行的活跃账号：同校两任务窗口不同也不混算（P2-13）。
+func (s *Service) OffsetCountsForTask(ctx context.Context, schoolID, taskID, day string) (map[int]int, error) {
 	if strings.TrimSpace(schoolID) == "" {
 		return nil, coreerrs.New(coreerrs.CodeValidation, "school_id is required")
 	}
-	return s.store.OffsetCounts(ctx, schoolID)
+	if strings.TrimSpace(taskID) == "" {
+		return nil, coreerrs.New(coreerrs.CodeValidation, "task_id is required")
+	}
+	if _, err := time.Parse("2006-01-02", day); err != nil {
+		return nil, coreerrs.New(coreerrs.CodeValidation, "day must be YYYY-MM-DD")
+	}
+	return s.store.OffsetCounts(ctx, schoolID, taskID, day)
 }

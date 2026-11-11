@@ -28,9 +28,9 @@ type claimCountStore struct {
 	reclaims int
 }
 
-func (c *claimCountStore) ClaimDue(ctx context.Context, now time.Time, limit int) ([]coreschedule.TaskRow, error) {
+func (c *claimCountStore) ClaimDue(ctx context.Context, now time.Time, day string, limit int) ([]coreschedule.TaskRow, error) {
 	c.claims++
-	return c.fakeStore.ClaimDue(ctx, now, limit)
+	return c.fakeStore.ClaimDue(ctx, now, day, limit)
 }
 
 func (c *claimCountStore) ReclaimExpired(ctx context.Context, now time.Time, limit int) (int64, error) {

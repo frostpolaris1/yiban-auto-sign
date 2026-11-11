@@ -103,7 +103,7 @@ func newStore(tasks ...coreschedule.TaskRow) *fakeStore {
 	}
 }
 
-func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]coreschedule.TaskRow, error) {
+func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, day string, limit int) ([]coreschedule.TaskRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	// 同账号串行：已有 running 的账号本次不领。
@@ -119,7 +119,7 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 		if len(out) >= limit {
 			break
 		}
-		if t.State != string(corestatus.TaskPending) || t.RunAt.After(now) {
+		if t.State != string(corestatus.TaskPending) || t.RunAt.After(now) || t.Day < day {
 			continue
 		}
 		if runningAccount[t.AccountID] {
@@ -251,7 +251,7 @@ func (f *fakeStore) ReclaimExpired(context.Context, time.Time, int) (int64, erro
 	return 0, nil
 }
 
-func (f *fakeStore) ResetRunning(context.Context) (int64, error) {
+func (f *fakeStore) ResetRunning(context.Context, time.Time) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var n int64
@@ -488,6 +488,19 @@ func newServiceLogged(t *testing.T, st *fakeStore, signer *fakeSigner, limiter f
 		Limiter: limiter, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
 		Paused: neverPaused,
 		Logger: logger,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+// newServiceWithClock 注入可变时钟：多轮 Step 之间推进时间。
+func newServiceWithClock(t *testing.T, st *fakeStore, signer *fakeSigner, limiter fakeLimiter, clk coreclock.Clock) *appworker.Service {
+	t.Helper()
+	svc, err := appworker.NewService(appworker.Deps{
+		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
+		Limiter: limiter, Clock: clk, Location: loc, Paused: neverPaused,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -1208,6 +1221,35 @@ func TestStepRequeuesWaitAfterCancel(t *testing.T) {
 	}
 	if st.tasks[0].State != string(corestatus.TaskPending) {
 		t.Fatalf("状态 = %s, want pending（未提交的行必须退回队列）", st.tasks[0].State)
+	}
+}
+
+// 未提交失败退回队列必须带最小退避：持续故障不得每 tick 热循环重领（P1-5）。
+func TestStepRequeuesUnsubmittedWithBackoff(t *testing.T) {
+	st := newStore(baseTask())
+	st.windowErrFor["st-1"] = errors.New("db down")
+	clk := &stepClock{t: testNow()}
+	svc := newServiceWithClock(t, st, defaultSigner(), fakeLimiter{allow: true}, clk)
+
+	if _, err := svc.Step(context.Background(), 10); err == nil {
+		t.Fatal("基础设施失败应上抛")
+	}
+	first := st.requeued["t1"]
+	if want := testNow().Add(30 * time.Second); !first.Equal(want) {
+		t.Fatalf("首次退回落点 = %v, want %v（now+最小退避）", first, want)
+	}
+
+	// 推进到退避之后再次失败：落点必须晚于上一次，不能停在原 run_at。
+	clk.t = first.Add(time.Second)
+	if _, err := svc.Step(context.Background(), 10); err == nil {
+		t.Fatal("第二次基础设施失败应上抛")
+	}
+	second := st.requeued["t1"]
+	if !second.After(first) {
+		t.Fatalf("第二次退回落点 %v 不晚于第一次 %v（热循环）", second, first)
+	}
+	if want := clk.t.Add(30 * time.Second); !second.Equal(want) {
+		t.Fatalf("第二次退回落点 = %v, want %v", second, want)
 	}
 }
 

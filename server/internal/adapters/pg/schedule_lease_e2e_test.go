@@ -32,7 +32,7 @@ func TestClaimDueSetsLease(t *testing.T) {
 	e := newEnv(t)
 	rowID, due := seedClaimable(t, e, "lease-set")
 	now := due.Add(time.Minute)
-	if _, err := e.sched.ClaimDue(e.ctx, now, 10); err != nil {
+	if _, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if got := e.scalarInt(
@@ -47,7 +47,7 @@ func TestReclaimExpiredRequeues(t *testing.T) {
 	e := newEnv(t)
 	rowID, due := seedClaimable(t, e, "lease-reclaim")
 	now := due.Add(time.Minute)
-	if _, err := e.sched.ClaimDue(e.ctx, now, 10); err != nil {
+	if _, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if _, err := e.db.Exec(e.ctx,
@@ -83,7 +83,7 @@ func TestReclaimExpiredSkipsLiveLease(t *testing.T) {
 	e := newEnv(t)
 	_, due := seedClaimable(t, e, "lease-live")
 	now := due.Add(time.Minute)
-	if _, err := e.sched.ClaimDue(e.ctx, now, 10); err != nil {
+	if _, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	reclaimer := pg.NewScheduleRepoWithAudit(e.db, e.audits)
@@ -96,20 +96,21 @@ func TestReclaimExpiredSkipsLiveLease(t *testing.T) {
 	}
 }
 
-// 启动回收清空租约并放回 pending。
+// 启动回收清空租约并放回 pending；落点取注入时钟（P3-18）。
 func TestResetRunningClearsLease(t *testing.T) {
 	e := newEnv(t)
 	rowID, due := seedClaimable(t, e, "lease-reset")
-	if _, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), 10); err != nil {
+	if _, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), "2026-10-29", 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	// 显式把租约置为过去：本用例断言的是「启动回收清过期租约」。
+	now := due.Add(2 * time.Minute)
+	// 显式把租约置为 now 之前：本用例断言的是「启动回收清过期租约」。
 	if _, err := e.db.Exec(e.ctx,
-		`UPDATE sign_tasks SET lease_expires_at = now() - interval '1 minute' WHERE id = $1::uuid`,
-		rowID); err != nil {
+		`UPDATE sign_tasks SET lease_expires_at = $2 WHERE id = $1::uuid`,
+		rowID, now.Add(-time.Minute)); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
-	n, err := e.sched.ResetRunning(e.ctx)
+	n, err := e.sched.ResetRunning(e.ctx, now)
 	if err != nil {
 		t.Fatalf("reset: %v", err)
 	}
@@ -117,9 +118,9 @@ func TestResetRunningClearsLease(t *testing.T) {
 		t.Fatalf("reset = %d, want 1", n)
 	}
 	if got := e.scalarInt(
-		"SELECT (state = 'pending' AND lease_expires_at IS NULL AND claimed_at IS NULL)::int FROM sign_tasks WHERE id = $1::uuid",
-		rowID); got != 1 {
-		t.Fatal("启动回收后未回 pending 或未清空租约")
+		"SELECT (state = 'pending' AND lease_expires_at IS NULL AND claimed_at IS NULL AND run_at = $2)::int FROM sign_tasks WHERE id = $1::uuid",
+		rowID, now); got != 1 {
+		t.Fatal("启动回收后未回 pending、未清空租约或落点不是注入时钟")
 	}
 }
 
@@ -127,8 +128,14 @@ func TestResetRunningClearsLease(t *testing.T) {
 func TestResetRunningRespectsAdvisoryLock(t *testing.T) {
 	e := newEnv(t)
 	rowID, due := seedClaimable(t, e, "lease-lock")
-	if _, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), 10); err != nil {
+	if _, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), "2026-10-29", 10); err != nil {
 		t.Fatalf("claim: %v", err)
+	}
+	now := due.Add(2 * time.Minute)
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE sign_tasks SET lease_expires_at = $2 WHERE id = $1::uuid`,
+		rowID, now.Add(-time.Minute)); err != nil {
+		t.Fatalf("expire lease: %v", err)
 	}
 	locker, err := pg.Open(e.ctx, pg.Options{DSN: e.dsn, MaxConns: 1, StatementTimeout: 10 * time.Second})
 	if err != nil {
@@ -138,7 +145,7 @@ func TestResetRunningRespectsAdvisoryLock(t *testing.T) {
 	if _, err := locker.Exec(e.ctx, "SELECT pg_advisory_lock($1)", pg.ResetRunningLockKey); err != nil {
 		t.Fatalf("acquire lock: %v", err)
 	}
-	if n, err := e.sched.ResetRunning(e.ctx); err != nil || n != 0 {
+	if n, err := e.sched.ResetRunning(e.ctx, now); err != nil || n != 0 {
 		t.Fatalf("locked reset = (%d, %v), want (0, nil)", n, err)
 	}
 	if got := e.taskState(rowID); got != string(corestatus.TaskRunning) {
@@ -147,7 +154,7 @@ func TestResetRunningRespectsAdvisoryLock(t *testing.T) {
 	if _, err := locker.Exec(e.ctx, "SELECT pg_advisory_unlock($1)", pg.ResetRunningLockKey); err != nil {
 		t.Fatalf("release lock: %v", err)
 	}
-	if n, err := e.sched.ResetRunning(e.ctx); err != nil || n != 1 {
+	if n, err := e.sched.ResetRunning(e.ctx, now); err != nil || n != 1 {
 		t.Fatalf("unlocked reset = (%d, %v), want (1, nil)", n, err)
 	}
 }
@@ -161,7 +168,7 @@ func TestClaimDueCASKeepsTerminalRows(t *testing.T) {
 		rowID, string(corestatus.TaskSuccess)); err != nil {
 		t.Fatalf("seed terminal: %v", err)
 	}
-	claimed, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), 10)
+	claimed, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), "2026-10-29", 10)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -185,7 +192,7 @@ func TestConcurrentClaimsExecuteOnce(t *testing.T) {
 	results := make(chan result, 2)
 	for i := 0; i < 2; i++ {
 		go func() {
-			claimed, err := e.sched.ClaimDue(e.ctx, now, 10)
+			claimed, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10)
 			results <- result{n: len(claimed), err: err}
 		}()
 	}
@@ -225,7 +232,7 @@ func TestReclaimUnblocksNextDay(t *testing.T) {
 		t.Fatalf("seed stale running: %v", err)
 	}
 	now := dueToday.Add(time.Minute)
-	if claimed, err := e.sched.ClaimDue(e.ctx, now, 10); err != nil {
+	if claimed, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10); err != nil {
 		t.Fatalf("claim before reclaim: %v", err)
 	} else if len(claimed) != 0 {
 		t.Fatalf("claimed %d rows while a stale running row blocks the account", len(claimed))
@@ -234,7 +241,7 @@ func TestReclaimUnblocksNextDay(t *testing.T) {
 	if n, err := reclaimer.ReclaimExpired(e.ctx, now, 10); err != nil || n != 1 {
 		t.Fatalf("reclaim = (%d, %v), want (1, nil)", n, err)
 	}
-	claimed, err := e.sched.ClaimDue(e.ctx, now, 10)
+	claimed, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10)
 	if err != nil {
 		t.Fatalf("claim after reclaim: %v", err)
 	}
@@ -248,7 +255,7 @@ func TestClaimDueUsesConfiguredLease(t *testing.T) {
 	e := newEnv(t)
 	rowID, due := seedClaimable(t, e, "lease-config")
 	now := due.Add(time.Minute)
-	if _, err := e.sched.WithLease(45*time.Second).ClaimDue(e.ctx, now, 10); err != nil {
+	if _, err := e.sched.WithLease(45*time.Second).ClaimDue(e.ctx, now, "2026-10-29", 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if got := e.scalarInt(
@@ -262,15 +269,16 @@ func TestClaimDueUsesConfiguredLease(t *testing.T) {
 func TestResetRunningKeepsLiveLease(t *testing.T) {
 	e := newEnv(t)
 	rowID, due := seedClaimable(t, e, "lease-live-reset")
-	if _, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), 10); err != nil {
+	if _, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), "2026-10-29", 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
+	now := due.Add(2 * time.Minute)
 	if _, err := e.db.Exec(e.ctx,
-		`UPDATE sign_tasks SET lease_expires_at = now() + interval '1 hour' WHERE id = $1::uuid`,
-		rowID); err != nil {
+		`UPDATE sign_tasks SET lease_expires_at = $2 WHERE id = $1::uuid`,
+		rowID, now.Add(time.Hour)); err != nil {
 		t.Fatalf("extend lease: %v", err)
 	}
-	if n, err := e.sched.ResetRunning(e.ctx); err != nil || n != 0 {
+	if n, err := e.sched.ResetRunning(e.ctx, now); err != nil || n != 0 {
 		t.Fatalf("reset = (%d, %v), want (0, nil)", n, err)
 	}
 	if got := e.taskState(rowID); got != string(corestatus.TaskRunning) {
@@ -283,7 +291,7 @@ func TestStaleClaimCannotSettleNewLease(t *testing.T) {
 	e := newEnv(t)
 	rowID, due := seedClaimable(t, e, "lease-fence")
 	now := due.Add(time.Minute)
-	first, err := e.sched.ClaimDue(e.ctx, now, 10)
+	first, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10)
 	if err != nil || len(first) != 1 {
 		t.Fatalf("first claim = (%d, %v)", len(first), err)
 	}
@@ -296,7 +304,7 @@ func TestStaleClaimCannotSettleNewLease(t *testing.T) {
 	if n, err := reclaimer.ReclaimExpired(e.ctx, now, 10); err != nil || n != 1 {
 		t.Fatalf("reclaim = (%d, %v), want (1, nil)", n, err)
 	}
-	second, err := e.sched.ClaimDue(e.ctx, now, 10)
+	second, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10)
 	if err != nil || len(second) != 1 {
 		t.Fatalf("second claim = (%d, %v)", len(second), err)
 	}

@@ -265,6 +265,14 @@ schedule keys that also exist as environment keys (`schedule.edge_front_sec`,
 `schedule.edge_back_sec`, `schedule.allow_time_pref`) report `source=db`
 with the row value when an override row is present.
 
+The account quota counts every live account row (`deleted_at IS NULL`),
+including pending and rejected accounts. This is intentional: a phone
+already on file must never be re-created as a new account.
+
+A user time preference is read at the next daily plan build (00:10, or the
+startup backfill). A value saved after that build applies to the following
+business day; the API does not rebuild today's rows on save.
+
 Canonical runtime files:
 
 - bare metal: `/etc/yiban/server.env` (0600 root:root), installed by

@@ -32,6 +32,16 @@ type fakePlanner struct {
 	done chan struct{}
 	// lastInput 记录最近一次 Build 的参数（sett2 覆盖链断言用）。
 	lastInput appschedule.Input
+	// 跨日清理观测面（P1-6）。
+	staleCalls   int
+	lastStaleDay string
+	staleErr     error
+}
+
+func (f *fakePlanner) SkipStalePending(_ context.Context, day string) (int64, error) {
+	f.staleCalls++
+	f.lastStaleDay = day
+	return 0, f.staleErr
 }
 
 func (f *fakePlanner) Build(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
@@ -249,6 +259,38 @@ func TestBuildTodayWeekendGateNilOverridesStillCloses(t *testing.T) {
 	}
 	if built != 0 || planner.calls != 0 {
 		t.Fatalf("built=%d calls=%d, want 0/0（nil=按缺行 false，不得放行）", built, planner.calls)
+	}
+}
+
+// 跨日清理先于周末门：门关也把上一日 pending 行落结论（P1-6）。
+func TestBuildTodaySkipsStalePendingBeforeWeekendGate(t *testing.T) {
+	planner := &fakePlanner{}
+	b := weekendBuilder(weekendSaturday, weekendTasks, planner, appschedule.BuildOverrides{})
+	built, err := b.BuildToday(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if built != 0 || planner.calls != 0 {
+		t.Fatalf("built=%d calls=%d, want 0/0（周六门关闭）", built, planner.calls)
+	}
+	if planner.staleCalls != 1 || planner.lastStaleDay != "2026-11-14" {
+		t.Fatalf("跨日清理 = (%d, %q), want (1, 2026-11-14)（门关也要清理）",
+			planner.staleCalls, planner.lastStaleDay)
+	}
+}
+
+// 跨日清理失败上抛：日切重试会再跑，不静默跳过旧行（P1-6）。
+func TestBuildTodayStaleCleanupFailureFailsBuild(t *testing.T) {
+	planner := &fakePlanner{staleErr: errors.New("db down")}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	built, err := b.BuildToday(context.Background())
+	if err == nil || built != 0 {
+		t.Fatalf("BuildToday = (%d, %v), want 0 builds with error", built, err)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("清理失败不得继续构建, calls=%d", planner.calls)
 	}
 }
 

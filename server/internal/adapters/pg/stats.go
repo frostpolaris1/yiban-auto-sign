@@ -113,10 +113,11 @@ func (r *StatsRepo) SignStats(ctx context.Context, scope corescope.Scope, from, 
 	return out, nil
 }
 
-// OffsetCounts 读该校有 active 账号的用户自选偏移分布。
+// OffsetCounts 读该校某任务某业务日的自选偏移分布。
 // 同一用户多个账号只计一次。待审、已拒与暂停账号不计入：
 // 它们不参与签到，拥挤度必须与引擎的领取面同源。
-func (r *StatsRepo) OffsetCounts(ctx context.Context, schoolID string) (map[int]int, error) {
+// 只计在该任务当日有计划行的账号：同校两任务窗口不同也不混算（P2-13）。
+func (r *StatsRepo) OffsetCounts(ctx context.Context, schoolID, taskID, day string) (map[int]int, error) {
 	rows, err := r.db.q(ctx).Query(ctx, `
 		SELECT p.offset_min, count(DISTINCT p.user_id)::int
 		  FROM time_prefs p
@@ -125,8 +126,13 @@ func (r *StatsRepo) OffsetCounts(ctx context.Context, schoolID string) (map[int]
 		   AND a.deleted_at IS NULL
 		   AND a.status = 'active'::account_status
 		   AND p.offset_min IS NOT NULL
+		   AND EXISTS (
+		       SELECT 1 FROM sign_tasks s
+		        WHERE s.account_id = a.id
+		          AND s.school_task_id = $2::uuid
+		          AND s.day = $3::date)
 		 GROUP BY p.offset_min
-		 ORDER BY p.offset_min`, schoolID)
+		 ORDER BY p.offset_min`, schoolID, taskID, day)
 	if err != nil {
 		return nil, mapError(err)
 	}

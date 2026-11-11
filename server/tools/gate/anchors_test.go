@@ -159,7 +159,12 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// （全局暂停真库 e2e 沿用 loop/p12_wait_target 的 os.Getenv 读测试 DSN 口径）。
 	// 76t：signing 边界收口，新增 boundary.core.protocol / boundary.core.contract /
 	// boundary.app.protocol / boundary.entry.protocol 四条 import 规则。
-	const want = "241e47cf0ac08753b5fb3a35f1d997f67781af5a97a49720b8588d561bd47520"
+	// rlu：boundary.adapters allow 增列
+	// internal/adapters/pg/schedule_capacity_e2e_test.go、
+	// internal/adapters/pg/schedule_override_e2e_test.go 与
+	// internal/adapters/pg/schedule_geometry_e2e_test.go
+	// （容量缩容/回升、覆盖原子性与名册几何的用例层 e2e 需要真实 PG 适配器）。
+	const want = "3f06892d39140c997176dec59d9696b76d60fedc4836e34b3f5024f52b2aaa18"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

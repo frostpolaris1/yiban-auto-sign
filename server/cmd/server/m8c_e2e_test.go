@@ -22,6 +22,7 @@ import (
 
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
@@ -201,12 +202,13 @@ func TestM8CTimePrefStats(t *testing.T) {
 	masterFirst := e.account(schoolA.ID, master.ID, "13800000040")
 	adminAccount := e.account(schoolA.ID, admin.ID, "13800000041")
 	// 同一用户两个账号只计一次。
-	m8cActivate(t, e, e.account(schoolA.ID, master.ID, "13800000050"))
+	masterSecond := e.account(schoolA.ID, master.ID, "13800000050")
+	m8cActivate(t, e, masterSecond)
 	m8cActivate(t, e, masterFirst)
 	m8cActivate(t, e, adminAccount)
 	// 待审账号不计入：它的用户即使选了 offset 0，首槽仍只应有 1 人。
 	pendingUser := e.user("m8c-pref-pending@example.com", coreauth.RoleUser)
-	e.account(schoolA.ID, pendingUser.ID, "13800000060")
+	pendingAccount := e.account(schoolA.ID, pendingUser.ID, "13800000060")
 	taskA, err := e.sched.CreateSchoolTask(e.ctx, schoolA.ID, "m8c-pref-task-a")
 	if err != nil {
 		t.Fatalf("create task A: %v", err)
@@ -233,6 +235,17 @@ func TestM8CTimePrefStats(t *testing.T) {
 	nowLocal := coreclock.System{}.Now().In(m8cZone)
 	start := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 6, 30, 0, 0, m8cZone)
 	e.windows[taskA] = contract.Window{Start: start, End: start.Add(80 * time.Minute), Source: contract.WindowPlatform}
+	// 拥挤度按选中任务过滤（P2-13）：给当日任务 A 铺计划行。
+	// master 两个账号都铺，仍只按用户计一次；待审账号即使有行也被状态过滤。
+	day := m8cDay(0)
+	if _, err := e.sched.InsertPlan(e.ctx, []coreschedule.PlanRow{
+		{AccountID: masterFirst, SchoolTaskID: taskA, Day: day, RunAt: start},
+		{AccountID: masterSecond, SchoolTaskID: taskA, Day: day, RunAt: start},
+		{AccountID: adminAccount, SchoolTaskID: taskA, Day: day, RunAt: start},
+		{AccountID: pendingAccount, SchoolTaskID: taskA, Day: day, RunAt: start},
+	}); err != nil {
+		t.Fatalf("seed plan rows: %v", err)
+	}
 
 	rec := e.do(http.MethodGet,
 		"/api/time-prefs/stats?school_id="+schoolA.ID+"&task_id="+taskA, nil, e.login(master))

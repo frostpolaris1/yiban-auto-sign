@@ -53,6 +53,9 @@ const (
 	waitEgress         = "wait_egress"         // 出口不可用（无可用出口或分配失败）
 	waitBatchAborted   = "wait_batch_aborted"  // 本行前置步骤遇基础设施失败，退回队列
 	windowMissingRetry = 10 * time.Minute      // 窗口未发现时的重试间隔
+	// requeueBackoff 是未提交失败退回队列的最小等待：DB 故障期不让同一行
+	// 每 2 秒热循环重领（P1-5）。
+	requeueBackoff = 30 * time.Second
 	// reclaimBatch 是每 tick 回收过期租约的上限。
 	reclaimBatch = 100
 )
@@ -118,7 +121,7 @@ func NewService(deps Deps) (*Service, error) {
 // 单进程是明文不变量：启动瞬间仍为 running 的行必然来自上次崩溃，
 // 它们不会再有人收尾，必须放回队列。
 func (s *Service) Recover(ctx context.Context) (int64, error) {
-	return s.deps.Store.ResetRunning(ctx)
+	return s.deps.Store.ResetRunning(ctx, s.deps.Clock.Now())
 }
 
 // CountRunning 数当前 running 行。优雅停机用它报在飞清零。
@@ -133,9 +136,10 @@ func (s *Service) CountRunning(ctx context.Context) (int64, error) {
 // （审计 P2-10：容量是按并行算的，执行却是串行）。
 // 每账号至多一行在批内，故并行不破坏"同账号串行"（由认领 SQL 保证）。
 //
-// 全局暂停门（3a）最先判定：engine.paused 生效时本轮整轮不动——
-// 不汇总、不回收租约、不认领，急停就是什么都不做。已到期的租约在
-// 恢复后仍会被回收（到期判据是绝对时刻，不依赖本轮执行）。
+// 全局暂停门（3a）最先判定：engine.paused 生效时本轮不回收租约、
+// 不认领；唯一的例外是只读的轮末汇总——它每业务日一次，暂停期间
+// 也要把上一日结果记下来（P3-22），否则跨日暂停会让汇总一直缺到恢复。
+// 已到期的租约在恢复后仍会被回收（到期判据是绝对时刻，不依赖本轮执行）。
 // 暂停查询故障原样上抛、本轮不认领：故障不是「未暂停」，
 // 与 timepref「故障不是关闭」同口径（急停方向保守一致）。
 //
@@ -152,13 +156,14 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	now := s.deps.Clock.Now()
+	// 轮末汇总：进程跨业务日时把上一日的任务结果记成一行日志。
+	// 只读、失败不改变 Step 与签到结论；暂停轮也照跑（P3-22）。
+	s.summarizePreviousDay(ctx, now, paused)
 	if paused {
 		return 0, nil
 	}
-	now := s.deps.Clock.Now()
-	// 轮末汇总：进程跨业务日时把上一日的任务结果记成一行日志。
-	// 只读、失败不改变 Step 与签到结论。
-	s.summarizePreviousDay(ctx, now)
+	today := now.In(s.deps.Location).Format(dayLayout)
 	// 先回收租约过期的行：崩溃或收尾失败留下的 running 不得跨 tick 卡住账号。
 	if reclaimed, err := s.deps.Store.ReclaimExpired(ctx, now, reclaimBatch); err != nil {
 		// 运行期必须可见：回收失败会让认领永久不可达，进程却看着健康。
@@ -167,7 +172,7 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 	} else if reclaimed > 0 {
 		s.log.Warn("worker: reclaimed expired task leases", logfield.KeyCount, reclaimed)
 	}
-	tasks, err := s.deps.Store.ClaimDue(ctx, now, limit)
+	tasks, err := s.deps.Store.ClaimDue(ctx, now, today, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -204,8 +209,11 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 		if !res.submitted {
 			// 退回用 WithoutCancel：即使 ctx 已取消，队列也必须被修好，
 			// 否则这一行停在 running 到重启。
+			// 落点取 max(原 run_at, now+最小退避)：持续故障不得每 tick
+			// 热循环重领同一行（P1-5）。
 			releaseCtx := context.WithoutCancel(ctx)
-			if releaseErr := s.requeueWait(releaseCtx, tasks[i], tasks[i].RunAt, waitBatchAborted); releaseErr != nil {
+			runAt := requeueRunAt(tasks[i].RunAt, s.deps.Clock.Now())
+			if releaseErr := s.requeueWait(releaseCtx, tasks[i], runAt, waitBatchAborted); releaseErr != nil {
 				// 退回失败优先上报：队列卡死比单次执行失败更严重。
 				// 其后的未提交行不再逐行退回：它们停在 running，
 				// 由租约到期后的回收器（ReclaimExpired）放回队列。
@@ -226,6 +234,16 @@ func (s *Service) logSettlementError(err error) {
 	if coreerrs.From(err).Code == coreerrs.CodeConflict {
 		s.log.Error("worker: settlement rejected by the claim fence", logfield.KeyError, err.Error())
 	}
+}
+
+// requeueRunAt 返回未提交失败退回队列的落点：max(原 run_at, now+最小退避)。
+// 原落点更晚时保留原落点，不把已排定的等待提前。
+func requeueRunAt(original, now time.Time) time.Time {
+	next := now.Add(requeueBackoff)
+	if next.After(original) {
+		return next
+	}
+	return original
 }
 
 // execute 执行一个已认领任务。返回 error 仅表示基础设施失败。

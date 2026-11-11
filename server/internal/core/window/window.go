@@ -72,7 +72,14 @@ func (w Window) Clamp(t time.Time) time.Time {
 
 // Effective 返回掐头去尾后的有效窗口（front/back 各让一段）。
 // 缓冲之和吃满窗口时保窗口、按比例收缩缓冲，第二返回值报收缩。
+// 负缓冲不是「让出」而是扩窗：先夹到 0，Effective 只允许收缩（P3-19）。
 func (w Window) Effective(front, back time.Duration) (Window, bool) {
+	if front < 0 {
+		front = 0
+	}
+	if back < 0 {
+		back = 0
+	}
 	width := w.End.Sub(w.Start)
 	if width <= 0 {
 		return Window{Start: w.Start, End: w.End}, true

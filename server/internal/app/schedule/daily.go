@@ -36,6 +36,11 @@ const (
 	dailyBuildLimit = 30 * time.Minute
 )
 
+// dailyRetryDelays 是日切失败后的当日重试间隔：15/30/60 分钟三次，成功即止。
+// 复用同一 cron 宿主：失败后在当前 goroutine 里等待并重跑，不新增调度器。
+// 00:10 一次故障不再让全天无计划（P1-4）。
+var dailyRetryDelays = []time.Duration{15 * time.Minute, 30 * time.Minute, 60 * time.Minute}
+
 // TaskLister 列出全部启用任务（实现为 pg.ScheduleRepo）。
 type TaskLister interface {
 	EnabledTasks(ctx context.Context) ([]coreschedule.TaskInfo, error)
@@ -78,6 +83,9 @@ type Overrides func(ctx context.Context) (BuildOverrides, error)
 // DailyPlanner 是日切构建需要的计划面（*Service 实现）。
 type DailyPlanner interface {
 	Build(ctx context.Context, in Input) (Preview, error)
+	// SkipStalePending 把 day 之前的 pending 行落 skipped：跨业务日的行
+	// 不会再被认领，日切时必须了结（P1-6）。
+	SkipStalePending(ctx context.Context, day string) (int64, error)
 }
 
 // DailyBuilder 为全部启用任务构建当日计划。
@@ -97,6 +105,8 @@ type DailyBuilder struct {
 }
 
 // BuildToday 构建当日全部启用任务的计划。
+// 先做跨日清理：day 之前的 pending 行落 skipped(window_closed)，
+// 周末门关闭也照做——旧行不会再被认领，必须当日了结（P1-6）。
 // 返回成功构建的任务数与首个错误；单个任务失败不阻断其余任务。
 // 批 3b 周末门：当日 weekday 对应键为 false（缺行=false=不签，
 // 对齐旧线 SUNDAY/SATURDAY_SIGN 缺省 0）时整日不铺行——
@@ -107,6 +117,11 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("schedule: incomplete daily builder")
 	}
 	day := coreclock.BusinessDay(b.Clock.Now(), b.Location)
+	// 跨日清理先于周末门与构建：上一日的 pending 行永远不会再被认领，
+	// 无论今天是否铺行都必须落结论（P1-6）。失败上抛，由日切重试兜底。
+	if _, err := b.Service.SkipStalePending(ctx, day); err != nil {
+		return 0, fmt.Errorf("schedule: skip stale pending rows: %w", err)
+	}
 	usePrefs, edgeFront, edgeBack := b.Params.UsePrefs, b.Params.EdgeFront, b.Params.EdgeBack
 	sundaySign, saturdaySign := false, false
 	signDist := b.Params.SignDist
@@ -198,6 +213,17 @@ type DailyCron struct {
 	mu      sync.Mutex
 	started bool
 	stopped bool
+	// retryDelays 是失败后的当日重试间隔；空表示不重试。
+	retryDelays []time.Duration
+	// wait 等待一次退避；返回 false 表示被 Stop 取消。测试可注入。
+	wait func(ctx context.Context, d time.Duration) bool
+	// retryCtx 取消待执行的退避等待；Stop 时取消。
+	retryCtx    context.Context
+	retryCancel context.CancelFunc
+	// runMu 是单飞锁：启动补建（含重试）与 00:10 轮不得重叠。
+	// 后到者跳过本轮并记一行 Warn；用锁而不是 cron.SkipIfStillRunning，
+	// 因为启动补建是普通 goroutine，cron 包装器管不到它。
+	runMu sync.Mutex
 }
 
 // NewDailyCron 构造日切宿主。builder 与 logger 缺一即失败。
@@ -209,15 +235,33 @@ func NewDailyCron(builder *DailyBuilder, logger *slog.Logger) (*DailyCron, error
 	if log == nil {
 		log = slog.Default()
 	}
-	d := &DailyCron{builder: builder, log: log}
+	retryCtx, retryCancel := context.WithCancel(context.Background())
+	d := &DailyCron{
+		builder: builder, log: log,
+		retryDelays: dailyRetryDelays, wait: waitContext,
+		retryCtx: retryCtx, retryCancel: retryCancel,
+	}
 	d.cron = cron.New(
 		cron.WithLocation(builder.Location),
 		cron.WithChain(cron.Recover(cronLog{log: log})),
 	)
 	if _, err := d.cron.AddFunc(dailyBuildSpec, func() { d.run(context.Background(), "daily") }); err != nil {
+		retryCancel()
 		return nil, fmt.Errorf("schedule: add daily job: %w", err)
 	}
 	return d, nil
+}
+
+// waitContext 等待 d 或 ctx 取消；返回 false 表示被取消。
+func waitContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // Start 先启动补建，再起定时器。重复 Start 返回错误。
@@ -249,6 +293,7 @@ func (d *DailyCron) Start() error {
 }
 
 // Stop 停定时器并等补建结束。ctx 到期即返回错误，不无限等待。
+// 先取消待执行的退避等待：否则 Stop 要等满 15/30/60 分钟。
 func (d *DailyCron) Stop(ctx context.Context) error {
 	d.mu.Lock()
 	if d.stopped {
@@ -258,6 +303,7 @@ func (d *DailyCron) Stop(ctx context.Context) error {
 	d.stopped = true
 	started := d.started
 	d.mu.Unlock()
+	d.retryCancel()
 	if !started {
 		return nil
 	}
@@ -277,17 +323,39 @@ func (d *DailyCron) Stop(ctx context.Context) error {
 	return nil
 }
 
-// run 执行一轮构建并记结果。
+// run 执行一轮构建并记结果；失败按 dailyRetryDelays 当日重试，成功即止。
+// 重试在同一个 goroutine 里等待：不新增调度器，也不与下一轮并跑。
+// 单飞锁覆盖启动补建与 00:10 轮：后到者跳过本轮，避免两轮同时发现/落库。
 func (d *DailyCron) run(parent context.Context, trigger string) {
-	ctx, cancel := context.WithTimeout(parent, dailyBuildLimit)
-	defer cancel()
-	built, err := d.builder.BuildToday(ctx)
-	if err != nil {
-		d.log.Error("schedule: daily build failed",
-			logfield.KeyTrigger, trigger, logfield.KeyBuilt, built, logfield.KeyError, err.Error())
+	if !d.runMu.TryLock() {
+		d.log.Warn("schedule: daily build skipped; another run is in flight",
+			logfield.KeyTrigger, trigger)
 		return
 	}
-	d.log.Info("schedule: daily build done", logfield.KeyTrigger, trigger, logfield.KeyBuilt, built)
+	defer d.runMu.Unlock()
+	for retry := 0; ; retry++ {
+		ctx, cancel := context.WithTimeout(parent, dailyBuildLimit)
+		built, err := d.builder.BuildToday(ctx)
+		cancel()
+		if err == nil {
+			d.log.Info("schedule: daily build done",
+				logfield.KeyTrigger, trigger, logfield.KeyBuilt, built)
+			return
+		}
+		d.log.Error("schedule: daily build failed",
+			logfield.KeyTrigger, trigger, logfield.KeyBuilt, built, logfield.KeyError, err.Error())
+		if retry >= len(d.retryDelays) {
+			return
+		}
+		delay := d.retryDelays[retry]
+		d.log.Warn("schedule: daily build retry scheduled",
+			logfield.KeyTrigger, trigger,
+			logfield.KeyAttempt, retry+1,
+			logfield.KeyDurationMS, delay.Milliseconds())
+		if !d.wait(d.retryCtx, delay) {
+			return
+		}
+	}
 }
 
 // cronLog 把 robfig/cron 的日志接到 slog。
