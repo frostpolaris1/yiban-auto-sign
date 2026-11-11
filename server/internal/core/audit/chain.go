@@ -150,16 +150,15 @@ const (
 	// 平台姓名懒加载揭示：只在平台认证成功且审计追加成功后响应姓名。
 	// detail 只记 field=person_name，**绝无姓名本体**；揭示本身零业务写库。
 	ActionAccountPersonNameReveal Action = "account.person_name_reveal"
-	ActionCredentialUpdate        Action = "credential.update"
-	ActionCredentialRekey         Action = "credential.rekey"
+	// 已裁撤：task.claim / task.settle / credential.update / credential.rekey。
+	// 这些动作从不写链（死常量）；高频写链会形成 advisory lock 风暴，
+	// 观测面由引擎监控承担。删除常量即关闭误用入口。
 	// P4 引擎：明确登录失败把账号移出排期（active → credential_error）。
 	ActionAccountCredentialError Action = "account.credential_error"
 	// 口令或设备更新把 credential_error 账号放回排期（credential_error → active）。
 	// 改绑手机号不走恢复：它回 pending 重审。
 	ActionAccountCredentialRecovered Action = "account.credential_recovered"
 	ActionTaskReclaim                Action = "task.reclaim"
-	ActionTaskClaim                  Action = "task.claim"
-	ActionTaskSettle                 Action = "task.settle"
 	// 手动签到把当日 failed/skipped 行放回队列（C2）。detail 只记来源状态。
 	ActionTaskRearm Action = "task.rearm"
 	// P5-C：账号定位策略写入。detail 只记 mode 与 has_reason。
