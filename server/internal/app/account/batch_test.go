@@ -330,6 +330,14 @@ func TestBatchValidatesActionAndIds(t *testing.T) {
 		{"empty ids", BatchPause, nil},
 		{"eleven ids", BatchPause, []string{"a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11"}},
 		{"duplicate ids", BatchPause, []string{"a1", "a1"}},
+		{"case-variant duplicate", BatchPause, []string{
+			"0190abcd-0000-7000-8000-000000000001",
+			"0190ABCD-0000-7000-8000-000000000001",
+		}},
+		{"urn duplicate", BatchPause, []string{
+			"0190abcd-0000-7000-8000-000000000001",
+			"urn:uuid:0190ABCD-0000-7000-8000-000000000001",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

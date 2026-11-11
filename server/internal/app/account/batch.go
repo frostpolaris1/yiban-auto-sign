@@ -18,6 +18,8 @@ import (
 	"context"
 	"slices"
 
+	"github.com/google/uuid"
+
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -81,12 +83,19 @@ func (s *Service) Batch(ctx context.Context, scope corescope.Scope, action strin
 	if len(ids) > maxBatchItems {
 		return nil, errs.New(errs.CodeValidation, "ids must hold at most 10 entries")
 	}
+	// 重复判据按 UUID 规范形归一化：同一账号的大小写、花括号、urn 形式
+	// 两次入批即整批 400；非 UUID 字面量按原文比较。
+	// 归一化只用于去重键，响应仍回显请求里的原始 id。
 	seen := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		if seen[id] {
+		key := id
+		if parsed, err := uuid.Parse(id); err == nil {
+			key = parsed.String()
+		}
+		if seen[key] {
 			return nil, errs.New(errs.CodeValidation, "ids must not repeat an entry")
 		}
-		seen[id] = true
+		seen[key] = true
 	}
 
 	results := make([]BatchItemResult, 0, len(ids))

@@ -19,6 +19,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
+	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 )
 
@@ -203,6 +204,32 @@ var rateLimitedPaths = map[string]struct{}{
 	"/api/accounts/batch/sign":      {},
 }
 
+// trustedProxyPrefixes 返回判定客户端 IP 与转发头用的可信代理表。
+// Options.TrustedProxies 优先；限流开关关闭时仍能判登录来源。
+func (s *server) trustedProxyPrefixes() []ratelimit.Prefix {
+	if len(s.trustedProxies) > 0 {
+		return s.trustedProxies
+	}
+	if s.rateLimit != nil {
+		return s.rateLimit.Trusted
+	}
+	return nil
+}
+
+// clientMeta 把客户端 IP 与 User-Agent 放进请求 context。
+// 会话签发只记录两者的 HMAC 摘要；本中间件不做任何判定。
+func (s *server) clientMeta() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ip := ratelimit.ClientIP(c.Request.RemoteAddr,
+			c.Request.Header.Values("X-Forwarded-For"), s.trustedProxyPrefixes())
+		c.Request = c.Request.WithContext(auth.WithClientMeta(c.Request.Context(), auth.ClientMeta{
+			IP:        ip,
+			UserAgent: c.Request.UserAgent(),
+		}))
+		c.Next()
+	}
+}
+
 // rateLimitInbound 在解析会话之前按客户端 IP 限流。
 // 未认证洪水不得先付一次会话查询或一次请求体绑定。
 func (s *server) rateLimitInbound() gin.HandlerFunc {
@@ -232,13 +259,31 @@ func tooManyRequests(c *gin.Context, wait time.Duration) {
 	respond.Error(c.Writer, c.Request, errs.New(errs.CodeRateLimited, "too many requests"))
 }
 
-// accountLimit 在付出 KDF 之前按账号键判限流。
-// 键由调用方给出：登录用归一邮箱，重置用令牌摘要，改密用会话 userID，
-// 校验与签到用账号 id。这里统一小写：UUID 大小写不敏感，
-// 不归一就能用大小写变体把同一个账号拆成多个桶。
+// 账号限流域。同一邮箱在登录、忘记口令、恢复与注册之间**不共用桶**：
+// 攻击者用登录错误洪水不得锁死受害者的 forgot/restore。
+// 域前缀同时隔开注册的任意邮箱键与默认域的十六进制/UUID 键。
+const (
+	accountDomainLogin    = "auth.login"
+	accountDomainForgot   = "auth.forgot"
+	accountDomainRestore  = "auth.restore"
+	accountDomainRegister = "auth.register"
+)
+
+// accountLimit 在付出 KDF 之前按默认账号域判限流。
+// 键由调用方给出：重置用令牌摘要，改密用会话 userID，
+// 校验与签到用账号 id。默认域键不含冒号，与四个邮箱域互不碰撞。
 func (s *server) accountLimit(c *gin.Context, key string) bool {
-	key = strings.ToLower(strings.TrimSpace(key))
-	if ok, wait := s.rateLimit.AllowAccount(key); !ok {
+	return s.accountLimitFor(c, "", key)
+}
+
+// accountLimitFor 在指定域内按账号键判限流。
+// 键先经 NormalizeAccountKey 归一：UUID 与邮箱大小写不敏感，
+// 不归一就能用大小写变体把同一个账号拆成多个桶。
+// 域前缀的唯一来源是 AllowAccountIn：本函数只传裸键，
+// 不在这里拼 "<domain>:<key>"，否则会落成双前缀桶。
+func (s *server) accountLimitFor(c *gin.Context, domain, key string) bool {
+	key = ratelimit.NormalizeAccountKey(key)
+	if ok, wait := s.rateLimit.AllowAccountIn(domain, key); !ok {
 		tooManyRequests(c, wait)
 		return false
 	}

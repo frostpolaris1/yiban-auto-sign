@@ -66,21 +66,42 @@ func (r *PasswordResetRepo) Peek(ctx context.Context, tokenHash coreauth.TokenHa
 	return recordOrNotFound(record, err)
 }
 
-// Consume 把令牌标记为已用并返回它。
+// Consume 把令牌标记为已用，并失效同用户其余未用且未过期的令牌，
+// 返回被消费的行。
 //
-// 这条 UPDATE 就是**单次使用判据**：只有未用且未过期的行会改变。
+// 这条 UPDATE 就是**单次使用判据**：只有未用且未过期的目标令牌会命中；
+// 同一语句同时把该用户其余 used_at IS NULL 且未过期的行一并置位。
+// 已过期的兄弟令牌本就不可用，**不置位也不加锁**：保留期清理按
+// expires_at 升序删过期行，本语句若锁过期行会形成反向锁序而死锁。
 // 第二次调用、已过期令牌、未知令牌一律 not_found。
+//
+// 一条语句完成两件事，故并发消费同一用户的不同令牌时行锁顺序一致，
+// 不会互相死锁；后到的事务在锁释放后重判 used_at，返回零行即 not_found。
+//
+// 与保留期清理之间是**与已过期行不相交**而非严格不相交：消费时刻未过期、
+// 清理时刻恰好过期的残余窗口 (T_consume, T_cleanup) 理论上仍可交错；两侧
+// 时钟同为注入源（非 DB now()），窗口为秒级且需同用户多枚临界令牌同刻并发。
+// 死锁脚本重放不再复现，见 TestPasswordResetConsumeSkipsExpiredSiblings。
 func (r *PasswordResetRepo) Consume(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) (coreauth.PasswordReset, error) {
 	if tokenHash.IsZero() {
 		return coreauth.PasswordReset{}, coreerrNotFound()
 	}
 	row := r.db.q(ctx).QueryRow(ctx, `
-		UPDATE password_resets
-		   SET used_at = $2
-		 WHERE token_hash = $1
-		   AND used_at IS NULL
-		   AND expires_at > $2
-		RETURNING `+resetColumns, tokenHash.Bytes(), now)
+		WITH target AS (
+			SELECT user_id FROM password_resets
+			 WHERE token_hash = $1
+			   AND used_at IS NULL
+			   AND expires_at > $2
+		), updated AS (
+			UPDATE password_resets
+			   SET used_at = $2
+			 WHERE user_id = (SELECT user_id FROM target)
+			   AND used_at IS NULL
+			   AND expires_at > $2
+			RETURNING `+resetColumns+`
+		)
+		SELECT `+resetColumns+` FROM updated WHERE token_hash = $1`,
+		tokenHash.Bytes(), now)
 	record, err := scanReset(row)
 	return recordOrNotFound(record, err)
 }

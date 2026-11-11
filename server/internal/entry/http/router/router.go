@@ -14,7 +14,8 @@
 //
 // # 口径
 // 中间件顺序固定：requestID → mergeListHeaders → bodyLimit → accessLog →
-// recoverPanic → securityHeaders → authenticate → requireCSRF。
+// recoverPanic → securityHeaders → clientMeta → rateLimitInbound →
+// authenticate → requireCSRF。
 // 不安全 cookie 名只用于本地 HTTP。
 package router
 
@@ -202,6 +203,8 @@ func New(opts Options) (*gin.Engine, error) {
 		accessLog(logger, clk),
 		recoverPanic(logger),
 		securityHeaders(),
+		// 来源摘要在会话签发时读取；它不做任何判定。
+		srv.clientMeta(),
 		// 限流在解析会话之前：未认证洪水不得先付一次会话查询。
 		srv.rateLimitInbound(),
 		srv.authenticate(),
