@@ -10,9 +10,9 @@
 // 追加顺序与锁由适配器保证（见 internal/app/audit）。
 //
 // # 复用
-// Action 及全部动作常量；Entry、Row、Report、Status、RowSource；
-// EncodeDetail、Payload、Hash、Verify、VerifyStream、ZeroHash、DeriveKey；
-// 错误值 ErrEmptyChain、ErrBrokenChain、ErrDetail*；
+// Action 及全部动作常量；Entry、Row、Report、Status、RowSource、Anchor、AnchorResult；
+// EncodeDetail、Payload、Hash、Verify、VerifyStream、VerifyStreamWithAnchor、ZeroHash、DeriveKey；
+// 错误值 ErrEmptyChain、ErrBrokenChain、ErrDetail*、ErrAnchorEmpty；
 // 上限常量 MaxDetailBytes、MaxReasonChars、Domain。
 //
 // # 口径
@@ -224,21 +224,24 @@ type Report struct {
 }
 
 // LogRow 是只读列表使用的一行审计记录。
-// 它不含 prev_hash/hash 与目标字段：列表不校验链、不导出。
+// 它不含 prev_hash/hash：列表不校验链、不导出。
 // ActorLabel 是写入时固定的掩码标签，永不是原始地址。
+// Target 是写入时固定的目标 id（账号/用户/设置/学校），不是个人数据。
 type LogRow struct {
 	ID         int64
 	TS         time.Time
 	Action     string
 	ActorLabel string
+	Target     string
 	Detail     string
 }
 
 // LogQuery 是审计只读列表的已定型条件。Actor 是已掩码的标签。
-// From 与 To 是闭区间时间界；nil 表示该侧不限。
+// Target 是精确匹配的目标 id。From 与 To 是闭区间时间界；nil 表示该侧不限。
 type LogQuery struct {
 	Action string
 	Actor  string
+	Target string
 	From   *time.Time
 	To     *time.Time
 	Cursor string
@@ -248,6 +251,10 @@ type LogQuery struct {
 // ErrEmptyChain 表示校验了零行。
 // **空扫描永不通过**：它没有证明任何事。
 var ErrEmptyChain = errors.New("audit: no rows to verify")
+
+// ErrAnchorEmpty 表示锚点文件存在但没有任何锚点行。
+// 空文件不是"从未写锚点"：它可能是一次截断，调用方按错误处理，不得静默放行。
+var ErrAnchorEmpty = errors.New("audit: anchor file is empty")
 
 // ErrBrokenChain 表示某行存储哈希或链接与复算结果不符。
 var ErrBrokenChain = errors.New("audit: chain is broken")
@@ -664,23 +671,46 @@ func Verify(key []byte, rows []Row) (Report, error) {
 	return Report{FirstID: rows[0].ID, LastID: rows[len(rows)-1].ID, Count: int64(len(rows))}, nil
 }
 
+// Anchor 是库外锚点文件的一行：链头行 id、截至该行的行数与链头哈希。
+// Seq 是锚点时刻最后一行（最大 id）的行 id；Count 是该行及之前的行数；
+// Hash 是该行存储哈希的 32 字节原值。
+// 锚点只覆盖到 Seq：其后新增的行不在本次比对范围内。
+type Anchor struct {
+	Seq   int64
+	Count int64
+	Hash  []byte
+}
+
+// AnchorResult 是一次锚点比对的结论。
+// Checked 为 false 表示没有执行比对（未配置锚点、链已断或空链未带锚点）。
+// OK 只在 Checked 为 true 且锚点与链一致时为 true。
+type AnchorResult struct {
+	Checked bool
+	OK      bool
+	Reason  string
+}
+
 // Status 汇总一次分窗链校验的结论。
 //
 // Empty 为 true 表示链内零行：没有证明任何事，**不是通过**。
 // BrokenAt 非零表示第一个不符行的行 id；CheckedRows 数到该行（含）。
-// 其余情况是完整通过：CheckedRows 是总行数，LastHash 是最后一行存储哈希的副本。
+// 其余情况是完整通过：CheckedRows 是总行数，LastID 是最后一行 id，
+// LastHash 是最后一行存储哈希的副本。
+// Anchor 是可选锚点比对的结论；未传锚点时 Checked 为 false。
 type Status struct {
 	CheckedRows int64
+	LastID      int64
 	LastHash    []byte
 	BrokenAt    int64
 	Empty       bool
+	Anchor      AnchorResult
 }
 
 // RowSource 按 id 升序返回 afterID 之后的一批行，至多 limit 行。
 // 返回零行表示链已读完。游标必须严格前进。
 type RowSource func(afterID int64, limit int) ([]Row, error)
 
-// VerifyStream 分窗校验整条链。
+// VerifyStream 分窗校验整条链，不比对库外锚点。
 //
 // 每窗至多 batchSize 行，故内存占用是 O(batchSize)，不随链长增长。
 // 窗与窗之间用上一窗末行的存储哈希作锚点：下一窗首行的 prev_hash
@@ -695,15 +725,40 @@ type RowSource func(afterID int64, limit int) ([]Row, error)
 // 扫描在读到不足一窗时结束：其后追加的行不在本次结论内，
 // LastHash 是本次扫描到的链头，可作外部锚点。
 func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
+	return VerifyStreamWithAnchor(key, batchSize, next, nil)
+}
+
+// VerifyStreamWithAnchor 在 VerifyStream 的链校验之外比对库外锚点。
+//
+// anchor 为 nil 时行为与 VerifyStream 完全相同。非 nil 时：
+//   - 链内零行：锚点记录的链头已消失，判不符；
+//   - 链头 id 小于锚点 Seq：锚点覆盖的尾部行被删除，判不符；
+//   - 锚点 Seq 那一行不存在：前缀或尾部被删除，判不符；
+//   - 该行哈希与锚点不符：链被改写或重签，判不符；
+//   - 该行及之前的行数与锚点 Count 不符：前缀被删除或改写，判不符。
+//
+// 锚点只覆盖到 Seq：Seq 之后新增的行被删除不在本判据内（需要离机副本）。
+// 链已断时不做锚点比对（断链本身已是结论）；空链带锚点仍执行比对并判不符。
+// 锚点值非法（Seq/Count 非正、Count 大于 Seq、哈希长度不是 32 字节）返回错误。
+func VerifyStreamWithAnchor(key []byte, batchSize int, next RowSource, anchor *Anchor) (Status, error) {
 	if batchSize < 1 {
 		return Status{}, fmt.Errorf("audit: batch size must be positive, got %d", batchSize)
 	}
 	if next == nil {
 		return Status{}, errors.New("audit: nil row source")
 	}
+	if anchor != nil {
+		if anchor.Seq < 1 || anchor.Count < 1 || anchor.Count > anchor.Seq ||
+			len(anchor.Hash) != sha256.Size {
+			return Status{}, errors.New("audit: invalid anchor")
+		}
+	}
 	var status Status
 	var afterID int64
-	var anchor []byte
+	var prevHash []byte
+	var anchorHash []byte
+	var anchorCount int64
+	anchorFound := false
 	for {
 		rows, err := next(afterID, batchSize)
 		if err != nil {
@@ -711,6 +766,7 @@ func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
 		}
 		if len(rows) == 0 {
 			status.Empty = status.CheckedRows == 0
+			applyAnchor(&status, anchor, anchorFound, anchorHash, anchorCount)
 			return status, nil
 		}
 		if len(rows) > batchSize {
@@ -724,7 +780,7 @@ func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
 		if rows[0].ID <= afterID {
 			return Status{}, fmt.Errorf("audit: row source did not advance past %d", afterID)
 		}
-		if anchor != nil && !hmac.Equal(anchor, rows[0].PrevHash) {
+		if prevHash != nil && !hmac.Equal(prevHash, rows[0].PrevHash) {
 			status.CheckedRows++
 			status.BrokenAt = rows[0].ID
 			return status, nil
@@ -734,6 +790,7 @@ func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
 				index := firstBrokenIndex(key, rows)
 				// 断点之前同窗的行已通过复算：链头锚点取最后一行的哈希。
 				if index > 0 {
+					status.LastID = rows[index-1].ID
 					status.LastHash = append([]byte(nil), rows[index-1].Hash...)
 				}
 				status.CheckedRows += int64(index + 1)
@@ -742,14 +799,54 @@ func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
 			}
 			return Status{}, err
 		}
+		if anchor != nil && !anchorFound {
+			for i := range rows {
+				if rows[i].ID == anchor.Seq {
+					anchorHash = append([]byte(nil), rows[i].Hash...)
+					anchorCount = status.CheckedRows + int64(i+1)
+					anchorFound = true
+					break
+				}
+			}
+		}
 		status.CheckedRows += int64(len(rows))
+		status.LastID = rows[len(rows)-1].ID
 		last := append([]byte(nil), rows[len(rows)-1].Hash...)
 		status.LastHash = last
-		anchor = last
+		prevHash = last
 		afterID = rows[len(rows)-1].ID
 		if len(rows) < batchSize {
+			applyAnchor(&status, anchor, anchorFound, anchorHash, anchorCount)
 			return status, nil
 		}
+	}
+}
+
+// applyAnchor 把一次已完成的链扫描与锚点比对写入 status.Anchor。
+// 只在链未断的返回路径调用；断链时锚点比对没有意义。
+func applyAnchor(status *Status, anchor *Anchor, found bool, hash []byte, count int64) {
+	if anchor == nil {
+		return
+	}
+	status.Anchor.Checked = true
+	switch {
+	case status.Empty:
+		status.Anchor.Reason = fmt.Sprintf(
+			"审计链为空，但锚点记录曾有 %d 行（链头 id=%d）——疑似整表被清空", anchor.Count, anchor.Seq)
+	case status.LastID < anchor.Seq:
+		status.Anchor.Reason = fmt.Sprintf(
+			"链头 id=%d 小于锚点记录的 %d——锚点覆盖的尾部行被删除", status.LastID, anchor.Seq)
+	case !found:
+		status.Anchor.Reason = fmt.Sprintf(
+			"锚点记录的行 id=%d 不存在——前缀或尾部被删除", anchor.Seq)
+	case !hmac.Equal(hash, anchor.Hash):
+		status.Anchor.Reason = fmt.Sprintf(
+			"锚点记录的行 id=%d 哈希与锚点不符——链被改写或重签", anchor.Seq)
+	case count != anchor.Count:
+		status.Anchor.Reason = fmt.Sprintf(
+			"锚点行 id=%d 之前的行数由 %d 变为 %d——前缀被删除或改写", anchor.Seq, anchor.Count, count)
+	default:
+		status.Anchor.OK = true
 	}
 }
 

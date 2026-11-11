@@ -52,8 +52,17 @@ function AuditStatusDetail({ report }: { report: AuditStatusReport }) {
         巡检 {report.checked_rows} 行 · {formatDateTime(report.checked_at)}
         {report.last_hash === '' ? '' : ` · 链头 ${shortHash(report.last_hash)}`}
       </p>
+      {report.anchor_status === 'ok' ||
+      report.anchor_status === 'mismatch' ||
+      report.anchor_status === 'error' ? (
+        <p className="app-muted">
+          库外锚点：{report.anchor_status}
+          {report.anchor_seq === undefined ? '' : ` · seq ${report.anchor_seq}`}
+          {report.anchor_count === undefined ? '' : ` · ${report.anchor_count} 行`}
+        </p>
+      ) : null}
       {broken !== null ? (
-        <Alert tone="danger" title="审计链异常">
+        <Alert tone="danger" title="审计异常">
           {broken} 请保留现场并排查；本页不展示审计正文。
         </Alert>
       ) : null}

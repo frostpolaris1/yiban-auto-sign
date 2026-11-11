@@ -36,6 +36,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	anchoradapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/anchor"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
@@ -141,6 +142,12 @@ func w2cRequireDSN(t *testing.T) string {
 }
 
 func w2cNewEnv(t *testing.T) *w2cEnv {
+	t.Helper()
+	return w2cNewEnvWithAnchor(t, "")
+}
+
+// w2cNewEnvWithAnchor 同 w2cNewEnv，但给巡检器挂上库外锚点读取器。
+func w2cNewEnvWithAnchor(t *testing.T, anchorPath string) *w2cEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	base := w2cRequireDSN(t)
@@ -392,6 +399,9 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	auditInspector, err := appaudit.NewInspector(e.audits, clk)
 	if err != nil {
 		t.Fatalf("new audit inspector: %v", err)
+	}
+	if anchorPath != "" {
+		auditInspector.WithAnchor(anchoradapter.NewFile(anchorPath))
 	}
 	auditHandler := audithttp.NewHandler(auditReader).WithStatus(auditInspector)
 

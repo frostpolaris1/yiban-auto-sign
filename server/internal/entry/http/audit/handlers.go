@@ -6,9 +6,10 @@
 // 归属：entry/http 入口层。用例来自 app/audit；
 // 角色是运行时门：user 一律 403。
 //
-// 口径：actor 过滤值按写入口径掩码；detail 已在用例出口脱敏。
-// 游标由仓储编解码，处理器只透传。
-// 巡检结论（含断链）一律 200：断链是结论，不是 HTTP 错误。
+// 口径：actor 过滤值按写入口径掩码；target 精确匹配目标 id；
+// detail 已在用例出口脱敏。游标由仓储编解码，处理器只透传。
+// 响应信封带 total（同过滤条件忽略游标）与 has_more（next_cursor 非空）。
+// 巡检结论（含断链与锚点不符）一律 200：结论不是 HTTP 错误。
 // 旧线 parity：master 与 admin 都看全局审计，**不按院校作用域收窄**
 // （旧 web/routes/audit_api.py 同为全局视图）。这是已接受的风险，
 // 与「admin 只见绑定校」的一般规则刻意不同。
@@ -67,6 +68,7 @@ func (h *Handler) AuditLogList(c *gin.Context, params oapi.AuditLogListParams) {
 	filter := appaudit.ListFilter{
 		Action: deref(params.Action),
 		Actor:  deref(params.Actor),
+		Target: deref(params.Target),
 		From:   params.From,
 		To:     params.To,
 		Limit:  limit,
@@ -86,12 +88,15 @@ func (h *Handler) AuditLogList(c *gin.Context, params oapi.AuditLogListParams) {
 			At:     row.TS,
 			Action: row.Action,
 			Actor:  row.ActorLabel,
+			Target: row.Target,
 			Detail: row.Detail,
 		})
 	}
 	respond.JSON(c.Writer, http.StatusOK, oapi.AuditLogPage{
 		Items:      items,
 		NextCursor: page.NextCursor,
+		Total:      page.Total,
+		HasMore:    page.NextCursor != "",
 	})
 }
 
@@ -110,14 +115,31 @@ func (h *Handler) AuditStatus(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	respond.JSON(c.Writer, http.StatusOK, oapi.AuditStatusReport{
+	report := oapi.AuditStatusReport{
 		Ok:          status.OK,
 		Empty:       status.Empty,
 		CheckedRows: status.CheckedRows,
 		LastHash:    status.LastHash,
 		BrokenAt:    status.BrokenAt,
 		CheckedAt:   status.CheckedAt,
-	})
+	}
+	anchorStatus := oapi.AuditStatusReportAnchorStatus(status.AnchorStatus)
+	if !anchorStatus.Valid() {
+		anchorStatus = oapi.AuditStatusReportAnchorStatusDisabled
+	}
+	report.AnchorStatus = &anchorStatus
+	anchorOK := status.AnchorOK
+	report.AnchorOk = &anchorOK
+	if status.AnchorReason != "" {
+		report.AnchorReason = &status.AnchorReason
+	}
+	if status.AnchorSeq > 0 {
+		report.AnchorSeq = &status.AnchorSeq
+	}
+	if status.AnchorCount > 0 {
+		report.AnchorCount = &status.AnchorCount
+	}
+	respond.JSON(c.Writer, http.StatusOK, report)
 }
 
 // requireAdmin 是两条审计端点的共同角色门：只放行有效会话的 master/admin。

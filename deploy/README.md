@@ -481,8 +481,36 @@ sudo systemctl restart yiban.service
 | `YIBAN_DOCS_DIR` | 合规文档目录（`CHANGELOG.md`、`USER_AGREEMENT.md`、`PRIVACY_POLICY.md`） | 空或文件缺失：`/api/changelog` 回「暂无更新日志」，`/terms` 与 `/privacy` 回占位页 |
 | `YIBAN_TRUSTED_PROXIES` | 可信代理 IP/CIDR，逗号分隔 | 空：不信任转发头（compose 默认 `172.16.0.0/12,127.0.0.1`） |
 | `YIBAN_PHOTO_DIR` | 照片目录 | `data/photos` |
+| `YIBAN_AUDIT_ANCHOR_FILE` | 库外审计锚点文件（append-only，0600） | 空：巡检端点不做锚点比对 |
 
 完整名册与每键说明见 `server/internal/configdata/registry.json`（编译期嵌入二进制）。
+
+### 6.1 审计锚点（建议开启）
+
+`GET /api/admin/audit-status` 只复算链内自洽；DB owner 禁用触发器后删首/尾行，
+链内仍然自洽。库外锚点把链头（seq/count/hash）写到数据库之外，巡检时比对：
+删前缀、截尾、整表清空与链尾重签都会 `ok=false`。锚点只覆盖到写入时刻，
+其后的新增行被删需要离机副本（备份/外发）才能发现。
+锚点文件本身必须放在数据库权限之外（0600，只有服务/运维用户可写）：
+删掉锚点文件会让巡检退回链内校验（现行为），所以文件权限与离机副本同样是防线。
+备份时把锚点文件一并归档；恢复旧备份后按下面的第 3 步重新播种。
+
+1. 在运行配置里设 `YIBAN_AUDIT_ANCHOR_FILE`（空值＝不启用）：
+   - 裸机建议 `/var/lib/yiban/audit-anchor.log`（服务用户可写；服务进程只读）。
+   - 容器建议 `/data/photos/audit-anchor.log`（落在 photos 卷，随卷保留；
+     blob 回收只认两层摘要目录，不会碰根下这个文件）。
+2. 每日追加一次链头（cron 示例；时间放在备份之后、业务低峰）：
+   ```cron
+   # 裸机：yiban 用户执行
+   10 3 * * * yiban /usr/local/bin/yiban-cli audit anchor >> /var/lib/yiban/audit-anchor-cron.log 2>&1
+   # 容器：在宿主执行（app 容器内已有 yiban-cli）
+   10 3 * * * root cd /opt/yiban && docker compose --env-file deploy/container/compose.env -f deploy/container/docker-compose.yml exec -T app /usr/local/bin/yiban-cli audit anchor >> /var/log/yiban/audit-anchor-cron.log 2>&1
+   ```
+   命令输出是一行 `audit anchor: seq=… count=… hash=…`；锚点文件本身由命令追加，
+   不要把 stdout 重定向到同一个锚点文件（cron 的 `>>` 目标是日志，不是锚点文件）。
+3. 恢复旧备份或手工整表清理后，锚点会指向已不存在的链头并持续判红。
+   这是预期：确认是合法回滚后，停服、移走旧锚点文件、重新跑一次
+   `yiban-cli audit anchor` 播种新基线，再起服务。
 
 容器形态另有两个编排层变量，不进 Go 名册，也不在镜像里：`POSTGRES_PASSWORD`
 （db 初始口令，同时是派生 `YIBAN_DATABASE_URL` 的唯一来源）与

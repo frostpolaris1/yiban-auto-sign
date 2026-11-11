@@ -46,6 +46,8 @@ var contractEnums = []contractEnum{
 	{".", "ScheduleWindowSource", "../../../signing/contract", "WindowSource", "Window", 4},
 	// 3c：分布档词表单源在 app/settings（用例层）；契约与用例词表同集。
 	{".", "ScheduleSignDist", "../../../app/settings", "SignDist", "SignDist", 2},
+	// R3：锚点状态词单源在 app/audit（disabled/missing/ok/mismatch/error/not_checked）。
+	{".", "AuditStatusReportAnchorStatus", "../../../app/audit", "AnchorStatus", "AnchorStatus", 6},
 	// r4r：配额来源词表单源在 app/settings（db/default 两值）；契约同集。
 	{".", "QuotaSettingSource", "../../../app/settings", "QuotaSource", "QuotaSource", 2},
 	// smtp4：SMTP 设置来源词表单源在 app/settings（db/env/default 三值）；契约同集。

@@ -1,9 +1,10 @@
 // 本文件实现审计只读列表用例（2ws A）。
 //
-// 功能：按 action/actor/from/to 筛选审计行，游标分页，出口脱敏。
+// 功能：按 action/actor/target/from/to 筛选审计行，游标分页，出口脱敏。
 // 归属：app 层用例；端口 Lister 由 adapters/pg 实现。
-// 口径：actor 过滤值先按写入口径掩码再匹配；detail 出口过 mask.MaskText；
-// 不校验链、不导出、不返回 target 字段。
+// 口径：actor 过滤值先按写入口径掩码再匹配；target 精确匹配目标 id；
+// detail 出口过 mask.MaskText；不校验链、不导出。
+// total 是同过滤条件下忽略游标的总行数，供响应信封使用。
 // 旧线 parity：master 与 admin 看同一份全局列表，不按院校收窄。
 
 package audit
@@ -27,10 +28,11 @@ type LogRow = coreaudit.LogRow
 type LogQuery = coreaudit.LogQuery
 
 // ListFilter 是列表筛选条件。Actor 是客户端原值，服务层负责掩码。
-// From 与 To 是闭区间时间界。
+// Target 是精确匹配的目标 id。From 与 To 是闭区间时间界。
 type ListFilter struct {
 	Action string
 	Actor  string
+	Target string
 	From   *time.Time
 	To     *time.Time
 	Cursor string
@@ -38,16 +40,20 @@ type ListFilter struct {
 }
 
 // LogPage 是一页审计记录。
+// Total 是同过滤条件下忽略游标的总行数。
 type LogPage struct {
 	Items      []LogRow
+	Total      int64
 	NextCursor string
 }
 
 // Lister 是审计列表读取端口。
 // 实现按 (ts DESC, id DESC) 排序，键集分页，返回末页游标（末页为空串）。
-// from/to 闭区间，nil 表示不设该侧界。
+// from/to 闭区间，nil 表示不设该侧界。CountLogs 用同一过滤条件数总行数，
+// 忽略游标与 limit。
 type Lister interface {
 	ListLogs(ctx context.Context, query LogQuery) ([]LogRow, string, error)
+	CountLogs(ctx context.Context, query LogQuery) (int64, error)
 }
 
 // Reader 是审计只读列表用例。
@@ -79,17 +85,29 @@ func (r *Reader) List(ctx context.Context, filter ListFilter) (LogPage, error) {
 	if len(rawActor) > 254 {
 		return LogPage{}, errs.New(errs.CodeValidation, "actor is too long")
 	}
+	target := strings.TrimSpace(filter.Target)
+	if len(target) > 128 {
+		return LogPage{}, errs.New(errs.CodeValidation, "target is too long")
+	}
 	if filter.From != nil && filter.To != nil && filter.To.Before(*filter.From) {
 		return LogPage{}, errs.New(errs.CodeValidation, "to must not be before from")
 	}
-	items, next, err := r.lister.ListLogs(ctx, LogQuery{
+	query := LogQuery{
 		Action: action,
 		Actor:  FilterLabel(rawActor),
+		Target: target,
 		From:   filter.From,
 		To:     filter.To,
 		Cursor: filter.Cursor,
 		Limit:  limit,
-	})
+	}
+	items, next, err := r.lister.ListLogs(ctx, query)
+	if err != nil {
+		return LogPage{}, err
+	}
+	// 总行数忽略游标：同一过滤条件下的全量计数，供响应信封的 total。
+	query.Cursor = ""
+	total, err := r.lister.CountLogs(ctx, query)
 	if err != nil {
 		return LogPage{}, err
 	}
@@ -98,5 +116,5 @@ func (r *Reader) List(ctx context.Context, filter ListFilter) (LogPage, error) {
 	for i := range items {
 		items[i].Detail = mask.MaskText(items[i].Detail)
 	}
-	return LogPage{Items: items, NextCursor: next}, nil
+	return LogPage{Items: items, Total: total, NextCursor: next}, nil
 }

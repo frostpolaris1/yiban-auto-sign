@@ -14,11 +14,15 @@ import (
 
 // fakeLister 记录查询并返回固定页。
 type fakeLister struct {
-	rows   []coreaudit.LogRow
-	next   string
-	query  coreaudit.LogQuery
-	err    error
-	called int
+	rows        []coreaudit.LogRow
+	next        string
+	total       int64
+	query       coreaudit.LogQuery
+	countQ      coreaudit.LogQuery
+	err         error
+	countErr    error
+	called      int
+	countCalled int
 }
 
 func (f *fakeLister) ListLogs(_ context.Context, query coreaudit.LogQuery) ([]coreaudit.LogRow, string, error) {
@@ -28,6 +32,15 @@ func (f *fakeLister) ListLogs(_ context.Context, query coreaudit.LogQuery) ([]co
 		return nil, "", f.err
 	}
 	return f.rows, f.next, nil
+}
+
+func (f *fakeLister) CountLogs(_ context.Context, query coreaudit.LogQuery) (int64, error) {
+	f.countCalled++
+	f.countQ = query
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	return f.total, nil
 }
 
 func newReader(t *testing.T, lister *fakeLister) *appaudit.Reader {
@@ -137,13 +150,13 @@ func TestListUnknownActionIsEmpty(t *testing.T) {
 	}
 }
 
-// 时间界与游标原样透传，游标由仓储解释。
+// 时间界、目标与游标原样透传，游标由仓储解释；计数忽略游标。
 func TestListPassesBoundsAndCursor(t *testing.T) {
 	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)
-	lister := &fakeLister{next: "next-cursor"}
+	lister := &fakeLister{next: "next-cursor", total: 42}
 	page, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{
-		From: &from, To: &to, Cursor: "opaque", Limit: 10,
+		From: &from, To: &to, Target: "account-1", Cursor: "opaque", Limit: 10,
 	})
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -154,6 +167,39 @@ func TestListPassesBoundsAndCursor(t *testing.T) {
 	}
 	if lister.query.Cursor != "opaque" || page.NextCursor != "next-cursor" {
 		t.Fatalf("cursor passthrough failed: query=%q next=%q", lister.query.Cursor, page.NextCursor)
+	}
+	if lister.query.Target != "account-1" {
+		t.Fatalf("target = %q, want account-1", lister.query.Target)
+	}
+	if lister.countQ.Cursor != "" || lister.countQ.Target != "account-1" {
+		t.Fatalf("count query = %+v, want the same filters without a cursor", lister.countQ)
+	}
+	if page.Total != 42 {
+		t.Fatalf("total = %d, want 42", page.Total)
+	}
+}
+
+// 超长 target 是 400，且不读仓储。
+func TestListRejectsLongTarget(t *testing.T) {
+	lister := &fakeLister{}
+	_, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{
+		Target: strings.Repeat("a", 129),
+	})
+	var appErr *errs.Error
+	if !errors.As(err, &appErr) || appErr.Code != errs.CodeValidation {
+		t.Fatalf("err = %v, want validation_failed", err)
+	}
+	if lister.called != 0 || lister.countCalled != 0 {
+		t.Fatal("invalid target reached the repository")
+	}
+}
+
+// 计数错误原样上抛。
+func TestListPropagatesCountError(t *testing.T) {
+	boom := errors.New("count failed")
+	_, err := newReader(t, &fakeLister{countErr: boom}).List(context.Background(), appaudit.ListFilter{})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want count error", err)
 	}
 }
 

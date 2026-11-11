@@ -244,7 +244,7 @@ func appendAuditAt(t *testing.T, e *testEnv, ts time.Time, action coreaudit.Acti
 	return row
 }
 
-// 审计列表：最新在前、键集游标、action/actor/from/to 筛选。
+// 审计列表：最新在前、键集游标、action/actor/target/from/to 筛选。
 func TestAuditLogListE2E(t *testing.T) {
 	e := newEnv(t)
 	// 列表的排序与 actor 过滤必须有索引：缺索引时每页全表排序。
@@ -312,6 +312,23 @@ func TestAuditLogListE2E(t *testing.T) {
 	}
 	if len(byActor) != 4 {
 		t.Fatalf("actor rows = %d, want 4", len(byActor))
+	}
+	// target 精确匹配，响应行带 target_id；计数与列表同过滤口径。
+	byTarget, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Target: "target-1", Limit: 50})
+	if err != nil {
+		t.Fatalf("ListLogs target: %v", err)
+	}
+	if len(byTarget) != 5 {
+		t.Fatalf("target rows = %d, want 5", len(byTarget))
+	}
+	if byTarget[0].Target != "target-1" {
+		t.Fatalf("row target = %q, want target-1", byTarget[0].Target)
+	}
+	if total, err := repo.CountLogs(e.ctx, coreaudit.LogQuery{Target: "target-1"}); err != nil || total != 5 {
+		t.Fatalf("CountLogs(target) = (%d, %v), want (5, nil)", total, err)
+	}
+	if total, err := repo.CountLogs(e.ctx, coreaudit.LogQuery{Action: "auth.login"}); err != nil || total != 2 {
+		t.Fatalf("CountLogs(auth.login) = (%d, %v), want (2, nil)", total, err)
 	}
 	// from/to 闭区间。
 	from := base.Add(time.Minute)

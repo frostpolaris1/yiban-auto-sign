@@ -133,8 +133,9 @@ const auditStatusBatchRows = 2000
 // 复算；窗与窗之间由 core 的 VerifyStream 比较首行 prev_hash 与上一窗
 // 末行哈希。空链、断链都作为结论返回（err == nil），只有读库错误上抛。
 // 读到不足一窗即结束：其后追加的行不在本次结论内。
-func (r *AuditRepo) VerifyStatus(ctx context.Context) (coreaudit.Status, error) {
-	return coreaudit.VerifyStream(r.key, auditStatusBatchRows,
+// anchor 非 nil 时同时比对库外锚点（删前缀/截尾/清空/链尾重签）。
+func (r *AuditRepo) VerifyStatus(ctx context.Context, anchor *coreaudit.Anchor) (coreaudit.Status, error) {
+	return coreaudit.VerifyStreamWithAnchor(r.key, auditStatusBatchRows,
 		func(afterID int64, limit int) ([]coreaudit.Row, error) {
 			rows, err := r.db.q(ctx).Query(ctx, `
 				SELECT id, ts, coalesce(school_id::text, ''), coalesce(actor_user_id::text, ''),
@@ -149,7 +150,29 @@ func (r *AuditRepo) VerifyStatus(ctx context.Context) (coreaudit.Status, error) 
 			}
 			defer rows.Close()
 			return scanChainRows(rows)
-		})
+		}, anchor)
+}
+
+// Head 读取当前链头：最后一行 id、截至该行的行数与存储哈希。
+//
+// 单条语句取行与 count，二者来自同一快照：并发追加不会让锚点记下
+// 指向不同行的 seq 与 count。空链返回 ok=false。
+// 本方法不校验链，只服务 CLI 的 `audit anchor` 写锚点。
+func (r *AuditRepo) Head(ctx context.Context) (coreaudit.Anchor, bool, error) {
+	var seq, count int64
+	var hash []byte
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT id, hash, (SELECT count(*) FROM audit_logs)
+		  FROM audit_logs
+		 ORDER BY id DESC
+		 LIMIT 1`).Scan(&seq, &hash, &count)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coreaudit.Anchor{}, false, nil
+	}
+	if err != nil {
+		return coreaudit.Anchor{}, false, mapError(err)
+	}
+	return coreaudit.Anchor{Seq: seq, Count: count, Hash: hash}, true, nil
 }
 
 // scanChainRows 把链行查询结果扫成 core 的 Row 切片。
@@ -171,30 +194,13 @@ func scanChainRows(rows pgx.Rows) ([]coreaudit.Row, error) {
 }
 
 // ListLogs 读取审计只读列表，按 (ts DESC, id DESC) 键集分页。
-// action 与 actor 是精确匹配；from/to 是闭区间时间界；
-// actor 已由用例层掩码。本方法**不**校验链、**不**返回目标字段。
+// action、actor 与 target 是精确匹配；from/to 是闭区间时间界；
+// actor 已由用例层掩码。本方法**不**校验链。
 func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]coreaudit.LogRow, string, error) {
 	if query.Limit < 1 || query.Limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
 	}
-	where := " WHERE TRUE"
-	var args []any
-	if query.Action != "" {
-		args = append(args, query.Action)
-		where += fmt.Sprintf(" AND action = $%d", len(args))
-	}
-	if query.Actor != "" {
-		args = append(args, query.Actor)
-		where += fmt.Sprintf(" AND actor_label = $%d", len(args))
-	}
-	if query.From != nil {
-		args = append(args, query.From.UTC())
-		where += fmt.Sprintf(" AND ts >= $%d", len(args))
-	}
-	if query.To != nil {
-		args = append(args, query.To.UTC())
-		where += fmt.Sprintf(" AND ts <= $%d", len(args))
-	}
+	where, args := auditListWhere(query)
 	if query.Cursor != "" {
 		at, id, err := decodeIntCursor(query.Cursor)
 		if err != nil {
@@ -203,7 +209,7 @@ func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]c
 		args = append(args, at, id)
 		where += fmt.Sprintf(" AND (ts, id) < ($%d, $%d)", len(args)-1, len(args))
 	}
-	sqlText := `SELECT id, ts, action, actor_label, detail FROM audit_logs` + where +
+	sqlText := `SELECT id, ts, action, actor_label, target_id, detail FROM audit_logs` + where +
 		` ORDER BY ts DESC, id DESC`
 	sqlText, args = appendLimit(sqlText, args, query.Limit)
 
@@ -216,7 +222,7 @@ func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]c
 	items := make([]coreaudit.LogRow, 0, query.Limit)
 	for rows.Next() {
 		var row coreaudit.LogRow
-		if err := rows.Scan(&row.ID, &row.TS, &row.Action, &row.ActorLabel, &row.Detail); err != nil {
+		if err := rows.Scan(&row.ID, &row.TS, &row.Action, &row.ActorLabel, &row.Target, &row.Detail); err != nil {
 			return nil, "", mapError(err)
 		}
 		items = append(items, row)
@@ -232,4 +238,44 @@ func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]c
 		return row.TS, row.ID
 	})
 	return items, next, nil
+}
+
+// CountLogs 数同过滤条件下的总行数，忽略游标与 limit。
+// 与 ListLogs 共用 auditListWhere：两处过滤口径不会漂移。
+func (r *AuditRepo) CountLogs(ctx context.Context, query coreaudit.LogQuery) (int64, error) {
+	where, args := auditListWhere(query)
+	var total int64
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM audit_logs`+where, args...).Scan(&total); err != nil {
+		return 0, mapError(err)
+	}
+	return total, nil
+}
+
+// auditListWhere 构造列表与计数共用的过滤子句。
+// 返回的 clause 以 " WHERE TRUE" 开头；args 与占位符按出现顺序对应。
+func auditListWhere(query coreaudit.LogQuery) (string, []any) {
+	where := " WHERE TRUE"
+	var args []any
+	if query.Action != "" {
+		args = append(args, query.Action)
+		where += fmt.Sprintf(" AND action = $%d", len(args))
+	}
+	if query.Actor != "" {
+		args = append(args, query.Actor)
+		where += fmt.Sprintf(" AND actor_label = $%d", len(args))
+	}
+	if query.Target != "" {
+		args = append(args, query.Target)
+		where += fmt.Sprintf(" AND target_id = $%d", len(args))
+	}
+	if query.From != nil {
+		args = append(args, query.From.UTC())
+		where += fmt.Sprintf(" AND ts >= $%d", len(args))
+	}
+	if query.To != nil {
+		args = append(args, query.To.UTC())
+		where += fmt.Sprintf(" AND ts <= $%d", len(args))
+	}
+	return where, args
 }

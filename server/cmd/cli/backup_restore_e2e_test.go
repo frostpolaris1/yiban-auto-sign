@@ -173,6 +173,8 @@ func runCLIWithStdin(t *testing.T, stdin string, args []string) (string, int) {
 		code = runRestore(newBackupDeps(&out, &out), args[1:])
 	case "user":
 		code = runUser(args[1:], strings.NewReader(stdin), &out, &out)
+	case "audit":
+		code = runAudit(args[1:], &out, &out)
 	default:
 		t.Fatalf("unknown cli verb %q", args[0])
 	}

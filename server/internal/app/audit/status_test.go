@@ -22,11 +22,25 @@ type fakeChain struct {
 	status coreaudit.Status
 	err    error
 	called int
+	anchor *coreaudit.Anchor
 }
 
-func (f *fakeChain) VerifyStatus(context.Context) (coreaudit.Status, error) {
+func (f *fakeChain) VerifyStatus(_ context.Context, anchor *coreaudit.Anchor) (coreaudit.Status, error) {
 	f.called++
+	f.anchor = anchor
 	return f.status, f.err
+}
+
+// fakeAnchorReader 返回固定锚点或错误。
+type fakeAnchorReader struct {
+	anchor *coreaudit.Anchor
+	err    error
+	calls  int
+}
+
+func (f *fakeAnchorReader) Latest(context.Context) (*coreaudit.Anchor, error) {
+	f.calls++
+	return f.anchor, f.err
 }
 
 var inspectAt = time.Date(2026, 11, 8, 9, 15, 30, 0, time.UTC)
@@ -109,5 +123,127 @@ func TestInspectorPropagatesReadError(t *testing.T) {
 func TestNewInspectorRejectsNilChain(t *testing.T) {
 	if _, err := appaudit.NewInspector(nil, clock.Fixed{T: inspectAt}); err == nil {
 		t.Fatal("a nil chain reader was accepted")
+	}
+}
+
+// ===== 库外锚点 =====
+
+func TestInspectorAnchorDisabled(t *testing.T) {
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
+	status, err := newInspector(t, chain).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.OK || status.AnchorStatus != appaudit.AnchorStatusDisabled {
+		t.Fatalf("status = %+v, want ok with anchor disabled", status)
+	}
+	if chain.anchor != nil {
+		t.Fatalf("chain received anchor %+v, want nil", chain.anchor)
+	}
+}
+
+func TestInspectorAnchorMissingKeepsChainVerdict(t *testing.T) {
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
+	reader := &fakeAnchorReader{}
+	status, err := newInspector(t, chain).WithAnchor(reader).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.OK || status.AnchorStatus != appaudit.AnchorStatusMissing {
+		t.Fatalf("status = %+v, want ok with anchor missing", status)
+	}
+	if chain.anchor != nil {
+		t.Fatalf("chain received anchor %+v, want nil", chain.anchor)
+	}
+}
+
+func TestInspectorAnchorOK(t *testing.T) {
+	hash := make([]byte, 32)
+	anchor := &coreaudit.Anchor{Seq: 3, Count: 3, Hash: hash}
+	chain := &fakeChain{status: coreaudit.Status{
+		CheckedRows: 3, LastID: 3, Anchor: coreaudit.AnchorResult{Checked: true, OK: true},
+	}}
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.OK || status.AnchorStatus != appaudit.AnchorStatusOK || !status.AnchorOK {
+		t.Fatalf("status = %+v, want ok with anchor ok", status)
+	}
+	if status.AnchorSeq != 3 || status.AnchorCount != 3 {
+		t.Fatalf("anchor seq/count = %d/%d, want 3/3", status.AnchorSeq, status.AnchorCount)
+	}
+	if chain.anchor != anchor {
+		t.Fatalf("chain received anchor %+v, want the reader anchor", chain.anchor)
+	}
+}
+
+func TestInspectorAnchorMismatchTurnsRed(t *testing.T) {
+	hash := make([]byte, 32)
+	anchor := &coreaudit.Anchor{Seq: 3, Count: 3, Hash: hash}
+	chain := &fakeChain{status: coreaudit.Status{
+		CheckedRows: 3, LastID: 3,
+		Anchor: coreaudit.AnchorResult{Checked: true, OK: false, Reason: "prefix removed"},
+	}}
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OK || status.AnchorStatus != appaudit.AnchorStatusMismatch || status.AnchorOK {
+		t.Fatalf("status = %+v, want red with anchor mismatch", status)
+	}
+	if status.AnchorReason != "prefix removed" {
+		t.Fatalf("anchor reason = %q", status.AnchorReason)
+	}
+}
+
+func TestInspectorAnchorReadErrorTurnsRed(t *testing.T) {
+	for name, reader := range map[string]*fakeAnchorReader{
+		"io error": {err: errors.New("permission denied")},
+		"empty":    {err: coreaudit.ErrAnchorEmpty},
+	} {
+		t.Run(name, func(t *testing.T) {
+			chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
+			status, err := newInspector(t, chain).WithAnchor(reader).Status(context.Background())
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			if status.OK || status.AnchorStatus != appaudit.AnchorStatusError {
+				t.Fatalf("status = %+v, want red with anchor error", status)
+			}
+			if chain.anchor != nil {
+				t.Fatalf("chain received anchor %+v, want nil", chain.anchor)
+			}
+		})
+	}
+}
+
+func TestInspectorAnchorNotCheckedOnBrokenChain(t *testing.T) {
+	hash := make([]byte, 32)
+	anchor := &coreaudit.Anchor{Seq: 3, Count: 3, Hash: hash}
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 2, BrokenAt: 3}}
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OK || status.AnchorStatus != appaudit.AnchorStatusNotChecked {
+		t.Fatalf("status = %+v, want broken with anchor not checked", status)
+	}
+}
+
+// 空链带锚点：Empty 保留（页面文案），但 ok=false 且锚点判不符。
+func TestInspectorAnchorMismatchOnEmptyChain(t *testing.T) {
+	hash := make([]byte, 32)
+	anchor := &coreaudit.Anchor{Seq: 3, Count: 3, Hash: hash}
+	chain := &fakeChain{status: coreaudit.Status{
+		Empty:  true,
+		Anchor: coreaudit.AnchorResult{Checked: true, OK: false, Reason: "chain empty"},
+	}}
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{anchor: anchor}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OK || !status.Empty || status.AnchorStatus != appaudit.AnchorStatusMismatch {
+		t.Fatalf("status = %+v, want empty + anchor mismatch + not ok", status)
 	}
 }

@@ -83,29 +83,32 @@ func TestAuditLogListRoleGate(t *testing.T) {
 	}
 }
 
-// 参数映射：action/actor/from/to/cursor/limit 原样进入用例。
+// 参数映射：action/actor/target/from/to/cursor/limit 原样进入用例；
+// 响应带 target、total 与 has_more。
 func TestAuditLogListPassesFilters(t *testing.T) {
 	reader := &fakeReader{page: appaudit.LogPage{
 		Items: []appaudit.LogRow{{
 			ID: 7, TS: time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC),
-			Action: "auth.login", ActorLabel: "a***@example.com", Detail: "{}",
+			Action: "auth.login", ActorLabel: "a***@example.com",
+			Target: "account-1", Detail: "{}",
 		}},
+		Total:      42,
 		NextCursor: "next",
 	}}
 	handler := audithttp.NewHandler(reader)
 	c, rec := newContext(http.MethodGet, "/api/audit-logs", coreauth.RoleMaster)
 	limit := 10
-	action, actor, cursor := "auth.login", "alice@example.com", "opaque"
+	action, actor, target, cursor := "auth.login", "alice@example.com", "account-1", "opaque"
 	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)
 	handler.AuditLogList(c, oapi.AuditLogListParams{
-		Action: &action, Actor: &actor, Cursor: &cursor, From: &from, To: &to, Limit: &limit,
+		Action: &action, Actor: &actor, Target: &target, Cursor: &cursor, From: &from, To: &to, Limit: &limit,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	if reader.filter.Action != action || reader.filter.Actor != actor ||
-		reader.filter.Cursor != cursor || reader.filter.Limit != limit {
+		reader.filter.Target != target || reader.filter.Cursor != cursor || reader.filter.Limit != limit {
 		t.Fatalf("filter = %+v", reader.filter)
 	}
 	if reader.filter.From == nil || !reader.filter.From.Equal(from) ||
@@ -117,17 +120,23 @@ func TestAuditLogListPassesFilters(t *testing.T) {
 			ID     int64  `json:"id"`
 			Action string `json:"action"`
 			Actor  string `json:"actor"`
+			Target string `json:"target"`
 			Detail string `json:"detail"`
 			At     string `json:"at"`
 		} `json:"items"`
 		NextCursor string `json:"next_cursor"`
+		Total      int64  `json:"total"`
+		HasMore    bool   `json:"has_more"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode page: %v", err)
 	}
 	if len(body.Items) != 1 || body.Items[0].ID != 7 || body.Items[0].Actor != "a***@example.com" ||
-		body.NextCursor != "next" {
+		body.Items[0].Target != "account-1" || body.NextCursor != "next" {
 		t.Fatalf("body = %s", rec.Body.String())
+	}
+	if body.Total != 42 || !body.HasMore {
+		t.Fatalf("total/has_more = %d/%v, want 42/true", body.Total, body.HasMore)
 	}
 }
 

@@ -247,7 +247,8 @@ func TestStructureRowsPinned(t *testing.T) {
 	// arch-a1b：app 的 updatecheck 改名 selfcheck、admin 改名 schooladmin；
 	// entry/http 的 settings 拆为 notify 与 system（路由与形状不变）。
 	// kqa（2d webhook 渠道）：core 与 adapters 各增 webhook（端口/词表与出口实现）。
-	const want = "ddf82d11e05c9b490933ecf4df5a3ae5d2bc53ece349157bcfa946ffb3df05c5"
+	// R3（审计锚点）：adapters 增 anchor（库外锚点文件读写）。
+	const want = "f455b6ac951200fb9316573b84539794b9fab63ff066746cc34a9a1a29379c29"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}

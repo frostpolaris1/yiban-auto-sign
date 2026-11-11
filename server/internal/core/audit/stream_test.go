@@ -11,6 +11,7 @@ package audit_test
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,5 +176,134 @@ func TestVerifyStreamRejectsBadBatchSize(t *testing.T) {
 	}
 	if _, err := coreaudit.VerifyStream(streamKey, 2, nil); err == nil {
 		t.Fatal("a nil source was accepted")
+	}
+}
+
+// anchorOf 用一条链的最后一行造锚点。
+func anchorOf(rows []coreaudit.Row) *coreaudit.Anchor {
+	last := rows[len(rows)-1]
+	return &coreaudit.Anchor{Seq: last.ID, Count: int64(len(rows)), Hash: last.Hash}
+}
+
+// 锚点与链一致：比对执行且通过；锚点之后的新行不影响结论。
+func TestVerifyStreamWithAnchorIntact(t *testing.T) {
+	rows := streamChain(t, 5)
+	status, err := coreaudit.VerifyStreamWithAnchor(streamKey, 2, sourceOf(rows), anchorOf(rows))
+	if err != nil {
+		t.Fatalf("VerifyStreamWithAnchor: %v", err)
+	}
+	if !status.Anchor.Checked || !status.Anchor.OK {
+		t.Fatalf("anchor = %+v, want checked and ok", status.Anchor)
+	}
+	if status.LastID != 5 {
+		t.Fatalf("last id = %d, want 5", status.LastID)
+	}
+	// 锚点停在中间行：其后追加的行不在比对范围内。
+	mid := anchorOf(rows[:3])
+	status, err = coreaudit.VerifyStreamWithAnchor(streamKey, 2, sourceOf(rows), mid)
+	if err != nil {
+		t.Fatalf("VerifyStreamWithAnchor(mid): %v", err)
+	}
+	if !status.Anchor.Checked || !status.Anchor.OK {
+		t.Fatalf("mid anchor = %+v, want checked and ok", status.Anchor)
+	}
+}
+
+// 删前缀：剩余链仍自洽（首行 prev_hash 不比对），只有锚点行数能发现。
+func TestVerifyStreamWithAnchorDetectsPrefixDeletion(t *testing.T) {
+	rows := streamChain(t, 5)
+	status, err := coreaudit.VerifyStreamWithAnchor(streamKey, 2, sourceOf(rows[1:]), anchorOf(rows))
+	if err != nil {
+		t.Fatalf("VerifyStreamWithAnchor: %v", err)
+	}
+	if status.BrokenAt != 0 {
+		t.Fatalf("broken_at = %d; the remaining chain is internally consistent", status.BrokenAt)
+	}
+	if !status.Anchor.Checked || status.Anchor.OK {
+		t.Fatalf("anchor = %+v, want checked and mismatch", status.Anchor)
+	}
+	if !strings.Contains(status.Anchor.Reason, "行数") {
+		t.Fatalf("reason = %q, want a row-count mismatch", status.Anchor.Reason)
+	}
+}
+
+// 截尾：链头 id 小于锚点 Seq，必红。
+func TestVerifyStreamWithAnchorDetectsTailTruncation(t *testing.T) {
+	rows := streamChain(t, 5)
+	status, err := coreaudit.VerifyStreamWithAnchor(streamKey, 2, sourceOf(rows[:4]), anchorOf(rows))
+	if err != nil {
+		t.Fatalf("VerifyStreamWithAnchor: %v", err)
+	}
+	if !status.Anchor.Checked || status.Anchor.OK {
+		t.Fatalf("anchor = %+v, want checked and mismatch", status.Anchor)
+	}
+	if status.LastID != 4 {
+		t.Fatalf("last id = %d, want 4", status.LastID)
+	}
+}
+
+// 整表清空：空链带锚点不是"暂无行"，是锚点记录的链头消失。
+func TestVerifyStreamWithAnchorDetectsEmptyChain(t *testing.T) {
+	rows := streamChain(t, 3)
+	status, err := coreaudit.VerifyStreamWithAnchor(streamKey, 2, sourceOf(nil), anchorOf(rows))
+	if err != nil {
+		t.Fatalf("VerifyStreamWithAnchor: %v", err)
+	}
+	if !status.Empty {
+		t.Fatal("empty chain was not reported empty")
+	}
+	if !status.Anchor.Checked || status.Anchor.OK {
+		t.Fatalf("anchor = %+v, want checked and mismatch", status.Anchor)
+	}
+}
+
+// 链被重签：行数与 id 都对得上，只有锚点哈希能发现。
+func TestVerifyStreamWithAnchorDetectsResignedChain(t *testing.T) {
+	rows := streamChain(t, 3)
+	anchor := anchorOf(rows)
+	anchor.Hash = bytes.Repeat([]byte{0x11}, 32)
+	status, err := coreaudit.VerifyStreamWithAnchor(streamKey, 2, sourceOf(rows), anchor)
+	if err != nil {
+		t.Fatalf("VerifyStreamWithAnchor: %v", err)
+	}
+	if status.BrokenAt != 0 {
+		t.Fatalf("broken_at = %d; the chain is internally consistent", status.BrokenAt)
+	}
+	if !status.Anchor.Checked || status.Anchor.OK {
+		t.Fatalf("anchor = %+v, want checked and mismatch", status.Anchor)
+	}
+	if !strings.Contains(status.Anchor.Reason, "哈希") {
+		t.Fatalf("reason = %q, want a hash mismatch", status.Anchor.Reason)
+	}
+}
+
+// 断链时不做锚点比对：断链本身已是更直接的结论。
+func TestVerifyStreamWithAnchorSkipsComparisonOnBrokenChain(t *testing.T) {
+	rows := streamChain(t, 5)
+	rows[3].Detail = `{"field":"reason"}`
+	status, err := coreaudit.VerifyStreamWithAnchor(streamKey, 2, sourceOf(rows), anchorOf(rows))
+	if err != nil {
+		t.Fatalf("VerifyStreamWithAnchor: %v", err)
+	}
+	if status.BrokenAt != 4 {
+		t.Fatalf("broken_at = %d, want 4", status.BrokenAt)
+	}
+	if status.Anchor.Checked {
+		t.Fatalf("anchor = %+v, want not checked on a broken chain", status.Anchor)
+	}
+}
+
+// 非法锚点值直接报错：不把接线缺陷伪装成链结论。
+func TestVerifyStreamWithAnchorRejectsInvalidAnchor(t *testing.T) {
+	rows := streamChain(t, 2)
+	for _, anchor := range []*coreaudit.Anchor{
+		{Seq: 0, Count: 0, Hash: rows[0].Hash},
+		{Seq: 2, Count: 0, Hash: rows[1].Hash},
+		{Seq: 2, Count: 3, Hash: rows[1].Hash},
+		{Seq: 2, Count: 2, Hash: rows[1].Hash[:16]},
+	} {
+		if _, err := coreaudit.VerifyStreamWithAnchor(streamKey, 2, sourceOf(rows), anchor); err == nil {
+			t.Fatalf("invalid anchor %+v was accepted", anchor)
+		}
 	}
 }
