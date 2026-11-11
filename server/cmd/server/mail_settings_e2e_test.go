@@ -232,7 +232,8 @@ func TestMailSettingsWritebackAndPerSendResolution(t *testing.T) {
 	}
 
 	// 每发送解析：下一次 POST mail/test 命中新服务器与新凭据。
-	resp, payload = e.do(http.MethodPost, "/api/admin/mail/test", nil,
+	resp, payload = e.do(http.MethodPost, "/api/admin/mail/test",
+		map[string]string{"current_password": "master-password-9!"},
 		map[string]string{"X-CSRF-Token": csrf})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST mail/test after PUT = %d; body=%q", resp.StatusCode, payload)
@@ -262,7 +263,8 @@ func TestMailSettingsWritebackAndPerSendResolution(t *testing.T) {
 	if n := e.scalarInt("SELECT count(*) FROM settings WHERE key LIKE 'mail.%'"); n != 0 {
 		t.Fatalf("mail settings rows survived the clear: %d", n)
 	}
-	resp, payload = e.do(http.MethodPost, "/api/admin/mail/test", nil,
+	resp, payload = e.do(http.MethodPost, "/api/admin/mail/test",
+		map[string]string{"current_password": "master-password-9!"},
 		map[string]string{"X-CSRF-Token": csrf2})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST mail/test after clear = %d; body=%q", resp.StatusCode, payload)

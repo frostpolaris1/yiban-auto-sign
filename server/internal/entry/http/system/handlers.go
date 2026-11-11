@@ -282,7 +282,8 @@ func scheduleChangesFromJSON(body map[string]json.RawMessage) ([]appsettings.Sch
 }
 
 // AdminMailTest 实现 POST /api/admin/mail/test。仅 master。
-// 请求体为空且被忽略：收件人只取会话用户邮箱，客户端无法指定。
+// 请求体必须带 current_password（二次口令）：缺 400、错 403、连败 429。
+// 收件人只取会话用户邮箱，客户端无法指定；被拒请求零发送。
 func (h *Handler) AdminMailTest(c *gin.Context, _ oapi.AdminMailTestParams) {
 	session, ok := requester(c)
 	if !ok {
@@ -294,6 +295,14 @@ func (h *Handler) AdminMailTest(c *gin.Context, _ oapi.AdminMailTestParams) {
 	}
 	if h.mailTest == nil {
 		respond.NotImplemented(c.Writer, c.Request)
+		return
+	}
+	var body oapi.AdminMailTestRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		respond.BindError(c.Writer, c.Request, err)
+		return
+	}
+	if !h.reauthenticate(c, session.User.ID, body.CurrentPassword) {
 		return
 	}
 	if err := h.mailTest.SendTestMail(c.Request.Context(), session.User); err != nil {

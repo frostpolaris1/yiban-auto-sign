@@ -15,10 +15,23 @@ import (
 	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	systemhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/system"
 )
+
+// acceptingReauth 接受固定口令 correct-password；其余回 403。
+// 测试邮件的二次口令门只认这一条：缺值 400、错值 403。
+type acceptingReauth struct{ calls int }
+
+func (r *acceptingReauth) Reauthenticate(_ context.Context, _ string, password string) error {
+	r.calls++
+	if password == "correct-password" {
+		return nil
+	}
+	return errs.New(errs.CodeForbidden, "current password is incorrect")
+}
 
 type memAnnouncementStore struct {
 	text      string
@@ -113,7 +126,8 @@ func newHandlerWith(t *testing.T, sender coremail.Sender, cooldown appsettings.C
 	if err != nil {
 		t.Fatalf("announcement service: %v", err)
 	}
-	return systemhttp.NewHandler(roster, announcementSvc, announcementSvc), store, audits
+	return systemhttp.NewHandler(roster, announcementSvc, announcementSvc).
+		WithReauth(&acceptingReauth{}), store, audits
 }
 
 func newContext(method, path, body string, role coreauth.Role) (*gin.Context, *httptest.ResponseRecorder) {
@@ -324,7 +338,8 @@ func TestMailTestMasterOnly(t *testing.T) {
 		}
 	}
 
-	c, rec = newContext(http.MethodPost, "/api/admin/mail/test", "", coreauth.RoleMaster)
+	c, rec = newContext(http.MethodPost, "/api/admin/mail/test",
+		`{"current_password":"correct-password"}`, coreauth.RoleMaster)
 	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("master = %d %s", rec.Code, rec.Body.String())
@@ -346,7 +361,8 @@ func TestMailTestUsesSessionMailbox(t *testing.T) {
 	handler, _, audits := newHandlerWith(t, sender, &fakeCooldown{allowed: true})
 
 	c, rec := newContextWithEmail(http.MethodPost, "/api/admin/mail/test",
-		`{"to":"attacker@example.com"}`, coreauth.RoleMaster, "owner@example.com")
+		`{"to":"attacker@example.com","current_password":"correct-password"}`,
+		coreauth.RoleMaster, "owner@example.com")
 	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
@@ -370,7 +386,8 @@ func TestMailTestUsesSessionMailbox(t *testing.T) {
 func TestMailTestErrorMapping(t *testing.T) {
 	t.Run("mail disabled", func(t *testing.T) {
 		handler, _, _ := newHandlerWith(t, nil, nil)
-		c, rec := newContext(http.MethodPost, "/api/admin/mail/test", "", coreauth.RoleMaster)
+		c, rec := newContext(http.MethodPost, "/api/admin/mail/test",
+			`{"current_password":"correct-password"}`, coreauth.RoleMaster)
 		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
 		if rec.Code != http.StatusConflict || errorCode(t, rec) != "conflict" {
 			t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
@@ -381,7 +398,7 @@ func TestMailTestErrorMapping(t *testing.T) {
 		sender := &fakeSender{}
 		handler, _, _ := newHandlerWith(t, sender, nil)
 		c, rec := newContextWithEmail(http.MethodPost, "/api/admin/mail/test",
-			"", coreauth.RoleMaster, "")
+			`{"current_password":"correct-password"}`, coreauth.RoleMaster, "")
 		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
 		if rec.Code != http.StatusConflict || errorCode(t, rec) != "conflict" {
 			t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
@@ -397,7 +414,8 @@ func TestMailTestErrorMapping(t *testing.T) {
 			Kind: coremail.KindAuth, Err: errors.New(secret),
 		}}
 		handler, _, audits := newHandlerWith(t, sender, nil)
-		c, rec := newContext(http.MethodPost, "/api/admin/mail/test", "", coreauth.RoleMaster)
+		c, rec := newContext(http.MethodPost, "/api/admin/mail/test",
+			`{"current_password":"correct-password"}`, coreauth.RoleMaster)
 		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
 		if rec.Code != http.StatusBadGateway || errorCode(t, rec) != "upstream_unavailable" {
 			t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
@@ -414,7 +432,8 @@ func TestMailTestErrorMapping(t *testing.T) {
 		sender := &fakeSender{}
 		cooldown := &fakeCooldown{allowed: false, wait: 42 * time.Second}
 		handler, _, _ := newHandlerWith(t, sender, cooldown)
-		c, rec := newContext(http.MethodPost, "/api/admin/mail/test", "", coreauth.RoleMaster)
+		c, rec := newContext(http.MethodPost, "/api/admin/mail/test",
+			`{"current_password":"correct-password"}`, coreauth.RoleMaster)
 		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
 		if rec.Code != http.StatusTooManyRequests || errorCode(t, rec) != "rate_limited" {
 			t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
@@ -429,4 +448,40 @@ func TestMailTestErrorMapping(t *testing.T) {
 			t.Fatalf("cooldown keys = %v", cooldown.keys)
 		}
 	})
+}
+
+// F9：测试邮件必须带二次口令——缺 400、错 403、对才发送。
+// 被拒请求零发送零审计：端口探测不能借盲发留痕。
+func TestMailTestRequiresReauth(t *testing.T) {
+	sender := &fakeSender{}
+	handler, _, audits := newHandlerWith(t, sender, nil)
+
+	c, rec := newContext(http.MethodPost, "/api/admin/mail/test", `{}`, coreauth.RoleMaster)
+	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+	if rec.Code != http.StatusBadRequest || errorCode(t, rec) != "validation_failed" {
+		t.Fatalf("missing password = %d %s", rec.Code, rec.Body.String())
+	}
+	if sender.sends != 0 || len(audits.entries) != 0 {
+		t.Fatalf("missing password reached sender/audit: sends=%d audits=%d", sender.sends, len(audits.entries))
+	}
+
+	c, rec = newContext(http.MethodPost, "/api/admin/mail/test",
+		`{"current_password":"wrong-password"}`, coreauth.RoleMaster)
+	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+	if rec.Code != http.StatusForbidden || errorCode(t, rec) != "forbidden" {
+		t.Fatalf("wrong password = %d %s", rec.Code, rec.Body.String())
+	}
+	if sender.sends != 0 || len(audits.entries) != 0 {
+		t.Fatalf("wrong password reached sender/audit: sends=%d audits=%d", sender.sends, len(audits.entries))
+	}
+
+	c, rec = newContext(http.MethodPost, "/api/admin/mail/test",
+		`{"current_password":"correct-password"}`, coreauth.RoleMaster)
+	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("correct password = %d %s", rec.Code, rec.Body.String())
+	}
+	if sender.sends != 1 {
+		t.Fatalf("correct password sends = %d, want 1", sender.sends)
+	}
 }
