@@ -10,7 +10,35 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 )
+
+// 零值与半构造的 cipher 必须返回错误而不是 panic：
+// 装配缺失要显性失败，不得崩进程。
+func TestCipherZeroValueFailsClosed(t *testing.T) {
+	var zero Cipher
+	if _, err := zero.Seal("s", "a", CredentialPayload{Password: "p"}); err == nil {
+		t.Fatal("zero Cipher.Seal returned no error")
+	}
+	if _, err := zero.Open(coreaccount.Credential{}); err == nil {
+		t.Fatal("zero Cipher.Open returned no error")
+	}
+	if _, err := zero.SealSecret("domain", "plain"); err == nil {
+		t.Fatal("zero Cipher.SealSecret returned no error")
+	}
+	if _, err := zero.OpenSecret("domain", "AAAA"); err == nil {
+		t.Fatal("zero Cipher.OpenSecret returned no error")
+	}
+
+	var nilCipher *Cipher
+	if _, err := nilCipher.Seal("s", "a", CredentialPayload{}); err == nil {
+		t.Fatal("nil Cipher.Seal returned no error")
+	}
+	if _, err := nilCipher.Open(coreaccount.Credential{}); err == nil {
+		t.Fatal("nil Cipher.Open returned no error")
+	}
+}
 
 func TestCipherKIDMatchesFixedVector(t *testing.T) {
 	cipher, err := NewCipher([]byte("0123456789abcdef0123456789abcdef"))
