@@ -19,7 +19,8 @@
 | `ui/` | React 前端。Adminator 视觉语言 | 新，活跃 |
 | `docs/` | 入库文档。架构、开发规范、运行手册 | 共用 |
 | `work/` | 过程稿：计划、交接、审查产物。**不入库** | 本地 |
-| `deploy/container/`、`deploy/baremetal/`、`deploy/README.md`、`deploy/release.md` | 新栈部署件：容器编排、裸机安装/升级、发布与从零部署指南 | 新，活跃 |
+| `deploy/container/`、`deploy/baremetal/`、`deploy/README.md` | 新栈部署件：容器编排、裸机安装/升级、从零部署指南 | 新，活跃 |
+| `deploy/release.md` | 跨栈发布门清单：旧线版本源与 Go 线段（项 1b）并存 | 共用，活跃 |
 | `deploy/prod/`、`docker/`、`docker-compose.yml` | 旧 Python 栈部署件 | 旧，冻结 |
 | `scripts/` | 运维脚本与门：`dev-verify.sh` 旧栈入口、`verify-stacks.sh` 新栈入口 | 共用 |
 | `yiban/` | Python 旧引擎：调度、领取、协议 | 旧，冻结 |
@@ -29,7 +30,7 @@
 | `config/` | 旧 Python 栈配置名册（`registry.json`） | 旧，冻结 |
 | `data/`、`out/` | 运行期产物 | 忽略 |
 
-规则：新功能代码不得写入旧系统目录。跨系统共用的只有 `docs/`、`scripts/` 的入口脚本与 `tests/` 里的仓库级门；这些地方只放文档与门，不放业务代码。
+规则：新功能代码不得写入旧系统目录。跨系统共用的只有 `docs/`、`scripts/` 的入口脚本、`tests/` 里的仓库级门、`deploy/release.md` 发布门清单与 `.github/` CI 编排；这些地方只放文档与门，不放业务代码。
 
 ## 3. 后端 `server/`
 
