@@ -481,6 +481,9 @@ type migrationDownEnv struct {
 	t   *testing.T
 	ctx context.Context
 	db  *sql.DB
+	// dsn 指向独立 schema 的连接串：前滚类回归用例（如 00031 存量默认）
+	// 用真仓储读面复核，必须与迁移同库同 search_path。
+	dsn string
 }
 
 func newMigrationDownEnv(t *testing.T) *migrationDownEnv {
@@ -498,7 +501,8 @@ func newMigrationDownEnv(t *testing.T) *migrationDownEnv {
 		t.Fatalf("create schema %s: %v", schema, err)
 	}
 
-	db := openGooseDB(t, withSchema(base, schema))
+	dsn := withSchema(base, schema)
+	db := openGooseDB(t, dsn)
 	t.Cleanup(func() {
 		_ = db.Close()
 		dropSchema(t, admin, schema)
@@ -510,7 +514,7 @@ func newMigrationDownEnv(t *testing.T) *migrationDownEnv {
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("goose dialect: %v", err)
 	}
-	return &migrationDownEnv{t: t, ctx: ctx, db: db}
+	return &migrationDownEnv{t: t, ctx: ctx, db: db, dsn: dsn}
 }
 
 // openGooseDB 建单连接 *sql.DB，参数与产品 Migrate 相同。

@@ -308,3 +308,5 @@ server/internal/app/account/review_alert.go	uncovered=Go 包门 go test ./intern
 server/internal/core/photo/photo.go	uncovered=Go 包门：Record.SchoolOwned 由 app/photos 单测与 pg photo_e2e 驱动；保留期谓词由 core/photo 既有测试钉住
 server/migrations/postgres/00031_school_owned_photos.sql	uncovered=迁移执行面由真库整包各仓储 e2e 与 TestMigrationDownCoverage（forward-only 声明对账）检验
 ui/src/features/photos/SchoolDefaultPhotoPanel.tsx	uncovered=本批仅头注同步 D6 语义；面板行为由 ui Playwright e2e 与 npm run test:unit 真跑
+server/internal/adapters/pg/migration_00031_backfill_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./internal/adapters/pg 前滚 00030→种悬引用→跑 00031→重传不复活＋读面 join 防御，审查 M-1 回归）
+server/internal/adapters/pg/migrate_down_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./internal/adapters/pg 跑 Down 覆盖名册与 00031 回归共用的迁移 env）

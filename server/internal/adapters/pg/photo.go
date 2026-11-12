@@ -134,8 +134,12 @@ func (r *PhotoRepo) PhotoForDefault(ctx context.Context, scope corescope.Scope, 
 
 // SchoolDefault 读学校默认图引用。
 // 学校不在作用域内与不存在都返回 not_found。
-// 引用照片已软删时按未设置返回：字节已不可读，引用不再可用。
-// etag 是引用照片的 sha256 hex；无引用时为空串。
+// 只认学校自有资产行（owner_user_id IS NULL，D6 乙案）：任何指向用户行
+// 的指针一律按未设置回——纵深防御，写面（RegisterSchoolOwned）已保证
+// 只产出资产行指针；迁移 00031 的收尾清悬也把存量用户行指针置 NULL，
+// 这里再挡一层，源行被重传复活时旧指针不可能生效（审查 M-1）。
+// 引用资产行已软删时同样按未设置返回。
+// etag 是引用资产行的 sha256 hex；无引用时为空串。
 func (r *PhotoRepo) SchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string) (photoID, etag string, err error) {
 	clause, scopeArgs, err := schoolDefaultPhotoPredicate(scope, 2, "s.")
 	if err != nil {
@@ -144,7 +148,8 @@ func (r *PhotoRepo) SchoolDefault(ctx context.Context, scope corescope.Scope, sc
 	row := r.db.q(ctx).QueryRow(ctx,
 		`SELECT s.default_photo_id::text, p.sha256
 		   FROM schools s
-		   LEFT JOIN photos p ON p.id = s.default_photo_id AND p.deleted_at IS NULL
+		   LEFT JOIN photos p ON p.id = s.default_photo_id
+		    AND p.deleted_at IS NULL AND p.owner_user_id IS NULL
 		  WHERE s.id = $1::uuid`+clause,
 		append([]any{schoolID}, scopeArgs...)...)
 	var id *string
@@ -153,7 +158,7 @@ func (r *PhotoRepo) SchoolDefault(ctx context.Context, scope corescope.Scope, sc
 		return "", "", mapError(err)
 	}
 	if id == nil || sha == nil {
-		// 无引用，或引用照片已软删（LEFT JOIN 无行）。
+		// 无引用、引用行已软删，或指针指向非资产行（LEFT JOIN 无行）。
 		return "", "", nil
 	}
 	if len(sha) != 32 {

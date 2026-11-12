@@ -20,8 +20,8 @@
 --   自己的行，不复活学校默认**（谓词 P3-17/P2-4 同族口径）。
 --
 -- 存量迁移：默认指针指向未软删用户行时，复制登记同字节的学校资产行并
--- 把指针改道到学校行；指针已悬（引用行已软删——读面本来就按未设置回）
--- 的不动，管理员下一次显式 PUT 自然重建。
+-- 把指针改道到学校行；仍指向用户行（源已软删）的悬引用在收尾语句里
+-- 置 NULL——悬指针不留在库里，属主重传同字节不得复活旧默认（审查 M-1）。
 -- 取消默认＝admin 显式 PUT null：应用层删指针＋学校资产行（内容寻址，
 -- 行删字节留给 GC；GC 引用集合按行计，属主用户行若在则字节保留）。
 --
@@ -61,3 +61,14 @@ UPDATE schools s
    SET default_photo_id = ins.id
   FROM ins
  WHERE s.id = ins.school_id;
+
+-- 收尾清悬：backfill 只改道「引用行未软删」的存量默认。仍指向用户行
+-- 的指针（源已软删的悬引用）一律置 NULL——读面当时虽按未设置回，
+-- 但属主之后重传同字节会把该 photos 行恢复 live，旧指针会立刻复活
+-- 默认图，违反「重传同字节不复活默认」（审查 M-1，真库 probe 复现）。
+-- 此后存量指针要么 NULL、要么指向 school-owned 资产行，语义干净。
+UPDATE schools s
+   SET default_photo_id = NULL
+  FROM photos p
+ WHERE p.id = s.default_photo_id
+   AND p.owner_user_id IS NOT NULL;
