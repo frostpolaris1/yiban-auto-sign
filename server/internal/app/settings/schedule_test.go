@@ -828,3 +828,111 @@ func TestScheduleSettingsSignDistAuditFailureRollsBack(t *testing.T) {
 		t.Fatalf("audit rows = %d, want 0", len(audits.entries))
 	}
 }
+
+// P2-16 外围：写面同口径拒绝半对。
+// 读面（ResolveSignWindow）对「一侧有行一侧缺行/坏行」整对回退常量——
+// 半对的新行值永远不生效；写面不得再接受「看起来生效」的半对写入。
+// 判据：写完恰剩一侧有效行 ⇒ 400；唯一例外是本 PUT 没有把任何一侧
+// 写成有效行、也没有从完整对里删掉一侧（存量半对的清理与 no-op
+// 清除不卡死，3b F4 口径保持）。
+func TestScheduleSettingsSignWindowHalfPairRejected(t *testing.T) {
+	ctx := context.Background()
+	startKey := appsettings.KeyScheduleDefaultSignStartMin
+	endKey := appsettings.KeyScheduleDefaultSignEndMin
+
+	t.Run("lone start set within builtin end still rejected", func(t *testing.T) {
+		store := newKeyedWriteStore()
+		audits := &fakeAudit{}
+		svc, _ := newScheduleService(t, store, audits)
+		// 100 < 内置 end(470)：旧组合校验放行——写面收下、读面回退，死值。
+		err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+			{Key: startKey, Op: appsettings.ScheduleOpSet, Value: 100},
+		})
+		if err == nil || errs.From(err).Code != errs.CodeValidation {
+			t.Fatalf("err = %v, want validation（半对写面拒）", err)
+		}
+		if len(store.intWrites) != 0 || len(audits.entries) != 0 {
+			t.Fatalf("被拒写到达存储: %v", store.intWrites)
+		}
+	})
+
+	t.Run("lone end set above builtin start rejected", func(t *testing.T) {
+		store := newKeyedWriteStore()
+		svc, _ := newScheduleService(t, store, &fakeAudit{})
+		err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+			{Key: endKey, Op: appsettings.ScheduleOpSet, Value: 600},
+		})
+		if err == nil || errs.From(err).Code != errs.CodeValidation {
+			t.Fatalf("err = %v, want validation", err)
+		}
+	})
+
+	t.Run("set one side against corrupt other row rejected", func(t *testing.T) {
+		store := newKeyedWriteStore()
+		store.intRows[endKey] = "abc" // 坏行：读面整对回退
+		svc, _ := newScheduleService(t, store, &fakeAudit{})
+		err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+			{Key: startKey, Op: appsettings.ScheduleOpSet, Value: 100},
+		})
+		if err == nil || errs.From(err).Code != errs.CodeValidation {
+			t.Fatalf("err = %v, want validation（坏行另一侧不算配对）", err)
+		}
+	})
+
+	t.Run("repair by setting both in one put", func(t *testing.T) {
+		store := newKeyedWriteStore()
+		store.intRows[startKey] = "300" // 存量半对
+		svc, _ := newScheduleService(t, store, &fakeAudit{})
+		if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+			{Key: startKey, Op: appsettings.ScheduleOpSet, Value: 300},
+			{Key: endKey, Op: appsettings.ScheduleOpSet, Value: 400},
+		}); err != nil {
+			t.Fatalf("成对写回被拒: %v", err)
+		}
+		if store.intWrites[endKey] != 400 {
+			t.Fatalf("end 未落行: %v", store.intWrites)
+		}
+	})
+
+	t.Run("clear one side of full pair rejected", func(t *testing.T) {
+		store := newKeyedWriteStore()
+		store.intRows[startKey] = "300"
+		store.intRows[endKey] = "400"
+		svc, _ := newScheduleService(t, store, &fakeAudit{})
+		err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+			{Key: endKey, Op: appsettings.ScheduleOpClear},
+		})
+		if err == nil || errs.From(err).Code != errs.CodeValidation {
+			t.Fatalf("err = %v, want validation（清一侧把另一侧写成死值）", err)
+		}
+		if len(store.clears) != 0 {
+			t.Fatalf("被拒 clear 到达存储: %v", store.clears)
+		}
+	})
+
+	t.Run("clear both allowed", func(t *testing.T) {
+		store := newKeyedWriteStore()
+		store.intRows[startKey] = "300"
+		store.intRows[endKey] = "400"
+		svc, _ := newScheduleService(t, store, &fakeAudit{})
+		if err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+			{Key: startKey, Op: appsettings.ScheduleOpClear},
+			{Key: endKey, Op: appsettings.ScheduleOpClear},
+		}); err != nil {
+			t.Fatalf("成对清除被拒: %v", err)
+		}
+	})
+
+	t.Run("mixed set plus clear rejected", func(t *testing.T) {
+		store := newKeyedWriteStore()
+		store.intRows[endKey] = "400"
+		svc, _ := newScheduleService(t, store, &fakeAudit{})
+		err := svc.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+			{Key: startKey, Op: appsettings.ScheduleOpSet, Value: 350},
+			{Key: endKey, Op: appsettings.ScheduleOpClear},
+		})
+		if err == nil || errs.From(err).Code != errs.CodeValidation {
+			t.Fatalf("err = %v, want validation（set+clear 剩半对）", err)
+		}
+	})
+}

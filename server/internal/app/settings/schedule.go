@@ -26,7 +26,6 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
-	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
@@ -198,12 +197,28 @@ type signWindowIntent struct {
 	value int
 }
 
-// validateSignWindowPair 判默认窗口对的跨字段一致性（批 3b）：
-// 本次 PUT 只改一侧时，与另一侧的生效值组合后仍需 start<end。
-// 生效值口径与读面一致：本次 set 用新值；本次 clear 或未动时读 DB 行，
-// 行缺失、坏行或越域一律按 core 常量（读面 ResolveSignWindow 同口径，
-// 半对整对回退，不与行值拼接）。本次 PUT 不涉窗口两键时不校验：
-// 半对的存量行不得卡死其他键的普通写回。
+// signWindowSideState 是窗口一侧「写后」的行形状。
+type signWindowSideState int
+
+const (
+	signWindowAbsent  signWindowSideState = iota // 写后无行
+	signWindowValid                              // 写后有有效行（值在域内）
+	signWindowCorrupt                            // 写后残留坏行/越域行
+)
+
+// validateSignWindowPair 判默认窗口对的跨字段一致性（批 3b＋P2-16 外围）：
+// 读面 ResolveSignWindow 的口径是「半对/坏行/越域 → 整对回退常量」，
+// 写面同口径——**写后恰剩一侧有效行**的 PUT 收下的是永远不生效的死值，
+// 一律 400：
+//   - set 一侧而另一侧缺行或坏行 → 拒（本次写入造成死值；修复必须同一
+//     PUT 成对 set）；
+//   - 从完整对清掉一侧 → 拒（将另一侧翻成死值）；
+//   - 存量半对/坏行的清理类写回**不**卡死：no-op clear（清本来就缺的一行）
+//     与非 full 形状的清一侧保持放行（3b F4 口径），不涉窗口两键的普通
+//     写回同样不校验。
+//
+// 写后两侧都是有效行时仍要求 start<end（原组合校验保持）。
+// 生效值口径与读面一致：set 用新值；clear 后无行；未动时读 DB 行。
 // 存储故障原样上抛（校验期读失败不静默写）。
 func (s *Service) validateSignWindowPair(ctx context.Context, changes []ScheduleChange) error {
 	var startIntent, endIntent signWindowIntent
@@ -221,43 +236,68 @@ func (s *Service) validateSignWindowPair(ctx context.Context, changes []Schedule
 	if !touched {
 		return nil
 	}
-	start, err := s.signWindowEffectiveSide(ctx, KeyScheduleDefaultSignStartMin,
-		startIntent, coreschedule.DefaultSignWindowStartMinute)
+	preStart, startValue, err := s.signWindowRow(ctx, KeyScheduleDefaultSignStartMin)
 	if err != nil {
 		return err
 	}
-	end, err := s.signWindowEffectiveSide(ctx, KeyScheduleDefaultSignEndMin,
-		endIntent, coreschedule.DefaultSignWindowEndMinute)
+	preEnd, endValue, err := s.signWindowRow(ctx, KeyScheduleDefaultSignEndMin)
 	if err != nil {
 		return err
 	}
-	if start >= end {
+	postStart, postStartValue := s.signWindowPostSide(preStart, startValue, startIntent)
+	postEnd, postEndValue := s.signWindowPostSide(preEnd, endValue, endIntent)
+
+	if postStart == signWindowValid && postEnd == signWindowValid {
+		if postStartValue >= postEndValue {
+			return coreerrs.New(coreerrs.CodeValidation,
+				"default sign window must satisfy start < end after combining with the effective other side")
+		}
+		return nil
+	}
+	half := (postStart == signWindowValid) != (postEnd == signWindowValid)
+	if !half {
+		return nil
+	}
+	newlySet := (startIntent.op == ScheduleOpSet && postStart == signWindowValid) ||
+		(endIntent.op == ScheduleOpSet && postEnd == signWindowValid)
+	shrunkFromFull := preStart == signWindowValid && preEnd == signWindowValid
+	if newlySet || shrunkFromFull {
 		return coreerrs.New(coreerrs.CodeValidation,
-			"default sign window must satisfy start < end after combining with the effective other side")
+			"default sign window keys must be written as a full pair (set both or clear both)")
 	}
 	return nil
 }
 
-// signWindowEffectiveSide 计算写后该侧的生效分钟值：
-// set 用新值；clear 或未动时读覆盖行，行缺失/坏行/越域按常量。
-func (s *Service) signWindowEffectiveSide(ctx context.Context, key string, intent signWindowIntent, fallback int) (int, error) {
-	if intent.op == ScheduleOpSet {
-		return intent.value, nil
-	}
-	if intent.op == ScheduleOpClear {
-		return fallback, nil
-	}
+// signWindowRow 读该侧当前行形状（写前）。越域行与坏行同为 corrupt；
+// 缺行为 absent；存储故障原样上抛。
+func (s *Service) signWindowRow(ctx context.Context, key string) (signWindowSideState, int, error) {
 	row, found, err := s.deps.Schedule.IntOverride(ctx, key)
 	if err != nil {
 		if isSettingValueInvalid(err) {
-			return fallback, nil
+			return signWindowCorrupt, 0, nil
 		}
-		return 0, err
+		return signWindowAbsent, 0, err
 	}
-	if !found || row < signWindowMinuteMin || row > signWindowMinuteMax {
-		return fallback, nil
+	if !found {
+		return signWindowAbsent, 0, nil
 	}
-	return row, nil
+	if row < signWindowMinuteMin || row > signWindowMinuteMax {
+		return signWindowCorrupt, 0, nil
+	}
+	return signWindowValid, row, nil
+}
+
+// signWindowPostSide 计算写后该侧形状：set→valid(新值)；clear→absent；
+// 未动→保持写前形状。
+func (s *Service) signWindowPostSide(pre signWindowSideState, preValue int, intent signWindowIntent) (signWindowSideState, int) {
+	switch intent.op {
+	case ScheduleOpSet:
+		return signWindowValid, intent.value
+	case ScheduleOpClear:
+		return signWindowAbsent, 0
+	default:
+		return pre, preValue
+	}
 }
 
 // intValueOf 取 set 意图里的整型值；clear/未动时零值。
