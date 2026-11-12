@@ -87,3 +87,13 @@ func (idx *ownerIndex) resolve(owner string) ownerMatch {
 	}
 	return ownerMatch{}
 }
+
+// oldIDForEmail 按精确邮箱返回唯一旧 user id。
+// 无命中或多行同邮箱（歧义）都返回 false：deleted_by 的归属不可猜。
+func (idx *ownerIndex) oldIDForEmail(email string) (int64, bool) {
+	ids := idx.byEmail[coreuser.NormalizeEmail(email)]
+	if len(ids) != 1 {
+		return 0, false
+	}
+	return ids[0], true
+}

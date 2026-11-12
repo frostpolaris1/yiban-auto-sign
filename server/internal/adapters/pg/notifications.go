@@ -13,6 +13,10 @@ package pg
 // 不报错（幂等）。列表游标复用 cursor.go 的 (时刻, uuid) 形状；
 // 排序键固定 (created_at DESC, id DESC)。
 // 通知的类别与账本的渠道在本层只做取值校验，文本掩码由用例负责。
+// 读面按订阅矩阵 in_app 过滤（P2-3）：email/webhook 的账本锚行
+// 仍留在库里（外键需要父行），但 in_app 无效的类别不出列表与未读数。
+// 默认表的唯一事实源是 core/notify；本层只在 Go 侧组合「覆盖+默认」，
+// 不把默认值复制进 SQL。
 
 import (
 	"context"
@@ -47,7 +51,14 @@ func (r *NotificationRepo) List(ctx context.Context, query corenotify.Notificati
 	}
 	where := ` WHERE user_id = $1::uuid`
 	args := []any{query.UserID}
-	var err error
+	hidden, err := r.inAppHiddenCategories(ctx, query.UserID)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(hidden) > 0 {
+		where += fmt.Sprintf(` AND NOT (category = ANY($%d::text[]))`, len(args)+1)
+		args = append(args, hidden)
+	}
 	where, args, err = appendKeyset(where, args, query.Cursor, "created_at", "id")
 	if err != nil {
 		return nil, "", err
@@ -84,17 +95,72 @@ func (r *NotificationRepo) List(ctx context.Context, query corenotify.Notificati
 }
 
 // UnreadCount 返回一个用户的未读数。本人作用域是查询的一部分。
+// 与 List 同一过滤谓词（in_app 隐藏的类别不计数，角标不出泄读面）。
 func (r *NotificationRepo) UnreadCount(ctx context.Context, userID string) (int64, error) {
 	if userID == "" {
 		return 0, validationError("user id is required")
 	}
+	sqlText := `SELECT count(*) FROM notifications
+	  WHERE user_id = $1::uuid AND read_at IS NULL`
+	args := []any{userID}
+	hidden, err := r.inAppHiddenCategories(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	if len(hidden) > 0 {
+		sqlText += fmt.Sprintf(` AND NOT (category = ANY($%d::text[]))`, len(args)+1)
+		args = append(args, hidden)
+	}
 	var count int64
-	if err := r.db.q(ctx).QueryRow(ctx,
-		`SELECT count(*) FROM notifications
-		  WHERE user_id = $1::uuid AND read_at IS NULL`, userID).Scan(&count); err != nil {
+	if err := r.db.q(ctx).QueryRow(ctx, sqlText, args...).Scan(&count); err != nil {
 		return 0, mapError(err)
 	}
 	return count, nil
+}
+
+// inAppHiddenCategories 返回该用户站内信读面要隐藏的类别：
+// 显式覆盖 (category, in_app)=false 隐藏；缺覆盖行按 core/notify
+// 默认表解释（默认表只有一份，SQL 不复制默认值）。
+// 覆盖行里出现词表外类别时报错、不静默丢弃（同 Overrides 口径）。
+func (r *NotificationRepo) inAppHiddenCategories(ctx context.Context, userID string) ([]string, error) {
+	rows, err := r.db.q(ctx).Query(ctx,
+		`SELECT category, enabled FROM notification_prefs
+		  WHERE user_id = $1::uuid AND channel = 'in_app'`, userID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	overrides := map[corenotify.Category]bool{}
+	for rows.Next() {
+		var category string
+		var enabled bool
+		if err := rows.Scan(&category, &enabled); err != nil {
+			return nil, mapError(err)
+		}
+		parsed := corenotify.Category(category)
+		if !parsed.Valid() {
+			return nil, fmt.Errorf("pg: unknown notification category %q in storage", category)
+		}
+		overrides[parsed] = enabled
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+
+	hidden := make([]string, 0, len(corenotify.Categories()))
+	for _, category := range corenotify.Categories() {
+		if enabled, ok := overrides[category]; ok {
+			if !enabled {
+				hidden = append(hidden, string(category))
+			}
+			continue
+		}
+		if !corenotify.Default(corenotify.Pair{Category: category, Channel: corenotify.ChannelInApp}) {
+			hidden = append(hidden, string(category))
+		}
+	}
+	return hidden, nil
 }
 
 // MarkRead 把属于 userID 的指定行标为已读，返回实际更新行数。

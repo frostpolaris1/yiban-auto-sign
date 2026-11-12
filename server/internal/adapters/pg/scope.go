@@ -57,9 +57,12 @@ func schoolScopePredicate(s corescope.Scope, argIndex int, prefix string) (strin
 
 // photoScopePredicate 是 photos 表的可见面，供照片读取与默认图校验共用。
 //
-// owner 按 owner_user_id；admin 按账号归属：照片属主在该 admin 的绑定
-// 院校里有未删除账号。照片没有 school_id 列，院校面只能经 accounts
-// 派生；这与 scopePredicate 的 user 面同源（所有权即可见面）。
+// owner 按 owner_user_id；admin 两路：①账号归属派生——照片属主在该
+// admin 的绑定院校里有未删除账号（用户行，与 scopePredicate 的 user
+// 面同源）；②学校资产行（D6 乙案，owner_user_id IS NULL）——绑定校
+// 的 admin 才能按 GET /api/me/photos/{id} 读默认图字节。
+// 学校资产行对 user 与「属主已注销」的用户行 owner 面都不可见：
+// user 面按 owner_user_id 精确匹配，NULL 行永远不命中。
 // master 没有本谓词：入口层把 master 收敛为 owner 作用域，只读自己的
 // 照片；学校默认图写入也收窄为 admin（见 PhotoRepo.PhotoForDefault）。
 // prefix 是表别名加点，或空串。
@@ -72,11 +75,12 @@ func photoScopePredicate(s corescope.Scope, argIndex int, prefix string) (string
 		clause := fmt.Sprintf(" AND %sowner_user_id = $%d::uuid", prefix, argIndex)
 		return clause, []any{s.UserID()}, nil
 	case corescope.KindAdmin:
-		clause := fmt.Sprintf(` AND EXISTS (
+		clause := fmt.Sprintf(` AND (EXISTS (
 			SELECT 1 FROM accounts a
 			WHERE a.owner_user_id = %sowner_user_id
 			  AND a.deleted_at IS NULL
-			  AND a.school_id = ANY($%d::text[]::uuid[]))`, prefix, argIndex)
+			  AND a.school_id = ANY($%d::text[]::uuid[]))
+			OR %sschool_id = ANY($%d::text[]::uuid[]))`, prefix, argIndex, prefix, argIndex)
 		return clause, []any{s.SchoolIDs()}, nil
 	default:
 		return "", nil, errs.New(errs.CodeInternal, "photo scope is user or admin")

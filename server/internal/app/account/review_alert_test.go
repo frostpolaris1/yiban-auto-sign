@@ -2,8 +2,10 @@ package account
 
 // 0v8 B 接线判据：账号进入或回到审核队列后必须把事件交给通知端口。
 //
-// 覆盖：Create 提交成功发一条待审核事件（业务键带事件 uuid）；
-// 两次提交产生两个不同业务键；Update 只在重提面发；
+// 覆盖：Create 提交成功发一条待审核事件（业务键＝账号+日）；
+// 同日同账号两次提交折叠为同一业务键（巡检新发现：uuid 键使
+// create→delete→create 每次都产生新事件、邮件无冷却即洪水）；
+// 不同账号仍不同键；Update 只在重提面发；
 // 只改备注名、凭据恢复与普通编辑不发；
 // 端口失败或 panic 不改建号/更新结果。
 
@@ -176,7 +178,7 @@ func createInput(phone string) CreateInput {
 	}
 }
 
-// Create 提交成功即发待审核事件；每次提交都是新业务键。
+// Create 提交成功即发待审核事件；业务键＝账号+日。
 func TestCreateDispatchesReviewPending(t *testing.T) {
 	repo := &reviewFakeRepo{}
 	alerts := &recordingReviewAlerts{}
@@ -198,14 +200,46 @@ func TestCreateDispatchesReviewPending(t *testing.T) {
 	event := alerts.events[0]
 	if event.Category != corenotify.CategoryReviewPending ||
 		event.SchoolID != "school-1" || event.AccountID != first.ID ||
-		!strings.HasPrefix(event.DedupeKey, "review_pending/"+first.ID+"/") {
-		t.Fatalf("事件 = %+v", event)
+		event.DedupeKey != "review_pending/"+first.ID+"/2026-10-29" {
+		t.Fatalf("事件 = %+v, want dedupe key review_pending/%s/2026-10-29", event, first.ID)
 	}
 	if alerts.events[1].DedupeKey == event.DedupeKey {
-		t.Fatalf("两次提交得到同一业务键 %q", event.DedupeKey)
+		t.Fatalf("不同账号得到同一业务键 %q", event.DedupeKey)
 	}
 	if alerts.events[1].AccountID != second.ID {
 		t.Fatalf("第二条事件账号 = %q, want %q", alerts.events[1].AccountID, second.ID)
+	}
+}
+
+// 同日同账号两次提交折叠为同一业务键：重提不再产生新邮件/新站内信行。
+// （日口径＝用例时钟所在日；跨日重提是新键——同日折叠只治当日洪水。）
+func TestResubmitSameDayCollapsesToOneBusinessKey(t *testing.T) {
+	password := "new-password"
+	repo := &reviewFakeRepo{current: Record{
+		ID: "acct-9", SchoolID: "school-1", OwnerUserID: "owner-1",
+		Phone: "13800000009", Status: StatusRejected,
+	}}
+	alerts := &recordingReviewAlerts{}
+	svc := newReviewAlertService(t, repo, alerts)
+
+	if _, err := svc.Update(context.Background(), corescope.Master(), "acct-9",
+		UpdateInput{Password: &password}, appaudit.Actor{UserID: "master-1", Role: "master"}); err != nil {
+		t.Fatalf("Update 1: %v", err)
+	}
+	// 模拟审核再拒：只有 rejected→重提才发事件（pending 原地编辑不发）。
+	repo.current.Status = StatusRejected
+	if _, err := svc.Update(context.Background(), corescope.Master(), "acct-9",
+		UpdateInput{Password: &password}, appaudit.Actor{UserID: "master-1", Role: "master"}); err != nil {
+		t.Fatalf("Update 2: %v", err)
+	}
+	if len(alerts.events) != 2 {
+		t.Fatalf("事件 = %d, want 2（每次重提都发事件，键折叠在存储去重）", len(alerts.events))
+	}
+	if alerts.events[0].DedupeKey != alerts.events[1].DedupeKey {
+		t.Fatalf("同日同账号键未折叠: %q vs %q", alerts.events[0].DedupeKey, alerts.events[1].DedupeKey)
+	}
+	if alerts.events[0].DedupeKey != "review_pending/acct-9/2026-10-29" {
+		t.Fatalf("键 = %q, want review_pending/acct-9/2026-10-29", alerts.events[0].DedupeKey)
 	}
 }
 

@@ -16,9 +16,12 @@ package notify
 // 订阅只看 notification_prefs(sign_failed_daily,*)；缺行按默认表，
 // **不看** users.mail_notify（两条订阅面分别判定，永不 OR）。
 // 三渠道都关时整条跳过；email/webhook 开启时通知行与账本行同事务写入，
-// 复用 B 的 insertWithChannel（in_app 关闭时通知行仍是账本锚）。
-// webhook 订阅启用时按订阅者逐行记账：摘要正文即既有摘要正文，
-// 同题节流保证多订阅者全局至多一条真发，其余 skipped(cooldown_hit)。
+// 复用 B 的 insertWithChannel（in_app 关闭时通知行仍是账本锚，
+// 读面按订阅矩阵 in_app 过滤，P2-3）。
+// webhook 订阅启用时按订阅者逐行记账：摘要正文按**收件人各自 scope**
+// 聚合（P2-4）——不同 scope 的正文不同，发送期同文节流不折叠它们，
+// 每个订阅者收到自己 scope 的正文；正文相同的订阅者（同 scope）
+// 仍全局至多一条真发，其余 skipped(cooldown_hit)。
 // 去重键 sign_failed_daily/{day}：同一收件人同一业务日至多一行通知、
 // 一条账本、一封邮件。
 // 正文按账号聚合：掩码手机号、结论词（空串为 unknown）、尝试次数；
@@ -138,19 +141,18 @@ func (d *Dispatcher) DispatchDigest(ctx context.Context, day string) error {
 		}
 		if email {
 			// email 开启时通知与账本同事务写入。in_app 关闭时这一行仍是
-			// 事件档案/账本锚，会出现在管理员站内信列表（同 B 的实施单裁决）。
+			// 事件档案/账本锚（读面按 in_app 过滤，同 B 的实施单裁决+P2-3）。
 			wasSkipped, err := d.insertWithChannel(ctx, insert, now, corenotify.ChannelEmail)
 			if err != nil {
+				// P3-15：email 账本失败不连带跳过同收件人的 webhook 行。
 				recordError(&firstErr, err)
-				continue
-			}
-			if wasSkipped {
+			} else if wasSkipped {
 				skipped++
 			}
 		}
 		if webhook {
-			// webhook 行按订阅者逐行记账，正文即摘要正文；
-			// 发送期同题节流保证多订阅者全局至多一条真发。
+			// webhook 行按订阅者逐行记账，正文为该收件人 scope 的摘要正文；
+			// 同文节流只折叠正文相同的订阅者（P2-4）。
 			wasSkipped, err := d.insertWithChannel(ctx, insert, now, corenotify.ChannelWebhook)
 			if err != nil {
 				recordError(&firstErr, err)

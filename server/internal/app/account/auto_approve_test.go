@@ -5,7 +5,10 @@ package account
 // 判据：开关关闭零外呼；身份一致才 pending→active 并写
 // account.auto_approve；不一致、缺绑定、平台故障都留 pending
 // 并写 account.auto_check_failed（detail 只含结果词）；
-// confirm_defaults 缺失时不启动核验。
+// confirm_defaults 缺失时不启动核验；
+// P3-14：confirm_defaults+开关开 的建号只发**最终态**一条通知
+// （成功＝auto_approved 文案，失败＝pending 文案），不再
+// pending 与 auto_approved 各发一份。
 
 import (
 	"bytes"
@@ -17,6 +20,7 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
@@ -131,7 +135,7 @@ func TestRunAutoApproveMatchesAndActivates(t *testing.T) {
 	svc.deps.Cipher = autoCipher(t)
 	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-1")
 
-	svc.runAutoApprove(context.Background(), "acc-1", "school-1")
+	svc.runAutoApprove(context.Background(), "acc-1", "school-1", false)
 
 	if repo.record.Status != StatusActive {
 		t.Fatalf("status = %q, want active", repo.record.Status)
@@ -160,7 +164,7 @@ func TestRunAutoApproveMismatchStaysPending(t *testing.T) {
 	svc.deps.Cipher = autoCipher(t)
 	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-2")
 
-	svc.runAutoApprove(context.Background(), "acc-2", "school-1")
+	svc.runAutoApprove(context.Background(), "acc-2", "school-1", false)
 
 	if repo.record.Status != StatusPending {
 		t.Fatalf("status = %q, want pending", repo.record.Status)
@@ -187,7 +191,7 @@ func TestRunAutoApproveSwitchOffDoesNothing(t *testing.T) {
 	svc.deps.Cipher = autoCipher(t)
 	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-3")
 
-	svc.runAutoApprove(context.Background(), "acc-3", "school-1")
+	svc.runAutoApprove(context.Background(), "acc-3", "school-1", false)
 
 	if identity.calls != 0 {
 		t.Fatalf("platform calls = %d, want 0", identity.calls)
@@ -209,7 +213,7 @@ func TestRunAutoApprovePlatformFailureAuditsResult(t *testing.T) {
 	svc.deps.Cipher = autoCipher(t)
 	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-4")
 
-	svc.runAutoApprove(context.Background(), "acc-4", "school-1")
+	svc.runAutoApprove(context.Background(), "acc-4", "school-1", false)
 
 	if repo.record.Status != StatusPending {
 		t.Fatalf("status = %q, want pending", repo.record.Status)
@@ -274,6 +278,120 @@ func TestCreateWithoutConfirmDefaultsSkipsCheck(t *testing.T) {
 	}
 	if len(audits.entries) != 1 {
 		t.Fatalf("audit rows = %d, want only account.create", len(audits.entries))
+	}
+}
+
+// newAutoServiceAlerts 与 newAutoService 同形，另注入审核通知端口。
+// ReviewAlerts 是 *recordingReviewAlerts：断言自动审批链的通知次数与形状。
+func newAutoServiceAlerts(t *testing.T, repo Repo, schools SchoolReader,
+	settings AutoApproveSettings, identity *fakeIdentity,
+	alerts ReviewAlerts) *Service {
+	t.Helper()
+	cipher, err := NewCipher(bytes.Repeat([]byte{9}, CredentialKeyBytes))
+	if err != nil {
+		t.Fatalf("NewCipher: %v", err)
+	}
+	svc, err := NewService(Deps{
+		Accounts:     repo,
+		Schools:      schools,
+		Audit:        &reviewFakeAudit{},
+		Tx:           reviewFakeTx{},
+		Clock:        clock.Fixed{T: time.Date(2026, 11, 8, 6, 0, 0, 0, time.UTC)},
+		Cipher:       cipher,
+		Owner:        fakeOwnerReader{},
+		Device:       &fakeDeviceReader{},
+		Settings:     settings,
+		Identity:     identity,
+		Quota:        fixedQuota(10),
+		ReviewAlerts: alerts,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+// P3-14：confirm_defaults+开关开、核验通过——只发一条 auto_approved 最终态，
+// 不再 pending 与 auto_approved 各发一份。
+func TestAutoApproveSuccessSendsOnlyFinalAlert(t *testing.T) {
+	repo := &autoRepo{record: Record{ID: "acc-d1", SchoolID: "school-1", Status: StatusPending}}
+	identity := &fakeIdentity{profile: contract.Profile{UniversityID: "U1"}}
+	alerts := &recordingReviewAlerts{}
+	svc := newAutoServiceAlerts(t, repo,
+		autoSchools{record: coreschool.Record{ID: "school-1", Status: coreschool.StatusActive, PlatformUniversityID: "U1"}},
+		&autoSettings{enabled: true}, identity, alerts)
+	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-d1")
+
+	if _, err := svc.Create(context.Background(), corescope.Master(), CreateInput{
+		SchoolID: "school-1", Phone: "13800138061", Password: "secret", ConfirmDefaults: true,
+	}, fakeActor()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	svc.waitBackground()
+
+	if repo.record.Status != StatusActive {
+		t.Fatalf("status = %q, want active", repo.record.Status)
+	}
+	if len(alerts.events) != 1 {
+		t.Fatalf("通知 = %d, want 1（只发最终态）：%+v", len(alerts.events), alerts.events)
+	}
+	event := alerts.events[0]
+	if !event.AutoApproved || event.Category != corenotify.CategoryReviewPending ||
+		event.DedupeKey != "account_auto_approve/acc-d1/2026-11-08" {
+		t.Fatalf("事件 = %+v, want auto_approved 最终态、键含账号+日", event)
+	}
+}
+
+// P3-14：核验失败留 pending——同一条通知是 pending 文案（最终态），仍只一条。
+func TestAutoApproveFailureSendsOnlyPendingAlert(t *testing.T) {
+	repo := &autoRepo{record: Record{ID: "acc-d2", SchoolID: "school-1", Status: StatusPending}}
+	identity := &fakeIdentity{profile: contract.Profile{UniversityID: "U2"}}
+	alerts := &recordingReviewAlerts{}
+	svc := newAutoServiceAlerts(t, repo,
+		autoSchools{record: coreschool.Record{ID: "school-1", Status: coreschool.StatusActive, PlatformUniversityID: "U1"}},
+		&autoSettings{enabled: true}, identity, alerts)
+	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-d2")
+
+	if _, err := svc.Create(context.Background(), corescope.Master(), CreateInput{
+		SchoolID: "school-1", Phone: "13800138062", Password: "secret", ConfirmDefaults: true,
+	}, fakeActor()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	svc.waitBackground()
+
+	if repo.record.Status != StatusPending {
+		t.Fatalf("status = %q, want pending", repo.record.Status)
+	}
+	if len(alerts.events) != 1 {
+		t.Fatalf("通知 = %d, want 1（失败后 pending 一条）：%+v", len(alerts.events), alerts.events)
+	}
+	event := alerts.events[0]
+	if event.AutoApproved || event.DedupeKey != "review_pending/acc-d2/2026-11-08" {
+		t.Fatalf("事件 = %+v, want pending 键 review_pending/acc-d2/2026-11-08", event)
+	}
+}
+
+// P3-14 负向：开关在 Create 与核验之间保持关闭——pending 通知仍恰一条
+// （Create 发，核验早退不补发）。
+func TestAutoApproveSwitchOffSendsSinglePendingAlert(t *testing.T) {
+	repo := &autoRepo{record: Record{ID: "acc-d3", SchoolID: "school-1", Status: StatusPending}}
+	identity := &fakeIdentity{}
+	alerts := &recordingReviewAlerts{}
+	svc := newAutoServiceAlerts(t, repo, autoSchools{}, &autoSettings{enabled: false}, identity, alerts)
+	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-d3")
+
+	if _, err := svc.Create(context.Background(), corescope.Master(), CreateInput{
+		SchoolID: "school-1", Phone: "13800138063", Password: "secret", ConfirmDefaults: true,
+	}, fakeActor()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	svc.waitBackground()
+
+	if identity.calls != 0 {
+		t.Fatalf("platform calls = %d, want 0", identity.calls)
+	}
+	if len(alerts.events) != 1 || alerts.events[0].AutoApproved {
+		t.Fatalf("通知 = %+v, want 恰一条 pending", alerts.events)
 	}
 }
 

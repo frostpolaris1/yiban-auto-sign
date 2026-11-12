@@ -16,12 +16,16 @@ package account
 // account.auto_check_failed（detail 只含结果词）。
 // 核验在 Service 生命周期上下文内运行：Shutdown 先取消再等待。
 // 审核竞态由 SetStatus 的 pending→active CAS 处理：人工已动过的行不覆盖。
+// P3-14 通知归属：Create 判「armed＝开关开且端口齐」时**不发** pending
+// 通知，把唯一一条通知交给核验收尾——通过发 auto_approved，
+// 留在 pending 的每一条早退路径（含开关中途关闭与竞写失败）补发
+// pending；CAS 冲突（人工已定）不发。未 armed 时 pending 通知照旧由
+// Create 发，核验成功不再补发（开关中途翻开的窗口取「一条通知」
+// 而不是最终态双发）。
 
 import (
 	"context"
 	"time"
-
-	"github.com/google/uuid"
 
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -78,7 +82,8 @@ func (s *Service) waitBackground() {
 
 // startAutoApprove 在一次成功建号后启动后台核验。
 // 缺开关或平台端口时不启动：自动审批是开关控制的可选面。
-func (s *Service) startAutoApprove(record Record) {
+// ownsAlert 标记「唯一一条通知归核验面收尾」（P3-14，由 Create 判定传入）。
+func (s *Service) startAutoApprove(record Record, ownsAlert bool) {
 	if s.deps.Settings == nil || s.deps.Identity == nil {
 		return
 	}
@@ -87,46 +92,54 @@ func (s *Service) startAutoApprove(record Record) {
 		defer s.bg.Done()
 		ctx, cancel := context.WithTimeout(s.baseCtx, autoApproveTimeout)
 		defer cancel()
-		s.runAutoApprove(ctx, record.ID, record.SchoolID)
+		s.runAutoApprove(ctx, record.ID, record.SchoolID, ownsAlert)
 	}()
 }
 
 // runAutoApprove 执行单步核验。
 // 顺序：开关 → 存储凭据 → 学校绑定 → 平台身份 → CAS 审核通过。
 // 失败路径只追加一条结果词审计；成功路径在状态迁移事务内追加审计，
-// 提交成功后才发管理员通知。
-func (s *Service) runAutoApprove(ctx context.Context, accountID, schoolID string) {
+// 提交成功后才发管理员通知。ownsAlert 时每条「留在 pending」的早退
+// 都补发 pending 通知（P3-14：armed 建号只发最终态一条）。
+func (s *Service) runAutoApprove(ctx context.Context, accountID, schoolID string, ownsAlert bool) {
 	enabled, err := s.deps.Settings.AutoApproveEnabled(ctx)
 	if err != nil {
 		s.log.Warn("account: auto approve switch read failed",
 			logfield.KeyEvent, "auto_approve.switch_failed",
 			logfield.KeyAccountID, accountID,
 			logfield.KeyReason, "store_unavailable")
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 	if !enabled {
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 	if ctx.Err() != nil {
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 
 	credential, err := s.SigningCredential(ctx, corescope.Master(), accountID)
 	if err != nil {
 		s.recordAutoCheckFailed(ctx, accountID, schoolID, autoCheckCredentialMissing)
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 	school, err := s.deps.Schools.Get(ctx, schoolID)
 	if err != nil {
 		s.recordAutoCheckFailed(ctx, accountID, schoolID, autoCheckSchoolMissing)
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 	if school.Status != coreschool.StatusActive {
 		s.recordAutoCheckFailed(ctx, accountID, schoolID, autoCheckSchoolDisabled)
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 	if school.PlatformUniversityID == "" {
 		s.recordAutoCheckFailed(ctx, accountID, schoolID, autoCheckSchoolUnbound)
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 
@@ -145,14 +158,17 @@ func (s *Service) runAutoApprove(ctx context.Context, accountID, schoolID string
 	})
 	if err != nil {
 		s.recordAutoCheckFailed(ctx, accountID, schoolID, autoCheckPlatformError)
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 	if profile.UniversityID == "" {
 		s.recordAutoCheckFailed(ctx, accountID, schoolID, autoCheckIdentityMissing)
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 	if profile.UniversityID != school.PlatformUniversityID {
 		s.recordAutoCheckFailed(ctx, accountID, schoolID, autoCheckIdentityMismatch)
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 		return
 	}
 
@@ -182,7 +198,8 @@ func (s *Service) runAutoApprove(ctx context.Context, accountID, schoolID string
 		return err
 	})
 	if err != nil {
-		// 人工审核已先一步改过状态：CAS 冲突不是故障，静默让位。
+		// 人工审核已先一步改过状态：CAS 冲突不是故障，静默让位——
+		// 状态已由人工事实决定，本面不得替它发通知。
 		if errs.From(err).Code == errs.CodeConflict {
 			return
 		}
@@ -190,9 +207,25 @@ func (s *Service) runAutoApprove(ctx context.Context, accountID, schoolID string
 			logfield.KeyEvent, "auto_approve.write_failed",
 			logfield.KeyAccountID, accountID,
 			logfield.KeyError, err.Error())
+		s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
+		return
+	}
+	// P3-14：未 armed 时 pending 通知已由 Create 发出，成功不再补发
+	// （开关在 Create 与核验之间翻开的窄窗口取「一条通知」）。
+	if !ownsAlert {
 		return
 	}
 	s.alertAutoApproved(ctx, approved)
+}
+
+// alertStaysPending 在 armed 核验把账号留在 pending 时补发唯一一条待审核通知。
+// 未 armed（pending 通知已由 Create 发）时静默；record 用 id+school 拼最小形状，
+// alertReviewPending 只读这两个字段。
+func (s *Service) alertStaysPending(ctx context.Context, accountID, schoolID string, ownsAlert bool) {
+	if !ownsAlert {
+		return
+	}
+	s.alertReviewPending(ctx, Record{ID: accountID, SchoolID: schoolID})
 }
 
 // recordAutoCheckFailed 在账号仍 pending 时追加失败审计。
@@ -229,7 +262,8 @@ func (s *Service) recordAutoCheckFailed(ctx context.Context, accountID, schoolID
 
 // alertAutoApproved 在核验通过后通知该校管理员。
 // 复用 review_pending 类别与 0v8 投递体系；AutoApproved 让文案
-// 显示「已自动通过」而不是「待审核」。失败只记日志。
+// 显示「已自动通过」而不是「待审核」。去重键同样＝账号+日（P3-14：
+// 通知归属唯一，同账号同日不产生第二行）。失败只记日志。
 func (s *Service) alertAutoApproved(ctx context.Context, record Record) {
 	if s.deps.ReviewAlerts == nil {
 		return
@@ -243,12 +277,14 @@ func (s *Service) alertAutoApproved(ctx context.Context, record Record) {
 	}()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reviewAlertTimeout)
 	defer cancel()
+	day := reviewAlertDay(s.deps.Clock.Now())
 	if err := s.deps.ReviewAlerts.Dispatch(ctx, corenotify.Event{
 		Category:     corenotify.CategoryReviewPending,
 		SchoolID:     record.SchoolID,
 		AccountID:    record.ID,
+		Day:          day,
 		AutoApproved: true,
-		DedupeKey:    "account_auto_approve/" + record.ID + "/" + uuid.NewString(),
+		DedupeKey:    "account_auto_approve/" + record.ID + "/" + day,
 	}); err != nil {
 		s.log.Warn("account: auto approve alert dispatch failed",
 			logfield.KeyEvent, "notify.dispatch_failed",

@@ -171,9 +171,9 @@ either side drifts.
 | PUT | `/api/me/mail-notify` | master/admin/user | 5mx |
 |  |  |  | 写本人开关；审计 `user.mail_notify`，detail 只含字段与 on/off。 |
 | GET | `/api/me/notifications` | master/admin | notify A |
-|  |  |  | 本人站内信；按 `(created_at DESC, id DESC)` 键集分页，`limit` 缺省 20 上限 100。 |
+|  |  |  | 本人站内信；按 `(created_at DESC, id DESC)` 键集分页，`limit` 缺省 20 上限 100。读面按订阅矩阵 `in_app` 过滤（P2-3）：显式关或默认关（`sign_failed_daily`）的类别不出列表——email/webhook 的账本锚行只作存储事实，不再泄读面。 |
 | GET | `/api/me/notifications/unread-count` | master/admin | notify A |
-|  |  |  | 本人未读数。 |
+|  |  |  | 本人未读数；过滤谓词与列表同口径（隐藏类别不计数）。 |
 | POST | `/api/me/notifications/read` | master/admin | notify A |
 |  |  |  | 标记本人指定 id 已读；越权/不存在 id 静默忽略，幂等。 |
 | POST | `/api/me/notifications/read-all` | master/admin | notify A |
@@ -195,8 +195,11 @@ either side drifts.
 | PUT | `/api/accounts/:id/location` | user/admin | P5 |
 | GET | `/api/accounts/:id/photos` | user/admin | P5 |
 | GET | `/api/schools/:id/default-photo` | master/admin/user | P5 |
+|  |  |  | 返回学校自有资产行的引用（D6 乙案，迁移 00031）：`photo_id` 是学校资产行 id（内容寻址复制，字节与源图同 sha256），默认图自设起独立生命周期——属主删图、用户保留期清理、属主 purge 级联都不触它；未设置回 `photo_id:null`。 |
 | PUT | `/api/schools/:id/default-photo` | admin | P5 |
+|  |  |  | 设默认＝校验源为调用者可见的未软删**用户行**（绑定校账号归属派生 ∪ 管理员本人照片——自照可设，用户确认点），复制登记学校资产行并把指针改到资产行；回显 `photo_id` 为资产行 id。`null` 清空指针并物理删旧资产行；更换默认同删旧行；同值重放幂等。属主重传同字节只复活用户行，**不复活旧默认**。写与 `school.default_photo_set` 审计同事务，detail 只含前后 id。 |
 | GET | `/api/admin/events` | master/admin | P6 |
+|  |  |  | 进程内并发流上限 10（sfr 卫生批；本批补契约 429 注）：超限回 429 `rate_limited`＋`Retry-After: 5`，不碰总线；断开即释放槽位。 |
 | GET | `/api/admin/tasks` | master/admin | UX-3 swh |
 | GET | `/api/admin/tasks/export` | master/admin | UX-3 swh |
 | GET | `/api/admin/engine` | master/admin | UX-5 aqn |

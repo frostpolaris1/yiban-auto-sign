@@ -43,7 +43,8 @@ var errStreamingUnsupported = errors.New("events: streaming writer unsupported")
 // MaxConcurrentStreams 是进程内同时打开的 SSE 连接上限。
 // 数值取 10。超限与限流中间件同口径：直接回 429 rate_limited，
 // 不排队；任一连接断开即释放槽位。一个进程只装配一个 Handler，
-// 故计数就是全局并发数。429 的契约响应增量待契约批补。
+// 故计数就是全局并发数。契约增量已由修复批 R5 补上
+// （/api/admin/events 的 '429' → TooManyRequestsError，sfr 挂账结清）。
 const MaxConcurrentStreams = 10
 
 // AdminEvents 实现 GET /api/admin/events（master/admin）。

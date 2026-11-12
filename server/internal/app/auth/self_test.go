@@ -288,10 +288,40 @@ func TestLoginRecoverableWithinGrace(t *testing.T) {
 		t.Fatal("a recoverable login established a session")
 	}
 
+	// clc MINOR-1 随车：恢复窗引导必须留痕——auth.login_failed 的
+	// detail.reason=recoverable（旧线 login_recoverable 的同位留痕）。
+	// 没有这条审计，公开登录端点在恢复窗内是一台零留痕的凭据验证器。
+	failed := func() int {
+		n := 0
+		for _, entry := range h.audits.entries {
+			if entry.Action == coreaudit.ActionAuthLoginFailed {
+				n++
+			}
+		}
+		return n
+	}
+	if got := failed(); got != 1 {
+		t.Fatalf("login_failed 审计行 = %d, want 1（recoverable 留痕）", got)
+	}
+	lastEntry := h.audits.entries[len(h.audits.entries)-1]
+	if lastEntry.Action != coreaudit.ActionAuthLoginFailed ||
+		lastEntry.Detail["reason"] != "recoverable" || lastEntry.TargetID != user.ID {
+		t.Fatalf("recoverable 留痕 = %+v, want login_failed reason=recoverable target=本人", lastEntry)
+	}
+
 	// 同窗口令错：与不存在同形，不带 recoverable（对齐旧线：仅在口令正确时引导）。
 	_, err = h.svc.Login(t.Context(), user.Email, "wrong-pass")
 	if err != appauth.ErrInvalidCredentials {
 		t.Fatalf("within-grace wrong password = %v, want ErrInvalidCredentials", err)
+	}
+	// 令错留痕 reason=invalid_credentials，与 recoverable 区分成对取证。
+	if got := failed(); got != 2 {
+		t.Fatalf("login_failed 审计行 = %d, want 2（含令错留痕）", got)
+	}
+	wrongEntry := h.audits.entries[len(h.audits.entries)-1]
+	if wrongEntry.Action != coreaudit.ActionAuthLoginFailed ||
+		wrongEntry.Detail["reason"] != "invalid_credentials" {
+		t.Fatalf("令错留痕 = %+v, want reason=invalid_credentials", wrongEntry)
 	}
 
 	// 超窗：即使口令正确也不带字段，与不存在同形。

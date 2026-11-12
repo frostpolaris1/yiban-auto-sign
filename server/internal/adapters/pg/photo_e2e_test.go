@@ -337,3 +337,139 @@ func TestPhotoRepoLibraryAtOrder(t *testing.T) {
 		t.Fatalf("越界 = %v, want not_found", err)
 	}
 }
+
+// D6 乙案：学校资产行的登记、幂等、级联排除与读取面。
+// 判据面：同 (school, sha) 重复登记回同一行；源用户行的重传不触资产行
+// （两族键互不相交）；PurgeExpired 按 owner 排除资产行；Get 的 admin 面
+// 放行本校资产行、user 面永不命中；PhotoForDefault 源必须用户行，
+// 另放行调用者本人；DeleteSchoolOwned 谓词锁死本校 owner NULL 行。
+func TestPhotoRepoSchoolOwnedRows(t *testing.T) {
+	e := newEnv(t)
+	repo := pg.NewPhotoRepo(e.db)
+	owner := e.createUser("so-owner@example.com")
+	other := e.createUser("so-other@example.com")
+	school := e.createSchool("so-school")
+	foreign := e.createSchool("so-foreign")
+	now := clock.System{}.Now().UTC()
+
+	src := mustPhoto(t, repo, e, photoRecord(owner.ID, 71, now))
+
+	// 登记两次＝同一资产行（幂等 upsert）。
+	first, err := repo.RegisterSchoolOwned(e.ctx, school.ID, src)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !first.SchoolOwned() || first.SchoolID != school.ID || first.OwnerUserID != "" {
+		t.Fatalf("资产行形状 = %+v, want owner 空 + school 挂", first)
+	}
+	second, err := repo.RegisterSchoolOwned(e.ctx, school.ID, src)
+	if err != nil {
+		t.Fatalf("register again: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("重复登记产生第二行: %s vs %s", first.ID, second.ID)
+	}
+
+	// 源侧重传（Create upsert 恢复用户行）**不触资产行**：
+	// 用户键 (owner, sha) 与学校键 (school, sha) 互不相交。
+	reactivated, err := repo.Create(e.ctx, photoRecord(owner.ID, 71, now.Add(time.Hour)))
+	if err != nil {
+		t.Fatalf("re-upload: %v", err)
+	}
+	if reactivated.ID != src.ID {
+		t.Fatalf("重传应命中同一用户行: %s vs %s", reactivated.ID, src.ID)
+	}
+	if n := e.scalarInt(`SELECT count(*) FROM photos WHERE owner_user_id IS NULL`); n != 1 {
+		t.Fatalf("重传动了资产行侧: owner NULL 行 = %d, want 1", n)
+	}
+
+	// Get 读取面：本校 admin 可见；外校 admin 与任何 user 不可见。
+	if _, err := repo.Get(e.ctx, corescope.Admin([]string{school.ID}), first.ID); err != nil {
+		t.Fatalf("本校 admin 读资产行: %v", err)
+	}
+	if _, err := repo.Get(e.ctx, corescope.Admin([]string{foreign.ID}), first.ID); !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("外校 admin 读到资产行: %v", err)
+	}
+	if _, err := repo.Get(e.ctx, corescope.User(owner.ID), first.ID); !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("user 读到资产行: %v", err)
+	}
+
+	// PhotoForDefault：源必须用户行；admin 面=绑定校派生 ∪ 本人。
+	// 本校派生路径需要账号：owner 在 school 有账号即可见他人无从判定，
+	// 这里用本人面——caller 传属主自己：
+	if _, err := repo.PhotoForDefault(e.ctx, corescope.Admin(nil), owner.ID, src.ID); err != nil {
+		t.Fatalf("本人源: %v", err)
+	}
+	// 资产行不可作源：
+	if _, err := repo.PhotoForDefault(e.ctx, corescope.Admin(nil), other.ID, first.ID); !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("资产行作源仍命中: %v", err)
+	}
+	// 他人用户行且无绑定账号：不可见。
+	if _, err := repo.PhotoForDefault(e.ctx, corescope.Admin(nil), other.ID, src.ID); !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("无关第三人读到他人源: %v", err)
+	}
+
+	// PurgeExpired 按 owner 排除资产行：把用户行与资产行都造到早已过期。
+	old := now.Add(-400 * 24 * time.Hour)
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE photos SET created_at = $2 WHERE id = $1::uuid`, src.ID, old); err != nil {
+		t.Fatalf("age source row: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE photos SET created_at = $2 WHERE id = $1::uuid`, first.ID, old); err != nil {
+		t.Fatalf("age asset row: %v", err)
+	}
+	n, err := repo.PurgeExpired(e.ctx, now, 100)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("purge 行数 = %d, want 1（只删过期的用户行）", n)
+	}
+	if left := e.scalarInt(`SELECT count(*) FROM photos WHERE id = $1::uuid`, first.ID); left != 1 {
+		t.Fatalf("资产行被用户保留期清理（级联未排除）: %d", left)
+	}
+
+	// DeleteSchoolOwned：外校 id 与用户行 id 都命中 0 行、不误删。
+	if err := repo.DeleteSchoolOwned(e.ctx, foreign.ID, first.ID); err != nil {
+		t.Fatalf("foreign delete: %v", err)
+	}
+	if left := e.scalarInt(`SELECT count(*) FROM photos WHERE id = $1::uuid`, first.ID); left != 1 {
+		t.Fatalf("外校删除动了本校资产行: %d", left)
+	}
+	userRow := mustPhoto(t, repo, e, photoRecord(owner.ID, 72, now))
+	if err := repo.DeleteSchoolOwned(e.ctx, school.ID, userRow.ID); err != nil {
+		t.Fatalf("user row delete: %v", err)
+	}
+	if left := e.scalarInt(`SELECT count(*) FROM photos WHERE id = $1::uuid`, userRow.ID); left != 1 {
+		t.Fatalf("DeleteSchoolOwned 删了用户行: %d", left)
+	}
+	if err := repo.DeleteSchoolOwned(e.ctx, school.ID, first.ID); err != nil {
+		t.Fatalf("own delete: %v", err)
+	}
+	if left := e.scalarInt(`SELECT count(*) FROM photos WHERE id = $1::uuid`, first.ID); left != 0 {
+		t.Fatalf("本校资产行未被删除: %d", left)
+	}
+}
+
+// 00031 XOR 约束：两列同空或同非空都必须被拒；owner 侧与 school 侧各放行一条。
+func TestPhotoRepoOwnerSchoolExclusivity(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("xor-owner@example.com")
+	school := e.createSchool("xor-school")
+	var sha [32]byte
+	sum := sha256.Sum256([]byte{99})
+	copy(sha[:], sum[:])
+
+	if _, err := e.db.Exec(e.ctx, `
+		INSERT INTO photos (owner_user_id, school_id, sha256, mime, width, height, bytes)
+		VALUES ($1::uuid, $2::uuid, $3, 'image/jpeg', 8, 8, 10)`,
+		owner.ID, school.ID, sha[:]); err == nil {
+		t.Fatal("owner+school 同非空被放行（XOR 约束失效）")
+	}
+	if _, err := e.db.Exec(e.ctx, `
+		INSERT INTO photos (sha256, mime, width, height, bytes)
+		VALUES ($1, 'image/jpeg', 8, 8, 10)`, sha[:]); err == nil {
+		t.Fatal("owner+school 同空被放行（XOR 约束失效）")
+	}
+}

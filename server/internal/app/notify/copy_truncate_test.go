@@ -54,3 +54,24 @@ func TestSanitizeCopyKeepsBoundaryText(t *testing.T) {
 		t.Fatalf("短文本被改写：%q / %q", gotTitle, gotBody)
 	}
 }
+
+// P3-18：节流键按全文区分，不再复用出口的 32 字截断。
+// 两条 title 共享前 32 字、正文不同的告警是两条事实：
+// 旧键截断后折叠成同题，第二条被 skipped(cooldown_hit) 吞掉；
+// 而 custom 出口的 title 本就不截，出口侧两条形同不同消息。
+func TestWebhookThrottleKeyKeepsLongTitlePrefix(t *testing.T) {
+	prefix := strings.Repeat("标", 32)
+	one := webhookThrottleKey(normalizeThrottleTitle(prefix+"甲"), "正文一")
+	two := webhookThrottleKey(normalizeThrottleTitle(prefix+"乙"), "正文一")
+	if one == two {
+		t.Fatal("32 字前缀相同的两条 title 折叠成同一节流键")
+	}
+	sameA := webhookThrottleKey(normalizeThrottleTitle(prefix+"甲"), "正文一")
+	if one != sameA {
+		t.Fatal("同题同文键必须全等（同文折叠语义保持）")
+	}
+	bodyDiff := webhookThrottleKey(normalizeThrottleTitle(prefix+"甲"), "正文二")
+	if one == bodyDiff {
+		t.Fatal("同题不同文折叠：正文维度必须进键")
+	}
+}

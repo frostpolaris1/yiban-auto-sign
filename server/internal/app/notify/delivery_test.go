@@ -51,15 +51,18 @@ func (c *manualClock) Advance(d time.Duration) {
 // fakeStore 是站内信与账本的内存实现，语义与 pg 一致：
 // (user_id, dedupe_key) 与 (notification_id, channel, user_id) 各一道唯一键。
 // clock 可为 nil；非 nil 时 MarkSent 用它记 UpdatedAt（额度计数口径）。
+// failEmailInsert 让 email 渠道的 InsertWithPending 返回错误：
+// P3-15 判据用它证明「邮件账本失败不连带跳过 webhook」。
 type fakeStore struct {
-	mu            sync.Mutex
-	notifications map[string]*corenotify.Notification
-	order         []string
-	deliveries    map[string]*corenotify.DueDelivery
-	deliveryOrder []string
-	emails        map[string]string
-	seq           int
-	clock         *manualClock
+	mu              sync.Mutex
+	notifications   map[string]*corenotify.Notification
+	order           []string
+	deliveries      map[string]*corenotify.DueDelivery
+	deliveryOrder   []string
+	emails          map[string]string
+	seq             int
+	clock           *manualClock
+	failEmailInsert bool
 }
 
 func newFakeStore() *fakeStore {
@@ -106,6 +109,9 @@ func (s *fakeStore) InsertWithPending(_ context.Context, note corenotify.Notific
 	pending corenotify.DeliveryInsert) (corenotify.NotificationWithDelivery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failEmailInsert && pending.Channel == corenotify.ChannelEmail {
+		return corenotify.NotificationWithDelivery{}, errors.New("fake: email ledger insert failed")
+	}
 	notification := s.insertLocked(note)
 	pending.NotificationID = notification.ID
 	pending.UserID = note.UserID
@@ -724,8 +730,10 @@ func TestSendDueSkipsInactiveRecipient(t *testing.T) {
 	}
 }
 
-// in_app 关闭、email 开启：锚点行仍会写（会出现在管理员站内信列表）。
+// in_app 关闭、email 开启：锚点行仍会写。
 // 这是实施单裁决：账本外键需要父行，本批不为可见性拆表。
+// 读面按订阅矩阵 in_app 过滤（P2-3，判据在 pg e2e
+// TestNotificationListAppliesInAppFilter），锚行本身保留。
 func TestEmailOnlyStillWritesAnchorNotification(t *testing.T) {
 	store := newFakeStore()
 	clk := newManualClock()
@@ -769,6 +777,125 @@ func TestEmailOnlyStillWritesAnchorNotification(t *testing.T) {
 	}
 	if len(store.notificationList()) != 1 || len(store.deliveryList()) != 1 {
 		t.Fatalf("两开关都关仍写行：%d/%d", len(store.notificationList()), len(store.deliveryList()))
+	}
+}
+
+// P3-15：email 账本插入失败只记错，**不**连带跳过同收件人的 webhook 行。
+// 两渠道各自独立尝试：email 的 InsertWithPending 失败后 webhook 行照常入队。
+func TestDispatchEmailLedgerFailureKeepsWebhook(t *testing.T) {
+	store := newFakeStore()
+	store.failEmailInsert = true
+	clk := newManualClock()
+	audience := &fakeAudience{
+		subscribers: []corenotify.Subscriber{
+			overriding("master-1", "master-1@example.com", map[corenotify.Pair]bool{
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}:   true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelWebhook}: true,
+			}),
+		},
+		phones: map[string]string{"acct-1": "13800000001"},
+	}
+	hook := &fakeWebhookSender{}
+	dispatcher, err := appnotify.NewDispatcher(appnotify.DispatcherDeps{
+		Notes: store, Ledger: store, Audience: audience,
+		Webhook: hook, Location: time.UTC, Clock: clk,
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	err = dispatcher.Dispatch(context.Background(), corenotify.Event{
+		Category:  corenotify.CategoryReviewPending,
+		SchoolID:  "school-1",
+		AccountID: "acct-1",
+		DedupeKey: "review_pending/acct-1/2026-10-29",
+		Day:       "2026-10-29",
+	})
+	if err == nil {
+		t.Fatal("email 账本失败必须上抛错误")
+	}
+	rows := store.deliveryList()
+	if len(rows) != 1 || rows[0].Channel != corenotify.ChannelWebhook ||
+		rows[0].Status != corenotify.DeliveryStatusPending {
+		t.Fatalf("webhook 账本行 = %+v, want 一条 pending（email 失败不连带）", rows)
+	}
+}
+
+// 巡检新发现（P3-13 同族）：邮件面同题冷却。
+// review_pending 去重键曾含事件 uuid：create→delete→create 产生多行同题
+// 邮件、无冷却即洪水。冷却窗口内同收件人同题第二封 skipped(cooldown_hit)。
+// 不同题（属主失败邮件按账号带掩码号标题）不互挤；窗口外放行。
+func TestSendDueMailThrottleCollapsesSameTitle(t *testing.T) {
+	store := newFakeStore()
+	clk := newManualClock()
+	audience := &fakeAudience{
+		subscribers: []corenotify.Subscriber{
+			overriding("master-1", "m@example.com", map[corenotify.Pair]bool{
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail}:   true,
+				{Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelWebhook}: false,
+			}),
+		},
+		phones: map[string]string{
+			"acct-1": "13800000001", "acct-2": "13800000002", "acct-3": "13800000003",
+		},
+	}
+	store.emails["master-1"] = "m@example.com"
+	mail := &fakeSender{}
+	dispatcher, err := appnotify.NewDispatcher(appnotify.DispatcherDeps{
+		Notes: store, Ledger: store, Audience: audience,
+		Mail: mail, MailCooldown: time.Minute, Clock: clk, Location: time.UTC,
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	for _, account := range []string{"acct-1", "acct-2"} {
+		if err := dispatcher.Dispatch(context.Background(), corenotify.Event{
+			Category:  corenotify.CategoryReviewPending,
+			SchoolID:  "school-1",
+			AccountID: account,
+			DedupeKey: "review_pending/" + account + "/2026-10-29",
+			Day:       "2026-10-29",
+		}); err != nil {
+			t.Fatalf("Dispatch %s: %v", account, err)
+		}
+	}
+	if err := dispatcher.SendDue(context.Background()); err != nil {
+		t.Fatalf("SendDue: %v", err)
+	}
+	if mail.calls() != 1 {
+		t.Fatalf("邮件发出 = %d, want 1（同题冷却折叠）", mail.calls())
+	}
+	var skipped int
+	for _, row := range store.deliveryList() {
+		if row.Channel != corenotify.ChannelEmail {
+			continue
+		}
+		if row.Status == corenotify.DeliveryStatusSkipped {
+			skipped++
+			if row.SkipReason != "cooldown_hit" {
+				t.Fatalf("skip reason = %q, want cooldown_hit", row.SkipReason)
+			}
+		}
+	}
+	if skipped != 1 {
+		t.Fatalf("email skipped 行 = %d, want 1", skipped)
+	}
+
+	// 同实例推进过窗口：第三条同题放行（冷却是窗口语义，不是永久静音）。
+	clk.Advance(2 * time.Minute)
+	if err := dispatcher.Dispatch(context.Background(), corenotify.Event{
+		Category:  corenotify.CategoryReviewPending,
+		SchoolID:  "school-1",
+		AccountID: "acct-3",
+		DedupeKey: "review_pending/acct-3/2026-10-29",
+		Day:       "2026-10-29",
+	}); err != nil {
+		t.Fatalf("Dispatch acct-3: %v", err)
+	}
+	if err := dispatcher.SendDue(context.Background()); err != nil {
+		t.Fatalf("SendDue after window: %v", err)
+	}
+	if mail.calls() != 2 {
+		t.Fatalf("窗口后邮件发出 = %d, want 2", mail.calls())
 	}
 }
 

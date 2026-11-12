@@ -2388,17 +2388,20 @@ type SchoolCreateTimezone string
 
 // SchoolDefaultPhoto defines model for SchoolDefaultPhoto.
 type SchoolDefaultPhoto struct {
-	// Etag sha256 (lowercase hex) of the referenced photo, the same digest
+	// Etag sha256 (lowercase hex) of the referenced bytes, the same digest
 	// as Photo.sha256; empty when photo_id is null.
 	Etag string `json:"etag"`
 
-	// PhotoId Referenced photo id; null when no default photo is set.
+	// PhotoId The school's own asset-row id (D6: setting a default copies
+	// the referenced bytes into a school-owned row). Not the source
+	// photo id. null when no default photo is set.
 	PhotoId *string `json:"photo_id"`
 }
 
 // SchoolDefaultPhotoUpdate defines model for SchoolDefaultPhotoUpdate.
 type SchoolDefaultPhotoUpdate struct {
-	// PhotoId An existing photo visible to the caller; null clears the default.
+	// PhotoId An existing non-deleted user-owned photo visible to the caller
+	// (school asset rows are not valid sources); null clears the default.
 	PhotoId *string `json:"photo_id"`
 }
 

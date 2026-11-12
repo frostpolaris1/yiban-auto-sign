@@ -10,6 +10,22 @@ package legacy
 //     （主行＋legacy_ids 映射＋凭据同存亡）：单元失败整行回滚，
 //     好行照常提交、坏行显性计数。
 //   - 0：全部成功（默认档孤儿跳过也算成功，计数可见）。
+//
+// P2-7：legacy_ids 命中已物理 purge 的目标行＝**幂等跳过**（purged_targets
+// 计数），不是行错误——purge 是「这条旧行已被删除处理」的后到事实，
+// 重跑同导出物必须 0 新增、0 行错、不复活已 purge 的行。
+// P3-10：deleted_by 保留——旧行 deleted_by 为属主/他人邮箱时映射成新
+// user id（自助恢复判据「只认 deleted_by=本人」不再丢）；'admin'/未知
+// 值映射 NULL（管理员清退不进反悔窗）。旧 users 表没有 deleted_by 列，
+// 注销唯一路径是本人 soft_delete_user_with_accounts（旧线正本），导入
+// 给软删用户行盖本人 id。
+// P3-11：邮箱形状按行校验（core/user.ValidEmail，注册面同一支）——
+// 不校验会造出无法登录的用户。
+// P3-12：已删用户名下的 live 账号按旧线联动语义软删（旧线注销即级联
+// 软删名下账号；软删行不进排期）：deleted_at 取属主注销时刻——
+// 「注销当时哪一行在生效」的唯一线索，deleted_by 记属主（新线
+// RestoreSelfAccount 判据），状态词不动。本来就已软删的账号保持
+// 各自更早的时刻，不被覆盖。
 
 import (
 	"context"
@@ -220,9 +236,13 @@ func newState(orphanRows int, owners *ownerIndex) *importState {
 			"rows_read":        map[string]any{"users": 0, "accounts": 0, "time_prefs": 0, "audit": 0},
 			"rows_imported":    map[string]any{"users": 0, "accounts": 0},
 			"already_imported": map[string]any{"users": 0, "accounts": 0},
-			"row_errors":       map[string]any{"users": 0, "accounts": 0},
-			"role_mapping":     map[string]any{},
-			"status_mapping":   map[string]any{},
+			// P2-7：legacy_ids 命中已 purge 目标＝幂等跳过计数（不是行错误）。
+			"purged_targets": map[string]any{"users": 0, "accounts": 0},
+			// P3-12：已删用户名下 live 账号被联动软删的行数。
+			"owner_deleted_cascaded": 0,
+			"row_errors":             map[string]any{"users": 0, "accounts": 0},
+			"role_mapping":           map[string]any{},
+			"status_mapping":         map[string]any{},
 			"owner_resolution": map[string]any{
 				ownerViaExact: 0, ownerViaPrefix: 0, "fallback": 0, "unresolved": 0, "ambiguous": 0,
 			},
@@ -238,9 +258,18 @@ func newState(orphanRows int, owners *ownerIndex) *importState {
 			"audit_note":      "legacy audit chain is not appended to the new append-only chain; evidence stays in the export (audit.jsonl)",
 			"columns_dropped": "accounts.sort_order: the new schema has no counterpart column",
 		},
-		owners:  owners,
-		userIDs: map[int64]string{},
+		owners:    owners,
+		userIDs:   map[int64]string{},
+		usersMeta: map[int64]importedUser{},
 	}
+}
+
+// importedUser 是一次导入内已解析旧 user 行的最小元信息：
+// 账号行判定 P3-12 联动软删与 deleted_by 归属时用它。
+type importedUser struct {
+	newID     string
+	deleted   bool
+	deletedAt time.Time
 }
 
 // importState 是一次导入内的可变状态。全部写入发生在单事务闭包内。
@@ -253,6 +282,8 @@ type importState struct {
 	owners     *ownerIndex
 	// userIDs 是旧 user id → 新 user id，用户行先导入，账号行才能逐行解析 owner。
 	userIDs map[int64]string
+	// usersMeta 是旧 user id → 删除态元信息（P3-12/P3-10 判定用）。
+	usersMeta map[int64]importedUser
 }
 
 func (s *importState) bump(group, key string) {
@@ -297,6 +328,10 @@ func (s *importState) appendRecon(table string, row map[string]any, key string) 
 // 写段（主行＋映射＋admin 绑定）在保存点内同存亡：任一失败整行回滚，
 // 落地行必有 legacy_ids 映射。已导入的旧 admin 重跑时补确保绑定，
 // ON CONFLICT DO NOTHING 保持幂等。
+// legacy_ids 命中已 purge 的目标行时按 P2-7 幂等跳过：purged_targets
+// 计数＋行仍入对账表，**不**记行错误、**不**复活。
+// P3-11：邮箱形状按行校验（core/user.ValidEmail，与注册面同一支），
+// 不校验会造出无法登录的用户。
 func (s *importState) importUser(ctx context.Context, opts Options, row map[string]any) {
 	s.bumpRead("users")
 	oldID, ok := valueInt(row["id"])
@@ -319,7 +354,9 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 			return
 		}
 		if exists == 0 {
-			s.addRowError("users", "legacy_ids target", fmt.Errorf("user %d maps to %s but the row is gone", oldID, newID))
+			// P2-7：目标行已被物理 purge——幂等跳过（不复活、不报错）。
+			s.bump("purged_targets", "users")
+			s.appendRecon("users", row, fmt.Sprint(oldID))
 			return
 		}
 		if !roleOK {
@@ -327,6 +364,10 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 			return
 		}
 		s.userIDs[oldID] = newID
+		s.usersMeta[oldID] = importedUser{
+			newID: newID, deleted: valueIntOr(row["deleted"]) == 1,
+			deletedAt: legacyDeletedAt(row, opts),
+		}
 		if role == string(coreauth.RoleAdmin) {
 			created, err := s.bindAdminSchool(ctx, opts, newID)
 			if err != nil {
@@ -348,6 +389,12 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 	s.bump("role_mapping", oldRole+"->"+role)
 
 	email := coreuser.NormalizeEmail(valueString(row["email"]))
+	if !coreuser.ValidEmail(email) {
+		s.addRowError("users", "email", fmt.Errorf(
+			"user %d (%s): email fails the registration shape check; not importing an unloggable user",
+			oldID, coremask.MaskEmail(email)))
+		return
+	}
 	createdAt, err := parseLegacyTime(valueString(row["created_at"]), opts.Now)
 	if err != nil {
 		s.addRowError("users", "created_at", fmt.Errorf("user %d: %v", oldID, err))
@@ -372,6 +419,15 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 		if err != nil {
 			return err
 		}
+		// P3-10：旧 users 表没有 deleted_by 列，注销唯一路径是本人
+		// （旧线 soft_delete_user_with_accounts）；软删行盖本人 id，
+		// 新线自助恢复判据 deleted_by=id 才成立。
+		if deletedAt != nil {
+			if _, err := opts.DB.Exec(ctx,
+				`UPDATE users SET deleted_by = id::uuid WHERE id = $1::uuid`, createdID); err != nil {
+				return err
+			}
+		}
 		if _, err := opts.DB.Exec(ctx,
 			`INSERT INTO legacy_ids (old_table, old_id, new_id) VALUES ('users', $1, $2::uuid)`,
 			oldID, createdID); err != nil {
@@ -384,6 +440,8 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 			}
 		}
 		s.userIDs[oldID] = createdID
+		s.usersMeta[oldID] = importedUser{newID: createdID, deleted: deletedAt != nil,
+			deletedAt: legacyDeletedAt(row, opts)}
 		return nil
 	})
 	if txErr != nil {
@@ -396,6 +454,19 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 	}
 	s.bump("rows_imported", "users")
 	s.appendRecon("users", row, fmt.Sprint(oldID))
+}
+
+// legacyDeletedAt 返回软删行的 deleted_at（未删或解析失败回零值；
+// 解析失败在写路径已有行错误分支，这里只为元信息表兜底）。
+func legacyDeletedAt(row map[string]any, opts Options) time.Time {
+	if valueIntOr(row["deleted"]) != 1 {
+		return time.Time{}
+	}
+	at, err := parseLegacyTime(valueString(row["deleted_at"]), opts.Now)
+	if err != nil {
+		return time.Time{}
+	}
+	return at
 }
 
 // bindAdminSchool 为旧 admin 写一条院校绑定。重复绑定是空操作，
@@ -429,6 +500,11 @@ func mapLegacyRole(old string) (string, bool) {
 // owner 逐行解析到旧 user，再经 legacy_ids 落新 user：每条账号写自己的
 // owner_user_id。解析不到时，只有旧 status=active 的账号落
 // --fallback-owner-user-id；其余按行错误处理，不猜、不静默改归属。
+// P3-12：属主（经匹配解析、非 fallback）已注销而本行 live → 按旧线
+// 联动语义软删：deleted_at 取属主注销时刻、deleted_by 记属主，
+// 状态词不动——「已删用户名下 live 账号照签」被切断。
+// P3-10：行自带 deleted_by（邮箱形状）映射成新 user id；'admin'/未知
+// 值映射 NULL。
 func (s *importState) importAccount(ctx context.Context, opts Options, row map[string]any) {
 	s.bumpRead("accounts")
 	oldID, ok := valueInt(row["id"])
@@ -449,7 +525,9 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 			return
 		}
 		if exists == 0 {
-			s.addRowError("accounts", "legacy_ids target", fmt.Errorf("account %d maps to %s but the row is gone", oldID, newID))
+			// P2-7：目标行已被物理 purge——幂等跳过（不复活、不报错）。
+			s.bump("purged_targets", "accounts")
+			s.appendRecon("accounts", row, fmt.Sprint(oldID))
 			return
 		}
 		s.bump("already_imported", "accounts")
@@ -464,6 +542,7 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 		return
 	}
 	var deletedAt *time.Time
+	var deletedBy *string
 	if valueIntOr(row["deleted"]) == 1 {
 		at, err := parseLegacyTime(valueString(row["deleted_at"]), opts.Now)
 		if err != nil {
@@ -471,19 +550,33 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 			return
 		}
 		deletedAt = &at
+		if id, okm := s.legacyDeletedBy(valueString(row["deleted_by"])); okm {
+			deletedBy = &id
+		}
 	}
 
-	ownerID, ok := s.resolveOwner(opts, row, oldID, phone)
+	ownerID, ownerOldID, ok := s.resolveOwner(opts, row, oldID, phone)
 	if !ok {
 		return
+	}
+	if deletedAt == nil && ownerOldID >= 0 {
+		if meta, okm := s.usersMeta[ownerOldID]; okm && meta.deleted {
+			at := meta.deletedAt
+			deletedAt = &at
+			by := meta.newID
+			deletedBy = &by
+			s.bumpTop("owner_deleted_cascaded")
+			_, _ = fmt.Fprintf(s.err, "migrate-legacy: account %d (%s) soft-deleted with its removed owner\n",
+				oldID, coremask.MaskPhone(phone))
+		}
 	}
 
 	txErr := opts.DB.InSavepoint(ctx, func(ctx context.Context) error {
 		createdID, err := opts.DB.QueryString(ctx,
-			`INSERT INTO accounts (school_id, owner_user_id, phone, name, status, reject_reason, deleted_at)
-			 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7) RETURNING id::text`,
+			`INSERT INTO accounts (school_id, owner_user_id, phone, name, status, reject_reason, deleted_at, deleted_by)
+			 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::uuid) RETURNING id::text`,
 			opts.SchoolID, ownerID, phone, valueString(row["name"]), newStatus,
-			valueString(row["reject_reason"]), deletedAt)
+			valueString(row["reject_reason"]), deletedAt, deletedBy)
 		if err != nil {
 			return err
 		}
@@ -508,9 +601,11 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 }
 
 // resolveOwner 把旧 owner 文本解析成新 user id。
-// 返回 false 表示本行已记行错误，调用方不得继续写。
+// 返回 (新 id, 旧 id, ok)：旧 id 在 fallback 路径为 -1（P3-12 联动软删
+// 只对可解析归属的行生效，fallback 属主必须 active，不参与联动）。
+// ok=false 表示本行已记行错误，调用方不得继续写。
 // 错误文本只带旧行 id 与掩码手机号，不回放 owner 原文。
-func (s *importState) resolveOwner(opts Options, row map[string]any, oldID int64, phone string) (string, bool) {
+func (s *importState) resolveOwner(opts Options, row map[string]any, oldID int64, phone string) (string, int64, bool) {
 	match := s.owners.resolve(valueString(row["owner"]))
 	if match.found {
 		newID, ok := s.userIDs[match.oldID]
@@ -519,30 +614,47 @@ func (s *importState) resolveOwner(opts Options, row map[string]any, oldID int64
 			s.addRowError("accounts", "owner",
 				fmt.Errorf("account %d (%s): owner names legacy user %d, which has no imported row",
 					oldID, coremask.MaskPhone(phone), match.oldID))
-			return "", false
+			return "", -1, false
 		}
 		s.bump("owner_resolution", match.via)
-		return newID, true
+		return newID, match.oldID, true
 	}
 	if match.candidates > 1 {
 		s.bump("owner_resolution", "ambiguous")
 		s.addRowError("accounts", "owner",
 			fmt.Errorf("account %d (%s): owner matches %d legacy users; refusing to guess",
 				oldID, coremask.MaskPhone(phone), match.candidates))
-		return "", false
+		return "", -1, false
 	}
 	if !legacyStatusActive(row) {
 		s.bump("owner_resolution", "unresolved")
 		s.addRowError("accounts", "owner",
 			fmt.Errorf("account %d (%s): owner matches no legacy user and the account is not active; fallback applies to active accounts only",
 				oldID, coremask.MaskPhone(phone)))
-		return "", false
+		return "", -1, false
 	}
 	s.bump("owner_resolution", "fallback")
 	s.bumpTop("fallback_owner_rows")
 	_, _ = fmt.Fprintf(s.err, "migrate-legacy: fallback owner applied to account %d (%s)\n",
 		oldID, coremask.MaskPhone(phone))
-	return opts.FallbackOwnerUserID, true
+	return opts.FallbackOwnerUserID, -1, true
+}
+
+// legacyDeletedBy 把旧行 deleted_by 映射成新 user id。
+// 旧值是操作者邮箱或 'admin'（旧线 v10 留痕：users.py 反悔窗排除
+// deleted_by='admin'）。精确邮箱命中唯一旧用户才映射；'admin'、空串、
+// 查无与歧义一律 NULL——归属不可猜。
+func (s *importState) legacyDeletedBy(value string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if v == "" || strings.EqualFold(v, "admin") {
+		return "", false
+	}
+	oldID, ok := s.owners.oldIDForEmail(v)
+	if !ok {
+		return "", false
+	}
+	newID, ok := s.userIDs[oldID]
+	return newID, ok
 }
 
 // legacyStatusActive 报告旧行在旧栈是否属于 active（含用户自暂停）。

@@ -361,8 +361,16 @@ func (stubSchoolPhotos) SchoolWritable(context.Context, corescope.Scope, string)
 	return errs.ErrNotFound
 }
 
-func (stubSchoolPhotos) PhotoForDefault(context.Context, corescope.Scope, string) (corephoto.Record, error) {
+func (stubSchoolPhotos) PhotoForDefault(context.Context, corescope.Scope, string, string) (corephoto.Record, error) {
 	return corephoto.Record{}, errs.ErrNotFound
+}
+
+func (stubSchoolPhotos) RegisterSchoolOwned(context.Context, string, corephoto.Record) (corephoto.Record, error) {
+	return corephoto.Record{}, errs.ErrNotFound
+}
+
+func (stubSchoolPhotos) DeleteSchoolOwned(context.Context, string, string) error {
+	return errs.ErrNotFound
 }
 
 func (stubSchoolPhotos) SchoolDefault(context.Context, corescope.Scope, string) (string, string, error) {
