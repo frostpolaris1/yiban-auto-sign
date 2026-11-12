@@ -22,7 +22,12 @@
 // admin 读取照片要求照片属主在绑定院校有未删除账号；越权与不存在统一 404。
 // 学校默认图只允许 admin 写入；master 只读引用。
 // 去重键是 (owner_user_id, sha256)：同一用户重复上传返回同一行。
-// 学校默认图只登记照片引用；本包不提交图片字节给平台（P5-D）。
+// 学校默认图（D6 乙案）：设默认＝把源用户行的字节复制登记为学校资产行
+// （school_id 直挂、owner_user_id IS NULL，内容寻址零增盘），指针只指
+// 资产行——「默认图自设起独立生命周期」：属主删图、用户保留期清理、
+// 属主 purge 级联都不触资产行；重传同字节只复活用户自己的行，不复活
+// 旧默认。取消默认＝admin 显式 PUT null（指针清空＋资产行物理删除）。
+// 本包不提交图片字节给平台（P5-D）。
 package photos
 
 import (
@@ -274,9 +279,15 @@ func (s *Service) GetSchoolDefault(ctx context.Context, scope corescope.Scope, s
 }
 
 // SetSchoolDefault 覆盖写学校默认图并记 school.default_photo_set 审计。
-// photo_id 必须引用调用者可见的未软删照片；不可见与不存在回 400
-// （契约把照片引用列为请求体校验）。null 清除；重复 PUT 同值幂等。
-// 写与审计同事务；detail 只含 photo_id 与 previous_photo_id，无 PII。
+// D6 乙案：photo_id 必须引用调用者可见的未软删**用户行**照片
+// （绑定校账号归属派生，或管理员本人的照片——用户确认点）；
+// 写入即把字节**复制登记**为本校资产行（内容寻址零增盘），
+// 指针与回显都用资产行 id——默认图自设起独立生命周期，
+// 属主删图、用户保留期清理、属主 purge 级联都不再触它。
+// 不可见与不存在回 400（契约把照片引用列为请求体校验）。
+// null 清除指针并物理删除旧资产行（字节是否保留由 GC 引用集判定）；
+// 更换默认同样清理旧行。重复 PUT 同值幂等（同一资产行，不清理）。
+// 写与审计同事务；detail 只含 photo_id（资产行）与 previous_photo_id，无 PII。
 func (s *Service) SetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string, photoID *string, actor appaudit.Actor) (SchoolDefaultPhoto, error) {
 	if err := requireSchoolWriter(scope); err != nil {
 		return SchoolDefaultPhoto{}, err
@@ -290,24 +301,40 @@ func (s *Service) SetSchoolDefault(ctx context.Context, scope corescope.Scope, s
 	if err := s.deps.SchoolPhotos.SchoolWritable(ctx, scope, schoolID); err != nil {
 		return SchoolDefaultPhoto{}, err
 	}
-	var nextID *string
-	out := SchoolDefaultPhoto{}
+	var src *corephoto.Record
 	if photoID != nil {
-		rec, err := s.deps.SchoolPhotos.PhotoForDefault(ctx, scope, *photoID)
+		rec, err := s.deps.SchoolPhotos.PhotoForDefault(ctx, scope, actor.UserID, *photoID)
 		if err != nil {
 			if errs.From(err).Code == errs.CodeNotFound {
 				return SchoolDefaultPhoto{}, errs.New(errs.CodeValidation, "photo must reference an existing visible photo")
 			}
 			return SchoolDefaultPhoto{}, err
 		}
-		// 存库与审计都用库里读回的形状（小写 UUID）。
-		nextID = &rec.ID
-		out = SchoolDefaultPhoto{PhotoID: rec.ID, ETag: hex.EncodeToString(rec.SHA256[:])}
+		src = &rec
 	}
+	var nextID *string
+	out := SchoolDefaultPhoto{}
 	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		if src != nil {
+			// 复制登记：(school, sha) 幂等 upsert；源行与资产行同字节。
+			rec, err := s.deps.SchoolPhotos.RegisterSchoolOwned(ctx, schoolID, *src)
+			if err != nil {
+				return err
+			}
+			next := rec.ID
+			nextID = &next
+			out = SchoolDefaultPhoto{PhotoID: rec.ID, ETag: hex.EncodeToString(rec.SHA256[:])}
+		}
 		previous, err := s.deps.SchoolPhotos.SetSchoolDefault(ctx, scope, schoolID, nextID)
 		if err != nil {
 			return err
+		}
+		// 旧资产行清理：取消（nextID nil）或换值（id 不同）都物理删除；
+		// 同值重放（id 相同）不动。谓词只触本校 owner NULL 行。
+		if previous != nil && (nextID == nil || *previous != *nextID) {
+			if err := s.deps.SchoolPhotos.DeleteSchoolOwned(ctx, schoolID, *previous); err != nil {
+				return err
+			}
 		}
 		var prevValue, nextValue any
 		if previous != nil {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,9 +18,11 @@ import (
 // PhotoRepo 是图片记录与保留期的仓储。
 //
 // 作用域口径：owner 可见自己的照片；admin 可见绑定院校里账号属主的
-// 照片（照片没有 school_id，院校面经 accounts 派生）；master 没有
+// 照片、以及绑定校的学校资产行（默认图字节的读取面）；master 没有
 // 照片作用域，入口层把它收敛为 owner 范围，只读自己的行。
-// 学校默认图是本表的第二个读者：引用登记在 schools.default_photo_id。
+// 学校默认图是本表的第二个读者：schools.default_photo_id 指向
+// **学校资产行**（owner_user_id IS NULL、school_id 非空，D6 乙案，
+// 迁移 00031）——设默认即复制登记，属主删图/保留期/purge 不级联。
 type PhotoRepo struct {
 	db *DB
 }
@@ -26,11 +30,19 @@ type PhotoRepo struct {
 // NewPhotoRepo 构造图片仓储。
 func NewPhotoRepo(db *DB) *PhotoRepo { return &PhotoRepo{db: db} }
 
-const photoColumns = `id::text, owner_user_id::text, sha256, mime, width, height, bytes, created_at, deleted_at`
+// photoColumns 两族行互斥（00031 XOR）：读侧把 owner/school 各自
+// coalesce 成空串，Go 侧以 SchoolOwned 判族。
+const photoColumns = `id::text, coalesce(owner_user_id::text, ''), coalesce(school_id::text, ''), sha256, mime, width, height, bytes, created_at, deleted_at`
 
-// Create 幂等写入一张图片。同 (owner, sha256) 再次写入时恢复软删行，
+// Create 幂等写入一张用户图片。同 (owner, sha256) 再次写入时恢复软删行，
 // 并把 created_at 重置为本次上传时间（保留期从本次重算）。
+// 学校资产行不在此键上（owner_user_id IS NULL 不参与用户侧唯一键，
+// 也撞不到这里的 ON CONFLICT）——**重传同字节只复活用户自己的行，
+// 不复活学校默认**（谓词 P3-17）。
 func (r *PhotoRepo) Create(ctx context.Context, rec corephoto.Record) (corephoto.Record, error) {
+	if rec.SchoolID != "" {
+		return corephoto.Record{}, validationError("user photo must not carry a school id")
+	}
 	row := r.db.q(ctx).QueryRow(ctx,
 		`INSERT INTO photos (owner_user_id, sha256, mime, width, height, bytes, created_at)
 		 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
@@ -39,6 +51,40 @@ func (r *PhotoRepo) Create(ctx context.Context, rec corephoto.Record) (corephoto
 		 RETURNING `+photoColumns,
 		rec.OwnerUserID, rec.SHA256[:], rec.Mime, rec.Width, rec.Height, rec.Bytes, rec.CreatedAt)
 	return scanPhoto(row)
+}
+
+// RegisterSchoolOwned 把源照片的字节复制登记为本校资产行（内容寻址，
+// 磁盘零增量）。(school, sha256) 幂等：已存在（含已软删）时恢复为未删，
+// 尺寸形状按本次源行刷新。与指针写入同事务（调用方负责）。
+func (r *PhotoRepo) RegisterSchoolOwned(ctx context.Context, schoolID string, src corephoto.Record) (corephoto.Record, error) {
+	if schoolID == "" {
+		return corephoto.Record{}, validationError("school id is required")
+	}
+	if src.OwnerUserID == "" {
+		return corephoto.Record{}, validationError("school default source must be an owner photo")
+	}
+	row := r.db.q(ctx).QueryRow(ctx,
+		`INSERT INTO photos (school_id, sha256, mime, width, height, bytes, created_at)
+		 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
+		 ON CONFLICT (school_id, sha256) WHERE owner_user_id IS NULL DO UPDATE
+		 SET deleted_at = NULL, mime = EXCLUDED.mime,
+		     width = EXCLUDED.width, height = EXCLUDED.height, bytes = EXCLUDED.bytes
+		 RETURNING `+photoColumns,
+		schoolID, src.SHA256[:], src.Mime, src.Width, src.Height, src.Bytes, src.CreatedAt)
+	return scanPhoto(row)
+}
+
+// DeleteSchoolOwned 物理删除本校的一条资产行（取消/更换默认时调用）。
+// 谓词锁死 school_id 且 owner_user_id IS NULL：误传用户行 id 命中 0 行，
+// 属主面不受影响。字节是否可回收由 GC 的引用集合判定（不按本方法计）。
+func (r *PhotoRepo) DeleteSchoolOwned(ctx context.Context, schoolID, photoID string) error {
+	if schoolID == "" || photoID == "" {
+		return validationError("school id and photo id are required")
+	}
+	_, err := r.db.q(ctx).Exec(ctx,
+		`DELETE FROM photos WHERE id = $1::uuid AND school_id = $2::uuid AND owner_user_id IS NULL`,
+		photoID, schoolID)
+	return mapError(err)
 }
 
 // Get 按作用域读一张图片；跨用户、跨校、已软删与不存在都返回 not_found。
@@ -60,18 +106,29 @@ func (r *PhotoRepo) Get(ctx context.Context, scope corescope.Scope, id string) (
 	return scanPhoto(row)
 }
 
-// PhotoForDefault 读一张未软删照片，供学校默认图写入校验。
+// PhotoForDefault 读一张未软删的**用户行**，供学校默认图写入校验。
 // 只接受 admin 作用域：契约把 PUT default-photo 收窄为 [admin]。
-// 院校范围由 SetSchoolDefault 判定。
-func (r *PhotoRepo) PhotoForDefault(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
+// 可见面与 Get 同族（属主在绑定校有未删账号），另放行**调用者本人的
+// 照片**（D6 用户确认点：管理员自己账号的照片同样可设为默认）；
+// 学校资产行（school_id 非空）不可作源——源必须是用户行，复制登记
+// 出的才是学校资产。
+func (r *PhotoRepo) PhotoForDefault(ctx context.Context, scope corescope.Scope, callerUserID, id string) (corephoto.Record, error) {
+	if scope.Kind() != corescope.KindAdmin {
+		return corephoto.Record{}, errs.ErrNotFound
+	}
 	clause, scopeArgs, err := photoScopePredicate(scope, 2, "photos.")
 	if err != nil {
 		return corephoto.Record{}, err
 	}
-	row := r.db.q(ctx).QueryRow(ctx,
-		`SELECT `+photoColumns+` FROM photos
-		 WHERE id = $1::uuid AND deleted_at IS NULL`+clause,
-		append([]any{id}, scopeArgs...)...)
+	// clause 形如 " AND EXISTS (...$2...)"：去掉前缀后与「调用者本人」
+	// 组成 OR——本查询在 admin 面之外另放行 caller 的行。
+	// 参数位：id=$1，scopeArgs 占 $2..$(1+len)，caller 紧随其后。
+	inner := strings.TrimPrefix(clause, " AND ")
+	sqlText := `SELECT ` + photoColumns + ` FROM photos
+	     WHERE id = $1::uuid AND deleted_at IS NULL AND school_id IS NULL
+	       AND (` + inner + ` OR photos.owner_user_id = $` + fmt.Sprint(len(scopeArgs)+2) + `::uuid)`
+	row := r.db.q(ctx).QueryRow(ctx, sqlText,
+		append(append([]any{id}, scopeArgs...), callerUserID)...)
 	return scanPhoto(row)
 }
 
@@ -247,6 +304,8 @@ func (r *PhotoRepo) PutRetention(ctx context.Context, userID string, days int, n
 // PurgeExpired 物理删除按各用户保留期已到期的行，返回删除行数。
 // 判据是 COALESCE(deleted_at, created_at)：软删行从删除时刻起算。
 // 缺省保留期 90 天与 core/photo 一致。一次最多删 limit 行。
+// 学校资产行**排除在外**（D6 乙案）：owner_user_id IS NULL 不属于任何
+// 用户的保留期，其生命周期只随默认图指针（Register/Delete 成对）。
 func (r *PhotoRepo) PurgeExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
 	if limit < 1 {
 		limit = 1
@@ -256,8 +315,9 @@ func (r *PhotoRepo) PurgeExpired(ctx context.Context, now time.Time, limit int) 
 		 WHERE p.id IN (
 		   SELECT p2.id FROM photos p2
 		   LEFT JOIN photo_retention r ON r.user_id = p2.owner_user_id
-		   WHERE COALESCE(p2.deleted_at, p2.created_at)
-		         <= $1::timestamptz - make_interval(days => COALESCE(r.days, 90))
+		   WHERE p2.owner_user_id IS NOT NULL
+		     AND COALESCE(p2.deleted_at, p2.created_at)
+		     <= $1::timestamptz - make_interval(days => COALESCE(r.days, 90))
 		   ORDER BY COALESCE(p2.deleted_at, p2.created_at), p2.id
 		   LIMIT $2
 		 )`,
@@ -324,11 +384,12 @@ func (r *PhotoRepo) LibraryAt(ctx context.Context, ownerUserID string, offset in
 }
 
 // scanPhoto 把一行扫成记录。sha256 以 bytea 存取，读出后拷进定长数组。
+// owner/school 列已在 SQL 侧 coalesce 成空串（两族行互斥，00031）。
 func scanPhoto(row interface{ Scan(...any) error }) (corephoto.Record, error) {
 	var rec corephoto.Record
 	var sha []byte
 	var deleted *time.Time
-	if err := row.Scan(&rec.ID, &rec.OwnerUserID, &sha, &rec.Mime,
+	if err := row.Scan(&rec.ID, &rec.OwnerUserID, &rec.SchoolID, &sha, &rec.Mime,
 		&rec.Width, &rec.Height, &rec.Bytes, &rec.CreatedAt, &deleted); err != nil {
 		return corephoto.Record{}, mapError(err)
 	}

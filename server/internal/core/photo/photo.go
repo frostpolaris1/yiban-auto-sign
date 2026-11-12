@@ -50,9 +50,13 @@ func ValidRetention(days int) bool {
 
 // Record 是一张已入库的图片。
 // SHA256 是预处理后字节的摘要；DeletedAt 非空表示软删。
+// 两族行按 owner 互斥（D6 乙案，迁移 00031）：OwnerUserID 非空＝属主
+// 用户行；OwnerUserID 为空、SchoolID 非空＝学校资产行——学校默认图
+// 自设起独立生命周期，属主删图/保留期/purge 级联都不触它。
 type Record struct {
 	ID          string
 	OwnerUserID string
+	SchoolID    string
 	SHA256      [32]byte
 	Mime        string
 	Width       int
@@ -61,6 +65,9 @@ type Record struct {
 	CreatedAt   time.Time
 	DeletedAt   *time.Time
 }
+
+// SchoolOwned 报告该行是否学校资产行。
+func (r Record) SchoolOwned() bool { return r.OwnerUserID == "" && r.SchoolID != "" }
 
 // Blob 是一份已落盘图片字节的摘要与修改时间。
 // 回收判据需要修改时间：刚落盘但行事务尚未提交的文件必须保留。

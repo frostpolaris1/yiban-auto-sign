@@ -69,16 +69,28 @@ type Accounts interface {
 
 // SchoolPhotos 是学校默认图的存储面（实现为 pg.PhotoRepo）。
 // 院校可见面在存储侧按作用域判定，与照片/账号判据同源。
+// D6 乙案：默认图＝复制登记为学校资产行（owner_user_id IS NULL、
+// school_id 指向该学校，内容寻址零增盘），指针只指资产行；
+// 属主删图/保留期/purge 级联按 owner 排除，学校默认不随属主漂移。
 type SchoolPhotos interface {
 	// SchoolWritable 判定院校可写：master 不限，admin 限绑定校。
 	// 越权与不存在返回 errs.ErrNotFound。
 	SchoolWritable(ctx context.Context, scope corescope.Scope, schoolID string) error
-	// PhotoForDefault 读一张未软删照片，供默认图写入校验。
-	// 只接受 admin 作用域：契约把 PUT default-photo 收窄为 [admin]。
-	// 跨用户、跨校与已软删返回 errs.ErrNotFound。
-	PhotoForDefault(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
+	// PhotoForDefault 读一张未软删的**用户行**，供默认图写入校验；
+	// 学校资产行不可作源。只接受 admin 作用域：契约把 PUT
+	// default-photo 收窄为 [admin]。可见面＝绑定校账号归属派生 ∪
+	// 调用者本人（callerUserID——管理员自己账号的照片同样可设为
+	// 默认，D6 用户确认点）。越权、跨校、已软删与学校资产行一律
+	// errs.ErrNotFound。
+	PhotoForDefault(ctx context.Context, scope corescope.Scope, callerUserID, id string) (corephoto.Record, error)
+	// RegisterSchoolOwned 把源用户行的字节复制登记为本校资产行
+	// （(school, sha) 幂等 upsert，命中软删行时恢复）。**必须在事务内运行**。
+	RegisterSchoolOwned(ctx context.Context, schoolID string, src corephoto.Record) (corephoto.Record, error)
+	// DeleteSchoolOwned 物理删除本校一条资产行（取消/更换默认时清理旧行）。
+	// 谓词锁死 school_id 且 owner_user_id IS NULL；**必须在事务内运行**。
+	DeleteSchoolOwned(ctx context.Context, schoolID, photoID string) error
 	// SchoolDefault 读学校默认图；越权与不存在返回 errs.ErrNotFound。
-	// 引用照片已软删时按未设置返回。
+	// 引用资产行已软删时按未设置返回（正常路径不出现：取消即物理删）。
 	SchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string) (photoID, etag string, err error)
 	// SetSchoolDefault 覆盖写并返回旧引用（nil 表示原先未设置）。
 	// **必须在事务内运行**。

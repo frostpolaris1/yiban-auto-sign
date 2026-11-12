@@ -287,7 +287,8 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 		t.Fatalf("初始值 = %+v", got)
 	}
 
-	// adminA 设 p1：200，回显一致。
+	// D6 乙案：adminA 设 p1＝复制登记学校资产行。200 回显的是**资产行 id**
+	// （≠源 p1.ID），etag 与源字节同 sha256。
 	code, body := g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": p1.ID})
 	if code != http.StatusOK {
 		t.Fatalf("PUT status = %d: %s", code, body)
@@ -295,11 +296,17 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf("decode PUT: %v", err)
 	}
-	if got.PhotoID == nil || *got.PhotoID != p1.ID || got.ETag != p1.Sha256 {
-		t.Fatalf("PUT 回显 = %+v, want %s/%s", got, p1.ID, p1.Sha256)
+	if got.PhotoID == nil || *got.PhotoID == p1.ID || got.ETag != p1.Sha256 {
+		t.Fatalf("PUT 回显 = %+v, want 资产行 id（≠%s）+ %s", got, p1.ID, p1.Sha256)
+	}
+	asset1 := *got.PhotoID
+	if n := e.scalarInt(`SELECT count(*) FROM photos
+		WHERE id = $1::uuid AND owner_user_id IS NULL AND school_id = $2::uuid`,
+		asset1, f.schoolA); n != 1 {
+		t.Fatalf("资产行未登记或归属错位: %d", n)
 	}
 
-	// GET 一致：master、adminA、owner1（A 校账号属主）都读到 p1。
+	// GET 一致：master、adminA、owner1（A 校账号属主）都读到**同一资产行**。
 	for _, tc := range []struct {
 		name   string
 		issued *coreauth.Issued
@@ -316,8 +323,8 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &cur); err != nil {
 			t.Fatalf("%s decode: %v", tc.name, err)
 		}
-		if cur.PhotoID == nil || *cur.PhotoID != p1.ID || cur.ETag != p1.Sha256 {
-			t.Fatalf("%s GET = %+v", tc.name, cur)
+		if cur.PhotoID == nil || *cur.PhotoID != asset1 || cur.ETag != p1.Sha256 {
+			t.Fatalf("%s GET = %+v, want 资产行 %s", tc.name, cur, asset1)
 		}
 	}
 
@@ -332,7 +339,7 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 		t.Fatalf("不存在学校 GET status = %d", rec.Code)
 	}
 
-	// 幂等：重复 PUT 同值 200，GET 不变。
+	// 幂等：重复 PUT 同值 200，仍指同一资产行（upsert 不产生第二行）。
 	if code, body := g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": p1.ID}); code != http.StatusOK {
 		t.Fatalf("重复 PUT status = %d: %s", code, body)
 	}
@@ -341,13 +348,28 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &again); err != nil {
 		t.Fatalf("decode after repeat: %v", err)
 	}
-	if again.PhotoID == nil || *again.PhotoID != p1.ID {
-		t.Fatalf("重复 PUT 后 = %+v", again)
+	if again.PhotoID == nil || *again.PhotoID != asset1 {
+		t.Fatalf("重复 PUT 后 = %+v, want %s", again, asset1)
 	}
 
-	// adminA 设 p2（属主在 A 有账号）：200。
-	if code, body := g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": p2.ID}); code != http.StatusOK {
+	// adminA 设 p2（属主在 A 有账号）：200，指针改到 p2 的新资产行，
+	// 旧资产行随换值物理删除（同一时刻每校至多一条 live 资产行）。
+	// 注意用 = 赋值而非 :=：body/code 的外层变量必须拿到本响应。
+	code, body = g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": p2.ID})
+	if code != http.StatusOK {
 		t.Fatalf("可见他账号图 PUT status = %d: %s", code, body)
+	}
+	var switched g1uDefaultPhoto
+	if err := json.Unmarshal([]byte(body), &switched); err != nil {
+		t.Fatalf("decode switch: %v", err)
+	}
+	if switched.PhotoID == nil || *switched.PhotoID == asset1 || switched.ETag != p2.Sha256 {
+		t.Fatalf("换值后 = %+v, want p2 新资产行 etag %s（asset1=%s）", switched, p2.Sha256, asset1)
+	}
+	asset2 := *switched.PhotoID
+	if n := e.scalarInt(`SELECT count(*) FROM photos
+		WHERE school_id = $1::uuid AND owner_user_id IS NULL`, f.schoolA); n != 1 {
+		t.Fatalf("旧资产行未清理: %d, want 恰 1 行（新行）", n)
 	}
 	// adminA 设 p3（属主不在 A）：400。
 	if code, body := g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": p3.ID}); code != http.StatusBadRequest {
@@ -412,8 +434,8 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 	if d["photo_id"] != nil {
 		t.Fatalf("清除后 detail.photo_id = %v, want null", d["photo_id"])
 	}
-	if d["previous_photo_id"] != p2.ID {
-		t.Fatalf("清除后 detail.previous_photo_id = %v, want %s", d["previous_photo_id"], p2.ID)
+	if d["previous_photo_id"] != asset2 {
+		t.Fatalf("清除后 detail.previous_photo_id = %v, want 资产行 %s", d["previous_photo_id"], asset2)
 	}
 	for _, pii := range []string{"g1u-owner", "@example.com", "13800020001", "13800020002", "13800020003"} {
 		if strings.Contains(detail, pii) {
@@ -425,10 +447,19 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 		t.Fatalf("审计行 = %d, want 4（每次成功写入一行）", n)
 	}
 
-	// 引用照片软删后 GET 按未设置回：不返回 API 已判定不存在的 id。
-	if code, body := g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": p1.ID}); code != http.StatusOK {
+	// D6 谓词一（属主删图→校默认仍在）：重设 p1，属主软删**自己的**行，
+	// 学校默认不动——默认图自设起独立生命周期。
+	code, body = g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": p1.ID})
+	if code != http.StatusOK {
 		t.Fatalf("重设 p1 status = %d: %s", code, body)
 	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode re-set: %v", err)
+	}
+	if got.PhotoID == nil {
+		t.Fatal("重设后无引用")
+	}
+	asset3 := *got.PhotoID
 	if rec := e.do("DELETE", "/api/me/photos/"+p1.ID, nil, f.owner1); rec.Code != http.StatusNoContent {
 		t.Fatalf("删图 status = %d", rec.Code)
 	}
@@ -436,20 +467,40 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode after photo delete: %v", err)
 	}
-	if got.PhotoID != nil || got.ETag != "" {
-		t.Fatalf("引用照片软删后 = %+v, want null", got)
+	if got.PhotoID == nil || *got.PhotoID != asset3 || got.ETag != p1.Sha256 {
+		t.Fatalf("属主删图后校默认 = %+v, want 资产行 %s 原样在", got, asset3)
 	}
-	// 同字节重传恢复同一行：引用随之复活。
+	// D6 谓词二（重传→不复活旧默认）：同字节重传只复活属主自己的用户行，
+	// 学校默认的指针与资产行不因重传发生任何变化。
 	back := g1uUpload(t, e, f.owner1, 12, 8)
 	if back.ID != p1.ID {
-		t.Fatalf("重传未恢复同一行: %s, want %s", back.ID, p1.ID)
+		t.Fatalf("重传未恢复同一用户行: %s, want %s", back.ID, p1.ID)
 	}
 	rec = e.do("GET", "/api/schools/"+f.schoolA+"/default-photo", nil, f.adminA)
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode after restore: %v", err)
+		t.Fatalf("decode after re-upload: %v", err)
 	}
-	if got.PhotoID == nil || *got.PhotoID != p1.ID {
-		t.Fatalf("重传后 = %+v, want %s", got, p1.ID)
+	if got.PhotoID == nil || *got.PhotoID != asset3 {
+		t.Fatalf("重传后校默认漂移: %+v, want %s", got, asset3)
+	}
+	// 取消默认后重传：指针 null、资产行物理删除，旧默认不复活。
+	if code, body = g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": nil}); code != http.StatusOK {
+		t.Fatalf("清除 PUT status = %d: %s", code, body)
+	}
+	if n := e.scalarInt(`SELECT count(*) FROM photos
+		WHERE school_id = $1::uuid AND owner_user_id IS NULL`, f.schoolA); n != 0 {
+		t.Fatalf("取消后资产行未清理: %d, want 0", n)
+	}
+	back2 := g1uUpload(t, e, f.owner1, 12, 8)
+	if back2.ID != p1.ID {
+		t.Fatalf("再次重传应命中同一用户行: %s", back2.ID)
+	}
+	rec = e.do("GET", "/api/schools/"+f.schoolA+"/default-photo", nil, f.adminA)
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode after cleared re-upload: %v", err)
+	}
+	if got.PhotoID != nil || got.ETag != "" {
+		t.Fatalf("取消后重传复活了默认: %+v", got)
 	}
 
 	// 缺 photo_id 键：400（契约 required；显式 null 才是清除）。不写审计。
@@ -505,5 +556,75 @@ func TestG1UPhotoEndpointsUnchanged(t *testing.T) {
 	}
 	if rec := e.do("GET", "/api/me/photos/"+photo.ID, nil, unboundIssued); rec.Code != http.StatusNotFound {
 		t.Fatalf("未绑定 admin 读取 status = %d", rec.Code)
+	}
+}
+
+// g1uExec 执行一条清理 SQL（同包同结构，purge 模拟专用）。
+func g1uExec(t *testing.T, e *w2cEnv, sql string, args ...any) {
+	t.Helper()
+	if _, err := e.db.Exec(e.ctx, sql, args...); err != nil {
+		t.Fatalf("exec %q: %v", sql, err)
+	}
+}
+
+// D6 乙案补充判据（purge 属主→校默认仍在＋自照可设＋资产字节可读）：
+// ①admin 用**自己账号库**的照片设默认＝200（用户确认点：源可见面
+// 在绑定校派生之外放行本人）；②默认指针与回显都是资产行 id，
+// 绑定校 admin 可经 GET /api/me/photos/{id} 读回字节（admin 面含本校
+// 资产行），无本人事物的 user 走本人面 404；③硬删属主（先删账号
+// 再删用户——owner FK 是 RESTRICT，这正是 purge 的删除序）后，
+// 指针与资产行原样在、字节仍可读——学校展示不随属主消失。
+func TestG1USchoolDefaultPhotoSelfAndPurge(t *testing.T) {
+	f := g1uSetup(t)
+	e := f.e
+
+	own := g1uUpload(t, e, f.adminA, 10, 10)
+	code, body := g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": own.ID})
+	if code != http.StatusOK {
+		t.Fatalf("admin 自照设默认 PUT = %d: %s", code, body)
+	}
+	var got g1uDefaultPhoto
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode self set: %v", err)
+	}
+	if got.PhotoID == nil || *got.PhotoID == own.ID || got.ETag != own.Sha256 {
+		t.Fatalf("自照回显 = %+v, want 资产行（≠源 %s）", got, own.ID)
+	}
+	assetID := *got.PhotoID
+
+	// 资产行字节的读取面：绑定校 admin 200；user 本人面 404（无属主）。
+	if rec := e.do("GET", "/api/me/photos/"+assetID, nil, f.adminA); rec.Code != http.StatusOK {
+		t.Fatalf("admin 读资产行字节 = %d, want 200", rec.Code)
+	}
+	if rec := e.do("GET", "/api/me/photos/"+assetID, nil, f.owner1); rec.Code != http.StatusNotFound {
+		t.Fatalf("user 读资产行字节 = %d, want 404", rec.Code)
+	}
+
+	// 改用 owner1 的照片设默认，随后 purge 属主：默认不漂移、不失效。
+	src := g1uUpload(t, e, f.owner1, 9, 9)
+	if code, body = g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": src.ID}); code != http.StatusOK {
+		t.Fatalf("设 owner1 照片 = %d: %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode owner1 set: %v", err)
+	}
+	asset2 := *got.PhotoID
+	g1uExec(t, e, `DELETE FROM accounts WHERE owner_user_id = $1::uuid`, f.owner1.User.ID)
+	g1uExec(t, e, `DELETE FROM users WHERE id = $1::uuid`, f.owner1.User.ID)
+
+	rec := e.do("GET", "/api/schools/"+f.schoolA+"/default-photo", nil, f.adminA)
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode after purge: %v", err)
+	}
+	if got.PhotoID == nil || *got.PhotoID != asset2 || got.ETag != src.Sha256 {
+		t.Fatalf("purge 属主后校默认 = %+v, want 资产行 %s 原样在", got, asset2)
+	}
+	if rec := e.do("GET", "/api/me/photos/"+asset2, nil, f.adminA); rec.Code != http.StatusOK {
+		t.Fatalf("purge 后资产字节不可读 = %d, want 200", rec.Code)
+	}
+	// 用户行随级联消失，资产行独存：owner NULL 的学校行计数仍为 1。
+	if n := e.scalarInt(`SELECT count(*) FROM photos
+		WHERE school_id = $1::uuid AND owner_user_id IS NULL`, f.schoolA); n != 1 {
+		t.Fatalf("purge 后资产行数 = %d, want 1", n)
 	}
 }
