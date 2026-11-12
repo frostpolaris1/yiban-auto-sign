@@ -4,6 +4,8 @@ package main
 //
 // # 功能
 // 空链拒绝写锚点；有行时追加一行 seq/count/hash；第二次追加取新链头；
+// 链头未前进时同 seq 重跑幂等跳过（不追加、不写 meta、exit 0）；
+// 文件截空后的失败运行不得留下噪音行；--reseed 显式重播种覆盖 meta；
 // 锚点文件可被巡检端读取；未配置路径是用法错误。
 //
 // # 口径
@@ -142,9 +144,41 @@ func TestAuditAnchorE2E(t *testing.T) {
 		}
 	}
 
-	// 审查探针：文件截空后再正常跑 CLI，必须 exit 1 且不洗白 meta。
-	// CLI 先追加本次链头（文件变一行），随后发现 meta 记录的那一行
-	// （seq=2 的旧行）在文件中缺失，判 anchor_truncated 并拒写 meta。
+	// 审查探针①-1：链头未前进时同 seq 重跑必须幂等跳过——exit 0、stdout
+	// 一句 already anchored、文件不追加新行、meta 不变。旧行为在此追加
+	// "同 seq 新时间戳"行：Latest 取新行 ≠ meta.LineHash，判 anchor_rewritten
+	// 退 1，每日 timer 在安静日必误报。判等只看 seq/count/head_hash，
+	// 时间戳不参与身份。
+	out, code = runCLI(t, []string{"audit", "anchor", "--file", path})
+	if code != 0 {
+		t.Fatalf("same-seq rerun code = %d, out=%s", code, out)
+	}
+	if !strings.Contains(out, "already anchored") {
+		t.Fatalf("same-seq rerun stdout = %q, want a line with already anchored", out)
+	}
+	body, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file after same-seq rerun: %v", err)
+	}
+	if lines := strings.Count(string(body), "\n"); lines != 2 {
+		t.Fatalf("anchor lines after same-seq rerun = %d, want 2 (no append)", lines)
+	}
+	strongest, err := anchor.NewFile(path).Latest(ctx)
+	if err != nil {
+		t.Fatalf("read strongest after rerun: %v", err)
+	}
+	lineHash, err = db.QueryString(ctx, "SELECT encode(line_hash, 'hex') FROM anchor_meta WHERE singleton")
+	if err != nil {
+		t.Fatalf("query anchor_meta line_hash after rerun: %v", err)
+	}
+	if lineHash != hex.EncodeToString(strongest.LineHash) {
+		t.Fatalf("meta line_hash after rerun = %q, want file strongest %x", lineHash, strongest.LineHash)
+	}
+
+	// 审查探针②-1：文件截空后再正常跑 CLI，必须 exit 1、不洗白 meta，
+	// 并且**不得往文件里追加噪音行**。门在追加之前跑：旧实现先追加再判,
+	// 失败时把新链头行留在空文件里，meta 记录行永远找不回，巡检在
+	// truncated/unrecorded/rewritten 之间循环、永不自愈。
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatalf("truncate anchor file: %v", err)
 	}
@@ -166,8 +200,57 @@ func TestAuditAnchorE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read file after truncation: %v", err)
 	}
+	if lines := strings.Count(string(body), "\n"); lines != 0 {
+		t.Fatalf("anchor lines after failed run = %d, want 0 (gate must run before append)", lines)
+	}
+
+	// 审查探针②-2：合法恢复走 --reseed。移走/截空锚点文件后显式重播种：
+	// 忽略"meta 记录行在文件中缺失"检查，以当前链头追加新行并无条件覆盖
+	// anchor_meta（独立 SQL 路径，不走棘轮）；stderr 必须写明这是运维显式
+	// 动作。旧实现下此场景永远 exit 1（anchor_truncated），恢复走不通。
+	out, code = runCLI(t, []string{"audit", "anchor", "--reseed", "--file", path})
+	if code != 0 {
+		t.Fatalf("reseed code = %d, out=%s", code, out)
+	}
+	if !strings.Contains(out, "reseed") {
+		t.Fatalf("reseed must flag itself as an explicit ops action: %s", out)
+	}
+	body, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file after reseed: %v", err)
+	}
 	if lines := strings.Count(string(body), "\n"); lines != 1 {
-		t.Fatalf("anchor lines after failed run = %d, want 1 (only the new head)", lines)
+		t.Fatalf("anchor lines after reseed = %d, want 1", lines)
+	}
+	got, err = anchor.NewFile(path).Latest(ctx)
+	if err != nil {
+		t.Fatalf("read anchor after reseed: %v", err)
+	}
+	if got.Seq != 2 || got.Count != 2 || len(got.LineHash) != 32 {
+		t.Fatalf("anchor after reseed = %+v, want seq=2 count=2", got)
+	}
+	lineHash, err = db.QueryString(ctx, "SELECT encode(line_hash, 'hex') FROM anchor_meta WHERE singleton")
+	if err != nil {
+		t.Fatalf("query anchor_meta line_hash after reseed: %v", err)
+	}
+	if lineHash != hex.EncodeToString(got.LineHash) {
+		t.Fatalf("meta line_hash after reseed = %q, want the new row %x", lineHash, got.LineHash)
+	}
+
+	// reseed 之后同链头再跑普通命令：链头未前进，幂等跳过，文件不再长行。
+	out, code = runCLI(t, []string{"audit", "anchor", "--file", path})
+	if code != 0 {
+		t.Fatalf("post-reseed rerun code = %d, out=%s", code, out)
+	}
+	if !strings.Contains(out, "already anchored") {
+		t.Fatalf("post-reseed rerun stdout = %q, want already anchored", out)
+	}
+	body, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file after post-reseed rerun: %v", err)
+	}
+	if lines := strings.Count(string(body), "\n"); lines != 1 {
+		t.Fatalf("anchor lines after post-reseed rerun = %d, want 1", lines)
 	}
 
 	// 未配置路径：用法错误 2，不连库也不写文件。

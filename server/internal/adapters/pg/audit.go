@@ -196,12 +196,19 @@ func (r *AuditRepo) AnchorMeta(ctx context.Context) (*coreaudit.AnchorMeta, erro
 	return &coreaudit.AnchorMeta{Seq: seq, HeadHash: headHash, LineHash: lineHash}, nil
 }
 
-// RecordAnchorMeta 按**棘轮**覆盖写单行高水位：seq 只进不退。
-// ON CONFLICT 的 WHERE 要求新 seq 不小于库内 seq；倒退写不更新任何列、
-// RETURNING 无行，本方法把它当错误返回（调用方已先行判截断，
-// 走到这里还倒退属于缺陷，不得静默吞掉）。
+// RecordAnchorMeta 按**棘轮**覆盖写单行高水位：seq 只进不退，同 seq 还要求
+// 整行哈希相同。ON CONFLICT 的 WHERE 允许两种写入：
+//   - 新 seq 严格大于库内 seq：链头前进，正常推进；
+//   - 新 seq 等于库内 seq 且 line_hash 与库内相同：同一行的幂等重放。
+//
+// 同 seq 不同 line_hash 直写不更新任何列、RETURNING 无行，本方法把它当错误
+// 返回。行哈希绑进棘轮是刻意的：库 owner 绕过 CLI 用同 seq 改写高水位时，
+// 平行篡改（含洗掉截断/改写证据）洗不动——line_hash 覆盖只有一条合法路径，
+// 即锚点文件里真的存在那一整行（由 CLI 门保证）。
+// 倒退写同样被拒：调用方已先行判截断，走到这里还倒退属于缺陷，不得静默吞掉。
 // 调用方负责保证 seq/head_hash/line_hash 与锚点文件的最强行一致：
 // 本方法只落库，不读锚点文件。
+// 显式重播种（--reseed）走 OverwriteAnchorMeta，不走本棘轮。
 func (r *AuditRepo) RecordAnchorMeta(ctx context.Context, meta coreaudit.AnchorMeta) error {
 	if meta.Seq < 1 || len(meta.HeadHash) != 32 || len(meta.LineHash) != 32 {
 		return validationError("invalid anchor meta")
@@ -215,12 +222,37 @@ func (r *AuditRepo) RecordAnchorMeta(ctx context.Context, meta coreaudit.AnchorM
 		    head_hash = EXCLUDED.head_hash,
 		    line_hash = EXCLUDED.line_hash,
 		    updated_at = EXCLUDED.updated_at
-		WHERE EXCLUDED.seq >= anchor_meta.seq
+		WHERE EXCLUDED.seq > anchor_meta.seq
+		   OR (EXCLUDED.seq = anchor_meta.seq AND EXCLUDED.line_hash = anchor_meta.line_hash)
 		RETURNING seq`,
 		meta.Seq, meta.HeadHash, meta.LineHash).Scan(&seq)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return validationError("anchor meta ratchet rejected a lower seq")
+		return validationError("anchor meta ratchet rejected the write (lower seq, or same seq with a different line_hash)")
 	}
+	if err != nil {
+		return mapError(err)
+	}
+	return nil
+}
+
+// OverwriteAnchorMeta 无条件覆盖单行高水位：**显式运维动作专用**，不走棘轮。
+// 信任假设＝调用方（CLI 的 --reseed）是人工确认过的恢复操作：合法回滚/整表
+// 清理后旧高水位指向不存在的链头，棘轮会一直挡住新播种；重播种以当前链头
+// 重建基线，接受高水位倒退。日常定时任务必须用 RecordAnchorMeta，
+// 误用本方法等于放弃截断/改写检测。见 deploy/README.md §6.1 第 3 步。
+func (r *AuditRepo) OverwriteAnchorMeta(ctx context.Context, meta coreaudit.AnchorMeta) error {
+	if meta.Seq < 1 || len(meta.HeadHash) != 32 || len(meta.LineHash) != 32 {
+		return validationError("invalid anchor meta")
+	}
+	_, err := r.db.q(ctx).Exec(ctx, `
+		INSERT INTO anchor_meta (singleton, seq, head_hash, line_hash, updated_at)
+		VALUES (true, $1, $2, $3, now())
+		ON CONFLICT (singleton) DO UPDATE
+		SET seq = EXCLUDED.seq,
+		    head_hash = EXCLUDED.head_hash,
+		    line_hash = EXCLUDED.line_hash,
+		    updated_at = EXCLUDED.updated_at`,
+		meta.Seq, meta.HeadHash, meta.LineHash)
 	if err != nil {
 		return mapError(err)
 	}

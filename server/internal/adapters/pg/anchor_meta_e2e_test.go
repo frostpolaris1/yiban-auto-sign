@@ -4,8 +4,10 @@ package pg_test
 //
 // # 功能
 // RecordAnchorMeta 的 seq 只进不退：meta 3→1 必须被拒且库内仍是 3；
-// 同 seq 幂等重放放行；更高 seq 正常推进；非法值（seq 非正、哈希长度错）
-// 一律 validation 拒绝。读回三字段与写入值一致。
+// 同 seq 且整行哈希相同才放行（幂等重放）；同 seq 不同 line_hash 直写
+// 必须被拒（棘轮绑行哈希，库 owner 平行篡改洗不掉证据）；更高 seq 正常
+// 推进；非法值（seq 非正、哈希长度错）一律 validation 拒绝。
+// 读回三字段与写入值一致。
 //
 // # 口径
 // 棘轮是第二道防线：CLI 先行判截断/改写后才写 meta；走到这里还倒退
@@ -75,6 +77,23 @@ func TestAnchorMetaRatchetE2E(t *testing.T) {
 	meta, err = e.audits.AnchorMeta(e.ctx)
 	if err != nil || meta == nil || meta.Seq != 4 {
 		t.Fatalf("meta after forward write = (%+v, %v), want seq=4", meta, err)
+	}
+
+	// 审查探针：棘轮绑 line_hash——同 seq 不同整行哈希的直写必须被拒。
+	// 库 owner 绕过 CLI 用同 seq 平行篡改高水位时，line_hash 不在棘轮
+	// 等值分支里就洗得掉截断/改写证据；等 seq 只许重写同一行。
+	sameSeqDiffLine := anchorMetaOf(4, 0x33, 0x99)
+	diffErr := e.audits.RecordAnchorMeta(e.ctx, sameSeqDiffLine)
+	if diffErr == nil {
+		t.Fatal("ratchet accepted same seq with a different line_hash")
+	}
+	requireValidation(t, diffErr)
+	meta, err = e.audits.AnchorMeta(e.ctx)
+	if err != nil || meta == nil {
+		t.Fatalf("AnchorMeta after same-seq rejection = (%+v, %v), want the old row", meta, err)
+	}
+	if meta.Seq != 4 || !bytes.Equal(meta.LineHash, forward.LineHash) {
+		t.Fatalf("meta after same-seq rejection = %+v, want untouched seq=4 line=%x", meta, forward.LineHash)
 	}
 
 	// 非法值：seq 非正与哈希长度错都是 validation 拒绝。

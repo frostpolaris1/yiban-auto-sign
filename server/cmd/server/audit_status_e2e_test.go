@@ -245,6 +245,104 @@ func TestAuditStatusAnchorTruncatedE2E(t *testing.T) {
 	}
 }
 
+// 审查探针②-2（巡检侧闭环）：合法恢复三步——移走锚点文件（留取证）后
+// 巡检 anchor_truncated 判红；按 --reseed 的两步原语（以当前链头追加
+// 新行＋OverwriteAnchorMeta 无条件覆盖，CLI 接线由 cmd/cli e2e 钉）
+// 重播种后，巡检必须回到 ok 且 meta 确实更新到新行字节。
+// 旧棘轮（>=）下"同 seq 覆盖 meta"顺带放行，库 owner 可平行洗证据；
+// 现在无条件覆盖只剩独立方法，正常 RecordAnchorMeta 同 seq 异哈希被拒。
+func TestAuditStatusAnchorReseedE2E(t *testing.T) {
+	anchorPath := filepath.Join(t.TempDir(), "audit-anchor.log")
+	e := w2cNewEnvWithAnchor(t, anchorPath)
+	master := e.user("anchor-reseed@example.com", coreauth.RoleMaster)
+	session := e.login(master)
+	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		for _, action := range []coreaudit.Action{
+			coreaudit.ActionUserCreate,
+			coreaudit.ActionSchoolCreate,
+			coreaudit.ActionAdminGrant,
+		} {
+			if _, err := e.audits.Append(ctx, appaudit.Entry{
+				TS:         time.Date(2026, 11, 8, 8, 0, 0, 0, time.UTC),
+				ActorLabel: "anchor-master",
+				Action:     action,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("append audit rows: %v", err)
+	}
+	headOf := func() coreaudit.Anchor {
+		t.Helper()
+		lastID := e.scalarInt("SELECT id FROM audit_logs ORDER BY id DESC LIMIT 1")
+		hashHex := e.scalarString("SELECT encode(hash, 'hex') FROM audit_logs WHERE id = $1", lastID)
+		hash, err := hex.DecodeString(hashHex)
+		if err != nil || len(hash) != 32 {
+			t.Fatalf("decode head hash: %v", err)
+		}
+		count := e.scalarInt("SELECT count(*) FROM audit_logs")
+		return coreaudit.Anchor{Seq: lastID, Count: int64(count), Hash: hash}
+	}
+	file := anchoradapter.NewFile(anchorPath)
+	head := headOf()
+	if err := file.Append(e.ctx, head, time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("append anchor: %v", err)
+	}
+	seeded, err := file.Last(e.ctx)
+	if err != nil {
+		t.Fatalf("read anchor last: %v", err)
+	}
+	if err := e.audits.RecordAnchorMeta(e.ctx, coreaudit.AnchorMeta{
+		Seq: seeded.Seq, HeadHash: seeded.Hash, LineHash: seeded.LineHash,
+	}); err != nil {
+		t.Fatalf("record anchor meta: %v", err)
+	}
+	before := e.auditStatus(session)
+	if !before.OK || before.AnchorStatus != "ok" || !before.AnchorOK {
+		t.Fatalf("before removal = %+v, want ok", before)
+	}
+	oldLineHash := e.scalarString("SELECT encode(line_hash, 'hex') FROM anchor_meta WHERE singleton")
+
+	// 移走锚点文件（保留取证）：有高水位在，巡检必须 anchor_truncated 判红。
+	forensic := anchorPath + ".forensic"
+	if err := os.Rename(anchorPath, forensic); err != nil {
+		t.Fatalf("move anchor file away: %v", err)
+	}
+	red := e.auditStatus(session)
+	if red.OK || red.AnchorStatus != "mismatch" || red.AnchorReason != "anchor_truncated" {
+		t.Fatalf("after removal = %+v, want mismatch anchor_truncated", red)
+	}
+
+	// 重播种（runAudit --reseed 的两步原语，同序执行）：以当前链头追加
+	// 新行，再无条件覆盖 anchor_meta。旧记录行不在文件里也必须能落。
+	reseededAt := time.Date(2026, 11, 11, 2, 0, 0, 0, time.UTC)
+	if err := file.Append(e.ctx, headOf(), reseededAt); err != nil {
+		t.Fatalf("reseed append: %v", err)
+	}
+	strongest, err := file.Latest(e.ctx)
+	if err != nil {
+		t.Fatalf("read strongest after reseed: %v", err)
+	}
+	if err := e.audits.OverwriteAnchorMeta(e.ctx, coreaudit.AnchorMeta{
+		Seq: strongest.Seq, HeadHash: strongest.Hash, LineHash: strongest.LineHash,
+	}); err != nil {
+		t.Fatalf("reseed overwrite meta: %v", err)
+	}
+	newLineHash := e.scalarString("SELECT encode(line_hash, 'hex') FROM anchor_meta WHERE singleton")
+	if newLineHash == oldLineHash {
+		t.Fatal("reseed did not update anchor_meta line_hash")
+	}
+	if newLineHash != hex.EncodeToString(strongest.LineHash) {
+		t.Fatalf("meta line_hash = %q, want the reseeded row %x", newLineHash, strongest.LineHash)
+	}
+	after := e.auditStatus(session)
+	if !after.OK || after.AnchorStatus != "ok" || !after.AnchorOK {
+		t.Fatalf("after reseed = %+v, want ok with anchor ok", after)
+	}
+}
+
 // 审查探针：文件锚点行的 count 被改写——链内哈希不变，但整行字节哈希
 // 与 anchor_meta 不符，巡检必须判 anchor_rewritten，不得放行。
 func TestAuditStatusAnchorCountRewriteE2E(t *testing.T) {

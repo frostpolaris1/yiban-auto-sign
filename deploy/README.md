@@ -542,7 +542,7 @@ sudo systemctl restart yiban.service
    sudo systemctl daemon-reload
    sudo systemctl enable --now yiban-audit-anchor.timer
    sudo systemctl list-timers yiban-audit-anchor.timer
-   journalctl -u yiban-audit-anchor.service   # 每次运行一行 seq/count/hash
+   journalctl -u yiban-audit-anchor.service   # 链头前进一行 seq/count/hash，安静日一行 already anchored
    ```
    容器：在宿主用 cron 进容器执行（compose 已把运行配置注入 app 容器）：
    ```cron
@@ -550,14 +550,36 @@ sudo systemctl restart yiban.service
    ```
    命令输出是一行 `audit anchor: seq=… count=… hash=…`；锚点文件本身由命令追加，
    不要把 stdout 重定向到同一个锚点文件（日志的 `>>` 目标不是锚点文件）。
-3. 恢复旧备份或手工整表清理后，锚点会指向已不存在的链头并持续判红。
-   这是预期：确认是合法回滚后，停服、移走旧锚点文件（保留取证），
-   用 systemd 单元重新播种——单元自带 EnvironmentFile，root 读不到的
-   `server.env` 由它注入，`yiban` 直跑读不到：
+   链头未前进时重跑是幂等的：输出 `already anchored`，不追加、不写 meta，
+   安静日的每日 timer 不再往文件里堆"同 seq 新时间戳"行。
+3. 恢复旧备份或手工整表清理后，锚点会指向已不存在的链头并持续判红
+   （`anchor_status=mismatch`、`anchor_reason=anchor_truncated`）。这是预期。
+   确认是合法回滚后走闭环：**停服 → 移走旧锚点文件（留取证）→
+   `--reseed` 显式重播种 → 巡检回 `ok`**。重播种必须走单元同款身份：
+   `/etc/yiban/server.env` 是 0600 root:root，`yiban` 直跑读不到，systemd
+   以 root 读 `EnvironmentFile` 后降权到 `yiban`——锚点文件属主保持 `yiban`，
+   后续 timer 才接得上。用一次性 transient 单元，**不要**给常驻 service 的
+   `ExecStart` 加 `--reseed`（那等于天天放弃检测）：
    ```bash
-   sudo systemctl start yiban-audit-anchor.service   # 播种新基线并覆盖 anchor_meta
-   journalctl -u yiban-audit-anchor.service -n 20
-   sudo systemctl start yiban.service                # 再起服务
+   sudo systemctl stop yiban.service
+   sudo mv /var/lib/yiban/audit-anchor.log /var/lib/yiban/audit-anchor.log.forensic-$(date +%F)
+   sudo systemd-run --unit=yiban-anchor-reseed --wait \
+     -p EnvironmentFile=/etc/yiban/server.env \
+     -p User=yiban -p Group=yiban -p ReadWritePaths=/var/lib/yiban \
+     /usr/local/bin/yiban-cli audit anchor --reseed
+   # stderr 一行 "--reseed 显式重播种（运维动作）…"，stdout 一行 reseed seq=…
+   sudo systemctl start yiban.service
+   ```
+   巡检回到 `anchor_status=ok` 即闭环完成（`GET /api/admin/audit-status`；
+   或再跑一次**不带 flag** 的 `audit anchor`——输出 `already anchored`
+   同样说明文件与 meta 已一致）。信任假设同时写进 flag 说明与代码注释：
+   `--reseed` 走 `OverwriteAnchorMeta` 无条件覆盖 `anchor_meta`（绕开棘轮），
+   只允许人工确认过的恢复动作使用；日常路径的同 seq 异哈希直写会被新棘轮
+   （`seq >` 或 `seq =` 且 `line_hash` 相同）拒绝。
+   容器形态同理（compose 已注入运行配置），恢复窗口里手动进容器跑：
+   ```bash
+   docker compose --env-file deploy/container/compose.env -f deploy/container/docker-compose.yml \
+     exec -T app /usr/local/bin/yiban-cli audit anchor --reseed
    ```
 
 容器形态另有两个编排层变量，不进 Go 名册，也不在镜像里：`POSTGRES_PASSWORD`
