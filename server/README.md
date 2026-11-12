@@ -200,15 +200,22 @@ methods, paths, roles and per-endpoint semantics — lives in
 section names capabilities, not routes.
 
 Covered: auth and password reset; self-service delete and restore for users
-and accounts (physical purge is master/admin-only); users with batch
+and accounts with a 7-day grace window (delete answers `recover_until`, a
+grace-window login with the correct password carries
+`details.recoverable`, a restore whose phone or email was re-claimed
+answers 409; physical purge is master/admin-only); users with batch
 actions; schools and administrator bindings; accounts with batch actions
-and credentials (platform detect, verify, manual review, batch sign,
-person-name reveal); photos with retention and an optional
-random safety crop; location policies; scheduling — windows, previews, the
-daily plan build with the weekend gate and the front/uniform sign
-distribution, time preferences with a switch cooldown; the signing worker
-with leases, retries and a global pause switch; audit with an on-demand
-chain status check; events, diagnostics and retention; announcements;
+and credentials (platform detect, verify, manual review or the
+confirm-defaults auto-approve, batch sign with a random pick among
+equivalent tasks, person-name reveal); photos with retention, an optional
+random safety crop and school-owned default photos (a per-school asset
+with an independent lifecycle, migration 00031); location policies;
+scheduling — windows, previews, the daily plan build with the weekend gate
+and the front/uniform sign distribution, time preferences with a switch
+cooldown; the signing worker with leases, retries and a fail-closed global
+pause switch (paused answers 503 on manual sign and the interactive
+platform surfaces); audit with an on-demand chain status check; events,
+diagnostics and retention; announcements;
 in-app notifications with email and webhook delivery (ServerChan Turbo or a
 custom https outlet behind an SSRF allowlist) and a daily failure digest;
 runtime settings write-back — schedule margins and the time-preference
@@ -312,7 +319,7 @@ Canonical runtime files:
 | `YIBAN_WEBHOOK_ENABLE` | no | `false` | webhook push channel master switch; when off, notification webhook ledger rows record `skipped(webhook_not_configured)` |
 | `YIBAN_WEBHOOK_TYPE` | no | `serverchan` | `serverchan` (Server酱 Turbo) or `custom` (https only, re-checked against the SSRF allowlist) |
 | `YIBAN_WEBHOOK_SECRET` | no | empty | outlet credential: the ServerChan SendKey or the full webhook URL; never logged, audited or echoed in an error |
-| `YIBAN_WEBHOOK_COOLDOWN_SEC` | no | `60` | per-topic push throttle window in seconds (0 = no throttle); process-local, cleared on restart |
+| `YIBAN_WEBHOOK_COOLDOWN_SEC` | no | `60` | per-topic push throttle window in seconds (0 = no throttle); process-local, cleared on restart. The same window also throttles same-title admin mail per recipient |
 | `YIBAN_WEBHOOK_DAILY_MAX` | no | `5` | daily push quota (0 = unlimited); only truly delivered pushes occupy it, tracked in the notification ledger |
 | `YIBAN_RATE_LIMIT_ENABLE` | no | `true` | inbound rate limiting for login, forgot/reset password, change password, verify and sign |
 | `YIBAN_RATE_IP_PER_MIN` | no | `60` | requests per minute per client IP on those routes |
