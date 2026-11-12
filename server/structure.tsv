@@ -14,7 +14,7 @@ server/cmd	server,cli,bench,probe-login	process entrypoints
 server/migrations	postgres	SQL migrations
 server/internal/core	auth,user,school,account,schedule,photo,audit,mail,webhook,diagnostic,clock,status,errs,mask,logfield,retry,egress,plan,capacity,image,scope,window,rate,location,fsperm,notify	pure domain packages
 server/internal/app	auth,user,school,account,schooladmin,schedule,timepref,calendar,stats,photos,location,audit,diagnostic,egress,worker,events,retention,selfcheck,notify,settings	use cases
-server/internal/adapters	pg,session,config,mail,webhook,storage,legacy	infrastructure packages
+server/internal/adapters	pg,session,config,mail,webhook,storage,anchor,legacy	infrastructure packages
 server/internal/entry/http	router,respond,oapi,user,school,account,admin,schedule,signing,photos,location,events,calendar,ratelimit,notify,system,audit	http handlers
 ui/src	app,pages,features,components,lib,styles	frontend layers
 ui/src/features	auth,dashboard,design,user,schools,accounts,schedule,run,settings,photos	domain features

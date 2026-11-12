@@ -56,6 +56,8 @@ func main() {
 		code = runRestore(newBackupDeps(os.Stdout, os.Stderr), os.Args[2:])
 	case "user":
 		code = runUser(os.Args[2:], os.Stdin, os.Stdout, os.Stderr)
+	case "audit":
+		code = runAudit(os.Args[2:], os.Stdout, os.Stderr)
 	case "--help", "-h", "help":
 		usage(os.Stdout)
 	default:
@@ -82,6 +84,7 @@ func usage(w io.Writer) {
   backup       pg_dump + GPG 对称加密备份（含行数清单）
   restore      解密导入 + 迁移 + 行数对账（--force 或交互确认）
   user         建号；user create-master 是干净部署建第一个 master 的入口
+  audit        审计链运维；audit anchor 把链头追加到库外锚点文件
   help         打印本清单
 `)
 }

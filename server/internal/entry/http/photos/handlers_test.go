@@ -80,7 +80,7 @@ func (f *fakeService) Open(context.Context, corescope.Scope, string) (corephoto.
 	return f.getRec, f.getBody, f.getErr
 }
 
-func (f *fakeService) Delete(_ context.Context, scope corescope.Scope, _ string) (corephoto.Record, error) {
+func (f *fakeService) Delete(_ context.Context, scope corescope.Scope, _ string, _ appaudit.Actor) (corephoto.Record, error) {
 	f.scopes = append(f.scopes, scope)
 	return corephoto.Record{}, f.deleteErr
 }

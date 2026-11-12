@@ -303,6 +303,8 @@ func (s *Service) applyScheduleChange(ctx context.Context, change ScheduleChange
 
 // readOverrideOld 读覆盖行旧值作审计标量。
 // 存储故障原样上抛；坏行按未覆盖（nil）——坏值原文绝不进审计。
+// 布尔键（allow_time_pref 与两枚周末门）必须走 BoolOverride：
+// IntOverride 读布尔行会按坏行返回错误，旧值被记成 nil。
 func (s *Service) readOverrideOld(ctx context.Context, key string) (any, error) {
 	if key == KeyScheduleSignDist {
 		raw, found, err := s.deps.Schedule.StringOverride(ctx, key)
@@ -320,7 +322,7 @@ func (s *Service) readOverrideOld(ctx context.Context, key string) (any, error) 
 		}
 		return raw, nil
 	}
-	if key == KeyScheduleAllowTimePref {
+	if key == KeyScheduleAllowTimePref || key == KeyScheduleSundaySign || key == KeyScheduleSaturdaySign {
 		value, found, err := s.deps.Schedule.BoolOverride(ctx, key)
 		if err != nil {
 			if isSettingValueInvalid(err) {

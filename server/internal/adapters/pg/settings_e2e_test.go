@@ -244,11 +244,11 @@ func appendAuditAt(t *testing.T, e *testEnv, ts time.Time, action coreaudit.Acti
 	return row
 }
 
-// 审计列表：最新在前、键集游标、action/actor/from/to 筛选。
+// 审计列表：最新在前、键集游标、action/actor/target/from/to 筛选。
 func TestAuditLogListE2E(t *testing.T) {
 	e := newEnv(t)
 	// 列表的排序与 actor 过滤必须有索引：缺索引时每页全表排序。
-	for _, index := range []string{"idx_audit_ts_id", "idx_audit_actor_label_ts"} {
+	for _, index := range []string{"idx_audit_ts_id", "idx_audit_actor_label_ts", "idx_audit_target_id_ts"} {
 		if n := e.scalarInt(
 			"SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1", index); n != 1 {
 			t.Fatalf("index %s missing (count=%d)", index, n)
@@ -312,6 +312,23 @@ func TestAuditLogListE2E(t *testing.T) {
 	}
 	if len(byActor) != 4 {
 		t.Fatalf("actor rows = %d, want 4", len(byActor))
+	}
+	// target 精确匹配，响应行带 target_id；计数与列表同过滤口径。
+	byTarget, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Target: "target-1", Limit: 50})
+	if err != nil {
+		t.Fatalf("ListLogs target: %v", err)
+	}
+	if len(byTarget) != 5 {
+		t.Fatalf("target rows = %d, want 5", len(byTarget))
+	}
+	if byTarget[0].Target != "target-1" {
+		t.Fatalf("row target = %q, want target-1", byTarget[0].Target)
+	}
+	if total, err := repo.CountLogs(e.ctx, coreaudit.LogQuery{Target: "target-1"}); err != nil || total != 5 {
+		t.Fatalf("CountLogs(target) = (%d, %v), want (5, nil)", total, err)
+	}
+	if total, err := repo.CountLogs(e.ctx, coreaudit.LogQuery{Action: "auth.login"}); err != nil || total != 2 {
+		t.Fatalf("CountLogs(auth.login) = (%d, %v), want (2, nil)", total, err)
 	}
 	// from/to 闭区间。
 	from := base.Add(time.Minute)
@@ -630,6 +647,52 @@ func TestScheduleSettingsServiceE2E(t *testing.T) {
 	}
 	if value := e.scalarString("SELECT value FROM settings WHERE key = $1", appsettings.KeyScheduleEdgeFrontSec); value != "120" {
 		t.Fatalf("settings value after failed put = %q, want the pre-failure 120", value)
+	}
+}
+
+// 周末布尔旧值：第二次写回必须记 [true,false] 真值，而不是 [null,false]。
+// readOverrideOld 曾把布尔键落到 IntOverride，真库读布尔行失败后按坏行记 nil。
+func TestWeekendBoolOldValueE2E(t *testing.T) {
+	e := newEnv(t)
+	master := e.createUser("weekend-old-value-master@example.com")
+	resolver, err := appsettings.NewResolver(pg.NewSettingsRepo(e.db), map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store:    pg.NewAnnouncementRepo(e.db),
+		Audit:    e.audits,
+		Tx:       e.db,
+		Clock:    coreclock.Fixed{T: time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)},
+		Schedule: pg.NewSettingsRepo(e.db),
+		Resolver: resolver,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	actor := appaudit.Actor{UserID: master.ID, Role: coreauth.RoleMaster, Label: "m***@example.com"}
+
+	if err := svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: true},
+		{Key: appsettings.KeyScheduleSaturdaySign, Op: appsettings.ScheduleOpSet, Value: true},
+	}); err != nil {
+		t.Fatalf("SetSchedule(true): %v", err)
+	}
+	if err := svc.SetSchedule(e.ctx, corescope.Master(), actor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: false},
+		{Key: appsettings.KeyScheduleSaturdaySign, Op: appsettings.ScheduleOpSet, Value: false},
+	}); err != nil {
+		t.Fatalf("SetSchedule(false): %v", err)
+	}
+	detail := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'settings.schedule_writeback' ORDER BY id DESC LIMIT 1")
+	for _, key := range []string{appsettings.KeyScheduleSundaySign, appsettings.KeyScheduleSaturdaySign} {
+		if !strings.Contains(detail, `"`+key+`":[true,false]`) {
+			t.Fatalf("audit detail = %q, want %q to record [true,false]", detail, key)
+		}
 	}
 }
 

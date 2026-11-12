@@ -116,6 +116,10 @@ type Config struct {
 
 	// PhotoDir 是图片 blob 存储根目录。
 	PhotoDir string
+	// AuditAnchorFile 是库外审计锚点文件路径。
+	// 空表示未配置：巡检端点不做锚点比对，行为与引入锚点前相同。
+	// 非空时服务进程只读该文件；写锚点由 `yiban-cli audit anchor` 负责。
+	AuditAnchorFile string
 	// PhotoCrop 开启用户照片上传前的随机安全裁切（每边 0–10%）。
 	// 缺省关闭：上传不做裁切，审计 detail 的四边比例记 0。
 	PhotoCrop bool
@@ -324,6 +328,7 @@ var (
 	keyHTTPAddr         = stringKey{"YIBAN_HTTP_ADDR", DefaultHTTPAddr}
 	keyTimezone         = stringKey{"YIBAN_TZ", DefaultTimezone}
 	keyPhotoDir         = stringKey{"YIBAN_PHOTO_DIR", DefaultPhotoDir}
+	keyAuditAnchorFile  = stringKey{"YIBAN_AUDIT_ANCHOR_FILE", ""}
 	keyPhotoCropEnabled = boolKey{"YIBAN_PHOTO_CROP_ENABLE", false}
 	keyUIDir            = stringKey{"YIBAN_UI_DIR", ""}
 	keyDocsDir          = stringKey{"YIBAN_DOCS_DIR", ""}
@@ -371,6 +376,7 @@ func configSpecs() []keySpec {
 		keyHTTPAddr.spec(),
 		keyTimezone.spec(),
 		keyPhotoDir.spec(),
+		keyAuditAnchorFile.spec(),
 		keyPhotoCropEnabled.spec(),
 		keyUIDir.spec(),
 		keyDocsDir.spec(),
@@ -531,6 +537,8 @@ func LoadFrom(src Source) (*Config, error) {
 	if cfg.PhotoDir == "" {
 		return nil, errors.New("config: YIBAN_PHOTO_DIR must not be empty")
 	}
+	// 空表示未配置库外锚点：巡检端点不做锚点比对。
+	cfg.AuditAnchorFile = strings.TrimSpace(keyAuditAnchorFile.read(src))
 	// 裁切缺省关闭；显式开启后上传前按每边 0–10% 随机裁切。
 	if cfg.PhotoCrop, err = keyPhotoCropEnabled.read(src); err != nil {
 		return nil, err

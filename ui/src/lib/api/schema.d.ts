@@ -1783,11 +1783,14 @@ export interface paths {
          *     the opaque cursor; limit is 1..200 with a default of 50. action
          *     filters by the exact action word, actor filters by the masked actor
          *     label (the value is masked with the same rule the writer used, so a
-         *     full email matches its stored masked form), from and to bound the
-         *     row time inclusively; both take an RFC3339 timestamp. Each row
-         *     carries the row id, the time, the action, the masked actor label and
+         *     full email matches its stored masked form), target filters by the
+         *     exact target id (account or user id), from and to bound the row time
+         *     inclusively; both take an RFC3339 timestamp. Each row carries the row
+         *     id, the time, the action, the masked actor label, the target id and
          *     the detail JSON text, which is passed through the mask rules on the
-         *     way out. The chain is not verified here and there is no export.
+         *     way out. total is the number of rows matching the same filters
+         *     ignoring the cursor; has_more is true when next_cursor is non-empty.
+         *     The chain is not verified here and there is no export.
          *     Legacy parity: the previous console showed every school's rows to
          *     both master and admin; this endpoint deliberately keeps that global
          *     view and does not narrow by the caller's school scope.
@@ -1824,6 +1827,16 @@ export interface paths {
          *     the last verified row and is empty when no row passed. checked_at is
          *     the server time this scan finished. No audit detail, actor, target or
          *     personal value is returned.
+         *     When YIBAN_AUDIT_ANCHOR_FILE is configured and the file exists, the
+         *     scan also compares the chain head against the strongest anchor line
+         *     written by `yiban-cli audit anchor`: the anchored row must still
+         *     exist, its hash must match and the row count through it must match.
+         *     Deleting a prefix, truncating the anchored tail, clearing the table or
+         *     re-signing the chain therefore answers ok=false with anchor_status
+         *     mismatch. Rows appended after the anchor are outside this check; keep
+         *     an off-machine copy of the anchor for that window. Without an anchor
+         *     file the endpoint keeps the previous chain-only behavior and reports
+         *     anchor_status disabled or missing.
          *     Legacy parity: the previous console's audit-status endpoint read a
          *     cached daily snapshot; this endpoint recomputes the chain on demand.
          */
@@ -2967,6 +2980,11 @@ export interface components {
             action: string;
             /** @description Masked actor label fixed at write time; never a raw address. */
             actor: string;
+            /**
+             * @description Target id fixed at write time: an account id, a user id or a
+             *     settings/school word, depending on the action. Not personal data.
+             */
+            target: string;
             /** @description Detail JSON text; passed through the mask rules on the way out. */
             detail: string;
         };
@@ -2974,6 +2992,15 @@ export interface components {
             items: components["schemas"]["AuditLogItem"][];
             /** @description Cursor for the next page; empty on the last page. */
             next_cursor: string;
+            /**
+             * Format: int64
+             * @description Rows matching the same filters, ignoring the cursor. It is a
+             *     snapshot count, not a stable pagination total under concurrent
+             *     writes.
+             */
+            total: number;
+            /** @description True when next_cursor is non-empty. */
+            has_more: boolean;
         };
         AuditStatusReport: {
             /** @description True only when a non-empty chain verified end to end. */
@@ -3000,6 +3027,37 @@ export interface components {
              * @description Server time this scan finished.
              */
             checked_at: string;
+            /**
+             * @description Out-of-database anchor comparison state. disabled means no anchor
+             *     path is configured; missing means the path is configured but the
+             *     file does not exist yet (the chain verdict stands); ok means the
+             *     anchor row, its hash, the row count and the recorded line bytes
+             *     (line_hash in anchor_meta) all match; mismatch means the anchor
+             *     row is gone, its hash or recorded line bytes changed, the count
+             *     changed or the chain is empty; error means the anchor file exists
+             *     but cannot be read or parsed (fail closed); not_checked means the
+             *     chain was already broken, so the anchor comparison did not run.
+             * @enum {string}
+             */
+            anchor_status?: "disabled" | "missing" | "ok" | "mismatch" | "error" | "not_checked";
+            /** @description True only when anchor_status is ok. */
+            anchor_ok?: boolean;
+            /**
+             * @description Human-readable anchor mismatch or error reason. Empty when the
+             *     anchor is disabled, missing or ok. Never contains audit detail,
+             *     actor or personal data.
+             */
+            anchor_reason?: string;
+            /**
+             * Format: int64
+             * @description Row id of the anchor head when an anchor was compared.
+             */
+            anchor_seq?: number;
+            /**
+             * Format: int64
+             * @description Row count through the anchor head when an anchor was compared.
+             */
+            anchor_count?: number;
         };
         Error: {
             error: components["schemas"]["ErrorBody"];
@@ -6831,6 +6889,12 @@ export interface operations {
                  *     a full address matches its stored masked label.
                  */
                 actor?: string;
+                /**
+                 * @description Exact target id filter. The value is whatever the action records:
+                 *     an account id, a user id, a settings/school word or a photo id.
+                 *     Useful for aggregating every row that touched one object.
+                 */
+                target?: string;
                 /** @description Inclusive lower bound on the row time (RFC3339). */
                 from?: string;
                 /** @description Inclusive upper bound on the row time (RFC3339). */

@@ -10,9 +10,9 @@
 // 追加顺序与锁由适配器保证（见 internal/app/audit）。
 //
 // # 复用
-// Action 及全部动作常量；Entry、Row、Report、Status、RowSource；
-// EncodeDetail、Payload、Hash、Verify、VerifyStream、ZeroHash、DeriveKey；
-// 错误值 ErrEmptyChain、ErrBrokenChain、ErrDetail*；
+// Action 及全部动作常量；Entry、Row、Report、Status、RowSource、Anchor、AnchorResult；
+// EncodeDetail、Payload、Hash、Verify、VerifyStream、VerifyStreamWithAnchor、ZeroHash、DeriveKey；
+// 错误值 ErrEmptyChain、ErrBrokenChain、ErrDetail*、ErrAnchorEmpty；
 // 上限常量 MaxDetailBytes、MaxReasonChars、Domain。
 //
 // # 口径
@@ -22,6 +22,7 @@
 package audit
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
@@ -150,16 +151,15 @@ const (
 	// 平台姓名懒加载揭示：只在平台认证成功且审计追加成功后响应姓名。
 	// detail 只记 field=person_name，**绝无姓名本体**；揭示本身零业务写库。
 	ActionAccountPersonNameReveal Action = "account.person_name_reveal"
-	ActionCredentialUpdate        Action = "credential.update"
-	ActionCredentialRekey         Action = "credential.rekey"
+	// 已裁撤：task.claim / task.settle / credential.update / credential.rekey。
+	// 这些动作从不写链（死常量）；高频写链会形成 advisory lock 风暴，
+	// 观测面由引擎监控承担。删除常量即关闭误用入口。
 	// P4 引擎：明确登录失败把账号移出排期（active → credential_error）。
 	ActionAccountCredentialError Action = "account.credential_error"
 	// 口令或设备更新把 credential_error 账号放回排期（credential_error → active）。
 	// 改绑手机号不走恢复：它回 pending 重审。
 	ActionAccountCredentialRecovered Action = "account.credential_recovered"
 	ActionTaskReclaim                Action = "task.reclaim"
-	ActionTaskClaim                  Action = "task.claim"
-	ActionTaskSettle                 Action = "task.settle"
 	// 手动签到把当日 failed/skipped 行放回队列（C2）。detail 只记来源状态。
 	ActionTaskRearm Action = "task.rearm"
 	// P5-C：账号定位策略写入。detail 只记 mode 与 has_reason。
@@ -167,6 +167,11 @@ const (
 	// P5：图片入库。detail 只记四边裁切比例与输出摘要，
 	// 无自由文本，无用户标识之外的主体信息。
 	ActionPhotoUpload Action = "photo.upload"
+	// P5：图片软删。属主自助删除，actor 是本人；detail 只记照片 id 形状。
+	ActionPhotoDelete Action = "photo.delete"
+	// 保留期自动物理清理：系统 actor（system:purge），按删除批次记计数。
+	// detail 只含 count，无照片 id、属主或任何个人数据。
+	ActionPhotoPurge Action = "photo.purge"
 	// P5：学校默认图登记。detail 只记新照片 id 与旧照片 id（可空）。
 	ActionSchoolDefaultPhotoSet Action = "school.default_photo_set"
 )
@@ -220,21 +225,24 @@ type Report struct {
 }
 
 // LogRow 是只读列表使用的一行审计记录。
-// 它不含 prev_hash/hash 与目标字段：列表不校验链、不导出。
+// 它不含 prev_hash/hash：列表不校验链、不导出。
 // ActorLabel 是写入时固定的掩码标签，永不是原始地址。
+// Target 是写入时固定的目标 id（账号/用户/设置/学校），不是个人数据。
 type LogRow struct {
 	ID         int64
 	TS         time.Time
 	Action     string
 	ActorLabel string
+	Target     string
 	Detail     string
 }
 
 // LogQuery 是审计只读列表的已定型条件。Actor 是已掩码的标签。
-// From 与 To 是闭区间时间界；nil 表示该侧不限。
+// Target 是精确匹配的目标 id。From 与 To 是闭区间时间界；nil 表示该侧不限。
 type LogQuery struct {
 	Action string
 	Actor  string
+	Target string
 	From   *time.Time
 	To     *time.Time
 	Cursor string
@@ -244,6 +252,10 @@ type LogQuery struct {
 // ErrEmptyChain 表示校验了零行。
 // **空扫描永不通过**：它没有证明任何事。
 var ErrEmptyChain = errors.New("audit: no rows to verify")
+
+// ErrAnchorEmpty 表示锚点文件存在但没有任何锚点行。
+// 空文件不是"从未写锚点"：它可能是一次截断，调用方按错误处理，不得静默放行。
+var ErrAnchorEmpty = errors.New("audit: anchor file is empty")
 
 // ErrBrokenChain 表示某行存储哈希或链接与复算结果不符。
 var ErrBrokenChain = errors.New("audit: chain is broken")
@@ -274,9 +286,10 @@ const MaxReasonChars = 200
 
 // 落在本闭区间内的数字按手机号形状拒绝。
 // 11 位手机号与普通整数无法区分，故整段形状一律拒绝。
+// 与字符串规则 isElevenDigitOneShape 对齐：全部 1 开头的 11 位数字。
 const (
 	phoneNumberMin = 10000000000
-	phoneNumberMax = 14999999999
+	phoneNumberMax = 19999999999
 )
 
 // detailKeys 是允许的 detail 键全集，闭合不可扩展。
@@ -299,7 +312,8 @@ var (
 	// wordShape 是状态或原因码。
 	wordShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	// universityIDShape 是平台院校标识：UUID 形状或纯数字/字母 ID，
-	// 1..128 字符，无空格与自由文本标点。它是公开院校标识，不是 PII。
+	// 1..128 字符，无空格与自由文本标点。它是公开院校标识，不是 PII；
+	// 11 位、1 开头的纯数字串按手机号形状拒绝（见 validateDetailString）。
 	universityIDShape = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$`)
 	// uuidShape 匹配小写 UUID。学校默认图只记照片 id。
 	uuidShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -309,7 +323,8 @@ var (
 	settingsKeyShape = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,63}$`)
 	// hostShape 匹配 SMTP 主机名或 IP 字面量：字母、数字、点、冒号、连字符。
 	// 首字符允许冒号以容纳 IPv6 字面量（::1）；无空白、@、引号与路径分隔符，
-	// 故不是自由文本通道。只服务 settings.mail_writeback 的 mail.smtp_host 字面值。
+	// 故不是自由文本通道。纯数字串与手机号形状另行拒绝（见 validateDetailValue）：
+	// 数字串是号码的通道，不是主机名。只服务 settings.mail_writeback 的 mail.smtp_host 字面值。
 	hostShape = regexp.MustCompile(`^[A-Za-z0-9:][A-Za-z0-9.:-]{0,252}$`)
 )
 
@@ -471,12 +486,29 @@ func validateDetailValue(key string, value any) error {
 			}
 			for _, item := range pair {
 				switch value := item.(type) {
-				case nil, bool, int, int64:
+				case nil, bool:
+				case int:
+					// 整数值同样要过手机号形状：changes 是键→[旧,新]对，
+					// 不能因为值住在映射里就绕过通用数值规则。
+					if err := validateDetailNumber(float64(value)); err != nil {
+						return err
+					}
+				case int64:
+					if err := validateDetailNumber(float64(value)); err != nil {
+						return err
+					}
 				case string:
 					// 主机名形状只放行 mail.smtp_host 一个键位：
 					// 其它 changes 键仍只收状态词，不因本批放宽。
-					if !wordShape.MatchString(value) &&
-						(name != "mail.smtp_host" || !hostShape.MatchString(value)) {
+					// 纯数字串与手机号形状一律拒绝：主机名不是号码的通道。
+					if name == "mail.smtp_host" {
+						if !hostShape.MatchString(value) || isAllDigits(value) ||
+							mask.TextHasPhone(value) {
+							return fmt.Errorf("%w: changes %q value has the wrong value shape", ErrDetailShape, name)
+						}
+						continue
+					}
+					if !wordShape.MatchString(value) {
 						return fmt.Errorf("%w: changes %q value has the wrong value shape", ErrDetailShape, name)
 					}
 				default:
@@ -527,7 +559,7 @@ func validateDetailString(key, text string) error {
 		}
 		return nil
 	case "university_id":
-		if !universityIDShape.MatchString(text) {
+		if !universityIDShape.MatchString(text) || isElevenDigitOneShape(text) {
 			return fmt.Errorf("%w: %q has the wrong university id shape", ErrDetailShape, key)
 		}
 		return nil
@@ -553,6 +585,25 @@ func validateDetailNumber(value float64) error {
 		return fmt.Errorf("%w: numeric phone shape", ErrDetailPII)
 	}
 	return nil
+}
+
+// isAllDigits 报告 s 非空且全为 ASCII 十进制数字。
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isElevenDigitOneShape 报告 s 是 11 位、1 开头的纯数字串。
+// 手机号与普通整数无法区分，故整段形状一律拒绝。
+func isElevenDigitOneShape(s string) bool {
+	return len(s) == 11 && s[0] == '1' && isAllDigits(s)
 }
 
 // validateDetailNumberWithLimits 是数值族的公共入口：先按按键限幅（crop_* 限
@@ -622,23 +673,58 @@ func Verify(key []byte, rows []Row) (Report, error) {
 	return Report{FirstID: rows[0].ID, LastID: rows[len(rows)-1].ID, Count: int64(len(rows))}, nil
 }
 
+// Anchor 是库外锚点文件的一行：链头行 id、截至该行的行数与链头哈希。
+// Seq 是锚点时刻最后一行（最大 id）的行 id；Count 是该行及之前的行数；
+// Hash 是该行存储哈希的 32 字节原值；LineHash 是锚点文件该**整行字节**的
+// SHA-256（对齐旧线 last_hash 语义）：文件里的 count 或任何字段被改写，
+// 行字节变化即 LineHash 不符，count 改写无法绕过比对。
+// 锚点只覆盖到 Seq：其后新增的行不在本次比对范围内。
+type Anchor struct {
+	Seq      int64
+	Count    int64
+	Hash     []byte
+	LineHash []byte
+}
+
+// AnchorResult 是一次锚点比对的结论。
+// Checked 为 false 表示没有执行比对（未配置锚点、链已断或空链未带锚点）。
+// OK 只在 Checked 为 true 且锚点与链一致时为 true。
+type AnchorResult struct {
+	Checked bool
+	OK      bool
+	Reason  string
+}
+
+// AnchorMeta 是库内锚点高水位：最后一次成功记录的锚点 seq、链头哈希与
+// 锚点文件整行字节的 SHA-256。它用于检出锚点文件被截断或改写
+// （含 count 改写：行字节变化即 LineHash 不符）；链比对仍以锚点文件的最强行为准。
+type AnchorMeta struct {
+	Seq      int64
+	HeadHash []byte
+	LineHash []byte
+}
+
 // Status 汇总一次分窗链校验的结论。
 //
 // Empty 为 true 表示链内零行：没有证明任何事，**不是通过**。
 // BrokenAt 非零表示第一个不符行的行 id；CheckedRows 数到该行（含）。
-// 其余情况是完整通过：CheckedRows 是总行数，LastHash 是最后一行存储哈希的副本。
+// 其余情况是完整通过：CheckedRows 是总行数，LastID 是最后一行 id，
+// LastHash 是最后一行存储哈希的副本。
+// Anchor 是可选锚点比对的结论；未传锚点时 Checked 为 false。
 type Status struct {
 	CheckedRows int64
+	LastID      int64
 	LastHash    []byte
 	BrokenAt    int64
 	Empty       bool
+	Anchor      AnchorResult
 }
 
 // RowSource 按 id 升序返回 afterID 之后的一批行，至多 limit 行。
 // 返回零行表示链已读完。游标必须严格前进。
 type RowSource func(afterID int64, limit int) ([]Row, error)
 
-// VerifyStream 分窗校验整条链。
+// VerifyStream 分窗校验整条链，不比对库外锚点。
 //
 // 每窗至多 batchSize 行，故内存占用是 O(batchSize)，不随链长增长。
 // 窗与窗之间用上一窗末行的存储哈希作锚点：下一窗首行的 prev_hash
@@ -653,15 +739,47 @@ type RowSource func(afterID int64, limit int) ([]Row, error)
 // 扫描在读到不足一窗时结束：其后追加的行不在本次结论内，
 // LastHash 是本次扫描到的链头，可作外部锚点。
 func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
+	return VerifyStreamWithAnchor(key, batchSize, next, nil, nil)
+}
+
+// VerifyStreamWithAnchor 在 VerifyStream 的链校验之外比对库外锚点。
+//
+// anchor 为 nil 时行为与 VerifyStream 完全相同。非 nil 时：
+//   - meta 非 nil：文件锚点行与库内高水位逐字段比对（seq/head_hash/line_hash），
+//     任何一项不符即判不符——count 改写改变行字节，LineHash 必然失配；
+//   - 链内零行：锚点记录的链头已消失，判不符；
+//   - 链头 id 小于锚点 Seq：锚点覆盖的尾部行被删除，判不符；
+//   - 锚点 Seq 那一行不存在：前缀或尾部被删除，判不符；
+//   - 该行哈希与锚点不符：链被改写或重签，判不符；
+//   - 该行及之前的行数与锚点 Count 不符：前缀被删除或改写，判不符。
+//
+// meta 只作文件完整性的高水位，不参与链内复算；meta 为 nil 时退回
+// 仅文件对链的比对口径。
+// 锚点只覆盖到 Seq：Seq 之后新增的行被删除不在本判据内（需要离机副本）。
+// 链已断时不做锚点比对（断链本身已是结论）；空链带锚点仍执行比对并判不符。
+// 锚点值非法（Seq/Count 非正、Count 大于 Seq、哈希长度不是 32 字节）返回错误。
+func VerifyStreamWithAnchor(key []byte, batchSize int, next RowSource, anchor *Anchor, meta *AnchorMeta) (Status, error) {
 	if batchSize < 1 {
 		return Status{}, fmt.Errorf("audit: batch size must be positive, got %d", batchSize)
 	}
 	if next == nil {
 		return Status{}, errors.New("audit: nil row source")
 	}
+	if anchor != nil {
+		if anchor.Seq < 1 || anchor.Count < 1 || anchor.Count > anchor.Seq ||
+			len(anchor.Hash) != sha256.Size {
+			return Status{}, errors.New("audit: invalid anchor")
+		}
+		if meta != nil && (len(meta.HeadHash) != sha256.Size || len(meta.LineHash) != sha256.Size) {
+			return Status{}, errors.New("audit: invalid anchor meta")
+		}
+	}
 	var status Status
 	var afterID int64
-	var anchor []byte
+	var prevHash []byte
+	var anchorHash []byte
+	var anchorCount int64
+	anchorFound := false
 	for {
 		rows, err := next(afterID, batchSize)
 		if err != nil {
@@ -669,6 +787,7 @@ func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
 		}
 		if len(rows) == 0 {
 			status.Empty = status.CheckedRows == 0
+			applyAnchor(&status, anchor, meta, anchorFound, anchorHash, anchorCount)
 			return status, nil
 		}
 		if len(rows) > batchSize {
@@ -682,7 +801,7 @@ func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
 		if rows[0].ID <= afterID {
 			return Status{}, fmt.Errorf("audit: row source did not advance past %d", afterID)
 		}
-		if anchor != nil && !hmac.Equal(anchor, rows[0].PrevHash) {
+		if prevHash != nil && !hmac.Equal(prevHash, rows[0].PrevHash) {
 			status.CheckedRows++
 			status.BrokenAt = rows[0].ID
 			return status, nil
@@ -692,6 +811,7 @@ func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
 				index := firstBrokenIndex(key, rows)
 				// 断点之前同窗的行已通过复算：链头锚点取最后一行的哈希。
 				if index > 0 {
+					status.LastID = rows[index-1].ID
 					status.LastHash = append([]byte(nil), rows[index-1].Hash...)
 				}
 				status.CheckedRows += int64(index + 1)
@@ -700,14 +820,65 @@ func VerifyStream(key []byte, batchSize int, next RowSource) (Status, error) {
 			}
 			return Status{}, err
 		}
+		if anchor != nil && !anchorFound {
+			for i := range rows {
+				if rows[i].ID == anchor.Seq {
+					anchorHash = append([]byte(nil), rows[i].Hash...)
+					anchorCount = status.CheckedRows + int64(i+1)
+					anchorFound = true
+					break
+				}
+			}
+		}
 		status.CheckedRows += int64(len(rows))
+		status.LastID = rows[len(rows)-1].ID
 		last := append([]byte(nil), rows[len(rows)-1].Hash...)
 		status.LastHash = last
-		anchor = last
+		prevHash = last
 		afterID = rows[len(rows)-1].ID
 		if len(rows) < batchSize {
+			applyAnchor(&status, anchor, meta, anchorFound, anchorHash, anchorCount)
 			return status, nil
 		}
+	}
+}
+
+// applyAnchor 把一次已完成的链扫描与锚点比对写入 status.Anchor。
+// 只在链未断的返回路径调用；断链时锚点比对没有意义。
+// meta 非 nil 时先比文件锚点行与库内高水位（seq/head_hash/line_hash）：
+// count 改写改变行字节，LineHash 必然失配，绕不开这一层。
+func applyAnchor(status *Status, anchor *Anchor, meta *AnchorMeta, found bool, hash []byte, count int64) {
+	if anchor == nil {
+		return
+	}
+	status.Anchor.Checked = true
+	switch {
+	case status.Empty:
+		status.Anchor.Reason = fmt.Sprintf(
+			"审计链为空，但锚点记录曾有 %d 行（链头 id=%d）——疑似整表被清空", anchor.Count, anchor.Seq)
+	case meta != nil && anchor.Seq < meta.Seq:
+		status.Anchor.Reason = "anchor_truncated"
+	case meta != nil && anchor.Seq > meta.Seq:
+		status.Anchor.Reason = "anchor_unrecorded"
+	case meta != nil && !bytes.Equal(anchor.LineHash, meta.LineHash):
+		status.Anchor.Reason = "anchor_rewritten"
+	case meta != nil && !hmac.Equal(anchor.Hash, meta.HeadHash):
+		// LineHash 相等时 HeadHash 必然相等；走到这里属矛盾状态，失败关闭。
+		status.Anchor.Reason = "anchor_rewritten"
+	case status.LastID < anchor.Seq:
+		status.Anchor.Reason = fmt.Sprintf(
+			"链头 id=%d 小于锚点记录的 %d——锚点覆盖的尾部行被删除", status.LastID, anchor.Seq)
+	case !found:
+		status.Anchor.Reason = fmt.Sprintf(
+			"锚点记录的行 id=%d 不存在——前缀或尾部被删除", anchor.Seq)
+	case !hmac.Equal(hash, anchor.Hash):
+		status.Anchor.Reason = fmt.Sprintf(
+			"锚点记录的行 id=%d 哈希与锚点不符——链被改写或重签", anchor.Seq)
+	case count != anchor.Count:
+		status.Anchor.Reason = fmt.Sprintf(
+			"锚点行 id=%d 之前的行数由 %d 变为 %d——前缀被删除或改写", anchor.Seq, anchor.Count, count)
+	default:
+		status.Anchor.OK = true
 	}
 }
 

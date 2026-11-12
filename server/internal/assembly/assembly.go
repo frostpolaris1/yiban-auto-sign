@@ -38,6 +38,7 @@ import (
 	"sync"
 	"time"
 
+	anchoradapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/anchor"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	mailadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
@@ -471,7 +472,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			return nil, err
 		}
 		notifyLib, systemLib, auditLib, settingsSvc, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle,
-			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, settingsResolver, mailResolver, cipher)
+			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, settingsResolver, mailResolver, cipher,
+			cfg.AuditAnchorFile)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -994,7 +996,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	webhook corewebhook.Sender, webhookCooldown appsettings.Cooldown,
 	autoApprove appsettings.AutoApproveStore, settingsRepo *pg.SettingsRepo,
 	settingsResolver *appsettings.Resolver, mailResolver *appsettings.MailResolver,
-	cipher *appaccount.Cipher) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
+	cipher *appaccount.Cipher, auditAnchorFile string) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
@@ -1033,6 +1035,10 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	inspector, err := appaudit.NewInspector(audits, clk)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("assembly: audit inspector: %w", err)
+	}
+	// 库外锚点：路径为空表示未配置，巡检端点不做比对（现行为）。
+	if auditAnchorFile != "" {
+		inspector.WithAnchor(anchoradapter.NewFile(auditAnchorFile)).WithAnchorMeta(audits)
 	}
 
 	entries, err := config.Registry()

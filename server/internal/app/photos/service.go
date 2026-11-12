@@ -2,9 +2,11 @@
 //
 // # 功能
 // 上传、列表、读取、软删与保留期设置；上传前完成预处理与去重。
-// 上传写 photo.upload 审计（四边裁切比例与输出摘要）；随机安全
-// 裁切（每边 0–10%）默认关闭，由装配方按 env 决定是否开启。
-// 到期行清理与无引用 blob 回收由 RetentionLoop 每日执行。
+// 上传写 photo.upload 审计（四边裁切比例与输出摘要）；软删写
+// photo.delete（属主本人为 actor，detail 只含照片 id 形状）；
+// 随机安全裁切（每边 0–10%）默认关闭，由装配方按 env 决定是否开启。
+// 到期行清理与无引用 blob 回收由 RetentionLoop 每日执行；每批物理删除
+// 写 photo.purge（系统 actor system:purge，detail 只含本批 count）。
 // 处理顺序固定：预处理 → 写 blob → 事务内写记录与审计。
 // 本包**不**发 HTTP 请求、**不**写 SQL、**不**生成公开 URL。
 //
@@ -351,13 +353,43 @@ func (s *Service) Open(ctx context.Context, scope corescope.Scope, id string) (c
 	return rec, body, nil
 }
 
-// Delete 软删一张图片。重复删除返回同一行，不报错。
+// Delete 软删一张图片。重复删除返回同一行，不报错，也不重复审计。
 // 只接受 owner 作用域：/api/me/photos/{id} 只能删本人的行。
-func (s *Service) Delete(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
+// 真实软删与 photo.delete 审计同事务；审计失败整体回滚。
+// detail 只记照片 id 形状（UUID），无属主、摘要或自由文本。
+func (s *Service) Delete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (corephoto.Record, error) {
 	if err := requireUser(scope); err != nil {
 		return corephoto.Record{}, err
 	}
-	return s.deps.Store.SoftDelete(ctx, scope, id, s.deps.Clock.Now())
+	var deleted corephoto.Record
+	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		rec, changed, err := s.deps.Store.SoftDelete(ctx, scope, id, s.deps.Clock.Now())
+		if err != nil {
+			return err
+		}
+		deleted = rec
+		// 幂等重放不重复审计：只有真实软删转移才写 photo.delete。
+		if !changed {
+			return nil
+		}
+		if _, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
+			TS:          s.deps.Clock.Now().UTC(),
+			ActorUserID: actor.UserID,
+			ActorRole:   actor.Role,
+			ActorLabel:  actor.Label,
+			Action:      coreaudit.ActionPhotoDelete,
+			TargetType:  "photo",
+			TargetID:    rec.ID,
+			Detail:      map[string]any{"photo_id": rec.ID},
+		}); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return corephoto.Record{}, err
+	}
+	return deleted, nil
 }
 
 // Retention 返回用户的保留期天数；未设置时返回缺省值。
@@ -413,6 +445,8 @@ const blobSafetyWindow = time.Hour
 
 // Purge 循环删除到期行，直到一次调用返回 0 行。
 // limit 是单次删除上限：单条大事务会长时间持锁。
+// 每个非空删除批次与 photo.purge 审计同事务：系统 actor 记 system:purge，
+// detail 只含本批 count；审计失败则本批回滚，不留无留痕的物理删除。
 func (s *Service) Purge(ctx context.Context, limit int) (int64, error) {
 	limit, err := appcore.NormalizeLimit(limit)
 	if err != nil {
@@ -420,7 +454,25 @@ func (s *Service) Purge(ctx context.Context, limit int) (int64, error) {
 	}
 	var total int64
 	for {
-		n, err := s.deps.Store.PurgeExpired(ctx, s.deps.Clock.Now(), limit)
+		var n int64
+		err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+			var err error
+			n, err = s.deps.Store.PurgeExpired(ctx, s.deps.Clock.Now(), limit)
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return nil
+			}
+			_, err = s.deps.Audit.Append(ctx, coreaudit.Entry{
+				TS:         s.deps.Clock.Now().UTC(),
+				ActorLabel: "system:purge",
+				Action:     coreaudit.ActionPhotoPurge,
+				TargetType: "photo",
+				Detail:     map[string]any{"count": n},
+			})
+			return err
+		})
 		if err != nil {
 			return total, err
 		}

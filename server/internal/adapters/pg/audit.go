@@ -133,8 +133,10 @@ const auditStatusBatchRows = 2000
 // 复算；窗与窗之间由 core 的 VerifyStream 比较首行 prev_hash 与上一窗
 // 末行哈希。空链、断链都作为结论返回（err == nil），只有读库错误上抛。
 // 读到不足一窗即结束：其后追加的行不在本次结论内。
-func (r *AuditRepo) VerifyStatus(ctx context.Context) (coreaudit.Status, error) {
-	return coreaudit.VerifyStream(r.key, auditStatusBatchRows,
+// anchor 非 nil 时同时比对库外锚点（删前缀/截尾/清空/链尾重签）；
+// meta 非 nil 时再比库内高水位（截断/count 改写/seq 倒退）。
+func (r *AuditRepo) VerifyStatus(ctx context.Context, anchor *coreaudit.Anchor, meta *coreaudit.AnchorMeta) (coreaudit.Status, error) {
+	return coreaudit.VerifyStreamWithAnchor(r.key, auditStatusBatchRows,
 		func(afterID int64, limit int) ([]coreaudit.Row, error) {
 			rows, err := r.db.q(ctx).Query(ctx, `
 				SELECT id, ts, coalesce(school_id::text, ''), coalesce(actor_user_id::text, ''),
@@ -149,7 +151,112 @@ func (r *AuditRepo) VerifyStatus(ctx context.Context) (coreaudit.Status, error) 
 			}
 			defer rows.Close()
 			return scanChainRows(rows)
-		})
+		}, anchor, meta)
+}
+
+// Head 读取当前链头：最后一行 id、截至该行的行数与存储哈希。
+//
+// 单条语句取行与 count，二者来自同一快照：并发追加不会让锚点记下
+// 指向不同行的 seq 与 count。空链返回 ok=false。
+// 本方法不校验链，只服务 CLI 的 `audit anchor` 写锚点。
+func (r *AuditRepo) Head(ctx context.Context) (coreaudit.Anchor, bool, error) {
+	var seq, count int64
+	var hash []byte
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT id, hash, (SELECT count(*) FROM audit_logs)
+		  FROM audit_logs
+		 ORDER BY id DESC
+		 LIMIT 1`).Scan(&seq, &hash, &count)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coreaudit.Anchor{}, false, nil
+	}
+	if err != nil {
+		return coreaudit.Anchor{}, false, mapError(err)
+	}
+	return coreaudit.Anchor{Seq: seq, Count: count, Hash: hash}, true, nil
+}
+
+// AnchorMeta 读取库内锚点高水位；无行返回 (nil, nil)。
+// 高水位只用于检出锚点文件被截断/改写（含 count 改写），不参与链内复算。
+func (r *AuditRepo) AnchorMeta(ctx context.Context) (*coreaudit.AnchorMeta, error) {
+	var seq int64
+	var headHash, lineHash []byte
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT seq, head_hash, line_hash FROM anchor_meta WHERE singleton`).
+		Scan(&seq, &headHash, &lineHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if len(headHash) != 32 || len(lineHash) != 32 {
+		return nil, fmt.Errorf("pg: anchor meta hash has the wrong length")
+	}
+	return &coreaudit.AnchorMeta{Seq: seq, HeadHash: headHash, LineHash: lineHash}, nil
+}
+
+// RecordAnchorMeta 按**棘轮**覆盖写单行高水位：seq 只进不退，同 seq 还要求
+// 整行哈希相同。ON CONFLICT 的 WHERE 允许两种写入：
+//   - 新 seq 严格大于库内 seq：链头前进，正常推进；
+//   - 新 seq 等于库内 seq 且 line_hash 与库内相同：同一行的幂等重放。
+//
+// 同 seq 不同 line_hash 直写不更新任何列、RETURNING 无行，本方法把它当错误
+// 返回。行哈希绑进棘轮是刻意的：库 owner 绕过 CLI 用同 seq 改写高水位时，
+// 平行篡改（含洗掉截断/改写证据）洗不动——line_hash 覆盖只有一条合法路径，
+// 即锚点文件里真的存在那一整行（由 CLI 门保证）。
+// 倒退写同样被拒：调用方已先行判截断，走到这里还倒退属于缺陷，不得静默吞掉。
+// 调用方负责保证 seq/head_hash/line_hash 与锚点文件的最强行一致：
+// 本方法只落库，不读锚点文件。
+// 显式重播种（--reseed）走 OverwriteAnchorMeta，不走本棘轮。
+func (r *AuditRepo) RecordAnchorMeta(ctx context.Context, meta coreaudit.AnchorMeta) error {
+	if meta.Seq < 1 || len(meta.HeadHash) != 32 || len(meta.LineHash) != 32 {
+		return validationError("invalid anchor meta")
+	}
+	var seq int64
+	err := r.db.q(ctx).QueryRow(ctx, `
+		INSERT INTO anchor_meta (singleton, seq, head_hash, line_hash, updated_at)
+		VALUES (true, $1, $2, $3, now())
+		ON CONFLICT (singleton) DO UPDATE
+		SET seq = EXCLUDED.seq,
+		    head_hash = EXCLUDED.head_hash,
+		    line_hash = EXCLUDED.line_hash,
+		    updated_at = EXCLUDED.updated_at
+		WHERE EXCLUDED.seq > anchor_meta.seq
+		   OR (EXCLUDED.seq = anchor_meta.seq AND EXCLUDED.line_hash = anchor_meta.line_hash)
+		RETURNING seq`,
+		meta.Seq, meta.HeadHash, meta.LineHash).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return validationError("anchor meta ratchet rejected the write (lower seq, or same seq with a different line_hash)")
+	}
+	if err != nil {
+		return mapError(err)
+	}
+	return nil
+}
+
+// OverwriteAnchorMeta 无条件覆盖单行高水位：**显式运维动作专用**，不走棘轮。
+// 信任假设＝调用方（CLI 的 --reseed）是人工确认过的恢复操作：合法回滚/整表
+// 清理后旧高水位指向不存在的链头，棘轮会一直挡住新播种；重播种以当前链头
+// 重建基线，接受高水位倒退。日常定时任务必须用 RecordAnchorMeta，
+// 误用本方法等于放弃截断/改写检测。见 deploy/README.md §6.1 第 3 步。
+func (r *AuditRepo) OverwriteAnchorMeta(ctx context.Context, meta coreaudit.AnchorMeta) error {
+	if meta.Seq < 1 || len(meta.HeadHash) != 32 || len(meta.LineHash) != 32 {
+		return validationError("invalid anchor meta")
+	}
+	_, err := r.db.q(ctx).Exec(ctx, `
+		INSERT INTO anchor_meta (singleton, seq, head_hash, line_hash, updated_at)
+		VALUES (true, $1, $2, $3, now())
+		ON CONFLICT (singleton) DO UPDATE
+		SET seq = EXCLUDED.seq,
+		    head_hash = EXCLUDED.head_hash,
+		    line_hash = EXCLUDED.line_hash,
+		    updated_at = EXCLUDED.updated_at`,
+		meta.Seq, meta.HeadHash, meta.LineHash)
+	if err != nil {
+		return mapError(err)
+	}
+	return nil
 }
 
 // scanChainRows 把链行查询结果扫成 core 的 Row 切片。
@@ -171,30 +278,13 @@ func scanChainRows(rows pgx.Rows) ([]coreaudit.Row, error) {
 }
 
 // ListLogs 读取审计只读列表，按 (ts DESC, id DESC) 键集分页。
-// action 与 actor 是精确匹配；from/to 是闭区间时间界；
-// actor 已由用例层掩码。本方法**不**校验链、**不**返回目标字段。
+// action、actor 与 target 是精确匹配；from/to 是闭区间时间界；
+// actor 已由用例层掩码。本方法**不**校验链。
 func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]coreaudit.LogRow, string, error) {
 	if query.Limit < 1 || query.Limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
 	}
-	where := " WHERE TRUE"
-	var args []any
-	if query.Action != "" {
-		args = append(args, query.Action)
-		where += fmt.Sprintf(" AND action = $%d", len(args))
-	}
-	if query.Actor != "" {
-		args = append(args, query.Actor)
-		where += fmt.Sprintf(" AND actor_label = $%d", len(args))
-	}
-	if query.From != nil {
-		args = append(args, query.From.UTC())
-		where += fmt.Sprintf(" AND ts >= $%d", len(args))
-	}
-	if query.To != nil {
-		args = append(args, query.To.UTC())
-		where += fmt.Sprintf(" AND ts <= $%d", len(args))
-	}
+	where, args := auditListWhere(query)
 	if query.Cursor != "" {
 		at, id, err := decodeIntCursor(query.Cursor)
 		if err != nil {
@@ -203,7 +293,7 @@ func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]c
 		args = append(args, at, id)
 		where += fmt.Sprintf(" AND (ts, id) < ($%d, $%d)", len(args)-1, len(args))
 	}
-	sqlText := `SELECT id, ts, action, actor_label, detail FROM audit_logs` + where +
+	sqlText := `SELECT id, ts, action, actor_label, target_id, detail FROM audit_logs` + where +
 		` ORDER BY ts DESC, id DESC`
 	sqlText, args = appendLimit(sqlText, args, query.Limit)
 
@@ -216,7 +306,7 @@ func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]c
 	items := make([]coreaudit.LogRow, 0, query.Limit)
 	for rows.Next() {
 		var row coreaudit.LogRow
-		if err := rows.Scan(&row.ID, &row.TS, &row.Action, &row.ActorLabel, &row.Detail); err != nil {
+		if err := rows.Scan(&row.ID, &row.TS, &row.Action, &row.ActorLabel, &row.Target, &row.Detail); err != nil {
 			return nil, "", mapError(err)
 		}
 		items = append(items, row)
@@ -232,4 +322,44 @@ func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]c
 		return row.TS, row.ID
 	})
 	return items, next, nil
+}
+
+// CountLogs 数同过滤条件下的总行数，忽略游标与 limit。
+// 与 ListLogs 共用 auditListWhere：两处过滤口径不会漂移。
+func (r *AuditRepo) CountLogs(ctx context.Context, query coreaudit.LogQuery) (int64, error) {
+	where, args := auditListWhere(query)
+	var total int64
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM audit_logs`+where, args...).Scan(&total); err != nil {
+		return 0, mapError(err)
+	}
+	return total, nil
+}
+
+// auditListWhere 构造列表与计数共用的过滤子句。
+// 返回的 clause 以 " WHERE TRUE" 开头；args 与占位符按出现顺序对应。
+func auditListWhere(query coreaudit.LogQuery) (string, []any) {
+	where := " WHERE TRUE"
+	var args []any
+	if query.Action != "" {
+		args = append(args, query.Action)
+		where += fmt.Sprintf(" AND action = $%d", len(args))
+	}
+	if query.Actor != "" {
+		args = append(args, query.Actor)
+		where += fmt.Sprintf(" AND actor_label = $%d", len(args))
+	}
+	if query.Target != "" {
+		args = append(args, query.Target)
+		where += fmt.Sprintf(" AND target_id = $%d", len(args))
+	}
+	if query.From != nil {
+		args = append(args, query.From.UTC())
+		where += fmt.Sprintf(" AND ts >= $%d", len(args))
+	}
+	if query.To != nil {
+		args = append(args, query.To.UTC())
+		where += fmt.Sprintf(" AND ts <= $%d", len(args))
+	}
+	return where, args
 }

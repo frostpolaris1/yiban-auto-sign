@@ -215,6 +215,36 @@ func (e AccountStatus) Valid() bool {
 	}
 }
 
+// Defines values for AuditStatusReportAnchorStatus.
+const (
+	AuditStatusReportAnchorStatusDisabled   AuditStatusReportAnchorStatus = "disabled"
+	AuditStatusReportAnchorStatusError      AuditStatusReportAnchorStatus = "error"
+	AuditStatusReportAnchorStatusMismatch   AuditStatusReportAnchorStatus = "mismatch"
+	AuditStatusReportAnchorStatusMissing    AuditStatusReportAnchorStatus = "missing"
+	AuditStatusReportAnchorStatusNotChecked AuditStatusReportAnchorStatus = "not_checked"
+	AuditStatusReportAnchorStatusOk         AuditStatusReportAnchorStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the AuditStatusReportAnchorStatus enum.
+func (e AuditStatusReportAnchorStatus) Valid() bool {
+	switch e {
+	case AuditStatusReportAnchorStatusDisabled:
+		return true
+	case AuditStatusReportAnchorStatusError:
+		return true
+	case AuditStatusReportAnchorStatusMismatch:
+		return true
+	case AuditStatusReportAnchorStatusMissing:
+		return true
+	case AuditStatusReportAnchorStatusNotChecked:
+		return true
+	case AuditStatusReportAnchorStatusOk:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CapacityReportBinding.
 const (
 	EgressRate CapacityReportBinding = "egress_rate"
@@ -1460,18 +1490,54 @@ type AuditLogItem struct {
 
 	// Id Row id of the audit chain row.
 	Id int64 `json:"id"`
+
+	// Target Target id fixed at write time: an account id, a user id or a
+	// settings/school word, depending on the action. Not personal data.
+	Target string `json:"target"`
 }
 
 // AuditLogPage defines model for AuditLogPage.
 type AuditLogPage struct {
-	Items []AuditLogItem `json:"items"`
+	// HasMore True when next_cursor is non-empty.
+	HasMore bool           `json:"has_more"`
+	Items   []AuditLogItem `json:"items"`
 
 	// NextCursor Cursor for the next page; empty on the last page.
 	NextCursor string `json:"next_cursor"`
+
+	// Total Rows matching the same filters, ignoring the cursor. It is a
+	// snapshot count, not a stable pagination total under concurrent
+	// writes.
+	Total int64 `json:"total"`
 }
 
 // AuditStatusReport defines model for AuditStatusReport.
 type AuditStatusReport struct {
+	// AnchorCount Row count through the anchor head when an anchor was compared.
+	AnchorCount *int64 `json:"anchor_count,omitempty"`
+
+	// AnchorOk True only when anchor_status is ok.
+	AnchorOk *bool `json:"anchor_ok,omitempty"`
+
+	// AnchorReason Human-readable anchor mismatch or error reason. Empty when the
+	// anchor is disabled, missing or ok. Never contains audit detail,
+	// actor or personal data.
+	AnchorReason *string `json:"anchor_reason,omitempty"`
+
+	// AnchorSeq Row id of the anchor head when an anchor was compared.
+	AnchorSeq *int64 `json:"anchor_seq,omitempty"`
+
+	// AnchorStatus Out-of-database anchor comparison state. disabled means no anchor
+	// path is configured; missing means the path is configured but the
+	// file does not exist yet (the chain verdict stands); ok means the
+	// anchor row, its hash, the row count and the recorded line bytes
+	// (line_hash in anchor_meta) all match; mismatch means the anchor
+	// row is gone, its hash or recorded line bytes changed, the count
+	// changed or the chain is empty; error means the anchor file exists
+	// but cannot be read or parsed (fail closed); not_checked means the
+	// chain was already broken, so the anchor comparison did not run.
+	AnchorStatus *AuditStatusReportAnchorStatus `json:"anchor_status,omitempty"`
+
 	// BrokenAt Row id of the first mismatch; null when intact or empty.
 	BrokenAt *int64 `json:"broken_at"`
 
@@ -1491,6 +1557,17 @@ type AuditStatusReport struct {
 	// Ok True only when a non-empty chain verified end to end.
 	Ok bool `json:"ok"`
 }
+
+// AuditStatusReportAnchorStatus Out-of-database anchor comparison state. disabled means no anchor
+// path is configured; missing means the path is configured but the
+// file does not exist yet (the chain verdict stands); ok means the
+// anchor row, its hash, the row count and the recorded line bytes
+// (line_hash in anchor_meta) all match; mismatch means the anchor
+// row is gone, its hash or recorded line bytes changed, the count
+// changed or the chain is empty; error means the anchor file exists
+// but cannot be read or parsed (fail closed); not_checked means the
+// chain was already broken, so the anchor comparison did not run.
+type AuditStatusReportAnchorStatus string
 
 // AutoApproveStatus defines model for AutoApproveStatus.
 type AutoApproveStatus struct {
@@ -3243,6 +3320,11 @@ type AuditLogListParams struct {
 	// Actor Actor filter. Masked with the writer's rule before matching, so
 	// a full address matches its stored masked label.
 	Actor *string `form:"actor,omitempty" json:"actor,omitempty"`
+
+	// Target Exact target id filter. The value is whatever the action records:
+	// an account id, a user id, a settings/school word or a photo id.
+	// Useful for aggregating every row that touched one object.
+	Target *string `form:"target,omitempty" json:"target,omitempty"`
 
 	// From Inclusive lower bound on the row time (RFC3339).
 	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
@@ -5842,6 +5924,14 @@ func (siw *ServerInterfaceWrapper) AuditLogList(c *gin.Context) {
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "actor", c.Request.URL.Query(), &params.Actor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter actor: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "target" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "target", c.Request.URL.Query(), &params.Target, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter target: %w", err), http.StatusBadRequest)
 		return
 	}
 

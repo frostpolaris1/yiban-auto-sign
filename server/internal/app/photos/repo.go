@@ -25,7 +25,9 @@ type Store interface {
 	// List 按作用域列一页，游标语义与账号列表一致。
 	List(ctx context.Context, scope corescope.Scope, cursor string, limit int) ([]corephoto.Record, string, error)
 	// SoftDelete 软删一张；已软删返回同一行，不报错。
-	SoftDelete(ctx context.Context, scope corescope.Scope, id string, now time.Time) (corephoto.Record, error)
+	// changed 表示本次调用是否真的把行从"未删"翻成"已删"；
+	// 已软删的幂等重放返回 changed=false，调用方据此避免重复审计。
+	SoftDelete(ctx context.Context, scope corescope.Scope, id string, now time.Time) (corephoto.Record, bool, error)
 	// Retention 返回用户保留期；没有设置时返回 0，由用例补缺省。
 	Retention(ctx context.Context, userID string) (int, error)
 	// PutRetention 覆盖写用户保留期。

@@ -102,3 +102,45 @@ func TestAuditStatusReportsBrokenChainAsConclusion(t *testing.T) {
 		t.Fatalf("status reader called %d times, want 1", reader.called)
 	}
 }
+
+// 锚点字段原样映射：状态词、原因、seq/count 都出接口；ok 仍由用例定。
+func TestAuditStatusMapsAnchorFields(t *testing.T) {
+	at := time.Date(2026, 11, 11, 9, 15, 30, 0, time.UTC)
+	reader := &fakeStatusReader{status: appaudit.ChainStatus{
+		OK:           false,
+		Empty:        true,
+		CheckedAt:    at,
+		AnchorStatus: appaudit.AnchorStatusMismatch,
+		AnchorReason: "prefix removed",
+		AnchorSeq:    3,
+		AnchorCount:  3,
+	}}
+	handler := statusHandler(reader)
+
+	c, rec := newContext(http.MethodGet, "/api/admin/audit-status", coreauth.RoleMaster)
+	handler.AuditStatus(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("anchor mismatch = %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		OK           bool   `json:"ok"`
+		Empty        bool   `json:"empty"`
+		AnchorStatus string `json:"anchor_status"`
+		AnchorOK     bool   `json:"anchor_ok"`
+		AnchorReason string `json:"anchor_reason"`
+		AnchorSeq    int64  `json:"anchor_seq"`
+		AnchorCount  int64  `json:"anchor_count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+	}
+	if body.OK || !body.Empty {
+		t.Fatalf("body = %+v, want ok=false empty=true", body)
+	}
+	if body.AnchorStatus != "mismatch" || body.AnchorOK {
+		t.Fatalf("anchor status = %q ok=%v, want mismatch/false", body.AnchorStatus, body.AnchorOK)
+	}
+	if body.AnchorReason != "prefix removed" || body.AnchorSeq != 3 || body.AnchorCount != 3 {
+		t.Fatalf("anchor fields = %+v", body)
+	}
+}

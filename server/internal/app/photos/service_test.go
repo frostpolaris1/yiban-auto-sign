@@ -97,19 +97,20 @@ func (f *fakeStore) List(_ context.Context, scope corescope.Scope, _ string, _ i
 	return out, "", nil
 }
 
-func (f *fakeStore) SoftDelete(_ context.Context, scope corescope.Scope, id string, now time.Time) (corephoto.Record, error) {
+func (f *fakeStore) SoftDelete(_ context.Context, scope corescope.Scope, id string, now time.Time) (corephoto.Record, bool, error) {
 	if scope.Kind() != corescope.KindUser {
-		return corephoto.Record{}, errs.ErrNotFound
+		return corephoto.Record{}, false, errs.ErrNotFound
 	}
 	rec, ok := f.recs[id]
 	if !ok || rec.OwnerUserID != scope.UserID() {
-		return corephoto.Record{}, errs.ErrNotFound
+		return corephoto.Record{}, false, errs.ErrNotFound
 	}
 	if !rec.Deleted() {
 		rec.DeletedAt = &now
 		f.recs[id] = rec
+		return rec, true, nil
 	}
-	return rec, nil
+	return rec, false, nil
 }
 
 func (f *fakeStore) Retention(_ context.Context, userID string) (int, error) {
@@ -576,10 +577,10 @@ func TestUploadDedupesPerOwner(t *testing.T) {
 	}
 }
 
-// 跨用户读取与已软删读取都返回 not_found。
+// 跨用户读取与已软删读取都返回 not_found；软删写 photo.delete 审计。
 func TestGetScopesAndDelete(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc, _ := newService(t, store, blobs)
+	svc, audits := newService(t, store, blobs)
 	rec, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 5, 5))
 	if err != nil {
 		t.Fatalf("upload: %v", err)
@@ -587,19 +588,41 @@ func TestGetScopesAndDelete(t *testing.T) {
 	if _, err := svc.Get(context.Background(), owner("u2"), rec.ID); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("跨用户错误 = %v", err)
 	}
-	deleted, err := svc.Delete(context.Background(), owner("u1"), rec.ID)
+	deleted, err := svc.Delete(context.Background(), owner("u1"), rec.ID, actorOf("u1"))
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if !deleted.Deleted() {
 		t.Fatal("删除后 DeletedAt 为空")
 	}
+	if len(audits.entries) != 2 { // upload + delete
+		t.Fatalf("audit rows = %d, want 2", len(audits.entries))
+	}
+	entry := audits.entries[1]
+	if entry.Action != coreaudit.ActionPhotoDelete {
+		t.Fatalf("delete action = %q, want %q", entry.Action, coreaudit.ActionPhotoDelete)
+	}
+	if entry.TargetType != "photo" || entry.TargetID != rec.ID {
+		t.Fatalf("delete target = %s/%s, want photo/%s", entry.TargetType, entry.TargetID, rec.ID)
+	}
+	if entry.ActorUserID != "u1" || entry.ActorRole != coreauth.RoleUser {
+		t.Fatalf("delete actor = %s/%s, want u1/user", entry.ActorUserID, entry.ActorRole)
+	}
+	if entry.Detail["photo_id"] != rec.ID {
+		t.Fatalf("delete detail = %#v, want photo_id=%s", entry.Detail, rec.ID)
+	}
+	if !audits.inTx[1] {
+		t.Fatal("photo.delete audit must run inside the delete transaction")
+	}
 	if _, err := svc.Get(context.Background(), owner("u1"), rec.ID); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("删除后仍可读: %v", err)
 	}
-	again, err := svc.Delete(context.Background(), owner("u1"), rec.ID)
+	again, err := svc.Delete(context.Background(), owner("u1"), rec.ID, actorOf("u1"))
 	if err != nil || again.ID != rec.ID {
 		t.Fatalf("重复删除应幂等: %v, %+v", err, again)
+	}
+	if len(audits.entries) != 2 {
+		t.Fatalf("幂等重放写了重复审计: %d rows, want 2 (upload + first delete)", len(audits.entries))
 	}
 	// 重新上传同字节应恢复同一行。
 	restored, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 5, 5))
@@ -608,6 +631,37 @@ func TestGetScopesAndDelete(t *testing.T) {
 	}
 	if restored.ID != rec.ID || restored.Deleted() {
 		t.Fatalf("未恢复同一行: %+v", restored)
+	}
+}
+
+// 保留期物理删除按批次写 photo.purge：系统 actor、detail 只含 count、与删除同事务。
+func TestPurgeWritesSystemAudit(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc, audits := newService(t, store, blobs)
+	store.recs["photo-old"] = corephoto.Record{
+		ID: "photo-old", OwnerUserID: "u1",
+		CreatedAt: fixedNow.Add(-100 * 24 * time.Hour),
+	}
+	n, err := svc.Purge(context.Background(), 10)
+	if err != nil || n != 1 {
+		t.Fatalf("Purge = (%d, %v), want (1, nil)", n, err)
+	}
+	if len(audits.entries) != 1 {
+		t.Fatalf("audit rows = %d, want 1", len(audits.entries))
+	}
+	entry := audits.entries[0]
+	if entry.Action != coreaudit.ActionPhotoPurge {
+		t.Fatalf("action = %q, want %q", entry.Action, coreaudit.ActionPhotoPurge)
+	}
+	if entry.ActorLabel != "system:purge" || entry.ActorUserID != "" || entry.ActorRole != "" {
+		t.Fatalf("system actor = %q/%q/%q, want system:purge with no user or role",
+			entry.ActorLabel, entry.ActorUserID, entry.ActorRole)
+	}
+	if entry.Detail["count"] != int64(1) {
+		t.Fatalf("detail = %#v, want count=1", entry.Detail)
+	}
+	if !audits.inTx[0] {
+		t.Fatal("photo.purge audit must run inside the purge transaction")
 	}
 }
 
@@ -947,7 +1001,7 @@ func TestAdminCannotTouchPhotos(t *testing.T) {
 		if _, _, err := svc.Open(context.Background(), scope, rec.ID); !errors.Is(err, errs.ErrNotFound) {
 			t.Fatalf("%s Open = %v, want not_found", name, err)
 		}
-		if _, err := svc.Delete(context.Background(), scope, rec.ID); err == nil {
+		if _, err := svc.Delete(context.Background(), scope, rec.ID, actorOf("u1")); err == nil {
 			t.Fatalf("%s Delete 应被拒绝", name)
 		} else if code := errs.From(err).Code; code != errs.CodeForbidden {
 			t.Fatalf("%s Delete 错误码 = %q, want forbidden", name, code)

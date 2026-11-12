@@ -68,7 +68,7 @@ func TestPhotoRepoDedupeAndScope(t *testing.T) {
 		}
 	}
 
-	deleted, err := repo.SoftDelete(e.ctx, corescope.User(u1.ID), first.ID, now.Add(2*time.Minute))
+	deleted, _, err := repo.SoftDelete(e.ctx, corescope.User(u1.ID), first.ID, now.Add(2*time.Minute))
 	if err != nil || deleted.DeletedAt == nil {
 		t.Fatalf("delete: %+v, %v", deleted, err)
 	}
@@ -76,7 +76,7 @@ func TestPhotoRepoDedupeAndScope(t *testing.T) {
 		t.Fatalf("删除后 get = %v, want not_found", err)
 	}
 	// 跨用户软删必须 not_found，且不得改动原行。
-	if _, err := repo.SoftDelete(e.ctx, corescope.User(u2.ID), first.ID, now.Add(2*time.Minute)); !errors.Is(err, errs.ErrNotFound) {
+	if _, _, err := repo.SoftDelete(e.ctx, corescope.User(u2.ID), first.ID, now.Add(2*time.Minute)); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("跨用户软删 = %v, want not_found", err)
 	}
 	if left := e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid AND deleted_at IS NOT NULL", first.ID); left != 1 {
@@ -188,10 +188,10 @@ func TestPhotoRepoPurgeExpired(t *testing.T) {
 	keptLong := mustPhoto(t, repo, e, photoRecord(u365.ID, 34, now.Add(-60*24*time.Hour)))
 	softOld := mustPhoto(t, repo, e, photoRecord(u30.ID, 35, now.Add(-90*24*time.Hour)))
 	softNew := mustPhoto(t, repo, e, photoRecord(u30.ID, 36, now.Add(-90*24*time.Hour)))
-	if _, err := repo.SoftDelete(e.ctx, corescope.User(u30.ID), softOld.ID, now.Add(-31*24*time.Hour)); err != nil {
+	if _, _, err := repo.SoftDelete(e.ctx, corescope.User(u30.ID), softOld.ID, now.Add(-31*24*time.Hour)); err != nil {
 		t.Fatalf("soft delete old: %v", err)
 	}
-	if _, err := repo.SoftDelete(e.ctx, corescope.User(u30.ID), softNew.ID, now.Add(-24*time.Hour)); err != nil {
+	if _, _, err := repo.SoftDelete(e.ctx, corescope.User(u30.ID), softNew.ID, now.Add(-24*time.Hour)); err != nil {
 		t.Fatalf("soft delete new: %v", err)
 	}
 
@@ -256,7 +256,7 @@ func TestPhotoRepoReferencedDigests(t *testing.T) {
 
 	live := mustPhoto(t, repo, e, photoRecord(u1.ID, 70, now))
 	soft := mustPhoto(t, repo, e, photoRecord(u2.ID, 71, now))
-	if _, err := repo.SoftDelete(e.ctx, corescope.User(u2.ID), soft.ID, now); err != nil {
+	if _, _, err := repo.SoftDelete(e.ctx, corescope.User(u2.ID), soft.ID, now); err != nil {
 		t.Fatalf("soft delete: %v", err)
 	}
 
