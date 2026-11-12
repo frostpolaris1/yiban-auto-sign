@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -86,6 +87,9 @@ type Handler struct {
 	// 未接线时心跳一律断开（失败关闭）。
 	sessions   coreauth.SessionIssuer
 	cookieName string
+	// activeStreams 是当前在途的 SSE 连接数。
+	// 一个进程只装配一个 Handler，故它等价于全局并发上限。
+	activeStreams atomic.Int32
 }
 
 // NewHandler 构造事件流处理器。timer 为 nil 时用真计时器。

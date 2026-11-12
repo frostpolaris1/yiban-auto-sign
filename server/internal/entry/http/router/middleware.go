@@ -173,6 +173,24 @@ func accessLog(logger *slog.Logger, clk clock.Clock) gin.HandlerFunc {
 	}
 }
 
+// contentSecurityPolicy 是全站基线 CSP。
+//
+// script-src 只有 'self'：UI 的主题引导已外置为 /theme-boot.js，
+// 内联脚本会被浏览器拦掉（router 包的守卫测试钉住 index.html 无内联块）。
+// style-src 保留 'unsafe-inline'：React 组件的 style 属性是行内样式，
+// 不属于脚本注入面。
+// img-src 保留 data:：样式表里的下拉箭头是 data:image/svg+xml；
+// 照片字节走同源 /api/me/photos/{id}，不需要额外来源。
+// HSTS 不在进程内下发：TLS 由反向代理终结，HSTS 由代理统一下发
+// （见 deploy/README.md §5）。
+const contentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data:; " +
+	"frame-ancestors 'none'; " +
+	"object-src 'none'; " +
+	"base-uri 'none'"
+
 // securityHeaders 设置不随响应变化的头。
 func securityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -180,6 +198,7 @@ func securityHeaders() gin.HandlerFunc {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
 		// /api 与 /api/* 同一口径：未知 API 的 404 也不得被缓存。
 		if c.Request.URL.Path == "/api" || strings.HasPrefix(c.Request.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")

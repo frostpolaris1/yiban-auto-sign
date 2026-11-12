@@ -10,7 +10,8 @@ package main
 //
 // # 口径
 // 缺 DSN 时由 newAuthEnv 显式跳过（SKIP 不是绿）。
-// 业务日按服务端默认时区 Asia/Shanghai 计算；时钟走 core/clock。
+// 服务端时区显式设为 Asia/Shanghai（生产缺省）；业务日与测试同源计算。
+// 时钟走 core/clock。
 
 import (
 	"context"
@@ -36,6 +37,10 @@ func TestAbsR1PausedGatesManualSurfaces(t *testing.T) {
 		cfg.Workers = 6
 		cfg.AvgAttempt = 3 * time.Second
 		cfg.EgressRate = 1.0
+		// 直接构造 Config 会绕过 config.Load 的缺省值；这里显式钉住
+		// 生产缺省时区，否则 assembly 按 UTC 判业务日，与下面的 CST day
+		// 在 00:00–08:00 CST 窗口错开一天（#353 遗留）。
+		cfg.Timezone = config.DefaultTimezone
 	}, nil)
 	ctx := e.ctx
 
@@ -119,10 +124,12 @@ func TestAbsR1PausedGatesManualSurfaces(t *testing.T) {
 	windowCacheBefore := e.scalarInt("SELECT count(*) FROM window_cache")
 	auditBefore := e.scalarInt("SELECT count(*) FROM audit_logs")
 
-	// 中国标准时间无夏令时，固定偏移与服务端 Asia/Shanghai 等价。
+	// 服务端 Location 已显式设为 Asia/Shanghai；CST 固定偏移与 IANA 等价。
+	// day 必须与服务同源计算：两边都从同一个 Location 取业务日，
+	// 00:00–08:00 CST（UTC 前一日 16:00–24:00）也不会错开。
 	loc := time.FixedZone("CST", 8*3600)
 	now := coreclock.System{}.Now().In(loc)
-	day := now.Format("2006-01-02")
+	day := coreclock.BusinessDay(now, loc)
 	start := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, loc)
 	end := start.Add(30 * time.Minute)
 
