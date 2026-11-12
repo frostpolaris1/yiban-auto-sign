@@ -2443,6 +2443,18 @@ type SchoolUpdate struct {
 // SchoolUpdateTimezone defines model for SchoolUpdate.Timezone.
 type SchoolUpdateTimezone string
 
+// SelfDeleteOutcome defines model for SelfDeleteOutcome.
+type SelfDeleteOutcome struct {
+	// RecoverUntil End of the 7-day self-restore window (RFC3339, the delete
+	// timestamp plus core/user.SelfRestoreGrace). Restore through
+	// POST /api/me/restore until this instant; the same value is
+	// echoed in the recoverable details of logins inside the
+	// window. The email is reserved against public re-registration
+	// until then; released phone numbers may be squatted, which
+	// turns the restore into a 409 collision.
+	RecoverUntil time.Time `json:"recover_until"`
+}
+
 // SessionUser defines model for SessionUser.
 type SessionUser struct {
 	// CsrfToken Token the client sends back in X-CSRF-Token.

@@ -21,6 +21,18 @@ export interface paths {
          *     When Sec-Fetch-Site is absent, a present Origin must match the
          *     configured public origin or the request origin; a mismatch is 403. Rate limited per client IP and per normalized email; a 429
          *     carries Retry-After in seconds.
+         *     A wrong password and an unknown email answer the identical 401
+         *     with empty details. While the account is self-deleted inside its
+         *     7-day restore window (core/user.SelfRestoreGrace) and the
+         *     submitted password matches that deleted row, the 401
+         *     additionally carries details.recoverable=true and
+         *     details.recover_until (RFC3339: delete time plus the grace) so
+         *     the client can guide the caller to POST /api/me/restore; no
+         *     session is established. Outside the window, and for
+         *     administrator-deleted rows, the answer is indistinguishable from
+         *     an unknown email, and a wrong password never carries the fields
+         *     (anti-enumeration, old-line parity). Additive to the existing
+         *     unauthorized code; no new error code is introduced.
          */
         post: operations["AuthLogin"];
         delete?: never;
@@ -253,6 +265,16 @@ export interface paths {
          *     All sessions for the user are revoked and the response clears the
          *     session cookie. The undo window is 7 days
          *     (core/user.SelfRestoreGrace), shared with POST /api/me/restore.
+         *     Success answers 200 with recover_until, the end of that window
+         *     (RFC3339, the delete timestamp plus the grace): the caller sees
+         *     at delete time how long the account can still be restored
+         *     through POST /api/me/restore. During the window the login email
+         *     is reserved against public re-registration, but the phone
+         *     numbers of the cascaded signing accounts are released with the
+         *     soft-delete (old-line decision: release prevents number
+         *     hoarding, and the accepted cost is that a released phone can be
+         *     squatted); a later self-restore that collides with a squatted
+         *     phone answers 409, see POST /api/me/restore.
          *     Every request must carry current_password, the acting user's own
          *     login password: a missing value answers 400, a wrong value 403, and
          *     repeated failures answer 429 with Retry-After. A rejected
@@ -279,9 +301,16 @@ export interface paths {
          * Restore the caller's own login account within the grace window.
          * @description Public, like the old line: a deleted account has no session. The
          *     email and login password identify the caller; a wrong password, an
-         *     unknown email, an account outside the 7-day window
-         *     (core/user.SelfRestoreGrace) and a live account that already owns
-         *     the email all answer the same 401, so existence is never disclosed.
+         *     unknown email and an account outside the 7-day window
+         *     (core/user.SelfRestoreGrace) all answer the same 401, so
+         *     existence is never disclosed. Once the password has been verified
+         *     against the soft-deleted row, an identity collision answers 409
+         *     conflict instead: the login email was taken by an account created
+         *     while the caller was deleted, or a phone number of the cascaded
+         *     signing accounts was squatted after the delete released it. The
+         *     409 message names no occupant; the whole restore stays rolled
+         *     back, the rows remain soft-deleted, and the caller may restore
+         *     again once the collision clears or ask an administrator.
          *     Only a soft-deleted login account is restored, and only when the
          *     user deleted it itself: a login account an administrator deleted is
          *     not revived (old-line administrator deletion was physical, so the
@@ -3256,6 +3285,19 @@ export interface components {
         MeDeleteRequest: {
             current_password: components["schemas"]["CurrentPassword"];
         };
+        SelfDeleteOutcome: {
+            /**
+             * Format: date-time
+             * @description End of the 7-day self-restore window (RFC3339, the delete
+             *     timestamp plus core/user.SelfRestoreGrace). Restore through
+             *     POST /api/me/restore until this instant; the same value is
+             *     echoed in the recoverable details of logins inside the
+             *     window. The email is reserved against public re-registration
+             *     until then; released phone numbers may be squatted, which
+             *     turns the restore into a 409 collision.
+             */
+            recover_until: string;
+        };
         MeRestoreRequest: {
             /** Format: email */
             email: string;
@@ -4802,12 +4844,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Login account soft-deleted and sessions revoked. */
-            204: {
+            /** @description Login account soft-deleted, sessions revoked, undo window announced. */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SelfDeleteOutcome"];
+                };
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
@@ -4840,6 +4884,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];

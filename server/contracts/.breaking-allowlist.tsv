@@ -10,3 +10,4 @@ response-property-enum-value-added	get	/api/capacity	abs R1 weekend_closed 回�
 response-property-enum-value-added	post	/api/schedule/override	abs R1 weekend_closed 回执来源（同上）	2026-12-11
 response-property-enum-value-added	post	/api/schedule/plan	abs R1 weekend_closed 回执来源（同上）	2026-12-11
 response-property-enum-value-added	get	/api/schedule/preview	abs R1 weekend_closed 回执来源（同上）	2026-12-11
+response-success-status-removed	post	/api/me/delete	clc 注销冷静期 UX 断链修复（204→200＋recover_until；契约唯一消费者为仓内生成物，oapi.gen.go 与 ui schema.d.ts 同批再生成钉住）	2026-12-12

@@ -65,14 +65,14 @@ func TestDeleteSelfReauthGate(t *testing.T) {
 	user := seedSelfUser(t, h, "gate@example.com", "right-pass", coreauth.RoleUser)
 	sess := sessionOf(user)
 
-	if err := h.svc.DeleteSelf(t.Context(), sess, ""); errs.From(err).Code != errs.CodeValidation {
+	if _, err := h.svc.DeleteSelf(t.Context(), sess, ""); errs.From(err).Code != errs.CodeValidation {
 		t.Fatalf("missing password code = %v, want validation_failed", errs.From(err).Code)
 	}
 	if len(h.users.selfDeleted) != 0 || len(h.sessions.revokedAll) != 0 || len(h.audits.actions) != 0 {
 		t.Fatal("a missing password wrote state")
 	}
 
-	if err := h.svc.DeleteSelf(t.Context(), sess, "wrong-pass"); errs.From(err).Code != errs.CodeForbidden {
+	if _, err := h.svc.DeleteSelf(t.Context(), sess, "wrong-pass"); errs.From(err).Code != errs.CodeForbidden {
 		t.Fatalf("wrong password code = %v, want forbidden", errs.From(err).Code)
 	}
 	if len(h.users.selfDeleted) != 0 || len(h.sessions.revokedAll) != 0 {
@@ -85,12 +85,12 @@ func TestDeleteSelfReauthGate(t *testing.T) {
 
 	// 上面已有一次错误；补到阈值（共 5 次失败），下一次必须 429。
 	for i := 1; i < appauth.ReauthFailureLimit; i++ {
-		err := h.svc.DeleteSelf(t.Context(), sess, "wrong-pass")
+		_, err := h.svc.DeleteSelf(t.Context(), sess, "wrong-pass")
 		if errs.From(err).Code != errs.CodeForbidden {
 			t.Fatalf("failure %d code = %v, want forbidden", i+1, errs.From(err).Code)
 		}
 	}
-	err := h.svc.DeleteSelf(t.Context(), sess, "wrong-pass")
+	_, err := h.svc.DeleteSelf(t.Context(), sess, "wrong-pass")
 	if errs.From(err).Code != errs.CodeRateLimited {
 		t.Fatalf("throttled code = %v, want rate_limited", errs.From(err).Code)
 	}
@@ -114,7 +114,7 @@ func TestDeleteSelfRevokesSessionsAndAudits(t *testing.T) {
 	h := newHarness(t)
 	user := seedSelfUser(t, h, "delete@example.com", "right-pass", coreauth.RoleUser)
 
-	if err := h.svc.DeleteSelf(t.Context(), sessionOf(user), "right-pass"); err != nil {
+	if _, err := h.svc.DeleteSelf(t.Context(), sessionOf(user), "right-pass"); err != nil {
 		t.Fatalf("DeleteSelf: %v", err)
 	}
 	if len(h.users.selfDeleted) != 1 || h.users.selfDeleted[0] != user.ID {
@@ -136,7 +136,7 @@ func TestDeleteSelfRejectsMaster(t *testing.T) {
 	h := newHarness(t)
 	boss := seedSelfUser(t, h, "boss@example.com", "right-pass", coreauth.RoleMaster)
 
-	if err := h.svc.DeleteSelf(t.Context(), sessionOf(boss), "right-pass"); errs.From(err).Code != errs.CodeForbidden {
+	if _, err := h.svc.DeleteSelf(t.Context(), sessionOf(boss), "right-pass"); errs.From(err).Code != errs.CodeForbidden {
 		t.Fatalf("master self-delete code = %v, want forbidden", errs.From(err).Code)
 	}
 	if len(h.users.selfDeleted) != 0 || len(h.sessions.revokedAll) != 0 || len(h.audits.actions) != 0 {
@@ -211,11 +211,114 @@ func TestRestoreSelfWithinGrace(t *testing.T) {
 func TestDeleteSelfUsesClock(t *testing.T) {
 	h := newHarness(t)
 	user := seedSelfUser(t, h, "clock@example.com", "right-pass", coreauth.RoleUser)
-	if err := h.svc.DeleteSelf(t.Context(), sessionOf(user), "right-pass"); err != nil {
+	at, err := h.svc.DeleteSelf(t.Context(), sessionOf(user), "right-pass")
+	if err != nil {
 		t.Fatalf("DeleteSelf: %v", err)
+	}
+	if !at.Equal(testClock.T) {
+		t.Fatalf("returned delete time = %v, want %v", at, testClock.T)
 	}
 	got := h.users.deletedByID[user.ID]
 	if got.DeletedAt == nil || !got.DeletedAt.Equal(testClock.T) {
 		t.Fatalf("deleted_at = %v, want %v", got.DeletedAt, testClock.T)
+	}
+}
+
+// TestRestoreSelfOccupiedConflictIs409 钉住注销后手机号被抢注的恢复判据：
+// 口令已验对、恢复撞唯一索引时回 409 conflict＋可懂文案，
+// **不**得折叠进 401（旧形状把「号被抢」说成「邮箱或密码错误」）。
+// 文案不得含占用者身份；拒绝路径零写入。
+func TestRestoreSelfOccupiedConflictIs409(t *testing.T) {
+	h := newHarness(t)
+	user := seedSelfUser(t, h, "squatted@example.com", "right-pass", coreauth.RoleUser)
+	markSelfDeleted(h, user, testClock.T.Add(-time.Hour))
+	h.users.restoreAcctErr = errs.New(errs.CodeConflict, "conflict")
+
+	err := h.svc.RestoreSelf(t.Context(), user.Email, "right-pass")
+	if errs.From(err).Code != errs.CodeConflict {
+		t.Fatalf("occupied restore code = %v, want conflict; err=%v", errs.From(err).Code, err)
+	}
+	if errs.From(err).Message == "" || errs.From(err).Message == appauth.ErrRestoreFailed.Message {
+		t.Fatalf("occupied restore message = %q, want a distinct user-safe text", errs.From(err).Message)
+	}
+	// 不泄露占用者身份：文案不含被恢复邮箱，也不含替身里的其它行标识。
+	if strings.Contains(errs.From(err).Message, "squatted@example.com") {
+		t.Fatalf("conflict message leaks the account email: %q", errs.From(err).Message)
+	}
+	// 事务回滚（用户行一并退回软删）由真库 e2e 负责；替身无回滚语义。
+	// 单元面只钉住：撞号拒绝不写审计、不发会话、账号恢复调用未生效。
+	if len(h.users.restoredAccts) != 0 || len(h.audits.actions) != 0 || len(h.sessions.issued) != 0 {
+		t.Fatal("a conflict-rejected restore wrote audit/session state")
+	}
+}
+
+// TestLoginRecoverableWithinGrace 钉住冷静期登录引导（旧线 auth.py 同口径）：
+// 本人软删且在 7 天窗内、口令正确 → 401＋details.recoverable＋recover_until
+// （RFC3339，注销时刻＋7 天），**不**建会话；
+// 口令错、超窗、管理员删除、不存在一律不带该字段——与不存在同形，防枚举。
+func TestLoginRecoverableWithinGrace(t *testing.T) {
+	h := newHarness(t)
+	user := seedSelfUser(t, h, "grace-login@example.com", "right-pass", coreauth.RoleUser)
+	deletedAt := testClock.T.Add(-48 * time.Hour)
+	markSelfDeleted(h, user, deletedAt)
+
+	_, err := h.svc.Login(t.Context(), strings.ToUpper(user.Email), "right-pass")
+	e := errs.From(err)
+	if e.Code != errs.CodeUnauthorized {
+		t.Fatalf("recoverable login code = %v, want unauthorized", e.Code)
+	}
+	if e.Message != appauth.ErrInvalidCredentials.Message {
+		t.Fatalf("recoverable login message = %q, want the generic 401 text", e.Message)
+	}
+	if e.Details["recoverable"] != true {
+		t.Fatalf("details = %v, want recoverable=true", e.Details)
+	}
+	raw, ok := e.Details["recover_until"].(string)
+	if !ok {
+		t.Fatalf("recover_until = %v, want an RFC3339 string", e.Details["recover_until"])
+	}
+	until, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("recover_until %q not RFC3339: %v", raw, err)
+	}
+	if want := deletedAt.Add(coreuser.SelfRestoreGrace); !until.Equal(want) {
+		t.Fatalf("recover_until = %v, want %v", until, want)
+	}
+	if len(h.sessions.issued) != 0 {
+		t.Fatal("a recoverable login established a session")
+	}
+
+	// 同窗口令错：与不存在同形，不带 recoverable（对齐旧线：仅在口令正确时引导）。
+	_, err = h.svc.Login(t.Context(), user.Email, "wrong-pass")
+	if err != appauth.ErrInvalidCredentials {
+		t.Fatalf("within-grace wrong password = %v, want ErrInvalidCredentials", err)
+	}
+
+	// 超窗：即使口令正确也不带字段，与不存在同形。
+	expired := seedSelfUser(t, h, "grace-expired@example.com", "right-pass", coreauth.RoleUser)
+	markSelfDeleted(h, expired, testClock.T.Add(-coreuser.SelfRestoreGrace-time.Hour))
+	_, err = h.svc.Login(t.Context(), expired.Email, "right-pass")
+	if err != appauth.ErrInvalidCredentials {
+		t.Fatalf("expired-window login = %v, want ErrInvalidCredentials", err)
+	}
+
+	// 管理员删除：恢复入口本就拒绝，登录面不得引导恢复。
+	admin := seedSelfUser(t, h, "grace-admin@example.com", "right-pass", coreauth.RoleUser)
+	markSelfDeleted(h, admin, testClock.T.Add(-time.Hour))
+	adminRow := h.users.deletedByEmail[admin.Email]
+	adminRow.DeletedBy = "admin-1"
+	h.users.deletedByEmail[admin.Email] = adminRow
+	_, err = h.svc.Login(t.Context(), admin.Email, "right-pass")
+	if err != appauth.ErrInvalidCredentials {
+		t.Fatalf("admin-deleted login = %v, want ErrInvalidCredentials", err)
+	}
+
+	// 不存在：同形基线。
+	_, err = h.svc.Login(t.Context(), "grace-nobody@example.com", "right-pass")
+	if err != appauth.ErrInvalidCredentials {
+		t.Fatalf("unknown login = %v, want ErrInvalidCredentials", err)
+	}
+	if errs.From(appauth.ErrInvalidCredentials).Details != nil {
+		t.Fatal("ErrInvalidCredentials carries details")
 	}
 }
