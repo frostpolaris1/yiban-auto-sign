@@ -29,9 +29,28 @@ import (
 // 重置令牌取 1 小时：足够用户查收邮件，又限制泄露窗口。
 const ResetTokenTTL = time.Hour
 
-// ErrInvalidCredentials 是登录失败的唯一错误。
+// ErrInvalidCredentials 是登录失败的同形错误。
 // **用户不存在与口令错误共用本值**，文案也相同。
 var ErrInvalidCredentials = errs.New(errs.CodeUnauthorized, "invalid email or password")
+
+// recoverableLoginError 构造冷静期登录引导（clc，对齐旧线 web/routes/auth.py）：
+// 本人软删且在 7 天恢复窗内、口令正确时，登录不放行也不建会话，
+// 回同一条 401 并在 details 增补 recoverable/recover_until，引导走
+// POST /api/me/restore。code 与 message 与不存在同形；recover_until
+// 是恢复窗终点（RFC3339，注销时刻＋7 天）。口令错误**不**得到本形状——
+// 否则公开登录端点变成近期注销邮箱的枚举器；旧线同样只在口令验对后引导。
+func recoverableLoginError(recoverUntil time.Time) *errs.Error {
+	return &errs.Error{
+		Code:    errs.CodeUnauthorized,
+		Message: ErrInvalidCredentials.Message,
+		Details: map[string]any{
+			"recoverable": true,
+			// RFC3339 带小数秒：与注销响应里 date-time 的序列化同源同形
+			// （time.Time 的 JSON 编码即 RFC3339Nano，尾零省略）。
+			"recover_until": recoverUntil.UTC().Format(time.RFC3339Nano),
+		},
+	}
+}
 
 // ErrInvalidResetToken 表示重置令牌未知、已用或过期。
 // 三种情形共用本值，**不区分**。
@@ -143,8 +162,11 @@ func NewService(d Deps) (*Service, error) {
 
 // Login 校验口令并签发会话。
 //
-// 失败一律返回 ErrInvalidCredentials：
+// 口令错误与账号不存在返回同一条 ErrInvalidCredentials：
 // 用户不存在时仍执行一次 argon2id 校验，压平计时差异。
+// 本人软删且在 7 天恢复窗内、口令正确时回同形 401＋details 引导
+// （recoverable/recover_until，见 recoverableLoginError），不建会话；
+// 超窗与管理员删除不带引导，与不存在同形。
 // 旧 scrypt 哈希校验成功后**当场**重哈希为 argon2id。
 // 成功时 auth.login 审计由 SessionIssuer 同事务写入。
 func (s *Service) Login(ctx context.Context, email, password string) (coreauth.Issued, error) {
@@ -162,10 +184,17 @@ func (s *Service) Login(ctx context.Context, email, password string) (coreauth.I
 		if !isNotFound(err) {
 			return coreauth.Issued{}, err
 		}
+		handled, herr := s.checkSelfDeleteGrace(ctx, email, password, now)
+		if herr != nil {
+			return coreauth.Issued{}, herr
+		}
+		if handled {
+			return coreauth.Issued{}, ErrInvalidCredentials
+		}
 		if err := s.verifyDummyPassword(ctx, password); err != nil {
 			return coreauth.Issued{}, err
 		}
-		if err := s.recordLoginFailure(ctx, "", coreauth.RoleUser, email, now); err != nil {
+		if err := s.recordLoginFailure(ctx, "", coreauth.RoleUser, email, "invalid_credentials", now); err != nil {
 			return coreauth.Issued{}, err
 		}
 		return coreauth.Issued{}, ErrInvalidCredentials
@@ -178,7 +207,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (coreauth.I
 		return coreauth.Issued{}, fmt.Errorf("appauth: stored hash for %s is unreadable: %w", rec.ID, err)
 	}
 	if !check.Valid || rec.Status != coreauth.StatusActive {
-		if err := s.recordLoginFailure(ctx, rec.ID, rec.Role, email, now); err != nil {
+		if err := s.recordLoginFailure(ctx, rec.ID, rec.Role, email, "invalid_credentials", now); err != nil {
 			return coreauth.Issued{}, err
 		}
 		return coreauth.Issued{}, ErrInvalidCredentials
@@ -207,7 +236,11 @@ func (s *Service) Login(ctx context.Context, email, password string) (coreauth.I
 
 // recordLoginFailure 写 auth.login_failed。
 // 审计写失败即返回错误：**不得**在证据没落下时回一个 401。
-func (s *Service) recordLoginFailure(ctx context.Context, userID string, role coreauth.Role, email string, now time.Time) error {
+// reason 区分形状：invalid_credentials 是口令/存在性失败；recoverable 是
+// 冷静期内口令已验对但未建会话——旧线同样为这一刻意状态单独留痕
+// （login_recoverable），否则公开登录端点在恢复窗内是一台零留痕的
+// 凭据验证器。两者共用动作名，成组取证口径不变。
+func (s *Service) recordLoginFailure(ctx context.Context, userID string, role coreauth.Role, email, reason string, now time.Time) error {
 	return s.tx.InTx(ctx, func(ctx context.Context) error {
 		_, err := s.audits.Append(ctx, coreaudit.Entry{
 			TS:          now,
@@ -217,10 +250,44 @@ func (s *Service) recordLoginFailure(ctx context.Context, userID string, role co
 			Action:      coreaudit.ActionAuthLoginFailed,
 			TargetType:  "user",
 			TargetID:    userID,
-			Detail:      map[string]any{"reason": "invalid_credentials"},
+			Detail:      map[string]any{"reason": reason},
 		})
 		return err
 	})
+}
+
+// checkSelfDeleteGrace 在活跃行查不到之后检查软删行（旧线 find_user_any 同位）。
+// 返回值 handled=false 表示无软删行，调用方走「不存在」原路径；
+// handled=true 表示已按软删行完成校验与留痕，err 非 nil 时为该次的最终错误
+// （recoverableLoginError），err 为 nil 时调用方回同一条 ErrInvalidCredentials。
+// 校验成本与「不存在」路径同量级：两条路径都恰好付一次 KDF 校验。
+func (s *Service) checkSelfDeleteGrace(ctx context.Context, email, password string, now time.Time) (bool, error) {
+	rec, err := s.users.FindDeletedByEmail(ctx, email)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return true, err
+	}
+	check, err := s.kdf.Verify(ctx, password, rec.PasswordHash)
+	if err != nil {
+		return true, fmt.Errorf("appauth: stored hash for %s is unreadable: %w", rec.ID, err)
+	}
+	// 引导恢复只在自助恢复入口真的可用时出现：本人软删、窗内、口令正确。
+	// 超窗、管理员删除、口令错一律与「不存在」同形，不给任何额外信号。
+	if check.Valid && rec.DeletedAt != nil && rec.DeletedBy == rec.ID {
+		until := rec.DeletedAt.Add(coreuser.SelfRestoreGrace)
+		if !now.After(until) {
+			if ferr := s.recordLoginFailure(ctx, rec.ID, rec.Role, email, "recoverable", now); ferr != nil {
+				return true, ferr
+			}
+			return true, recoverableLoginError(until)
+		}
+	}
+	if ferr := s.recordLoginFailure(ctx, rec.ID, rec.Role, email, "invalid_credentials", now); ferr != nil {
+		return true, ferr
+	}
+	return true, nil
 }
 
 // dummyOnce 生成计时拉平用的哈希。每个进程只算一次。

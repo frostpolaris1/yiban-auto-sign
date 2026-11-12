@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ import (
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 // meDeletePath / meRestorePath 是本批的两个端点。
@@ -35,6 +37,34 @@ const (
 	meDeletePath  = "/api/me/delete"
 	meRestorePath = "/api/me/restore"
 )
+
+// errorDetails 解码错误信封的 details 对象。信封四键恒在，
+// details 缺省是 {}，故取值前只判键存在。
+func errorDetails(t *testing.T, payload []byte) map[string]any {
+	t.Helper()
+	var env struct {
+		Error struct {
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		t.Fatalf("decode error envelope: %v; body=%q", err, payload)
+	}
+	return env.Error.Details
+}
+
+// dbDeletedAtUTC 取用户行的 deleted_at，UTC、毫秒精度、ISO 文本，Go 侧解析。
+func dbDeletedAtUTC(t *testing.T, e *authEnv, userID string) time.Time {
+	t.Helper()
+	raw := e.scalarString(`
+		SELECT to_char(deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+		  FROM users WHERE id = $1::uuid`, userID)
+	got, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("parse deleted_at %q: %v", raw, err)
+	}
+	return got
+}
 
 // meLoginStatus 用给定客户端登录并只回状态码。
 func meLoginStatus(t *testing.T, e *authEnv, client *http.Client, email, password string) int {
@@ -76,11 +106,28 @@ func TestMeDeleteRestoreChain(t *testing.T) {
 		t.Fatalf("user.self_delete rows after rejected delete = %d, want 0", n)
 	}
 
-	// 正确口令：204，登录账号与名下账号一并软删，全部会话撤销。
+	// 正确口令：200＋恢复窗（clc：注销当下把「7 天内可恢复」回给用户），
+	// 登录账号与名下账号一并软删，全部会话撤销。
 	resp, payload = u1Do(e, client, http.MethodPost, meDeletePath,
 		u1ReauthBody("correct-horse"), csrf)
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("self delete = %d, want 204; body=%q", resp.StatusCode, payload)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("self delete = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+	var deleteBody struct {
+		RecoverUntil string `json:"recover_until"`
+	}
+	if err := json.Unmarshal(payload, &deleteBody); err != nil {
+		t.Fatalf("decode delete body: %v; body=%q", err, payload)
+	}
+	if deleteBody.RecoverUntil == "" {
+		t.Fatalf("delete body carries no recover_until: %q", payload)
+	}
+	deleteUntil, err := time.Parse(time.RFC3339, deleteBody.RecoverUntil)
+	if err != nil {
+		t.Fatalf("recover_until %q not RFC3339: %v", deleteBody.RecoverUntil, err)
+	}
+	if want := dbDeletedAtUTC(t, e, user.ID).Add(coreuser.SelfRestoreGrace); deleteUntil.Sub(want) > time.Second || want.Sub(deleteUntil) > time.Second {
+		t.Fatalf("recover_until = %v, want deleted_at+7d = %v (±1s)", deleteUntil, want)
 	}
 	if got := e.scalarInt(
 		"SELECT count(*) FROM users WHERE id = $1::uuid AND deleted_at IS NOT NULL", user.ID); got != 1 {
@@ -110,8 +157,35 @@ func TestMeDeleteRestoreChain(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("me after delete = %d, want 401; body=%q", resp.StatusCode, payload)
 	}
-	if got := meLoginStatus(t, e, client, "me-chain@example.com", "correct-horse"); got != http.StatusUnauthorized {
-		t.Fatalf("login after delete = %d, want 401", got)
+	// 冷静期登录（口令对）：401＋details.recoverable＋recover_until，
+	// recover_until 与注销响应同值——恢复窗只有一个事实源。
+	graceClient := u1FreshClient(t)
+	resp, payload = u1Do(e, graceClient, http.MethodPost, "/api/auth/login",
+		map[string]string{"email": "me-chain@example.com", "password": "correct-horse"}, "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("login after delete = %d, want 401; body=%q", resp.StatusCode, payload)
+	}
+	loginDetails := errorDetails(t, payload)
+	if loginDetails["recoverable"] != true {
+		t.Fatalf("grace-window login details = %v, want recoverable=true", loginDetails)
+	}
+	// 同锚点判据用时刻比较，不用字符串相等：注销响应序列化 Go 时钟原值，
+	// 登录引导读库（微秒精度），尾数可差、时刻必须同（±1s）。
+	raw, isStr := loginDetails["recover_until"].(string)
+	if !isStr {
+		t.Fatalf("login details recover_until = %v, want RFC3339 string", loginDetails["recover_until"])
+	}
+	loginUntil, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("login recover_until %q not RFC3339: %v", raw, err)
+	}
+	if d := loginUntil.Sub(deleteUntil); d > time.Second || d < -time.Second {
+		t.Fatalf("login recover_until = %v, want the delete response value %v (±1s)", loginUntil, deleteUntil)
+	}
+	// 引导登录不建会话：该客户端随后读 me 仍 401。
+	resp, payload = u1Do(e, graceClient, http.MethodGet, "/api/auth/me", nil, "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("grace-window login established a session: me = %d; body=%q", resp.StatusCode, payload)
 	}
 
 	// 恢复：错误口令、未知邮箱、正确口令三种请求；前两种同一条 401。
@@ -396,6 +470,166 @@ func TestMeRestoreRejectsExpired(t *testing.T) {
 	if got := e.scalarInt(
 		"SELECT count(*) FROM users WHERE id = $1::uuid AND deleted_at IS NOT NULL", user.ID); got != 1 {
 		t.Fatal("expired restore revived the user")
+	}
+}
+
+// TestMeLoginRecoverableWindowShapes 钉住冷静期登录引导的三条谓词：
+// 窗内本人软删且口令正确 → 401＋details.recoverable＋recover_until；
+// 超窗不带字段、不存在不带字段（同形，防枚举）；窗内口令错也不带
+// （对齐旧线 auth.py：recoverable 只在口令验对后出现）。
+func TestMeLoginRecoverableWindowShapes(t *testing.T) {
+	e := newAuthEnv(t)
+	user := ux8CreateUser(t, e, "shape-grace@example.com", "correct-horse", coreauth.RoleUser)
+	anon := u1FreshClient(t)
+	good := map[string]string{"email": "shape-grace@example.com", "password": "correct-horse"}
+
+	// 基线：不存在用户的 401 形状（code＋message 为同形判据的参照）。
+	resp, payload := u1Do(e, anon, http.MethodPost, "/api/auth/login",
+		map[string]string{"email": "shape-nobody@example.com", "password": "correct-horse"}, "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unknown login = %d, want 401; body=%q", resp.StatusCode, payload)
+	}
+	baseCode, baseMessage := errorCode(t, payload)
+	if d := errorDetails(t, payload); d["recoverable"] != nil || d["recover_until"] != nil {
+		t.Fatalf("unknown login carries recovery fields: %v", d)
+	}
+
+	// 注销（SQL 造注销终态，同超窗用例先例）：窗内口令正确带字段。
+	if _, err := e.db.Exec(e.ctx, `
+		UPDATE users SET deleted_at = now(), deleted_by = id, updated_at = now()
+		 WHERE id = $1::uuid`, user.ID); err != nil {
+		t.Fatalf("mark user deleted: %v", err)
+	}
+	resp, payload = u1Do(e, anon, http.MethodPost, "/api/auth/login", good, "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("grace login = %d, want 401; body=%q", resp.StatusCode, payload)
+	}
+	graceCode, graceMessage := errorCode(t, payload)
+	if graceCode != baseCode || graceMessage != baseMessage {
+		t.Fatalf("grace login shape differs from baseline: (%s,%s) vs (%s,%s)",
+			graceCode, graceMessage, baseCode, baseMessage)
+	}
+	d := errorDetails(t, payload)
+	if d["recoverable"] != true {
+		t.Fatalf("grace login details = %v, want recoverable=true", d)
+	}
+	raw, isString := d["recover_until"].(string)
+	if !isString {
+		t.Fatalf("recover_until = %v, want RFC3339 string", d["recover_until"])
+	}
+	until, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("recover_until %q not RFC3339: %v", raw, err)
+	}
+	if want := dbDeletedAtUTC(t, e, user.ID).Add(coreuser.SelfRestoreGrace); until.Sub(want) > time.Second || want.Sub(until) > time.Second {
+		t.Fatalf("recover_until = %v, want deleted_at+7d = %v (±1s)", until, want)
+	}
+
+	// 窗内口令错：不带字段（防枚举，与不存在同形）。
+	resp, payload = u1Do(e, anon, http.MethodPost, "/api/auth/login",
+		map[string]string{"email": "shape-grace@example.com", "password": "wrong-horse"}, "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong-password login = %d, want 401", resp.StatusCode)
+	}
+	if d := errorDetails(t, payload); d["recoverable"] != nil {
+		t.Fatalf("wrong-password login leaks recoverable: %v", d)
+	}
+
+	// 超窗：口令正确也不带字段，与不存在同形。
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE users SET deleted_at = now() - interval '8 days' WHERE id = $1::uuid", user.ID); err != nil {
+		t.Fatalf("backdate user delete: %v", err)
+	}
+	resp, payload = u1Do(e, anon, http.MethodPost, "/api/auth/login", good, "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expired login = %d, want 401; body=%q", resp.StatusCode, payload)
+	}
+	expiredCode, expiredMessage := errorCode(t, payload)
+	if expiredCode != baseCode || expiredMessage != baseMessage {
+		t.Fatalf("expired login shape differs from baseline: (%s,%s) vs (%s,%s)",
+			expiredCode, expiredMessage, baseCode, baseMessage)
+	}
+	if d := errorDetails(t, payload); d["recoverable"] != nil {
+		t.Fatalf("expired login leaks recoverable: %v", d)
+	}
+}
+
+// TestMeRestorePhoneSquattedIs409 钉住恢复撞号语义：A 注销→手机号立即释放
+// （与 D7 同口径）→B 同校同号上线→A 恢复撞唯一索引 = 409 conflict＋可懂文案，
+// **不**折叠成 401；文案不泄露占用者；事务整体回滚，A 与其账号保持软删；
+// 号释放后（B 行软删）A 恢复走通 204。
+func TestMeRestorePhoneSquattedIs409(t *testing.T) {
+	e := newAuthEnv(t)
+	owner := ux8CreateUser(t, e, "sq-owner@example.com", "correct-horse", coreauth.RoleUser)
+	squatter := ux8CreateUser(t, e, "sq-squatter@example.com", "correct-horse", coreauth.RoleUser)
+	account := ux8SeedAccount(t, e, owner.ID, "13500135000")
+
+	client := u1FreshClient(t)
+	session := u1LoginOn(e, client, "sq-owner@example.com", "correct-horse")
+	resp, payload := u1Do(e, client, http.MethodPost, meDeletePath,
+		u1ReauthBody("correct-horse"), session.CSRFToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("self delete = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+
+	// 抢注：注销已释放号，同校同号可上线（直接 SQL，同 ux8SeedAccount 先例）。
+	squattedID, err := e.db.QueryString(e.ctx, `
+		INSERT INTO accounts (school_id, owner_user_id, phone)
+		VALUES ($1::uuid, $2::uuid, $3) RETURNING id::text`,
+		account.SchoolID, squatter.ID, account.Phone)
+	if err != nil {
+		t.Fatalf("squatter insert: %v", err)
+	}
+
+	anon := u1FreshClient(t)
+	resp, payload = u1Do(e, anon, http.MethodPost, meRestorePath,
+		map[string]string{"email": "sq-owner@example.com", "password": "correct-horse"}, "")
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("restore into squatted phone = %d, want 409; body=%q", resp.StatusCode, payload)
+	}
+	code, message := errorCode(t, payload)
+	if code != "conflict" {
+		t.Fatalf("409 code = %q, want conflict", code)
+	}
+	if message == "" || strings.Contains(message, "sq-squatter@example.com") ||
+		strings.Contains(message, squatter.ID) || strings.Contains(message, squattedID) {
+		t.Fatalf("conflict message leaks the occupant: %q", message)
+	}
+
+	// 拒绝即整体回滚：A 与 A 的账号仍是软删，B 的行不受影响，无恢复审计。
+	if got := e.scalarInt(
+		"SELECT count(*) FROM users WHERE id = $1::uuid AND deleted_at IS NOT NULL", owner.ID); got != 1 {
+		t.Fatal("conflict-rejected restore revived the user")
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM accounts WHERE id = $1::uuid AND deleted_at IS NOT NULL", account.ID); got != 1 {
+		t.Fatal("conflict-rejected restore revived the owner's account")
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM accounts WHERE id = $1::uuid AND deleted_at IS NULL", squattedID); got != 1 {
+		t.Fatal("the rejected restore touched the squatter's row")
+	}
+	if n := ux8AuditCount(t, e, "user.self_restore", owner.ID); n != 0 {
+		t.Fatalf("user.self_restore rows after 409 = %d, want 0", n)
+	}
+
+	// 号释放（B 行软删）后，A 恢复走通——409 是撞号专属，不是一刀切拒绝。
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE accounts SET deleted_at = now(), deleted_by = $2::uuid, updated_at = now() WHERE id = $1::uuid",
+		squattedID, squatter.ID); err != nil {
+		t.Fatalf("release squatted phone: %v", err)
+	}
+	resp, payload = u1Do(e, anon, http.MethodPost, meRestorePath,
+		map[string]string{"email": "sq-owner@example.com", "password": "correct-horse"}, "")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("restore after phone released = %d, want 204; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM accounts WHERE id = $1::uuid AND deleted_at IS NULL", account.ID); got != 1 {
+		t.Fatal("owner's account is not live after a successful restore")
+	}
+	if n := ux8AuditCount(t, e, "user.self_restore", owner.ID); n != 1 {
+		t.Fatalf("user.self_restore rows = %d, want 1", n)
 	}
 }
 

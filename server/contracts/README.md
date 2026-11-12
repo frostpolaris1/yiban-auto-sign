@@ -88,6 +88,7 @@ either side drifts.
 | Method | Path | Roles | Phase |
 |---|---|---|---|
 | POST | `/api/auth/login` | public | P1 |
+|  |  |  | 401 同形（clc）：口令错与不存在同码同文案；本人注销、7 天窗内且口令正确时 `details` 增补 `recoverable:true`＋`recover_until`（RFC3339，注销时刻＋宽限）引导走 `/api/me/restore`，不建会话；超窗、管理员删除、口令错不带该字段（与不存在同形，防枚举）；沿用 `unauthorized`，不新增错误码。 |
 | POST | `/api/auth/logout` | public | P1 |
 | GET | `/api/auth/me` | master/admin/user | P1 |
 | GET | `/api/auth/password-policy` | master/admin/user | PW-1 |
@@ -98,9 +99,9 @@ either side drifts.
 | PUT | `/api/auth/registration` | master | S05 |
 | POST | `/api/auth/register` | public | S05 |
 | POST | `/api/me/delete` | master/admin/user | lac2 |
-|  |  |  | 本人注销登录账号：`current_password` 二次口令（缺 400/错 403/连败 429＋Retry-After）；软删 `users` 行并连带软删名下全部生效账号；注销全部会话并清 cookie；master 403；7 天宽限（`core/user.SelfRestoreGrace`）；审计 `user.self_delete`，detail 不含邮箱/手机号。 |
+|  |  |  | 本人注销登录账号：`current_password` 二次口令（缺 400/错 403/连败 429＋Retry-After）；软删 `users` 行并连带软删名下全部生效账号；注销全部会话并清 cookie；master 403；7 天宽限（`core/user.SelfRestoreGrace`）；成功 200＋`recover_until`（恢复窗终点，RFC3339），注销当下即告知可恢复期限；宽限内邮箱挡公开重注册，手机号随软删立即释放（保号取舍：释放＝防占号，代价＝可被抢注，见 `docs/ops/cutover.md` §6）；审计 `user.self_delete`，detail 不含邮箱/手机号。 |
 | POST | `/api/me/restore` | public | lac2 |
-|  |  |  | 未登录可调：邮箱＋登录口令；仅恢复 7 天内本人软删的登录账号及注销时生效的那一行账号；口令错、账号不存在、超窗、邮箱已被活跃行占用、管理员删除一律同一条 401，不泄露存在性；容量满 429；恢复不建立会话；按客户端 IP 与归一邮箱限流，429 带 `Retry-After`；审计 `user.self_restore`，detail 不含邮箱/手机号。 |
+|  |  |  | 未登录可调：邮箱＋登录口令；仅恢复 7 天内本人软删的登录账号及注销时生效的那一行账号；口令错、账号不存在、超窗、管理员删除一律同一条 401，不泄露存在性；口令验对后撞活跃行唯一索引（手机号被抢注、邮箱被顶号）报 409 conflict，文案不含占用者身份，事务整体回滚；容量满 429；恢复不建立会话；按客户端 IP 与归一邮箱限流，429 带 `Retry-After`；审计 `user.self_restore`，detail 不含邮箱/手机号。 |
 | GET | `/api/users` | master | P1 |
 | POST | `/api/users` | master | P1 |
 | POST | `/api/users/batch` | master | 870 |

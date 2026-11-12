@@ -46,6 +46,9 @@ type fakeUsers struct {
 	nextID         int
 	// createErr 非空时 Create 直接返回它，用来模拟容量或存储故障。
 	createErr error
+	// restoreAcctErr 非空时 RestoreSelfAccount 原样返回它且不记录调用，
+	// 用来模拟恢复撞唯一索引（注销后手机号被抢注）。
+	restoreAcctErr error
 }
 
 func newFakeUsers() *fakeUsers {
@@ -175,6 +178,9 @@ func (f *fakeUsers) RestoreSelfUser(_ context.Context, id string, notBefore time
 }
 
 func (f *fakeUsers) RestoreSelfAccount(_ context.Context, ownerID string, _ time.Time, _ int) (bool, error) {
+	if f.restoreAcctErr != nil {
+		return false, f.restoreAcctErr
+	}
 	f.restoredAccts = append(f.restoredAccts, ownerID)
 	return true, nil
 }

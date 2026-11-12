@@ -12,7 +12,10 @@ package router
 //
 // # 口径
 // 登录与重置的请求体绑定失败回 400 validation_failed。
-// 登录失败回 401，文案与错误码由用例统一给出。
+// 登录失败回 401，文案与错误码由用例统一给出；冷静期内口令正确的
+// 引导登录同回 401，details 由用例给出 recoverable/recover_until。
+// 自助注销成功回 200＋恢复窗（recover_until），注销当下就告知
+// 「7 天内可恢复」；撞号恢复由用例给出 409。
 // 登出、忘记口令、重置口令与改密回 204，响应体为空。
 // 改密**不**改写当前会话的 cookie：只撤销其余会话。
 
@@ -25,6 +28,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -47,8 +51,9 @@ type AuthService interface {
 	ForgotPassword(ctx context.Context, email string) error
 	ResetPassword(ctx context.Context, token, newPassword string) error
 	ChangePassword(ctx context.Context, sess coreauth.Session, keepToken, currentPassword, newPassword string) error
-	// DeleteSelf 注销会话用户自己的登录账号，要求 current_password。
-	DeleteSelf(ctx context.Context, sess coreauth.Session, currentPassword string) error
+	// DeleteSelf 注销会话用户自己的登录账号，要求 current_password；
+	// 返回注销时刻（UTC），入口层据此给出恢复窗终点。
+	DeleteSelf(ctx context.Context, sess coreauth.Session, currentPassword string) (time.Time, error)
 	// RestoreSelf 以邮箱＋口令恢复宽限内软删的登录账号；不建立会话。
 	RestoreSelf(ctx context.Context, email, password string) error
 	// Registration 读公开注册状态。
@@ -232,7 +237,8 @@ func (s *server) AuthChangePassword(c *gin.Context, _ oapi.AuthChangePasswordPar
 
 // MeDelete 实现 POST /api/me/delete。
 // 目标只来自会话；请求体只承载 current_password。
-// 成功：软删登录账号与名下账号、撤销全部会话，并清掉客户端 cookie。
+// 成功：软删登录账号与名下账号、撤销全部会话、清掉客户端 cookie，
+// 并回 200＋恢复窗终点（注销时刻＋core/user.SelfRestoreGrace）。
 func (s *server) MeDelete(c *gin.Context, _ oapi.MeDeleteParams) {
 	if s.auth == nil {
 		notImplemented(c)
@@ -249,13 +255,17 @@ func (s *server) MeDelete(c *gin.Context, _ oapi.MeDeleteParams) {
 		bindError(c, err)
 		return
 	}
-	if err := s.auth.DeleteSelf(c.Request.Context(), sess, req.CurrentPassword); err != nil {
+	deletedAt, err := s.auth.DeleteSelf(c.Request.Context(), sess, req.CurrentPassword)
+	if err != nil {
 		writeRetryAfter(c, err)
 		respond.Error(c.Writer, c.Request, err)
 		return
 	}
 	s.cookies.clear(c.Writer)
-	c.Status(http.StatusNoContent)
+	// 恢复窗终点在注销当下就给出：与冷静期登录引导的 recover_until 同锚点。
+	respond.JSON(c.Writer, http.StatusOK, oapi.SelfDeleteOutcome{
+		RecoverUntil: deletedAt.UTC().Add(coreuser.SelfRestoreGrace),
+	})
 }
 
 // MeRestore 实现 POST /api/me/restore。
