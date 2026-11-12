@@ -298,3 +298,13 @@ server/internal/entry/http/events/sse_test.go	uncovered=Go 测试文件自身即
 ui/index.html	uncovered=前端入口：主题引导外置与无内联脚本由 Go router 的 TestUIIndexHasNoInlineScripts 钉住；页面行为由 Playwright e2e/快照真跑
 ui/public/theme-boot.js	uncovered=静态主题引导脚本：同步加载防首屏闪色；由 Go router 结构守卫与 Playwright e2e/快照真跑
 server/cmd/server/abs_r1_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑急停门 e2e）；本批修 #353 遗留的 CST/UTC 日界窗，测试内显式钉 Asia/Shanghai
+# ---- oek 外围协同批（2026-11-12）----
+server/cmd/server/g1u_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./cmd/server 跑图片/默认图 e2e，含 D6 资产行判据）
+server/internal/adapters/legacy/owner.go	uncovered=Go 包门 go test ./internal/adapters/legacy（owner_test.go 钉精确/前缀/歧义），oldIDForEmail 经 cmd/cli migrate-legacy e2e 真库驱动
+server/internal/adapters/pg/notifications_e2e_test.go	uncovered=Go 测试文件自身即门（真 PG：go test ./internal/adapters/pg 跑站内信读面过滤/账本 e2e）
+server/internal/adapters/pg/scope.go	uncovered=Go 包门 go test ./internal/adapters/pg：photoScopePredicate 由 photo_e2e 的资产行/作用域判据与通知 audience e2e 真库驱动
+server/internal/app/account/auto_approve.go	uncovered=Go 包门 go test ./internal/app/account 真跑 auto_approve_test（含 P3-14 最终态单通知判据）
+server/internal/app/account/review_alert.go	uncovered=Go 包门 go test ./internal/app/account 真跑 review_alert_test（含账号+日折叠判据）
+server/internal/core/photo/photo.go	uncovered=Go 包门：Record.SchoolOwned 由 app/photos 单测与 pg photo_e2e 驱动；保留期谓词由 core/photo 既有测试钉住
+server/migrations/postgres/00031_school_owned_photos.sql	uncovered=迁移执行面由真库整包各仓储 e2e 与 TestMigrationDownCoverage（forward-only 声明对账）检验
+ui/src/features/photos/SchoolDefaultPhotoPanel.tsx	uncovered=本批仅头注同步 D6 语义；面板行为由 ui Playwright e2e 与 npm run test:unit 真跑
