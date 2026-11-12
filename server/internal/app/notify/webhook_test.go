@@ -1,13 +1,13 @@
 package notify_test
 
 // 2d webhook 渠道的投递用例判据：账本按订阅者逐行记账、
-// 发送期同题节流与当日额度、端口未配置与退避沿用既有规则。
+// 发送期同文节流与当日额度、端口未配置与退避沿用既有规则。
 //
 // 覆盖：仅 webhook 订阅启用时的锚行与账本行；端口 nil 立即
-// skipped(webhook_not_configured)；多订阅者同事件恰一条真发、
-// 其余 skipped(cooldown_hit)；额度用尽 skipped(budget_exhausted)、
-// failed/skipped 不计数、0 不限额；冷却 0 不节流；
-// 日志与错误不含出口凭据。
+// skipped(webhook_not_configured)；多订阅者同事件（同正文）恰一条真发、
+// 其余 skipped(cooldown_hit)；不同账号正文不同、互不折叠（P3-13）；
+// 额度用尽 skipped(budget_exhausted)、failed/skipped 不计数、0 不限额；
+// 冷却 0 不节流；日志与错误不含出口凭据。
 
 import (
 	"bytes"
@@ -51,6 +51,13 @@ func (s *fakeWebhookSender) calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.pushes)
+}
+
+// received 返回按送达顺序排列的推送副本。
+func (s *fakeWebhookSender) received() []corewebhook.Push {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]corewebhook.Push(nil), s.pushes...)
 }
 
 // newWebhookDelivery 构造带 webhook 端口的投递服务。
@@ -195,25 +202,39 @@ func TestSendDueWebhookDeduplicatesByTitle(t *testing.T) {
 	}
 }
 
-// 冷却窗口内同题第二次 → cooldown_hit；COOLDOWN_SEC=0 → 不节流。
+// reviewPending 构造一条同账号同文、不同事件键的待审核事件：
+// title 与 body 逐字相同（掩码手机号相同、正文不含日次），
+// 是「同文重复推送」的最小生产形状。
+func reviewPending(accountID, key string) corenotify.Event {
+	return corenotify.Event{
+		Category:  corenotify.CategoryReviewPending,
+		SchoolID:  "school-1",
+		AccountID: accountID,
+		DedupeKey: key,
+		Day:       "2026-10-29",
+	}
+}
+
+// 冷却窗口内**同文**第二次 → cooldown_hit；COOLDOWN_SEC=0 → 不节流。
+// 同文判据 = 归一化 title + 正文全等（P3-13/P3-18：题下账号/任务维度在正文里）。
 func TestWebhookCooldownWindow(t *testing.T) {
 	t.Run("window blocks second push", func(t *testing.T) {
 		store := newFakeStore()
 		clk := newManualClock()
 		audience := &fakeAudience{
-			subscribers: []corenotify.Subscriber{overriding("master-1", "m@example.com", webhookOnly(corenotify.CategoryCredentialInvalid))},
-			phones:      map[string]string{"acct-1": "13800000001", "acct-2": "13800000002"},
+			subscribers: []corenotify.Subscriber{overriding("master-1", "m@example.com", webhookOnly(corenotify.CategoryReviewPending))},
+			phones:      map[string]string{"acct-1": "13800000001"},
 		}
 		hook := &fakeWebhookSender{}
 		dispatcher := newWebhookDelivery(t, store, audience, hook, time.Minute, 0, clk, nil)
-		if err := dispatcher.Dispatch(context.Background(), credentialEvent("acct-1")); err != nil {
+		if err := dispatcher.Dispatch(context.Background(), reviewPending("acct-1", "review_pending/acct-1/evt-1")); err != nil {
 			t.Fatalf("Dispatch: %v", err)
 		}
 		if err := dispatcher.SendDue(context.Background()); err != nil {
 			t.Fatalf("SendDue: %v", err)
 		}
-		// 同题第二次：节流窗口内。
-		if err := dispatcher.Dispatch(context.Background(), credentialEvent("acct-2")); err != nil {
+		// 同文第二次：节流窗口内。
+		if err := dispatcher.Dispatch(context.Background(), reviewPending("acct-1", "review_pending/acct-1/evt-2")); err != nil {
 			t.Fatalf("Dispatch: %v", err)
 		}
 		if err := dispatcher.SendDue(context.Background()); err != nil {
@@ -227,18 +248,18 @@ func TestWebhookCooldownWindow(t *testing.T) {
 		store := newFakeStore()
 		clk := newManualClock()
 		audience := &fakeAudience{
-			subscribers: []corenotify.Subscriber{overriding("master-1", "m@example.com", webhookOnly(corenotify.CategoryCredentialInvalid))},
-			phones:      map[string]string{"acct-1": "13800000001", "acct-2": "13800000002"},
+			subscribers: []corenotify.Subscriber{overriding("master-1", "m@example.com", webhookOnly(corenotify.CategoryReviewPending))},
+			phones:      map[string]string{"acct-1": "13800000001"},
 		}
 		hook := &fakeWebhookSender{}
 		dispatcher := newWebhookDelivery(t, store, audience, hook, 0, 0, clk, nil)
-		if err := dispatcher.Dispatch(context.Background(), credentialEvent("acct-1")); err != nil {
+		if err := dispatcher.Dispatch(context.Background(), reviewPending("acct-1", "review_pending/acct-1/evt-1")); err != nil {
 			t.Fatalf("Dispatch: %v", err)
 		}
 		if err := dispatcher.SendDue(context.Background()); err != nil {
 			t.Fatalf("SendDue: %v", err)
 		}
-		if err := dispatcher.Dispatch(context.Background(), credentialEvent("acct-2")); err != nil {
+		if err := dispatcher.Dispatch(context.Background(), reviewPending("acct-1", "review_pending/acct-1/evt-2")); err != nil {
 			t.Fatalf("Dispatch: %v", err)
 		}
 		if err := dispatcher.SendDue(context.Background()); err != nil {
@@ -248,6 +269,43 @@ func TestWebhookCooldownWindow(t *testing.T) {
 			t.Fatalf("端口调用 = %d, want 2（节流关闭）", hook.calls())
 		}
 	})
+}
+
+// P3-13：节流键跨账号折叠修复——同收件人、不同账号（正文掩码号不同）
+// 的两条凭据失效必须各推送一次，旧的「同 title 即同题」判定不得吞掉第二账号。
+func TestWebhookThrottleKeepsDistinctAccounts(t *testing.T) {
+	store := newFakeStore()
+	clk := newManualClock()
+	audience := &fakeAudience{
+		subscribers: []corenotify.Subscriber{overriding("master-1", "m@example.com", webhookOnly(corenotify.CategoryCredentialInvalid))},
+		phones:      map[string]string{"acct-1": "13800000001", "acct-2": "13800000002"},
+	}
+	hook := &fakeWebhookSender{}
+	dispatcher := newWebhookDelivery(t, store, audience, hook, time.Minute, 0, clk, nil)
+	if err := dispatcher.Dispatch(context.Background(), credentialEvent("acct-1")); err != nil {
+		t.Fatalf("Dispatch 1: %v", err)
+	}
+	if err := dispatcher.SendDue(context.Background()); err != nil {
+		t.Fatalf("SendDue 1: %v", err)
+	}
+	if err := dispatcher.Dispatch(context.Background(), credentialEvent("acct-2")); err != nil {
+		t.Fatalf("Dispatch 2: %v", err)
+	}
+	if err := dispatcher.SendDue(context.Background()); err != nil {
+		t.Fatalf("SendDue 2: %v", err)
+	}
+	pushes := hook.received()
+	if len(pushes) != 2 {
+		t.Fatalf("端口调用 = %d, want 2（不同账号不互挤）", len(pushes))
+	}
+	if !strings.Contains(pushes[0].Content, "138****0001") || !strings.Contains(pushes[1].Content, "138****0002") {
+		t.Fatalf("推送正文 = %q / %q, want 各自账号", pushes[0].Content, pushes[1].Content)
+	}
+	for _, row := range store.deliveryList() {
+		if row.Status != corenotify.DeliveryStatusSent {
+			t.Fatalf("行 = %+v, want 全部 sent", row)
+		}
+	}
 }
 
 // 当日额度：sent 行数达 DAILY_MAX → skipped(budget_exhausted)；

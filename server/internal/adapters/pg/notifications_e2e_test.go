@@ -415,6 +415,114 @@ func TestNotificationDeliveryLedger(t *testing.T) {
 	}
 }
 
+// mustInsertNotificationRow 写入一条站内信并断言成功；返回落库行。
+func mustInsertNotificationRow(t *testing.T, ctx context.Context, repo *pg.NotificationRepo,
+	in corenotify.NotificationInsert) corenotify.Notification {
+	t.Helper()
+	item, err := repo.Insert(ctx, in)
+	if err != nil {
+		t.Fatalf("insert %s/%s: %v", in.Category, in.DedupeKey, err)
+	}
+	return item
+}
+
+// P2-3：读面按订阅矩阵 in_app 过滤。
+// 显式覆盖 (credential_invalid, in_app)=false → 列表与未读数都不含该类行
+// （账本锚行仍在库里，只是不出读面）；
+// 默认表 sign_failed_daily in_app=false → 无覆盖时同样被隐藏；
+// 显式覆盖 (sign_failed_daily, in_app)=true → 回到列表。
+func TestNotificationListAppliesInAppFilter(t *testing.T) {
+	e := newEnv(t)
+	repo := pg.NewNotificationRepo(e.db)
+	prefs := pg.NewNotificationPrefsRepo(e.db)
+	alice := e.createUser("filter-alice@example.com")
+	bob := e.createUser("filter-bob@example.com")
+	ctx := context.Background()
+
+	base := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	cred := mustInsertNotificationRow(t, ctx, repo, corenotify.NotificationInsert{
+		UserID: alice.ID, Category: corenotify.CategoryCredentialInvalid,
+		DedupeKey: "filter/cred", Title: "凭据", Body: "b", CreatedAt: base,
+	})
+	mustInsertNotificationRow(t, ctx, repo, corenotify.NotificationInsert{
+		UserID: alice.ID, Category: corenotify.CategoryReviewPending,
+		DedupeKey: "filter/review", Title: "待审", Body: "b", CreatedAt: base,
+	})
+	mustInsertNotificationRow(t, ctx, repo, corenotify.NotificationInsert{
+		UserID: alice.ID, Category: corenotify.CategorySignFailedDaily,
+		DedupeKey: "filter/digest", Title: "摘要", Body: "b", CreatedAt: base,
+	})
+	// 锚行语义：账本锚仍落库；过滤只发生在读面，不删行。
+	if _, err := pg.NewNotificationDeliveryRepo(e.db).InsertPending(ctx,
+		corenotify.DeliveryInsert{NotificationID: cred.ID, UserID: alice.ID,
+			Channel: corenotify.ChannelEmail}); err != nil {
+		t.Fatalf("anchor delivery: %v", err)
+	}
+
+	// 默认表口径：credential_invalid/review_pending 可见，sign_failed_daily 隐藏。
+	items, _, err := repo.List(ctx, corenotify.NotificationQuery{UserID: alice.ID, Limit: 20})
+	if err != nil {
+		t.Fatalf("list default: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("默认可见 = %d, want 2（sign_failed_daily 默认 in_app=false）", len(items))
+	}
+	if n, err := repo.UnreadCount(ctx, alice.ID); err != nil || n != 2 {
+		t.Fatalf("默认未读 = %d, %v; want 2", n, err)
+	}
+
+	// 显式关 credential_invalid：列表与未读都不含；锚行仍在库。
+	if err := prefs.Replace(ctx, alice.ID, []corenotify.Pref{
+		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelInApp, Enabled: false},
+	}); err != nil {
+		t.Fatalf("replace prefs: %v", err)
+	}
+	items, _, err = repo.List(ctx, corenotify.NotificationQuery{UserID: alice.ID, Limit: 20})
+	if err != nil {
+		t.Fatalf("list filtered: %v", err)
+	}
+	for _, item := range items {
+		if item.ID == cred.ID {
+			t.Fatalf("in_app=false 的类别仍出现在列表: %+v", item)
+		}
+	}
+	if len(items) != 1 || items[0].Category != corenotify.CategoryReviewPending {
+		t.Fatalf("过滤后 = %+v, want 只剩 review_pending", items)
+	}
+	if n, _ := repo.UnreadCount(ctx, alice.ID); n != 1 {
+		t.Fatalf("过滤后未读 = %d, want 1", n)
+	}
+	if got := e.scalarInt(`SELECT count(*) FROM notifications WHERE id = $1::uuid`, cred.ID); got != 1 {
+		t.Fatalf("锚行被删除（读面过滤不得删行）: %d", got)
+	}
+	// 未覆盖用户不受影响：bob 的读面按默认表。
+	if _, _, err := repo.List(ctx, corenotify.NotificationQuery{UserID: bob.ID, Limit: 20}); err != nil {
+		t.Fatalf("list bob: %v", err)
+	}
+
+	// 显式开 sign_failed_daily：默认隐藏翻转回可见。
+	// Replace 是全量替换语义：一并保留 credential_invalid=false，
+	// 否则它会回到默认 in_app=true 而重新出现（这本身也是替换语义的守卫）。
+	if err := prefs.Replace(ctx, alice.ID, []corenotify.Pref{
+		{Category: corenotify.CategorySignFailedDaily, Channel: corenotify.ChannelInApp, Enabled: true},
+		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelInApp, Enabled: false},
+	}); err != nil {
+		t.Fatalf("replace prefs 2: %v", err)
+	}
+	items, _, err = repo.List(ctx, corenotify.NotificationQuery{UserID: alice.ID, Limit: 20})
+	if err != nil {
+		t.Fatalf("list reopened: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("显式开启后 = %d, want 2（review_pending + sign_failed_daily）", len(items))
+	}
+	for _, item := range items {
+		if item.ID == cred.ID {
+			t.Fatalf("credential_invalid 覆盖被替换丢失：%+v", items)
+		}
+	}
+}
+
 // deliveryState 读一行的 (status, attempts, last_error_kind, next_retry_at)。
 // deliveryState 读一行的
 // (status, attempts, last_error_kind, skip_reason, next_retry_at)。

@@ -441,11 +441,22 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 		return Record{}, err
 	}
 	// 事务已提交：待审核通知是补充事实，失败不影响建号结果。
-	s.alertReviewPending(ctx, record)
-	// 只在客户端声明全部默认值且开关开时起一次有界后台核验；
+	// P3-14：armed（声明默认值＋开关开＋端口齐）时 pending 通知不发，
+	// 唯一一条由核验收尾（成功＝auto_approved，留 pending＝pending）；
+	// 读开关失败按未 armed 处理——宁可早退多发一条 pending，不可吞掉通知。
+	armed := false
+	if in.ConfirmDefaults && s.deps.Settings != nil && s.deps.Identity != nil {
+		if enabled, err := s.deps.Settings.AutoApproveEnabled(ctx); err == nil && enabled {
+			armed = true
+		}
+	}
+	if !armed {
+		s.alertReviewPending(ctx, record)
+	}
+	// 只在客户端声明全部默认值时起一次有界后台核验；
 	// 声明不是授权：核验仍用存储凭据重登平台并复核院校绑定。
 	if in.ConfirmDefaults {
-		s.startAutoApprove(record)
+		s.startAutoApprove(record, armed)
 	}
 	// 新行的凭据刚写入；响应直接回入参，不必再解密一次。
 	record.PhoneModel = in.PhoneModel
@@ -742,6 +753,15 @@ func (s *Service) Delete(ctx context.Context, scope corescope.Scope, id string, 
 }
 
 // transition 执行一次状态比较并交换，并写对应审计。
+// 第三地带口径（R5 巡检对账，先核旧线正本后的有意保持项）：账号转入
+// pending/rejected **不取消当日已铺任务**——旧线正本同款
+// （yiban/adapters/persistence/accounts.py update_account_status 只 UPDATE
+// accounts.status，从不触碰 sign_claims/queue；queue_store.py 的领单判据
+// 也不回看账号状态）。与 D5「挡新不挡旧」同构：状态转换挡住的是
+// 下一次日切铺设计划（pending/暂停账号不占计划位，见 pg/schedule.go
+// 的 EnabledTasks），已铺的当日行照签、次日自然消失；滞留窗口＝当日。
+// 这里不动代码，只把口径钉在转换入口，防止后来者把「取消当日任务」
+// 当成旧线义务补进来。
 func (s *Service) transition(ctx context.Context, scope corescope.Scope, id string, from, to Status, action coreaudit.Action, detail map[string]any, actor appaudit.Actor) (Record, error) {
 	var record Record
 	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {

@@ -572,6 +572,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Mail:            mailer,
 			Webhook:         webhookSender,
 			WebhookCooldown: time.Duration(cfg.WebhookCooldownSec) * time.Second,
+			// MailCooldown：邮件同题冷却对齐 webhook 窗口语义，
+			// 值走既有配置面——YIBAN_WEBHOOK_COOLDOWN_SEC（默认 60）
+			// 是全仓唯一的发送期冷却秒数事实源，不新开 env 键。
+			MailCooldown:    time.Duration(cfg.WebhookCooldownSec) * time.Second,
 			WebhookDailyMax: cfg.WebhookDailyMax,
 			Location:        loc,
 			Clock:           clk,

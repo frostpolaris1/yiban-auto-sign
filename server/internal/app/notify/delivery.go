@@ -11,8 +11,9 @@ package notify
 // # 口径
 // 站内信行同时是事件档案与投递账本锚：收件人只要有一个渠道启用就写一行，
 // email 与 webhook 行通过 notification_id 外键挂靠。所有开关都关才整条跳过。
-// **in_app 关闭、其他渠道开启时锚点行仍会出现在管理员站内信列表**：
-// 这是实施单裁决（账本外键需要父行），本批不为可见性再拆表或删行。
+// **in_app 关闭、其他渠道开启时锚点行仍会落库**（账本外键需要父行，
+// 不拆表也不删行）；读面按订阅矩阵 in_app 过滤（P2-3，判据在
+// pg.NotificationRepo.List/UnreadCount），锚行不再出现在列表与未读数。
 // 用户失败邮件只看 users.mail_notify；管理员事件只看 notification_prefs。
 // 两条订阅面分别判定，**永不 OR**。
 // 文案在本文件拼装：手机号在落库前过 mask，title ≤ 80 字、body ≤ 500 字。
@@ -29,13 +30,21 @@ package notify
 // SMTP 未配置时仍写通知行与账本行，账本立即 skipped(smtp_not_configured)；
 // webhook 端口未配置同口径，落 skipped(webhook_not_configured)：
 // 跳过是显性事实，不静默丢弃。
-// webhook 发送期两道判定（调端口之前）：同题节流（process-local map，
+// webhook 发送期两道判定（调端口之前）：同文节流（process-local map，
 // 重启清零）与当日额度（账本本身即单源：count(sent) 达上限即跳过，
 // 失败天然不计数、无需退还）。额度按业务日窗口计数，时区由装配注入，
 // 与摘要的业务日 helper 同源（coreclock.BusinessDay）。
+// 同文节流键 = 归一化 title + 正文全等（P3-13/P3-18）：正文携带
+// 账号与任务维度（掩码手机号、日次、缺口数字），不同账号的同题告警
+// **互不折叠**；title 不再按出口上限截 32——出口截断只约束 title 显示，
+// 正文不同的两条告警不是同一条。
 // 多管理员启用 webhook 时账本按订阅者逐行记账：每事件每订阅者一行，
-// 发送期同题节流保证全局至多一条真发，其余 skipped(cooldown_hit)——
-// 账本是诚实簿记。
+// 同事件正文相同，发送期同文节流保证全局至多一条真发、
+// 其余 skipped(cooldown_hit)——账本是诚实簿记；
+// 摘要正文按收件人 scope 聚合，不同 scope 各发各的（P2-4）。
+// 邮件发送期同样有同题冷却（key=收件人+归一化 title，值走既有配置面）：
+// review_pending 标题为类别常量，create→delete→create 的同题洪水
+// 在窗口内折叠为 skipped(cooldown_hit)；失败释放占位，重试行不被静音。
 // Dispatch 只服务管理员的三类事件；sign_failed_daily 的管理员摘要走
 // DispatchDigest（digest.go 的独立入口），**不复用** Dispatch。
 
@@ -143,6 +152,8 @@ type Audience interface {
 // 其余行为不变。
 // WebhookCooldown 与 WebhookDailyMax 是 webhook 发送期两道判定的参数：
 // 冷却 <=0 表示不节流，日额度 <=0 表示不限额。
+// MailCooldown 是邮件发送期的同题冷却（<=0 不节流）：与 webhook 60s
+// 语义对齐，值走既有配置面（YIBAN_WEBHOOK_COOLDOWN_SEC 同源装配）。
 // Location 是业务日窗口的时区（额度计数与摘要的业务日同源）；
 // nil 按 UTC。
 // DigestSource 与 DigestAudience 是每日摘要的可选端口：缺失时
@@ -154,6 +165,7 @@ type DispatcherDeps struct {
 	Mail            coremail.Sender
 	Webhook         corewebhook.Sender
 	WebhookCooldown time.Duration
+	MailCooldown    time.Duration
 	WebhookDailyMax int
 	Location        *time.Location
 	Clock           coreclock.Clock
@@ -170,6 +182,7 @@ type Dispatcher struct {
 	mail            coremail.Sender
 	webhook         corewebhook.Sender
 	webhookCooldown time.Duration
+	mailCooldown    time.Duration
 	webhookDailyMax int
 	location        *time.Location
 	clock           coreclock.Clock
@@ -177,10 +190,12 @@ type Dispatcher struct {
 	digestSource    DigestSource
 	digestAudience  DigestAudience
 	webhookThrottle webhookThrottle
+	mailThrottle    webhookThrottle
 }
 
-// webhookThrottle 是 webhook 同题节流的 process-local 状态：
-// 重启清零（与测试邮件冷却的口径一致），键是归一化后的推送 title。
+// webhookThrottle 是发送期同文节流的 process-local 状态（webhook 与
+// 邮件各一份实例）：重启清零（与测试邮件冷却的口径一致）。
+// webhook 键 = 归一化 title + 正文；邮件键 = 收件人 + 归一化 title。
 type webhookThrottle struct {
 	mu   sync.Mutex
 	sent map[string]time.Time
@@ -241,6 +256,7 @@ func NewDispatcher(deps DispatcherDeps) (*Dispatcher, error) {
 		mail:            deps.Mail,
 		webhook:         deps.Webhook,
 		webhookCooldown: deps.WebhookCooldown,
+		mailCooldown:    deps.MailCooldown,
 		webhookDailyMax: deps.WebhookDailyMax,
 		location:        location,
 		clock:           deps.Clock,
@@ -306,20 +322,20 @@ func (d *Dispatcher) Dispatch(ctx context.Context, event corenotify.Event) error
 		}
 		if email {
 			// email 开启时通知与账本同事务写入。in_app 关闭时这一行仍是
-			// 事件档案/账本锚，会出现在管理员站内信列表（实施单裁决）。
+			// 事件档案/账本锚（读面按 in_app 过滤，P2-3）。
 			wasSkipped, err := d.insertWithChannel(ctx, insert, now, corenotify.ChannelEmail)
 			if err != nil {
+				// P3-15：email 账本失败只记错，不连带跳过同收件人的 webhook——
+				// 两渠道各自独立尝试，webhook 的 InsertWithPending 自带去重键。
 				recordError(&firstErr, err)
-				continue
-			}
-			if wasSkipped {
+			} else if wasSkipped {
 				skipped++
 			}
 		}
 		if webhook {
 			// webhook 账本行与 email 行同构、按订阅者逐行记账：
-			// 通知行的去重键命中后返回同一站内信行，webhook 账本行
-			// 经同一条事务路径挂靠（见 insertWithChannel）。
+			// 通知行的去重键保证同一事件只落一行站内信，
+			// 两个渠道的账本行各自独立入同一事务路径。
 			wasSkipped, err := d.insertWithChannel(ctx, insert, now, corenotify.ChannelWebhook)
 			if err != nil {
 				recordError(&firstErr, err)
@@ -429,6 +445,14 @@ func (d *Dispatcher) deliver(ctx context.Context, row corenotify.DueDelivery) er
 	if d.mail == nil {
 		return d.markSkipped(ctx, row.ID, skipReasonSMTPNotConfigured)
 	}
+	// 邮件同题冷却（巡检新发现）：键 = 收件人 + 归一化 title。
+	// review_pending 的 title 是类别常量——create→delete→create 产生的
+	// 同题邮件在窗口内折叠，第二条落 skipped(cooldown_hit)。
+	mailKey := mailThrottleKey(row)
+	now := d.clock.Now()
+	if !d.mailThrottle.allow(mailKey, d.mailCooldown, now) {
+		return d.markSkipped(ctx, row.ID, skipReasonCooldownHit)
+	}
 	kind, retryable, err := d.send(ctx, row)
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ledgerTimeout)
 	defer cancel()
@@ -444,6 +468,8 @@ func (d *Dispatcher) deliver(ctx context.Context, row corenotify.DueDelivery) er
 			logfield.KeyEmail, mask.EmailLabel(row.Email))
 		return nil
 	}
+	// 失败释放占位：重试行不得被自己的窗口静音（webhook 同口径）。
+	d.mailThrottle.release(mailKey)
 	attrs := []any{
 		logfield.KeyEvent, "notify.delivery_failed",
 		logfield.KeyKind, string(kind),
@@ -463,7 +489,10 @@ func (d *Dispatcher) deliver(ctx context.Context, row corenotify.DueDelivery) er
 // deliverWebhook 投递一条 webhook 到期行。
 //
 // 两道发送期判定都排在调端口之前：
-// ① 同题节流：键是归一化后的推送 title，process-local map，重启清零；
+// ① 同文节流：键是归一化 title+正文全等（P3-13：正文携带账号/任务维度，
+//
+//	不同账号互不折叠；P3-18：title 不截 32），process-local map，重启清零；
+//
 // ② 当日额度：账本 count(sent, webhook, 业务日窗口) 达上限即跳过，
 //
 //	额度单源在账本本身（只有真发成功才占用，失败天然无需退还）。
@@ -476,8 +505,8 @@ func (d *Dispatcher) deliverWebhook(ctx context.Context, row corenotify.DueDeliv
 		return d.markSkipped(ctx, row.ID, skipReasonWebhookNotConfigured)
 	}
 	now := d.clock.Now()
-	title := normalizeWebhookTitle(row.Title)
-	if !d.webhookThrottle.allow(title, d.webhookCooldown, now) {
+	key := webhookThrottleKey(normalizeThrottleTitle(row.Title), row.Body)
+	if !d.webhookThrottle.allow(key, d.webhookCooldown, now) {
 		return d.markSkipped(ctx, row.ID, skipReasonCooldownHit)
 	}
 	if d.webhookDailyMax > 0 {
@@ -485,14 +514,14 @@ func (d *Dispatcher) deliverWebhook(ctx context.Context, row corenotify.DueDeliv
 		used, err := d.ledger.CountSentOnDay(ctx, corenotify.ChannelWebhook, from, to)
 		if err != nil {
 			// 读库失败不是额度判定结论：释放占位、保留 pending 下一轮再试。
-			d.webhookThrottle.release(title)
+			d.webhookThrottle.release(key)
 			d.log.Warn("notify: webhook budget check failed",
 				logfield.KeyEvent, "notify.webhook_budget_check_failed",
 				logfield.KeyError, err.Error())
 			return err
 		}
 		if used >= d.webhookDailyMax {
-			d.webhookThrottle.release(title)
+			d.webhookThrottle.release(key)
 			return d.markSkipped(ctx, row.ID, skipReasonBudgetExhausted)
 		}
 	}
@@ -513,7 +542,7 @@ func (d *Dispatcher) deliverWebhook(ctx context.Context, row corenotify.DueDeliv
 	}
 	// 失败释放节流占位：额度单源在账本，无需退还；节流必须释放，
 	// 否则一次对端瞬断会把同题告警静音一个窗口。
-	d.webhookThrottle.release(title)
+	d.webhookThrottle.release(key)
 	attrs := []any{
 		logfield.KeyEvent, "notify.delivery_failed",
 		logfield.KeyKind, string(kind),
@@ -706,22 +735,28 @@ func (d *Dispatcher) warnIfDisabled(skipped int) {
 	}
 }
 
-// maxWebhookTitleChars 与 Server酱服务端的 title 上限一致：
-// 节流键与出口层用同一归一化口径，同题判定不因出口不同而漂移。
-const maxWebhookTitleChars = 32
-
-// normalizeWebhookTitle 把推送标题规整成节流键的形态：
-// 去 CR/LF、去首尾空白、按字符截 32（与 adapters/webhook 的出口
-// 归一化同口径）。落库 title 已掩码，这里只做出口形态归一。
-func normalizeWebhookTitle(title string) string {
+// normalizeThrottleTitle 把标题规整成节流键的形态：去 CR/LF、去首尾空白。
+// **不**按 32 字截断（P3-18）：出口截断（Server酱 title ≤32）是
+// adapters/webhook 的显示约束——custom 出口根本不截；截断曾把
+// 32 字前缀相同的两条不同告警折叠成一条，键必须区分。
+func normalizeThrottleTitle(title string) string {
 	title = strings.ReplaceAll(title, "\r", " ")
 	title = strings.ReplaceAll(title, "\n", " ")
-	title = strings.TrimSpace(title)
-	runes := []rune(title)
-	if len(runes) > maxWebhookTitleChars {
-		return string(runes[:maxWebhookTitleChars])
-	}
-	return title
+	return strings.TrimSpace(title)
+}
+
+// webhookThrottleKey 是 webhook 同文节流键（P3-13）：归一化 title 加正文全等。
+// 正文携带账号/任务维度（掩码手机号、日次、缺口数字），不同账号的同题
+// 告警互不折叠；同事件多订阅者正文相同，仍全局至多一条真发。
+func webhookThrottleKey(title, body string) string {
+	return title + "\x00" + body
+}
+
+// mailThrottleKey 是邮件同题冷却键：收件人 + 归一化 title。
+// 邮件按收件人分投递面，正文不进键——同一告警发给两位管理员是两封
+// 各得其所的信；折叠只发生在**同一收件人的同题窗口内**。
+func mailThrottleKey(row corenotify.DueDelivery) string {
+	return row.UserID + "\x00" + normalizeThrottleTitle(row.Title)
 }
 
 // businessDayWindow 返回 now 所在业务日的 [起, 止) 时刻窗口：
