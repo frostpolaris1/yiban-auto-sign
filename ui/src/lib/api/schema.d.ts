@@ -640,20 +640,35 @@ export interface paths {
          * @description master reads any school; an admin reads bound schools; a user reads
          *     schools where the caller owns at least one account that is not
          *     deleted. A school outside that range and a missing school both
-         *     answer 404. photo_id is null when no default photo is set or the
-         *     referenced photo was soft-deleted. etag is the sha256 of the
-         *     referenced photo.
+         *     answer 404. photo_id identifies the school's OWN asset row (see
+         *     PUT): the bytes are content-addressed from the source photo, and
+         *     the asset row has its own lifecycle — the source owner deleting
+         *     their photo, their retention sweep, or a full account purge can
+         *     none of them unset or move the default. photo_id is null when no
+         *     default photo is set. etag is the sha256 of the referenced bytes.
          */
         get: operations["SchoolDefaultPhotoGet"];
         /**
          * Set or clear the school default photo.
-         * @description photo_id must reference an existing, non-deleted photo visible to the
-         *     caller: an admin sees photos whose owner has a non-deleted account in
-         *     a bound school. null clears the reference. Only an admin writes here;
-         *     master keeps the read reference from GET. Repeating the same value
-         *     answers 200. The write and a school.default_photo_set audit row commit
-         *     in one transaction; the detail carries only the photo id and the
-         *     previous value.
+         * @description photo_id must reference an existing, non-deleted photo (a user-
+         *     owned row, never a school asset row) visible to the caller: an
+         *     admin sees photos whose owner has a non-deleted account in a bound
+         *     school, and sees their own photos too — an admin may set a default
+         *     from their own account's library. Setting the default copies the
+         *     referenced bytes into a school-owned asset row (content-addressed,
+         *     so no disk growth) and points the default at it: from this moment
+         *     the default has an independent lifecycle — the source owner
+         *     soft-deleting the photo, retention purges, or a hard purge of the
+         *     owner never move or unset it, and re-uploading identical bytes by
+         *     the owner restores only their own row, not the default. The
+         *     response and stored photo_id therefore carry the school's asset
+         *     row id, not the source photo id. null clears the reference and
+         *     physically deletes the school's asset row; clearing is an explicit
+         *     admin-only act. Only an admin writes here; master keeps the read
+         *     reference from GET. Repeating the same value answers 200 and is
+         *     idempotent (same asset row). The write, the asset-row copy and a
+         *     school.default_photo_set audit row commit in one transaction; the
+         *     detail carries only the photo id and the previous value.
          */
         put: operations["SchoolDefaultPhotoSet"];
         post?: never;
@@ -1262,6 +1277,11 @@ export interface paths {
          *     the buffer answers resync followed by a snapshot. A 15s heartbeat
          *     keeps the stream alive; 60s without an event closes the stream with
          *     an end event. Cache-Control: no-store; X-Accel-Buffering: no.
+         *     The process caps concurrent streams at 10 (sfr hygiene batch, the
+         *     contract note it deferred): a request over the cap answers 429
+         *     rate_limited with Retry-After: 5 and never touches the bus. Any
+         *     disconnect frees a slot; one process wires one handler, so the
+         *     counter is the global concurrency.
          */
         get: operations["AdminEvents"];
         put?: never;
@@ -4018,16 +4038,23 @@ export interface components {
             days: 30 | 90 | 180 | 365;
         };
         SchoolDefaultPhoto: {
-            /** @description Referenced photo id; null when no default photo is set. */
+            /**
+             * @description The school's own asset-row id (D6: setting a default copies
+             *     the referenced bytes into a school-owned row). Not the source
+             *     photo id. null when no default photo is set.
+             */
             photo_id: string | null;
             /**
-             * @description sha256 (lowercase hex) of the referenced photo, the same digest
+             * @description sha256 (lowercase hex) of the referenced bytes, the same digest
              *     as Photo.sha256; empty when photo_id is null.
              */
             etag: string;
         };
         SchoolDefaultPhotoUpdate: {
-            /** @description An existing photo visible to the caller; null clears the default. */
+            /**
+             * @description An existing non-deleted user-owned photo visible to the caller
+             *     (school asset rows are not valid sources); null clears the default.
+             */
             photo_id: string | null;
         };
         UserPage: {
@@ -6360,6 +6387,7 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
