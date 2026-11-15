@@ -1,12 +1,12 @@
 /**
  * **功能**
- * 看板三张图的纯逻辑：数据 → Chart.js 配置与摘要文案。
+ * 看板双图的纯逻辑：数据 → Chart.js 配置与摘要文案。
  *
  * **归属**
  * `features/dashboard` 展示层：无 React、无网络；canvas 生命周期在 ChartCanvas。
  *
  * **口径**
- * 只画契约给的字段：日桶互斥、by_status 桶间可重叠，摘要不许把桶相加当总数。
+ * 只画契约给的字段：日桶互斥，不重复绘制与趋势同源的环形分布图。
  * 空数据返回 null，由卡片给空态文案，不画空坐标轴。
  * 颜色只从调用方给的主题调色板取，不在本文件写色值。
  * 趋势只画三天主序列；待签/进行中只在窗口内出现过时才进图例。
@@ -116,50 +116,6 @@ export function trendConfig(
           beginAtZero: true,
           ticks: { color: palette.muted, precision: 0 },
           grid: { color: palette.grid },
-        },
-      },
-    },
-  }
-}
-
-/** 分布图：按状态去重的账号数。全零时返回 null。 */
-export function distributionConfig(
-  report: SignStatsReport | undefined,
-  palette: ChartPalette,
-): ChartConfiguration<'doughnut'> | null {
-  if (!report) return null
-  const keys = (Object.keys(STATUS_LABELS) as Array<keyof typeof STATUS_LABELS>).filter(
-    (key) => report.by_status[key] > 0,
-  )
-  if (keys.length === 0) return null
-  const colors: Record<string, string> = {
-    success: palette.success,
-    failed: palette.danger,
-    skipped: palette.warning,
-    pending: palette.info,
-    running: palette.primary,
-  }
-  return {
-    type: 'doughnut',
-    data: {
-      labels: keys.map((key) => STATUS_LABELS[key]),
-      datasets: [
-        {
-          data: keys.map((key) => report.by_status[key]),
-          backgroundColor: keys.map((key) => colors[key]),
-          borderWidth: 0,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      cutout: '62%',
-      plugins: {
-        legend: {
-          position: 'bottom',
-          labels: { boxWidth: 10, boxHeight: 10, color: palette.muted },
         },
       },
     },

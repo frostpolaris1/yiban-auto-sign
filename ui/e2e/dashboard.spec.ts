@@ -5,6 +5,7 @@ import type { SignStatsDay } from '../src/lib/api/stats'
 import {
   DASHBOARD_DAY,
   DEFAULT_AUDIT_STATUS,
+  DEFAULT_ENGINE_SNAPSHOT,
   DEFAULT_PREF_STATS,
   DEFAULT_SIGN_STATS,
   type DashboardApiCall,
@@ -13,6 +14,7 @@ import {
   auditStatusCalls,
   capacityCalls,
   diagnosticsCalls,
+  engineSnapshotCalls,
   lastCapacityCall,
   mockDashboardApi,
   prefStatsCalls,
@@ -114,6 +116,7 @@ test('invariant 1: the user dashboard sends no window or capacity request', asyn
   expect(windowsCalls(api), 'a user never reads the window list').toHaveLength(0)
   expect(capacityCalls(api), 'a user never reads capacity').toHaveLength(0)
   expect(auditStatusCalls(api), 'a user never inspects the audit chain').toHaveLength(0)
+  expect(engineSnapshotCalls(api), 'a user never reads the engine snapshot').toHaveLength(0)
   await expect(page.getByText('容量体检')).toHaveCount(0)
   await expect(page.getByText('审计链巡检')).toHaveCount(0)
 })
@@ -180,6 +183,39 @@ test('invariant 10: an empty chain is neutral, not an alarm', async ({ page }) =
   await expect(card).toContainText('暂无审计行')
   await expect(card).toContainText('空链不算通过')
   await expect(card.getByText('链异常')).toHaveCount(0)
+})
+
+test('invariant 10: the health pulse bar shows engine status, live counters and recovers from failure alone', async ({
+  page,
+}) => {
+  const api = await mockDashboardApi(page, {
+    role: 'admin',
+    engineSnapshot: {
+      ...DEFAULT_ENGINE_SNAPSHOT,
+      paused: true,
+      due_now: 4,
+      retrying_truncated: true,
+    },
+    engineError: {
+      status: 500,
+      code: 'internal_error',
+      message: '引擎快照暂不可用',
+      once: true,
+    },
+  })
+  await openDashboard(page)
+
+  const strip = auditCard(page)
+  await expect(strip).toContainText('引擎快照暂不可用')
+  await expect(strip).toContainText('链完好')
+  await expectKpi(page, '今日成功', '3个')
+
+  await strip.getByRole('button', { name: '重试' }).click()
+  await expect(strip).toContainText('引擎已暂停')
+  await expect(strip).toContainText('在飞 1')
+  await expect(strip).toContainText('待执行 4')
+  await expect(strip).toContainText('待重试 1+')
+  expect(engineSnapshotCalls(api).length).toBe(2)
 })
 
 test('invariant 2: the four KPI counts match the rows', async ({ page }) => {
@@ -514,17 +550,17 @@ function chartCard(page: Page, title: string) {
   return page.locator('.card').filter({ hasText: title })
 }
 
-test('invariant 8: a manager gets three aggregate charts and both stats reads', async ({
+test('invariant 8: a manager gets two aggregate charts and both stats reads', async ({
   page,
 }) => {
   const api = await mockDashboardApi(page, { role: 'admin' })
   await openDashboard(page)
 
   await expect(page.getByText('30 天签到趋势')).toBeVisible()
-  await expect(page.getByText('状态分布')).toBeVisible()
   await expect(page.getByText('签到时段拥挤度')).toBeVisible()
-  await expect(page.locator('.app-chart-canvas')).toHaveCount(3)
-  expect(signStatsCalls(api), 'one read for trend and distribution').toHaveLength(1)
+  await expect(page.getByText('状态分布')).toHaveCount(0)
+  await expect(page.locator('.app-chart-canvas')).toHaveCount(2)
+  expect(signStatsCalls(api), 'one read for trend and KPI').toHaveLength(1)
   expect(prefStatsCalls(api), 'one read for the selected task').toHaveLength(1)
   expect(prefStatsCalls(api)[0].params['school_id']).toBe('school-alpha')
   expect(prefStatsCalls(api)[0].params['task_id']).toBe('task-daily')
@@ -566,7 +602,6 @@ test('invariant 8: empty aggregates name the reason instead of drawing axes', as
   await openDashboard(page)
 
   await expect(chartCard(page, '30 天签到趋势')).toContainText('近 30 天暂无签到记录。')
-  await expect(chartCard(page, '状态分布')).toContainText('窗口内暂无账号终态。')
   await expect(chartCard(page, '签到时段拥挤度')).toContainText('当前窗口没有可展示的时间片。')
 })
 
@@ -584,12 +619,12 @@ test('invariant 8: a stats failure stays on its own cards and retries alone', as
   await expect(capacityCard(page)).toBeVisible()
   // KPI 与图表共用同一份报告：读不到就一起变虚线，不编数字。
   await expectKpi(page, '今日成功', '—')
-  await expectKpi(page, '今日成功率', '—')
+  await expectKpi(page, '今日失败', '—')
   const before = signStatsCalls(api).length
 
   await trend.getByRole('button', { name: '重试' }).click()
   await expect.poll(() => signStatsCalls(api).length).toBe(before + 1)
-  await expect(page.locator('.app-chart-canvas')).toHaveCount(3)
+  await expect(page.locator('.app-chart-canvas')).toHaveCount(2)
   // 重试成功后 KPI 与图表一起回升。
   await expectKpi(page, '今日成功', '3个')
 })
@@ -604,7 +639,7 @@ test('invariant 8: the crowding chart follows the selected task', async ({ page 
     .poll(() => prefStatsCalls(api).at(-1)?.params['task_id'])
     .toBe('task-night')
   // 假 API 按任务给不同人数：摘要随数据变，而不是只换请求参数。
-  await expect(chartCard(page, '签到时段拥挤度')).toContainText('最热 20:10（3 人）')
+  await expect(chartCard(page, '签到时段拥挤度')).toContainText('高峰 20:10（3 人）')
 })
 
 test('invariant 8: switching the theme rebuilds the charts', async ({ page }) => {
@@ -633,11 +668,13 @@ test('invariant 9: the manager KPI reads today from the same stats report', asyn
 
   await expectKpi(page, '今日成功', '5个')
   await expectKpi(page, '今日失败', '2个')
-  await expectKpi(page, '今日成功率', '71.4%')
   await expectKpi(page, '进行中/待签', '4个')
+  await expectKpi(page, '待处理账号', '3个')
 
-  // 昨日 50 → 今日 71.4：差 21.4 个百分点，向上 pill。
-  const pill = kpiCard(page, '今日成功率').locator('.kpi-pill')
+  // 昨日 50 → 今日 71.4：差 21.4 个百分点，向上 pill 挂在今日成功卡底部。
+  const successCard = kpiCard(page, '今日成功')
+  await expect(successCard).toContainText('成功率 71.4%')
+  const pill = successCard.locator('.kpi-pill')
   await expect(pill).toContainText('较昨日 +21.4pp')
   await expect(pill).toHaveClass(/up/)
 
@@ -656,24 +693,24 @@ test('invariant 9: skipped states never enter the rate denominator', async ({ pa
   })
   await openDashboard(page)
 
-  await expectKpi(page, '今日成功率', '50%')
-  const pill = kpiCard(page, '今日成功率').locator('.kpi-pill')
+  const successCard = kpiCard(page, '今日成功')
+  await expect(successCard).toContainText('成功率 50%')
+  const pill = successCard.locator('.kpi-pill')
   await expect(pill).toContainText('无昨日对比')
   await expect(pill).toHaveClass(/flat/)
 })
 
-test('invariant 9: a zero denominator shows an em dash without a pill', async ({ page }) => {
+test('invariant 9: a zero denominator shows no rate pill on today success', async ({ page }) => {
   await mockDashboardApi(page, {
     role: 'admin',
-    // 今日只有待签：成功+失败为 0 → 「—」；昨日有终态也不出对比。
+    // 今日只有待签：成功+失败为 0 → 无对比 pill；昨日有终态也不出对比。
     signStats: statsWithTail({ success: 1 }, { pending: 2 }),
   })
   await openDashboard(page)
 
   await expectKpi(page, '今日成功', '0个')
   await expectKpi(page, '今日失败', '0个')
-  await expectKpi(page, '今日成功率', '—')
-  await expect(kpiCard(page, '今日成功率').locator('.kpi-pill')).toHaveCount(0)
+  await expect(kpiCard(page, '今日成功').locator('.kpi-pill')).toHaveCount(0)
 })
 
 test('invariant 9: the rate pill turns down when today trails yesterday', async ({ page }) => {
@@ -687,8 +724,9 @@ test('invariant 9: the rate pill turns down when today trails yesterday', async 
   })
   await openDashboard(page)
 
-  await expectKpi(page, '今日成功率', '40%')
-  const pill = kpiCard(page, '今日成功率').locator('.kpi-pill')
+  const successCard = kpiCard(page, '今日成功')
+  await expect(successCard).toContainText('成功率 40%')
+  const pill = successCard.locator('.kpi-pill')
   await expect(pill).toContainText('较昨日 -40pp')
   await expect(pill).toHaveClass(/down/)
 })
@@ -699,14 +737,14 @@ test('invariant 9: the header creates an account and exports nothing', async ({ 
 
   // master 与 admin 同口径：KPI 来自缺省报告的末两天。
   await expectKpi(page, '今日成功', '3个')
-  await expectKpi(page, '今日成功率', '100%')
+  await expect(kpiCard(page, '今日成功')).toContainText('成功率 100%')
   await expect(page.getByRole('button', { name: '导出' })).toHaveCount(0)
 
   await page.getByRole('button', { name: '新建账号' }).click()
   await expect(page).toHaveURL(/\/accounts$/)
 })
 
-test('invariant 9: the todo strip reads the summary, leads the page and links to accounts', async ({
+test('invariant 9: the pending account KPI card sits in slot 4 and links straight to accounts', async ({
   page,
 }) => {
   const api = await mockDashboardApi(page, {
@@ -715,34 +753,29 @@ test('invariant 9: the todo strip reads the summary, leads the page and links to
   })
   await openDashboard(page)
 
-  const card = page.locator('.app-todo-card').filter({ hasText: '待审核 / 已驳回' })
-  await expect(card).toContainText('3')
-  await expect(card).toContainText('待审核 2 · 已拒绝 1')
+  const labels = await page.locator('.kpi-card .kpi-label').allTextContents()
+  expect(labels).toEqual(['今日成功', '今日失败', '进行中/待签', '待处理账号'])
+
+  const card = kpiCard(page, '待处理账号')
+  await expectKpi(page, '待处理账号', '3个')
+  await expect(card).toContainText('待审核 2 · 已拒绝 1 →')
   expect(accountSummaryCalls(api), 'one summary read').toHaveLength(1)
-
-  // 待办区在 KPI 行之前：首屏第一块是「等着我处理」。
-  const stripBox = await page.locator('.app-todo-strip').boundingBox()
-  const kpiBox = await page.locator('.kpi-card').first().boundingBox()
-  expect(stripBox!.y, 'todo strip precedes the KPI row').toBeLessThan(kpiBox!.y)
-
-  // 待处理计数只出现一次：KPI 行不再重复同一数字。
-  await expect(page.locator('.kpi-card').filter({ hasText: '待处理账号' })).toHaveCount(0)
 
   await card.click()
   await expect(page).toHaveURL(/\/accounts$/)
 })
 
-test('invariant 9: a user never reads the account summary nor sees the todo strip', async ({
+test('invariant 9: a user never reads the account summary nor sees the pending account KPI', async ({
   page,
 }) => {
   const api = await mockDashboardApi(page, { role: 'user' })
   await openDashboard(page)
 
   expect(accountSummaryCalls(api), 'a user never reads the summary').toHaveLength(0)
-  await expect(page.locator('.app-todo-strip')).toHaveCount(0)
+  await expect(page.locator('.kpi-card').filter({ hasText: '待处理账号' })).toHaveCount(0)
 })
 
-test('invariant 9: a failed summary keeps the todo review card at an em dash', async ({
+test('invariant 9: a failed summary keeps the pending account KPI card at an em dash', async ({
   page,
 }) => {
   await mockDashboardApi(page, {
@@ -751,8 +784,8 @@ test('invariant 9: a failed summary keeps the todo review card at an em dash', a
   })
   await openDashboard(page)
 
-  const card = page.locator('.app-todo-card').filter({ hasText: '待审核 / 已驳回' })
-  await expect(card).toContainText('—')
+  const card = kpiCard(page, '待处理账号')
+  await expectKpi(page, '待处理账号', '—')
   await expect(card).toContainText('等待读取')
 })
 

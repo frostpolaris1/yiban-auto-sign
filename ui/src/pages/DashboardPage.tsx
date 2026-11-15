@@ -38,7 +38,7 @@ export function DashboardPage() {
         subtitle={
           isUser
             ? '今日签到状态与诊断建议；状态每 30 秒自动刷新。'
-            : '今日任务窗口与容量体检；容量按所选任务计算。'
+            : '今日签到终态、任务容量水位与 30 天趋势总览。'
         }
         actions={
           <Button variant="primary" onClick={() => void navigate({ to: '/accounts' })}>

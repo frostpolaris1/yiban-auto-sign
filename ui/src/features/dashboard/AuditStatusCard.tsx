@@ -1,23 +1,24 @@
 /**
  * **功能**
- * 审计链巡检卡：三态徽章、巡检行数与时刻、断链定位行。
+ * 底部系统健康与审计状态条：汇合执行引擎实时脉冲与审计链三态结论。
  *
  * **归属**
- * `features/dashboard` 展示层：数据与回调查由 `DashboardView` 给。
+ * `features/dashboard` 展示层：数据与回调由 `DashboardView` 注入。
  *
  * **口径**
- * 端点 `GET /api/admin/audit-status` 的 `x-roles` 是 master/admin；
- * 本卡不自行取数，也不在 user 视角挂载。
- * 三态口径见 `audit-status.ts`：空链是「暂无审计行」，不是异常。
- * 断链只给定位行 id；**不展示**审计正文、actor 或 detail。
- * 异常用行内 danger 徽章与提示条，不弹窗。
+ * 端点 `GET /api/admin/engine` 与 `GET /api/admin/audit-status` 的 `x-roles`
+ * 均为 master/admin；不在 user 视角挂载。
+ * 正常态浓缩为页尾单行状态条，不再抢占首屏 KPI 视线；
+ * 断链或锚点不符时在条下展开行内 danger 告警条，不弹窗、不展示审计正文。
+ * 引擎读取失败与审计读取失败各自独立重试，互不连坐。
  */
 
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
-import { Card } from '@/components/ui/Card'
+import { Icon } from '@/components/ui/Icon'
 import type { AuditStatusReport } from '@/lib/api/audit'
+import type { EngineSnapshot } from '@/lib/api/engine'
 import { formatDateTime } from '@/lib/format'
 import {
   AUDIT_VERDICT_LABELS,
@@ -26,52 +27,47 @@ import {
   auditVerdictTone,
   shortHash,
 } from './audit-status'
+import { enginePulse } from './display'
 
 type AuditStatusCardProps = {
   report: AuditStatusReport | undefined
   loading: boolean
   error: string | null
   onRetry: () => void
+  engine: EngineSnapshot | undefined
+  engineLoading: boolean
+  engineError: string | null
+  onRetryEngine: () => void
 }
 
-/** 巡检结论正文：三态徽章、行数与时刻、断链定位。 */
-function AuditStatusDetail({ report }: { report: AuditStatusReport }) {
+function AuditSummaryInline({ report }: { report: AuditStatusReport }) {
   const verdict = auditVerdict(report)
-  const broken = auditBrokenText(report)
+  const anchorNote =
+    report.anchor_status === 'ok' ||
+    report.anchor_status === 'mismatch' ||
+    report.anchor_status === 'error'
+      ? ` · 库外锚点 ${report.anchor_status}${
+          report.anchor_seq === undefined ? '' : ` · seq ${report.anchor_seq}`
+        }`
+      : report.anchor_status === 'missing'
+        ? ' · 锚点未启用（仅链内自洽）'
+        : ''
+
   return (
-    <>
-      <p>
-        <Badge tone={auditVerdictTone(verdict)}>{AUDIT_VERDICT_LABELS[verdict]}</Badge>{' '}
-        {verdict === 'ok' ? (
-          <span>全部行已复算通过。</span>
-        ) : verdict === 'empty' ? (
-          <span>链内还没有可校验的行；空链不算通过。</span>
-        ) : null}
-      </p>
-      <p className="app-muted">
-        巡检 {report.checked_rows} 行 · {formatDateTime(report.checked_at)}
-        {report.last_hash === '' ? '' : ` · 链头 ${shortHash(report.last_hash)}`}
-      </p>
-      {report.anchor_status === 'ok' ||
-      report.anchor_status === 'mismatch' ||
-      report.anchor_status === 'error' ? (
-        <p className="app-muted">
-          库外锚点：{report.anchor_status}
-          {report.anchor_seq === undefined ? '' : ` · seq ${report.anchor_seq}`}
-          {report.anchor_count === undefined ? '' : ` · ${report.anchor_count} 行`}
-        </p>
-      ) : null}
-      {report.anchor_status === 'missing' ? (
-        <Alert tone="warning" title="锚点未启用">
-          巡检仅链内自洽。
-        </Alert>
-      ) : null}
-      {broken !== null ? (
-        <Alert tone="danger" title="审计异常">
-          {broken} 请保留现场并排查；本页不展示审计正文。
-        </Alert>
-      ) : null}
-    </>
+    <div className="app-health-inline">
+      <Badge tone={auditVerdictTone(verdict)}>{AUDIT_VERDICT_LABELS[verdict]}</Badge>
+      <span className="app-health-meta">
+        {verdict === 'empty' ? (
+          <>链内还没有可校验的行；空链不算通过{anchorNote}</>
+        ) : (
+          <>
+            巡检 {report.checked_rows} 行 · {formatDateTime(report.checked_at)}
+            {report.last_hash === '' ? '' : ` · 链头 ${shortHash(report.last_hash)}`}
+            {anchorNote}
+          </>
+        )}
+      </span>
+    </div>
   )
 }
 
@@ -80,28 +76,81 @@ export function AuditStatusCard({
   loading,
   error,
   onRetry,
+  engine,
+  engineLoading,
+  engineError,
+  onRetryEngine,
 }: AuditStatusCardProps) {
+  const pulse = enginePulse(engine)
+  const broken = report ? auditBrokenText(report) : null
+
   return (
-    <Card
-      className="col-6"
-      eyebrow="Audit"
-      title="审计链巡检"
-      action={<span className="app-caption">按需复算全链</span>}
-    >
-      {error !== null ? (
-        <div className="app-alert-block">
-          <Alert tone="danger" title="读取失败">
-            {error}{' '}
-            <Button variant="ghost" size="sm" onClick={onRetry}>
-              重试
-            </Button>
+    <section className="card app-health-strip" aria-label="系统健康与审计巡检">
+      <div className="app-health-bar">
+        <div className="app-health-zone">
+          <span className="app-health-label">
+            <Icon name="activity" size={14} />
+            执行引擎
+          </span>
+          {engineError !== null ? (
+            <div className="app-health-inline">
+              <Badge tone="danger">读取失败</Badge>
+              <span className="app-health-meta">{engineError}</span>
+              <Button variant="ghost" size="sm" onClick={onRetryEngine}>
+                重试
+              </Button>
+            </div>
+          ) : (
+            <div className="app-health-inline">
+              <Badge tone={pulse.tone} dot>
+                {engineLoading && engine === undefined ? '读取中…' : pulse.label}
+              </Badge>
+              <span className="app-health-chip">
+                在飞 <strong>{pulse.inflight ?? '—'}</strong>
+              </span>
+              <span className="app-health-chip">
+                待执行 <strong>{pulse.dueNow ?? '—'}</strong>
+              </span>
+              <span className="app-health-chip">
+                待重试 <strong>{pulse.retryingText}</strong>
+              </span>
+              {pulse.lastTickClock ? (
+                <span className="app-health-meta">最近一轮 {pulse.lastTickClock}</span>
+              ) : null}
+            </div>
+          )}
+        </div>
+
+        <span className="app-health-sep" aria-hidden="true" />
+
+        <div className="app-health-zone app-health-zone--grow">
+          <span className="app-health-label">
+            <Icon name="shield" size={14} />
+            审计链巡检
+          </span>
+          {error !== null ? (
+            <div className="app-health-inline">
+              <Badge tone="danger">读取失败</Badge>
+              <span className="app-health-meta">{error}</span>
+              <Button variant="ghost" size="sm" onClick={onRetry}>
+                重试
+              </Button>
+            </div>
+          ) : report === undefined ? (
+            <span className="app-health-meta">{loading ? '巡检中…' : '等待巡检…'}</span>
+          ) : (
+            <AuditSummaryInline report={report} />
+          )}
+        </div>
+      </div>
+
+      {broken !== null ? (
+        <div className="app-health-alert">
+          <Alert tone="danger" title="审计异常">
+            {broken} 请保留现场并排查；本页不展示审计正文。
           </Alert>
         </div>
-      ) : report === undefined ? (
-        <p className="app-muted">{loading ? '巡检中…' : '等待巡检…'}</p>
-      ) : (
-        <AuditStatusDetail report={report} />
-      )}
-    </Card>
+      ) : null}
+    </section>
   )
 }

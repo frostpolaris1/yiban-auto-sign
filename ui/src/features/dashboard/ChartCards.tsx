@@ -1,24 +1,25 @@
 /**
  * **功能**
- * 看板三张图卡：30 天趋势、状态分布、自选时间片拥挤度。
+ * 看板双图卡：30 天签到趋势（全宽）与自选时间片拥挤度（半宽，与容量体检并排）。
  *
  * **归属**
  * `features/dashboard` 展示层：数据与回调由 DashboardView 给。
  *
  * **口径**
  * 只画契约给的字段；空数据不画空坐标轴，给一句原因。
- * 分布图按状态去重，桶间可重叠，摘要明确写「不相加」。
+ * 状态分布环形图已移除，避免与 30 天趋势重复同一份统计。
  * 自选图只在该任务存在时取数；无可用任务时给空态文案，不发请求。
  * 错误只挂本卡，重试只重取本卡。
  */
 
 import { useCallback, type ReactNode } from 'react'
 import { Alert } from '@/components/ui/Alert'
+import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import type { PrefStatsReport, SignStatsReport } from '@/lib/api/stats'
 import type { ChartPalette } from './charts'
-import { distributionConfig, prefConfig, prefSummary, trendConfig, trendTotals } from './charts'
+import { prefConfig, prefSummary, trendConfig, trendTotals } from './charts'
 import { ChartCanvas } from './ChartCanvas'
 
 type CardState = {
@@ -84,6 +85,9 @@ export function SignTrendCard({ report, loading, error, onRetry }: SignReportPro
       className="col-12"
       eyebrow="Trend"
       title="30 天签到趋势"
+      action={
+        report ? <span className="app-caption">覆盖活跃账号 {report.total} 个</span> : null
+      }
       state={{ loading, error, onRetry }}
       empty={empty}
     >
@@ -91,39 +95,9 @@ export function SignTrendCard({ report, loading, error, onRetry }: SignReportPro
         <ChartCanvas ariaLabel="近 30 天每日签到终态堆叠柱状图" build={build} />
       </div>
       {totals ? (
-        <p className="app-muted">
-          近 30 天（账号日）：成功 {totals.success} · 失败 {totals.failed} · 跳过 {totals.skipped}
+        <p className="app-muted app-chart-foot">
+          30 天累计：成功 {totals.success} 次 · 失败 {totals.failed} 次 · 跳过 {totals.skipped} 次
           {totals.missing > 0 ? ` · 缺失 ${totals.missing} 天` : ''}
-        </p>
-      ) : null}
-    </CardShell>
-  )
-}
-
-/** 状态分布：窗口内按状态去重的账号数。 */
-export function SignDistributionCard({ report, loading, error, onRetry }: SignReportProps) {
-  const build = useCallback(
-    (palette: ChartPalette) => distributionConfig(report, palette),
-    [report],
-  )
-  const hasData =
-    report !== undefined &&
-    Object.values(report.by_status).some((value) => value > 0)
-  const empty = report && !hasData ? '窗口内暂无账号终态。' : null
-  return (
-    <CardShell
-      className="col-6"
-      eyebrow="Mix"
-      title="状态分布"
-      state={{ loading, error, onRetry }}
-      empty={empty}
-    >
-      <div className="app-chart-box">
-        <ChartCanvas ariaLabel="窗口内账号终态分布环形图" build={build} />
-      </div>
-      {report ? (
-        <p className="app-muted">
-          按状态去重共 {report.total} 个账号；各状态桶可重叠，不相加。
         </p>
       ) : null}
     </CardShell>
@@ -135,7 +109,7 @@ type PrefReportProps = {
   taskLabel: string | null
 } & CardState
 
-/** 自选时间片拥挤度：柱=人数，虚线=每片容量。 */
+/** 自选时间片拥挤度：半宽与容量体检并排，柱=人数，虚线=每片容量。 */
 export function PrefCrowdingCard({ report, taskLabel, loading, error, onRetry }: PrefReportProps) {
   const build = useCallback(
     (palette: ChartPalette) => prefConfig(report, palette),
@@ -151,24 +125,24 @@ export function PrefCrowdingCard({ report, taskLabel, loading, error, onRetry }:
         : null
   return (
     <CardShell
-      className="col-12"
+      className="col-6"
       eyebrow="Crowding"
       title="签到时段拥挤度"
-      action={taskLabel ? <span className="app-caption">{taskLabel}</span> : null}
+      action={taskLabel ? <Badge tone="primary">{taskLabel}</Badge> : null}
       state={{ loading, error, onRetry }}
       empty={empty}
     >
-      <div className="app-chart-box app-chart-box--wide">
+      <div className="app-chart-box app-chart-box--compact">
         <ChartCanvas ariaLabel="自选时间片人数与每片容量对比图" build={build} />
       </div>
       {summary ? (
-        <p className="app-muted">
+        <p className="app-muted app-chart-foot">
           {summary.users > 0
-            ? `自选用户 ${summary.users} · 最热 ${summary.hottest?.label ?? '—'}${
+            ? `已自选 ${summary.users} 人 · 高峰 ${summary.hottest?.label ?? '—'}${
                 summary.hottest ? `（${summary.hottest.count} 人）` : ''
-              } · 每片容量 ${cap}`
-            : `暂无用户自选，按自动铺点；每片容量 ${cap}`}
-          {' · 每 15 秒刷新'}
+              } · 每片上限 ${cap} 人`
+            : `暂无用户自选，按自动铺点 · 每片上限 ${cap} 人`}
+          {' · 15 秒刷新'}
         </p>
       ) : null}
     </CardShell>

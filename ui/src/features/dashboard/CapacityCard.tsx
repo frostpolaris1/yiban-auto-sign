@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 容量体检卡：任务选择器、容量／需求／缺口三个指标，来源与窗口起止。
+ * 容量体检卡：任务选择器、负载进度条、容量／需求／缺口三指标、来源与窗口起止。
  *
  * **归属**
  * `features/dashboard` 展示层：数据与回调由 `DashboardView` 给。
@@ -33,6 +33,7 @@ import { formatClock } from '@/lib/format'
 import {
   EMPTY_WINDOW_TEXT,
   type CapacityOption,
+  capacityMeter,
   capacitySourceLabel,
   capacitySourceTone,
   type WindowCounts,
@@ -123,12 +124,20 @@ export function CapacityCard({
   onRetryWindows,
   onRetryCapacity,
 }: CapacityCardProps) {
+  const meter = report ? capacityMeter(report) : null
+
   return (
     <Card
       className="col-6"
       eyebrow="Capacity"
       title="容量体检"
-      action={<span className="app-caption">缺省读当日窗口缓存</span>}
+      action={
+        counts !== null ? (
+          <span className="app-caption">
+            可用窗口 {counts.usable} / {counts.total}
+          </span>
+        ) : null
+      }
     >
       {windowsError !== null ? (
         <div className="app-alert-block">
@@ -154,6 +163,17 @@ export function CapacityCard({
               disabled={capacityLoading}
               onChange={(event) => onSelect(event.target.value)}
             />
+            {report ? (
+              <div className="app-capacity-window-chip">
+                <Badge tone={capacitySourceTone(report.source)}>
+                  {capacitySourceLabel(report.source)}
+                </Badge>
+                <span className="app-caption">
+                  窗口 {formatClock(report.window_start)}–{formatClock(report.window_end)} · 业务日{' '}
+                  {report.day}
+                </span>
+              </div>
+            ) : null}
           </div>
 
           {capacityError !== null ? (
@@ -192,18 +212,27 @@ export function CapacityCard({
                 </div>
               </div>
 
+              {meter ? (
+                <div className="app-capacity-meter" aria-label="容量负载比">
+                  <div className="app-capacity-meter-head">
+                    <span className="app-caption">需求 / 容量水位</span>
+                    <span className={`app-capacity-meter-status t-${meter.tone}`}>
+                      {meter.statusText}
+                    </span>
+                  </div>
+                  <div className="progress">
+                    <div
+                      className={`app-capacity-meter-fill t-${meter.tone}`}
+                      style={{ width: `${meter.fillWidth}%` }}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
               <CapacityHint
                 key={`${report.task_id}:${report.suggested_workers ?? 0}:${report.shortfall}`}
                 report={report}
               />
-
-              <p className="app-muted app-capacity-meta">
-                <Badge tone={capacitySourceTone(report.source)}>
-                  {capacitySourceLabel(report.source)}
-                </Badge>{' '}
-                窗口 {formatClock(report.window_start)}–{formatClock(report.window_end)} · 业务日{' '}
-                {report.day}
-              </p>
             </>
           )}
         </>
