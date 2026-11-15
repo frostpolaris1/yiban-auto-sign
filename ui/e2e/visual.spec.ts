@@ -198,13 +198,14 @@ for (const theme of THEMES) {
           const capacity = page.locator('.card').filter({ hasText: '容量体检' })
           await expect(capacity.locator('.app-metric')).toHaveCount(3)
           await expectNumbers(capacity.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
-          // 四张 KPI 卡：今日成功、今日失败、进行中/待签、待处理账号。
+          // 四张结论 KPI：成功/失败/进行中/成功率；待办计数在横幅只出现一次。
           await expectNumbers(page.locator('.kpi-card .kpi-value'), [
             '3个',
             '0个',
             '1个',
-            '3个',
+            '100%',
           ])
+          await expectNumbers(page.locator('.app-todo-value'), ['3', '1'])
         }
         await expect(page).toHaveScreenshot(`${view.name}-${theme}-${viewport.name}.png`, {
           fullPage: true,
@@ -468,7 +469,8 @@ for (const theme of THEMES) {
     await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
     const capacity = page.locator('.card').filter({ hasText: '容量体检' })
     await expectNumbers(capacity.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
-    await expectNumbers(page.locator('.kpi-card .kpi-value'), ['3个', '0个', '1个', '3个'])
+    await expectNumbers(page.locator('.kpi-card .kpi-value'), ['3个', '0个', '1个', '100%'])
+    await expectNumbers(page.locator('.app-todo-value'), ['3', '1'])
     await page.getByRole('button', { name: '账号菜单' }).click()
     await expect(page.getByRole('menu')).toBeVisible()
     // 菜单入场动画会改变整页的合成层，进而改变文字抗锯齿；等它结束再拍。

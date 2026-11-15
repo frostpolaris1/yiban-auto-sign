@@ -16,6 +16,7 @@ import {
   signKpiCards,
   stateLabel,
   todayKpiCards,
+  todoItems,
   todayStats,
   windowCounts,
 } from '../../src/features/dashboard/display.ts'
@@ -230,38 +231,63 @@ test('the manager KPI cards order active before pending review and carry rate pi
       { day: '2026-10-28', pending: 1, running: 1, success: 5, failed: 2, skipped: 0 },
     ]),
   )
-  const cards = todayKpiCards(stats, { pending: 3, rejected: 2 })
+  const cards = todayKpiCards(stats)
   assert.equal(cards.length, 4)
   assert.deepEqual(
     cards.map((card) => card.label),
-    ['今日成功', '今日失败', '进行中/待签', '待处理账号'],
+    ['今日成功', '今日失败', '进行中/待签', '今日成功率'],
   )
   assert.deepEqual(
     cards.map((card) => card.value),
-    [5, 2, 2, 5],
+    [5, 2, 2, 71.4],
   )
-  assert.equal(cards[0].pill, stats.pill)
-  assert.equal(cards[0].note, '成功率 71.4%')
+  assert.equal(cards[3].pill, stats.pill)
   assert.equal(cards[1].href, '/run')
   assert.equal(cards[1].note, '失败原因与重试 →')
   assert.equal(cards[2].href, '/run')
   assert.equal(cards[2].note, '查看实时进度 →')
-  assert.equal(cards[3].href, '/accounts')
-  assert.equal(cards[3].note, '待审核 3 · 已拒绝 2 →')
 
-  const zeroFailed = todayKpiCards({ ...stats, failed: 0 }, { pending: 0, rejected: 0 })
+  const zeroFailed = todayKpiCards({ ...stats, failed: 0 })
   assert.equal(zeroFailed[1].note, '全员正常 · 查看运行 →')
-  assert.equal(zeroFailed[3].value, 0)
-  assert.equal(zeroFailed[3].note, '待审核 0 · 已拒绝 0 →')
 
-  const blank = todayKpiCards(null, null)
+  const blank = todayKpiCards(null)
   assert.deepEqual(
     blank.map((card) => card.value),
     [null, null, null, null],
     'no data means no invented numbers',
   )
   assert.equal(blank[1].note, '等待读取')
-  assert.equal(blank[3].note, '等待读取')
+})
+
+test('the todo banner derives review and gap workloads and never invents numbers', () => {
+  const stats = { success: 5, failed: 2, active: 2, rate: 71.4, pill: null }
+  const items = todoItems({ pending: 3, rejected: 2 }, stats, [
+    { enabled: true, start: null, end: null },
+    { enabled: false, start: null, end: null },
+    { enabled: true, start: '06:00', end: '08:00' },
+  ])
+  assert.deepEqual(
+    items.map((item) => item.key),
+    ['review', 'failed', 'gap'],
+  )
+  assert.equal(items[0].value, 5, 'pending + rejected is the review workload')
+  assert.equal(items[0].note, '待审核 3 · 已拒绝 2')
+  assert.equal(items[0].href, '/accounts')
+  assert.equal(items[2].value, 1, 'only enabled windows lacking a reported range')
+  assert.equal(items[2].href, '/schedule')
+
+  // 全零是合法数据：显 0；横幅由视图按「有活」决定是否出现。
+  const zero = todoItems({ pending: 0, rejected: 0 }, { ...stats, failed: 0 }, [])
+  assert.equal(zero[0].value, 0)
+  assert.equal(zero[2].value, 0)
+
+  for (const missing of [null, undefined]) {
+    const dash = todoItems(missing, null, null)
+    assert.equal(dash[0].value, null)
+    assert.equal(dash[0].note, '等待读取')
+    assert.equal(dash[1].value, null)
+    assert.equal(dash[2].value, null)
+  }
 })
 
 test('every contract state has a label and null means no task', () => {

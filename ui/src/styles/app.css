@@ -1887,3 +1887,15 @@ a.kpi-card {
 :root[data-theme="dark"] .btn--primary:hover {
   background: var(--primary);
 }
+
+/* 合并稿：待办横幅双卡（有活才出现）；趋势/分布页签；拥挤度多片横滚；健康条链接。 */
+.app-todo-pair .app-todo-strip { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 720px) { .app-todo-pair .app-todo-strip { grid-template-columns: 1fr; } }
+.app-card-tabs { display: inline-flex; gap: 4px; }
+.app-card-tabs button { border: 1px solid var(--border); background: var(--bg-muted); color: var(--t-muted); border-radius: 999px; padding: 2px 12px; font-size: 12px; cursor: pointer; }
+.app-card-tabs button.on { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); font-weight: 700; }
+.app-chart-box--scroll { overflow-x: auto; }
+.app-health-chip-link { color: inherit; text-decoration: none; }
+.app-health-chip-link:hover strong { color: var(--primary); }
+.app-health-link { font-size: 12.5px; color: var(--primary); text-decoration: none; white-space: nowrap; }
+.app-health-link:hover { text-decoration: underline; }

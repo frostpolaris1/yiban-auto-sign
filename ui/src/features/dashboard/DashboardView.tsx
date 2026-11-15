@@ -49,12 +49,14 @@ import { PrefCrowdingCard, SignTrendCard } from './ChartCards'
 import { DiagnosticsCard } from './DiagnosticsCard'
 import { KpiGrid } from './KpiGrid'
 import { SignStatusCard } from './SignStatusCard'
+import { TodoStrip } from './TodoStrip'
 import {
   capacityOptions,
   signCounts,
   signKpiCards,
   todayKpiCards,
   todayStats,
+  todoItems,
   windowCounts,
 } from './display'
 
@@ -204,6 +206,14 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
   const diagnosticsItems = diagnosticsQuery.data?.items ?? []
   // master/admin 的四张 KPI 与图表共用这份 30 天报告；只读末两天作今日终态。
   const stats = todayStats(signStatsQuery.data)
+  // 待办横幅只在「有活」时出现：无活让位结论 KPI，有活行动优先。
+  // 失败计数留在 KPI（带直达链接），横幅只承载审核与容量缺口，避免同数双显。
+  const todo = todoItems(
+    accountSummaryQuery.data ?? null,
+    stats,
+    windowsQuery.data?.items ?? null,
+  ).filter((item) => item.key !== 'failed')
+  const showTodo = todo.some((item) => (item.value ?? 0) > 0)
 
   if (isUser) {
     return (
@@ -243,7 +253,12 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
 
   return (
     <>
-      <KpiGrid cards={todayKpiCards(stats, accountSummaryQuery.data ?? null)} />
+      {showTodo ? (
+        <div className="app-todo-pair">
+          <TodoStrip items={todo} />
+        </div>
+      ) : null}
+      <KpiGrid cards={todayKpiCards(stats)} />
       <div className="grid app-dashboard-workbench">
         <CapacityCard
           options={options}

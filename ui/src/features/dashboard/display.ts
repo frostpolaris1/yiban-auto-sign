@@ -287,13 +287,7 @@ export function todayStats(report: SignStatsReport | null | undefined): TodaySta
  * master/admin 四卡：今日成功（附成功率与环比）、今日失败、进行中/待签、待处理账号。
  * 待处理＝pending+rejected（未软删），读数未到或失败显「—」不编 0。
  */
-export function todayKpiCards(
-  stats: TodayStats | null,
-  summary?: AccountSummary | null,
-): KpiCard[] {
-  const pending = summary?.pending ?? null
-  const rejected = summary?.rejected ?? null
-  const review = pending === null || rejected === null ? null : pending + rejected
+export function todayKpiCards(stats: TodayStats | null): KpiCard[] {
   return [
     {
       tone: 'success',
@@ -301,13 +295,7 @@ export function todayKpiCards(
       label: '今日成功',
       value: stats?.success ?? null,
       unit: '个',
-      pill: stats?.pill ?? null,
-      note:
-        stats === null
-          ? '等待读取'
-          : stats.rate === null
-            ? '按账号当日终态'
-            : `成功率 ${stats.rate}%`,
+      note: '按账号当日终态',
     },
     {
       tone: 'danger',
@@ -334,15 +322,12 @@ export function todayKpiCards(
     },
     {
       tone: 'purple',
-      icon: 'edit',
-      label: '待处理账号',
-      value: review,
-      unit: '个',
-      href: '/accounts',
-      note:
-        pending === null || rejected === null
-          ? '等待读取'
-          : `待审核 ${pending} · 已拒绝 ${rejected} →`,
+      icon: 'gauge',
+      label: '今日成功率',
+      value: stats?.rate ?? null,
+      unit: '%',
+      note: '成功 ÷（成功 + 失败）',
+      pill: stats?.pill ?? null,
     },
   ]
 }
@@ -446,4 +431,66 @@ export function capacityMeter(
     tone,
     statusText: `负载 ${percent}%（余量 ${spare}）`,
   }
+}
+
+/**
+ * 待办行动区条目：首屏第一块，只放「等着我处理」的三件事。
+ * 值 null＝读数未到或失败，显「—」不编 0；全零是合法数据显 0。
+ * 待处理＝pending+rejected（未软删），与账号页提示条同口径同缓存键。
+ * 容量缺口＝启用但平台未报起止窗口的任务数。
+ */
+export type TodoItem = {
+  key: 'review' | 'failed' | 'gap'
+  tone: 'purple' | 'danger' | 'warning'
+  icon: IconName
+  label: string
+  value: number | null
+  note: string
+  href: '/accounts' | '/run' | '/schedule'
+}
+
+export function todoItems(
+  summary: AccountSummary | null | undefined,
+  stats: TodayStats | null,
+  windows: readonly ScheduleWindow[] | null,
+): TodoItem[] {
+  const pending = summary?.pending ?? null
+  const rejected = summary?.rejected ?? null
+  const review = pending === null || rejected === null ? null : pending + rejected
+  const gap =
+    windows === null
+      ? null
+      : windows.filter((w) => w.enabled && (w.start === null || w.end === null)).length
+  return [
+    {
+      key: 'review',
+      tone: 'purple',
+      icon: 'edit',
+      label: '待审核 / 已驳回',
+      value: review,
+      note:
+        pending === null || rejected === null
+          ? '等待读取'
+          : `待审核 ${pending} · 已拒绝 ${rejected}`,
+      href: '/accounts',
+    },
+    {
+      key: 'failed',
+      tone: 'danger',
+      icon: 'alertCircle',
+      label: '今日失败',
+      value: stats?.failed ?? null,
+      note: '按账号当日终态',
+      href: '/run',
+    },
+    {
+      key: 'gap',
+      tone: 'warning',
+      icon: 'calendar',
+      label: '容量缺口',
+      value: gap,
+      note: gap === null ? '等待读取' : '启用但平台未报窗口的任务',
+      href: '/schedule',
+    },
+  ]
 }

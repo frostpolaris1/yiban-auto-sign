@@ -123,6 +123,49 @@ export function trendConfig(
 }
 
 /** 自选拥挤度：柱=人数，线=每片容量。无槽时返回 null。 */
+export function distributionConfig(
+  report: SignStatsReport | undefined,
+  palette: ChartPalette,
+): ChartConfiguration<'doughnut'> | null {
+  if (!report) return null
+  const keys = (Object.keys(STATUS_LABELS) as Array<keyof typeof STATUS_LABELS>).filter(
+    (key) => report.by_status[key] > 0,
+  )
+  if (keys.length === 0) return null
+  const colors: Record<string, string> = {
+    success: palette.success,
+    failed: palette.danger,
+    skipped: palette.warning,
+    pending: palette.info,
+    running: palette.primary,
+  }
+  return {
+    type: 'doughnut',
+    data: {
+      labels: keys.map((key) => STATUS_LABELS[key]),
+      datasets: [
+        {
+          data: keys.map((key) => report.by_status[key]),
+          backgroundColor: keys.map((key) => colors[key]),
+          borderWidth: 0,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      cutout: '62%',
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { boxWidth: 10, boxHeight: 10, color: palette.muted },
+        },
+      },
+    },
+  }
+}
+
 export function prefConfig(
   report: PrefStatsReport | undefined,
   palette: ChartPalette,

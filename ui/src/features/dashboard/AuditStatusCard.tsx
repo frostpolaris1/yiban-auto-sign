@@ -13,6 +13,7 @@
  * 引擎读取失败与审计读取失败各自独立重试，互不连坐。
  */
 
+import { Link } from '@tanstack/react-router'
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -105,18 +106,19 @@ export function AuditStatusCard({
               <Badge tone={pulse.tone} dot>
                 {engineLoading && engine === undefined ? '读取中…' : pulse.label}
               </Badge>
-              <span className="app-health-chip">
+              <Link to="/engine" className="app-health-chip app-health-chip-link">
                 在飞 <strong>{pulse.inflight ?? '—'}</strong>
-              </span>
-              <span className="app-health-chip">
+              </Link>
+              <Link to="/engine" className="app-health-chip app-health-chip-link">
                 待执行 <strong>{pulse.dueNow ?? '—'}</strong>
-              </span>
-              <span className="app-health-chip">
+              </Link>
+              <Link to="/engine" className="app-health-chip app-health-chip-link">
                 待重试 <strong>{pulse.retryingText}</strong>
-              </span>
+              </Link>
               {pulse.lastTickClock ? (
                 <span className="app-health-meta">最近一轮 {pulse.lastTickClock}</span>
               ) : null}
+              <Link to="/run" className="app-health-link">运行台账 →</Link>
             </div>
           )}
         </div>
