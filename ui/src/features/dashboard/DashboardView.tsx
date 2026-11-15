@@ -15,8 +15,11 @@
  * windows 与时间片页共用缓存键 `['schedule-windows', day]`。
  * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与图表共用一次读取；
  * 缓存键带上海业务日，每 60 秒复核、跨日才重取。
- * 第 5 卡「待处理账号」读 `['account-summary']`（与账号页提示条共用缓存键），
+ * 第 5 卡「待处理账号」已移入首屏待办行动区（TodoStrip）：同一数字只出现一次；
+ * 读 `['account-summary']`（与账号页提示条共用缓存键），
  * 与 sign-stats 独立：加载或失败显「—」，账号页写操作会失效该键。
+ * 首屏顺序＝待办行动区→KPI×4→趋势全宽→拥挤度→分布/容量→审计/运行条。
+ * 拥挤度每 15 秒轮询（自选写入无 SSE 事件）；页面隐藏时不轮询。
  * 容量默认选第一个可用任务；没有可用任务就不发容量请求。
  * 各卡错误态独立，重试只重取该卡的数据。
  * 展示模式用合成夹具，零网络请求。
@@ -24,6 +27,8 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
+import { Card } from '@/components/ui/Card'
 import { describeApiError } from '@/lib/api/client'
 import { getAccountSummary } from '@/lib/api/account'
 import { getAuditStatus } from '@/lib/api/audit'
@@ -47,13 +52,14 @@ import { PrefCrowdingCard, SignDistributionCard, SignTrendCard } from './ChartCa
 import { DiagnosticsCard } from './DiagnosticsCard'
 import { KpiGrid } from './KpiGrid'
 import { SignStatusCard } from './SignStatusCard'
+import { TodoStrip } from './TodoStrip'
 import {
   capacityOptions,
-  pendingAccountCard,
   signCounts,
   signKpiCards,
   todayKpiCards,
   todayStats,
+  todoItems,
   windowCounts,
 } from './display'
 
@@ -183,6 +189,10 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     enabled: !isUser && selected !== null,
     staleTime: 0,
     retry: false,
+    // 拥挤度是「实时」诉求：15 秒轮询；页面隐藏时不轮询。
+    // 自选写入没有 SSE 事件，轮询是唯一刷新源；展示模式轮询合成夹具零请求。
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   })
 
   const signStatusItems = signStatusQuery.data?.items ?? []
@@ -228,8 +238,44 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
 
   return (
     <>
-      <KpiGrid cards={[...todayKpiCards(stats), pendingAccountCard(accountSummaryQuery.data ?? null)]} />
+      <TodoStrip
+        items={todoItems(
+          accountSummaryQuery.data ?? null,
+          stats,
+          windowsQuery.data?.items ?? null,
+        )}
+      />
+      <KpiGrid cards={todayKpiCards(stats)} />
       <div className="grid">
+        <SignTrendCard
+          report={signStatsQuery.data}
+          loading={signStatsQuery.isPending}
+          error={signStatsQuery.isError ? describeApiError(signStatsQuery.error) : null}
+          onRetry={() => {
+            void signStatsQuery.refetch()
+          }}
+        />
+      </div>
+      <div className="grid">
+        <PrefCrowdingCard
+          report={prefStatsQuery.data}
+          taskLabel={selected?.label ?? null}
+          loading={prefStatsQuery.isPending && selected !== null}
+          error={prefStatsQuery.isError ? describeApiError(prefStatsQuery.error) : null}
+          onRetry={() => {
+            void prefStatsQuery.refetch()
+          }}
+        />
+      </div>
+      <div className="grid">
+        <SignDistributionCard
+          report={signStatsQuery.data}
+          loading={signStatsQuery.isPending}
+          error={signStatsQuery.isError ? describeApiError(signStatsQuery.error) : null}
+          onRetry={() => {
+            void signStatsQuery.refetch()
+          }}
+        />
         <CapacityCard
           options={options}
           selectedValue={selected?.value ?? ''}
@@ -249,6 +295,8 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
             void capacityQuery.refetch()
           }}
         />
+      </div>
+      <div className="grid">
         <AuditStatusCard
           report={auditStatusQuery.data}
           loading={auditStatusQuery.isPending}
@@ -259,33 +307,27 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
             void auditStatusQuery.refetch()
           }}
         />
-      </div>
-      <div className="grid">
-        <SignTrendCard
-          report={signStatsQuery.data}
-          loading={signStatsQuery.isPending}
-          error={signStatsQuery.isError ? describeApiError(signStatsQuery.error) : null}
-          onRetry={() => {
-            void signStatsQuery.refetch()
-          }}
-        />
-        <SignDistributionCard
-          report={signStatsQuery.data}
-          loading={signStatsQuery.isPending}
-          error={signStatsQuery.isError ? describeApiError(signStatsQuery.error) : null}
-          onRetry={() => {
-            void signStatsQuery.refetch()
-          }}
-        />
-        <PrefCrowdingCard
-          report={prefStatsQuery.data}
-          taskLabel={selected?.label ?? null}
-          loading={prefStatsQuery.isPending && selected !== null}
-          error={prefStatsQuery.isError ? describeApiError(prefStatsQuery.error) : null}
-          onRetry={() => {
-            void prefStatsQuery.refetch()
-          }}
-        />
+        <Card
+          className="col-6"
+          eyebrow="Run"
+          title="运行状态"
+          action={<span className="app-caption">细层在运行与执行监控</span>}
+        >
+          <div className="app-metric-grid">
+            <div className="app-metric">
+              <div className="app-metric-label">进行中/待签</div>
+              <div className="app-metric-value">{stats?.active ?? '—'}</div>
+            </div>
+          </div>
+          <div className="app-runstrip-links">
+            <Link to="/run" className="app-runstrip-link">
+              今日运行 →
+            </Link>
+            <Link to="/engine" className="app-runstrip-link">
+              执行监控 →
+            </Link>
+          </div>
+        </Card>
       </div>
     </>
   )

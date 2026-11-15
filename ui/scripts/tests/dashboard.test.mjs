@@ -10,12 +10,12 @@ import {
   STATE_LABELS,
   capacityOptions,
   capacitySourceTone,
-  pendingAccountCard,
   signCounts,
   signKpiCards,
   stateLabel,
   todayKpiCards,
   todayStats,
+  todoItems,
   windowCounts,
 } from '../../src/features/dashboard/display.ts'
 import { SOURCE_LABELS, sourceTone } from '../../src/features/schedule/display.ts'
@@ -254,24 +254,37 @@ test('the manager KPI cards carry today numbers and an em dash without data', ()
   )
 })
 
-test('the pending-accounts card sums the summary and never invents a number', () => {
-  const card = pendingAccountCard({ pending: 3, rejected: 2 })
-  assert.equal(card.label, '待处理账号')
-  assert.equal(card.value, 5, 'pending + rejected is the workload')
-  assert.equal(card.note, '待审核 3 · 已拒绝 2')
-  assert.equal(card.href, '/accounts', 'the whole card links to the accounts page')
+test('the todo strip sums the summary and never invents a number', () => {
+  const stats = { success: 5, failed: 2, active: 4, rate: 71.4, pill: null }
+  const items = todoItems({ pending: 3, rejected: 2 }, stats, [])
+  const review = items.find((item) => item.key === 'review')
+  assert.equal(review.label, '待审核 / 已驳回')
+  assert.equal(review.value, 5, 'pending + rejected is the workload')
+  assert.equal(review.note, '待审核 3 · 已拒绝 2')
+  assert.equal(review.href, '/accounts', 'the whole card links to the accounts page')
+  assert.equal(items.find((item) => item.key === 'failed').value, 2)
 
   // 全零是合法数据：显 0，不是「—」。
-  const zero = pendingAccountCard({ pending: 0, rejected: 0 })
-  assert.equal(zero.value, 0)
-  assert.equal(zero.note, '待审核 0 · 已拒绝 0')
+  const zero = todoItems({ pending: 0, rejected: 0 }, stats, [])
+  assert.equal(zero.find((item) => item.key === 'review').value, 0)
+  assert.equal(zero.find((item) => item.key === 'review').note, '待审核 0 · 已拒绝 0')
 
-  // 汇总未到或失败都是 null：显「—」，不编 0。
+  // 汇总/窗口未到或失败都是 null：显「—」，不编 0。
   for (const missing of [null, undefined]) {
-    const dash = pendingAccountCard(missing)
-    assert.equal(dash.value, null)
-    assert.equal(dash.note, '等待读取')
+    const dash = todoItems(missing, null, null)
+    assert.equal(dash.find((item) => item.key === 'review').value, null)
+    assert.equal(dash.find((item) => item.key === 'review').note, '等待读取')
+    assert.equal(dash.find((item) => item.key === 'failed').value, null)
+    assert.equal(dash.find((item) => item.key === 'gap').value, null)
   }
+
+  // 缺口只数「启用且未报起止」的窗口：停用与已报都不算。
+  const gap = todoItems(null, null, [
+    { enabled: true, start: null, end: null },
+    { enabled: false, start: null, end: null },
+    { enabled: true, start: '06:00', end: '08:00' },
+  ])
+  assert.equal(gap.find((item) => item.key === 'gap').value, 1)
 })
 
 test('every contract state has a label and null means no task', () => {

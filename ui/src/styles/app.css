@@ -1637,3 +1637,92 @@ a.kpi-card {
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
+
+/* ---------- 待办行动区 ----------
+ * 总览首屏第一块：三张整卡链接，只放「等着我处理」的计数。
+ * 左缘色条按语义实色；卡面用 surface，hover 微抬升证明可点。
+ * 全零降透明度但保留链接：零也是结论，不是隐藏理由。
+ */
+.app-todo-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.app-todo-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+  color: var(--t-base);
+  text-decoration: none;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.app-todo-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
+}
+.app-todo-card.t-purple {
+  border-left-color: var(--purple);
+}
+.app-todo-card.t-danger {
+  border-left-color: var(--danger);
+}
+.app-todo-card.t-warning {
+  border-left-color: var(--warning);
+}
+.app-todo-card.is-zero {
+  opacity: 0.62;
+}
+.app-todo-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--t-muted);
+}
+.app-todo-value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.app-todo-note {
+  font-size: 11.5px;
+  color: var(--t-light);
+}
+.app-todo-go {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 13px;
+  color: var(--t-light);
+}
+@media (max-width: 720px) {
+  .app-todo-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 运行状态卡的双链接行：与 metric 区隔一条软边框。 */
+.app-runstrip-links {
+  display: flex;
+  gap: 14px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.app-runstrip-link {
+  font-size: 13px;
+  color: var(--primary);
+  text-decoration: none;
+}
+.app-runstrip-link:hover {
+  text-decoration: underline;
+}

@@ -68,37 +68,14 @@ export function isNavGroup(item: NavItem): item is NavGroup {
 
 export const NAV: NavSection[] = [
   {
-    label: '工作区',
+    label: '今日',
     items: [
       {
         key: 'dashboard',
         text: '仪表盘',
         to: '/',
         icon: 'dashboard',
-        crumbs: ['工作区', '仪表盘'],
-      },
-      {
-        key: 'accounts',
-        text: '账号',
-        to: '/accounts',
-        icon: 'accounts',
-        crumbs: ['工作区', '账号'],
-      },
-      {
-        key: 'schools',
-        text: '学校',
-        to: '/schools',
-        icon: 'school',
-        roles: SCHOOL_VIEW_ROLES,
-        crumbs: ['工作区', '学校'],
-      },
-      {
-        key: 'schedule',
-        text: '时间片',
-        to: '/schedule',
-        icon: 'calendar',
-        roles: SCHEDULE_VIEW_ROLES,
-        crumbs: ['工作区', '时间片'],
+        crumbs: ['今日', '仪表盘'],
       },
       {
         key: 'run',
@@ -106,7 +83,7 @@ export const NAV: NavSection[] = [
         to: '/run',
         icon: 'activity',
         roles: RUN_VIEW_ROLES,
-        crumbs: ['工作区', '运行'],
+        crumbs: ['今日', '运行'],
       },
       {
         key: 'engine',
@@ -114,19 +91,19 @@ export const NAV: NavSection[] = [
         to: '/engine',
         icon: 'gauge',
         roles: ENGINE_VIEW_ROLES,
-        crumbs: ['工作区', '执行监控'],
+        crumbs: ['今日', '执行监控'],
       },
     ],
   },
   {
-    label: '系统',
+    label: '管理',
     items: [
       {
-        key: 'settings',
-        text: '账号设置',
-        to: '/settings',
-        icon: 'settings',
-        crumbs: ['系统', '账号设置'],
+        key: 'accounts',
+        text: '账号',
+        to: '/accounts',
+        icon: 'accounts',
+        crumbs: ['管理', '账号'],
       },
       {
         key: 'users',
@@ -134,7 +111,35 @@ export const NAV: NavSection[] = [
         to: '/users',
         icon: 'userCog',
         roles: USER_VIEW_ROLES,
-        crumbs: ['系统', '用户管理'],
+        crumbs: ['管理', '用户管理'],
+      },
+      {
+        key: 'schools',
+        text: '学校',
+        to: '/schools',
+        icon: 'school',
+        roles: SCHOOL_VIEW_ROLES,
+        crumbs: ['管理', '学校'],
+      },
+    ],
+  },
+  {
+    label: '系统',
+    items: [
+      {
+        key: 'schedule',
+        text: '时间片',
+        to: '/schedule',
+        icon: 'calendar',
+        roles: SCHEDULE_VIEW_ROLES,
+        crumbs: ['系统', '时间片'],
+      },
+      {
+        key: 'settings',
+        text: '账号设置',
+        to: '/settings',
+        icon: 'settings',
+        crumbs: ['系统', '账号设置'],
       },
       {
         key: 'design',

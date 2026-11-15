@@ -213,7 +213,7 @@ export function ScheduleView({ day, onDayChange }: ScheduleViewProps) {
   return (
     <>
       <PageHeader
-        eyebrow="工作区 · 时间片"
+        eyebrow="系统 · 时间片"
         title={
           <>
             签到 <span className="accent">窗口</span>

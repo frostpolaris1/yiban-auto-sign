@@ -394,7 +394,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   return (
     <>
       <PageHeader
-        eyebrow="工作区 · 账号"
+        eyebrow="管理 · 账号"
         title={
           <>
             账号 <span className="accent">列表</span>

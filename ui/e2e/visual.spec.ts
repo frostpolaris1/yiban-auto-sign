@@ -194,15 +194,18 @@ for (const theme of THEMES) {
           await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4个', '1个', '1个', '1个'])
         } else {
           await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
-          await expect(page.locator('.app-metric')).toHaveCount(3)
-          await expectNumbers(page.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+          // 容量三指标只数容量卡：运行状态卡另有自己的 metric，不再全局计数。
+          const capacity = page.locator('.card').filter({ hasText: '容量体检' })
+          await expect(capacity.locator('.app-metric')).toHaveCount(3)
+          await expectNumbers(capacity.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+          // 待处理计数移入首屏待办区：KPI 行只剩四张今日终态卡。
           await expectNumbers(page.locator('.kpi-card .kpi-value'), [
             '3个',
             '0个',
             '100%',
             '1个',
-            '3个',
           ])
+          await expectNumbers(page.locator('.app-todo-value'), ['3', '0', '1'])
         }
         await expect(page).toHaveScreenshot(`${view.name}-${theme}-${viewport.name}.png`, {
           fullPage: true,
@@ -464,14 +467,10 @@ for (const theme of THEMES) {
     await openWithTheme(page, '/', theme)
     // 背景是看板：滚动数字全部落定再拍，菜单态不能带中间帧。
     await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
-    await expectNumbers(page.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
-    await expectNumbers(page.locator('.kpi-card .kpi-value'), [
-      '3个',
-      '0个',
-      '100%',
-      '1个',
-      '3个',
-    ])
+    const capacity = page.locator('.card').filter({ hasText: '容量体检' })
+    await expectNumbers(capacity.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+    await expectNumbers(page.locator('.kpi-card .kpi-value'), ['3个', '0个', '100%', '1个'])
+    await expectNumbers(page.locator('.app-todo-value'), ['3', '0', '1'])
     await page.getByRole('button', { name: '账号菜单' }).click()
     await expect(page.getByRole('menu')).toBeVisible()
     // 菜单入场动画会改变整页的合成层，进而改变文字抗锯齿；等它结束再拍。

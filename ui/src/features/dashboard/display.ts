@@ -321,25 +321,65 @@ export function todayKpiCards(stats: TodayStats | null): KpiCard[] {
 }
 
 /**
- * 第 5 卡「待处理账号」：值＝pending+rejected（未软删），note 拆两数。
- * 汇总未到或读取失败都是 null：显示「—」，不编 0。整卡链接到账号页。
+ * 待办行动区条目：首屏第一块，只放「等着我处理」的三件事。
+ * 值 null＝读数未到或失败，显「—」不编 0；全零是合法数据显 0。
+ * 待处理＝pending+rejected（未软删），与账号页提示条同口径同缓存键。
+ * 容量缺口＝启用但平台未报起止窗口的任务数。
  */
-export function pendingAccountCard(summary: AccountSummary | null): KpiCard {
+export type TodoItem = {
+  key: 'review' | 'failed' | 'gap'
+  tone: 'purple' | 'danger' | 'warning'
+  icon: IconName
+  label: string
+  value: number | null
+  note: string
+  href: '/accounts' | '/run' | '/schedule'
+}
+
+export function todoItems(
+  summary: AccountSummary | null | undefined,
+  stats: TodayStats | null,
+  windows: readonly ScheduleWindow[] | null,
+): TodoItem[] {
   const pending = summary?.pending ?? null
   const rejected = summary?.rejected ?? null
-  const value = pending === null || rejected === null ? null : pending + rejected
-  return {
-    tone: 'purple',
-    icon: 'edit',
-    label: '待处理账号',
-    value,
-    unit: '个',
-    note:
-      pending === null || rejected === null
-        ? '等待读取'
-        : `待审核 ${pending} · 已拒绝 ${rejected}`,
-    href: '/accounts',
-  }
+  const review = pending === null || rejected === null ? null : pending + rejected
+  const gap =
+    windows === null
+      ? null
+      : windows.filter((w) => w.enabled && (w.start === null || w.end === null)).length
+  return [
+    {
+      key: 'review',
+      tone: 'purple',
+      icon: 'edit',
+      label: '待审核 / 已驳回',
+      value: review,
+      note:
+        pending === null || rejected === null
+          ? '等待读取'
+          : `待审核 ${pending} · 已拒绝 ${rejected}`,
+      href: '/accounts',
+    },
+    {
+      key: 'failed',
+      tone: 'danger',
+      icon: 'alertCircle',
+      label: '今日失败',
+      value: stats?.failed ?? null,
+      note: '按账号当日终态',
+      href: '/run',
+    },
+    {
+      key: 'gap',
+      tone: 'warning',
+      icon: 'calendar',
+      label: '容量缺口',
+      value: gap,
+      note: gap === null ? '等待读取' : '启用但平台未报窗口的任务',
+      href: '/schedule',
+    },
+  ]
 }
 
 export const EMPTY_SIGN_TEXT = '今日暂无签到任务'

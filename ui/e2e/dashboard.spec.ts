@@ -706,39 +706,54 @@ test('invariant 9: the header creates an account and exports nothing', async ({ 
   await expect(page).toHaveURL(/\/accounts$/)
 })
 
-test('invariant 9: the pending KPI reads the summary and links to accounts', async ({ page }) => {
+test('invariant 9: the todo strip reads the summary, leads the page and links to accounts', async ({
+  page,
+}) => {
   const api = await mockDashboardApi(page, {
     role: 'admin',
     accountSummary: { pending: 2, rejected: 1 },
   })
   await openDashboard(page)
 
-  await expectKpi(page, '待处理账号', '3个')
-  const card = kpiCard(page, '待处理账号')
+  const card = page.locator('.app-todo-card').filter({ hasText: '待审核 / 已驳回' })
+  await expect(card).toContainText('3')
   await expect(card).toContainText('待审核 2 · 已拒绝 1')
   expect(accountSummaryCalls(api), 'one summary read').toHaveLength(1)
+
+  // 待办区在 KPI 行之前：首屏第一块是「等着我处理」。
+  const stripBox = await page.locator('.app-todo-strip').boundingBox()
+  const kpiBox = await page.locator('.kpi-card').first().boundingBox()
+  expect(stripBox!.y, 'todo strip precedes the KPI row').toBeLessThan(kpiBox!.y)
+
+  // 待处理计数只出现一次：KPI 行不再重复同一数字。
+  await expect(page.locator('.kpi-card').filter({ hasText: '待处理账号' })).toHaveCount(0)
 
   await card.click()
   await expect(page).toHaveURL(/\/accounts$/)
 })
 
-test('invariant 9: a user never reads the account summary', async ({ page }) => {
+test('invariant 9: a user never reads the account summary nor sees the todo strip', async ({
+  page,
+}) => {
   const api = await mockDashboardApi(page, { role: 'user' })
   await openDashboard(page)
 
   expect(accountSummaryCalls(api), 'a user never reads the summary').toHaveLength(0)
-  await expect(page.locator('.kpi-card').filter({ hasText: '待处理账号' })).toHaveCount(0)
+  await expect(page.locator('.app-todo-strip')).toHaveCount(0)
 })
 
-test('invariant 9: a failed summary keeps the pending card at an em dash', async ({ page }) => {
+test('invariant 9: a failed summary keeps the todo review card at an em dash', async ({
+  page,
+}) => {
   await mockDashboardApi(page, {
     role: 'admin',
     accountSummaryError: { status: 500, code: 'internal_error', message: '汇总不可用' },
   })
   await openDashboard(page)
 
-  await expectKpi(page, '待处理账号', '—')
-  await expect(kpiCard(page, '待处理账号')).toContainText('等待读取')
+  const card = page.locator('.app-todo-card').filter({ hasText: '待审核 / 已驳回' })
+  await expect(card).toContainText('—')
+  await expect(card).toContainText('等待读取')
 })
 
 test('invariant 9: the stats read refetches once when the business day rolls over', async ({

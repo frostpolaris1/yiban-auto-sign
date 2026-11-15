@@ -188,7 +188,7 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
   return (
     <>
       <PageHeader
-        eyebrow="工作区 · 学校"
+        eyebrow="管理 · 学校"
         title={
           <>
             学校 <span className="accent">列表</span>

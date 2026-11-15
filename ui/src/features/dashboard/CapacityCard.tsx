@@ -125,7 +125,7 @@ export function CapacityCard({
 }: CapacityCardProps) {
   return (
     <Card
-      className="col-12"
+      className="col-6"
       eyebrow="Capacity"
       title="容量体检"
       action={<span className="app-caption">缺省读当日窗口缓存</span>}

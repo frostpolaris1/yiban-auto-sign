@@ -81,7 +81,7 @@ export function SignTrendCard({ report, loading, error, onRetry }: SignReportPro
     report && totals && totals.total === 0 ? '近 30 天暂无签到记录。' : null
   return (
     <CardShell
-      className="col-6"
+      className="col-12"
       eyebrow="Trend"
       title="30 天签到趋势"
       state={{ loading, error, onRetry }}
@@ -168,6 +168,7 @@ export function PrefCrowdingCard({ report, taskLabel, loading, error, onRetry }:
                 summary.hottest ? `（${summary.hottest.count} 人）` : ''
               } · 每片容量 ${cap}`
             : `暂无用户自选，按自动铺点；每片容量 ${cap}`}
+          {' · 每 15 秒刷新'}
         </p>
       ) : null}
     </CardShell>

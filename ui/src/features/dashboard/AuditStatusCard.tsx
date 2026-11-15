@@ -83,7 +83,7 @@ export function AuditStatusCard({
 }: AuditStatusCardProps) {
   return (
     <Card
-      className="col-12"
+      className="col-6"
       eyebrow="Audit"
       title="审计链巡检"
       action={<span className="app-caption">按需复算全链</span>}
