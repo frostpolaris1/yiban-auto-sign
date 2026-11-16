@@ -27,6 +27,7 @@ import { EnginePage } from '@/pages/EnginePage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
+import { QueuePage } from '@/pages/QueuePage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { RunPage } from '@/pages/RunPage'
 import { SchedulePage } from '@/pages/SchedulePage'
@@ -145,18 +146,19 @@ function UsersRouteComponent() {
  * 校验即净化：非法日期在解析时丢弃，容器回落到今天。
  */
 /**
- * 目标目录的占位入口：B2/B3/B4 落地前重定向到现有承载页。
- * /queue → /run（今日失败/未签在运行页）；/logs → /run；/audit → /。
- * 页面就绪时把重定向换成真 page 组件。
+ * 待办工作台：master/admin。权限门由 QueueView 内部执行。
  */
 const queueRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/queue',
-  beforeLoad: () => {
-    throw redirect({ to: '/run' })
-  },
+  component: QueuePage,
 })
 
+/**
+ * 目标目录的占位入口：B3/B4 落地前重定向到现有承载页。
+ * /logs → /run；/audit → /。
+ * 页面就绪时把重定向换成真 page 组件。
+ */
 const logsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/logs',

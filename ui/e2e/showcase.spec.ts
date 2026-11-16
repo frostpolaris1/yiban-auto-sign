@@ -56,7 +56,8 @@ test('invariant 7: the showcase dashboard renders fixtures with zero requests', 
   await expect.poll(() => visibleText(total.locator('.kpi-value'))).toBe('3个')
 
   const card = page.locator('.card').filter({ hasText: '容量体检' })
-  await expect(page.getByLabel('任务')).toHaveValue('school-a:task-daily')
+  // 容量卡改用 Radix Select：触发器是按钮，断言可见文案而非原生 value。
+  await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日点名')
   await expect
     .poll(() => visibleText(card.locator('.app-metric').filter({ hasText: '容量' })))
     .toBe('容量24')
@@ -281,4 +282,32 @@ test('invariant 10: the showcase drawer shows synthetic photos with zero request
   await expect(drawer.getByRole('button', { name: '上传照片' })).toHaveCount(0)
 
   expect(apiRequests, 'the photo fixture never touches the API').toEqual([])
+})
+
+test('invariant 11: the showcase queue page renders fixtures with zero requests and disabled writes', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/queue')
+  await expect(page.getByRole('heading', { level: 1, name: /今日\s*待办/ })).toBeVisible()
+  await expect(page.locator('[data-queue-group="pending"]')).toContainText('138****8000')
+  await expect(page.locator('[data-queue-group="failed"]')).toContainText('138****8003')
+  await expect(page.locator('[data-queue-group="unsigned"]')).toContainText('138****8004')
+
+  const approveBtn = page.getByRole('button', { name: '通过 138****8000' })
+  await expect(approveBtn).toBeDisabled()
+  await expect(approveBtn).toHaveAttribute('title', READ_ONLY_REASON)
+
+  const retryBtn = page.getByRole('button', { name: '重试 138****8003' })
+  await expect(retryBtn).toBeDisabled()
+  await expect(retryBtn).toHaveAttribute('title', READ_ONLY_REASON)
+
+  // 详情抽屉在展示模式下仍可读合成诊断
+  await page.getByRole('button', { name: '详情 138****8003' }).click()
+  const drawer = page.getByRole('dialog', { name: '诊断 · 138****8003' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer).toContainText('credential_invalid')
+
+  expect(apiRequests, 'the showcase queue page never touches the API').toEqual([])
 })

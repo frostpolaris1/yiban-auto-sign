@@ -86,7 +86,6 @@ export const NAV: NavSection[] = [
         to: '/queue',
         icon: 'listTodo',
         roles: RUN_VIEW_ROLES,
-        alsoActive: ['/run'],
         crumbs: ['今日', '待办'],
       },
     ],

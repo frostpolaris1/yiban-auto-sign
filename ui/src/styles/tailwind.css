@@ -1,0 +1,39 @@
+/*
+ * tailwind.css — Tailwind CSS v4 工具层（无 preflight，不覆写既有 Adminator 基线）。
+ *
+ * **功能**
+ * 提供组合式布局与排版工具类；全部色彩、阴影令牌直接绑定 tokens.css 变量，
+ * 保证明暗两套主题自动同步，且不引入任何颜色字面量（满足 token-gate）。
+ */
+
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme {
+  --color-bg-body: var(--bg-body);
+  --color-bg-card: var(--bg-card);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-muted: var(--bg-muted);
+  --color-t-base: var(--t-base);
+  --color-t-muted: var(--t-muted);
+  --color-t-light: var(--t-light);
+  --color-t-inverse: var(--t-inverse);
+  --color-border-hair: var(--border);
+  --color-border-soft: var(--border-soft);
+  --color-primary: var(--primary);
+  --color-primary-light: var(--primary-light);
+  --color-primary-dark: var(--primary-dark);
+  --color-primary-soft: var(--primary-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-card: var(--shadow-card);
+  --shadow-lg: var(--shadow-lg);
+}

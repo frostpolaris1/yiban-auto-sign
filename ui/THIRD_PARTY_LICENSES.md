@@ -66,6 +66,9 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @babel/traverse | 8.0.10 | MIT | 开发 |
 | @babel/types | 7.29.11 | MIT | 开发 |
 | @babel/types | 8.0.10 | MIT | 开发 |
+| @emnapi/core | 1.11.3 | MIT | 开发 |
+| @emnapi/runtime | 1.11.3 | MIT | 开发 |
+| @emnapi/wasi-threads | 1.2.3 | MIT | 开发 |
 | @eslint-community/eslint-utils | 4.10.1 | MIT | 开发 |
 | @eslint-community/regexpp | 4.12.2 | MIT | 开发 |
 | @eslint/config-array | 0.21.2 | Apache-2.0 | 开发 |
@@ -93,6 +96,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @jridgewell/sourcemap-codec | 1.6.0 | MIT | 开发 |
 | @jridgewell/trace-mapping | 0.3.31 | MIT | 开发 |
 | @kurkle/color | 0.3.4 | MIT | 运行时 |
+| @napi-rs/wasm-runtime | 1.2.2 | MIT | 开发 |
 | @number-flow/react | 0.6.2 | MIT | 运行时 |
 | @oxc-project/types | 0.155.0 | MIT | 开发 |
 | @playwright/test | 1.64.1 | Apache-2.0 | 开发 |
@@ -173,6 +177,21 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @rolldown/binding-win32-x64-msvc | 1.2.15 | MIT | 开发 |
 | @rolldown/pluginutils | 1.0.1 | MIT | 开发 |
 | @standard-schema/utils | 0.3.0 | MIT | 运行时 |
+| @tailwindcss/node | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-android-arm64 | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-darwin-arm64 | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-darwin-x64 | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-freebsd-x64 | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-linux-arm-gnueabihf | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-linux-arm64-gnu | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-linux-arm64-musl | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-linux-x64-gnu | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-linux-x64-musl | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-wasm32-wasi | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-win32-arm64-msvc | 4.3.5 | MIT | 开发 |
+| @tailwindcss/oxide-win32-x64-msvc | 4.3.5 | MIT | 开发 |
+| @tailwindcss/vite | 4.3.5 | MIT | 开发 |
 | @tanstack/history | 1.162.5 | MIT | 运行时 |
 | @tanstack/query-core | 5.104.5 | MIT | 运行时 |
 | @tanstack/react-query | 5.104.5 | MIT | 运行时 |
@@ -180,6 +199,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @tanstack/react-store | 0.11.2 | MIT | 运行时 |
 | @tanstack/router-core | 1.171.39 | MIT | 运行时 |
 | @tanstack/store | 0.11.2 | MIT | 运行时 |
+| @tybys/wasm-util | 0.10.3 | MIT | 开发 |
 | @types/esrecurse | 4.3.1 | MIT | 开发 |
 | @types/estree | 1.0.10 | MIT | 开发 |
 | @types/gensync | 1.0.5 | MIT | 开发 |
@@ -258,6 +278,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | electron-to-chromium | 1.5.472 | ISC | 开发 |
 | emoji-regex | 9.2.2 | MIT | 开发 |
 | empathic | 2.1.0 | MIT | 开发 |
+| enhanced-resolve | 5.27.0 | MIT | 开发 |
 | es-abstract | 1.24.2 | MIT | 开发 |
 | es-abstract-get | 1.0.0 | MIT | 开发 |
 | es-define-property | 1.0.1 | MIT | 开发 |
@@ -306,6 +327,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | globals | 14.0.0 | MIT | 开发 |
 | globalthis | 1.0.4 | MIT | 开发 |
 | gopd | 1.2.0 | MIT | 开发 |
+| graceful-fs | 4.2.12 | BlueOak-1.0.0 | 开发 |
 | has-bigints | 1.1.0 | MIT | 开发 |
 | has-flag | 4.0.0 | MIT | 开发 |
 | has-property-descriptors | 1.0.2 | MIT | 开发 |
@@ -347,6 +369,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | isarray | 2.0.5 | MIT | 开发 |
 | isbot | 5.2.2 | Unlicense | 运行时 |
 | isexe | 2.0.0 | ISC | 开发 |
+| jiti | 2.7.0 | MIT | 开发 |
 | js-tokens | 10.0.0 | MIT | 开发 |
 | js-tokens | 4.0.0 | MIT | 开发 |
 | js-yaml | 4.3.2 | MIT | 开发 |
@@ -376,6 +399,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | lodash.merge | 4.6.2 | MIT | 开发 |
 | lru-cache | 5.1.1 | ISC | 开发 |
 | lucide-react | 1.63.0 | ISC | 运行时 |
+| magic-string | 1.4.5 | MIT | 开发 |
 | math-intrinsics | 1.1.0 | MIT | 开发 |
 | minimatch | 3.1.5 | ISC | 开发 |
 | ms | 2.1.3 | MIT | 开发 |
@@ -440,8 +464,10 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | string.prototype.trimstart | 1.0.8 | MIT | 开发 |
 | strip-json-comments | 3.1.1 | MIT | 开发 |
 | supports-color | 7.2.0 | MIT | 开发 |
+| tailwindcss | 4.3.5 | MIT | 开发 |
+| tapable | 2.3.4 | MIT | 开发 |
 | tinyglobby | 0.2.17 | MIT | 开发 |
-| tslib | 2.8.1 | 0BSD | 运行时 |
+| tslib | 2.8.1 | 0BSD | 开发 |
 | type-check | 0.4.0 | MIT | 开发 |
 | typed-array-buffer | 1.0.3 | MIT | 开发 |
 | typed-array-byte-length | 1.0.3 | MIT | 开发 |
@@ -468,4 +494,4 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | zod | 4.6.7 | MIT | 运行时 |
 | zod-validation-error | 4.0.2 | MIT | 开发 |
 
-共 452 个包（运行时 104，开发 348）。
+共 478 个包（运行时 103，开发 375）。

@@ -19,7 +19,7 @@ import type { AuditStatusReport } from './api/audit'
 import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
 import type { EngineSnapshot } from './api/engine'
-import type { AdminTaskRow, TaskPage } from './api/task'
+import type { AccountDiagnostics, AdminTaskRow, TaskPage } from './api/task'
 import type { UserPage } from './api/user'
 import type {
   CapacityReport,
@@ -567,5 +567,47 @@ export function showcaseEngineSnapshot(): EngineSnapshot {
     last_claim_at: at(-40_000),
     last_tick_at: at(-2_000),
     worker_started_at: at(-6 * 60 * minute),
+  }
+}
+
+/** 待办页（展示构建）：按状态筛选账号夹具，与侧栏待处理徽标同源。 */
+export function showcaseQueueAccounts(status: 'pending' | 'rejected'): AccountPage {
+  return {
+    items: showcaseAccounts().items.filter((item) => item.status === status),
+    next_cursor: '',
+  }
+}
+
+/** 待办页（展示构建）：按任务态筛选当日任务夹具。 */
+export function showcaseQueueTasks(state: 'failed' | 'pending' | 'running'): TaskPage {
+  return {
+    items: showcaseRunPage().items.filter((item) => item.state === state),
+    next_cursor: '',
+  }
+}
+
+/** 待办页诊断抽屉（展示构建）：按对象构造合成诊断快照。 */
+export function showcaseQueueDiagnostics(accountId: string): AccountDiagnostics {
+  const acc = showcaseAccounts().items.find((item) => item.id === accountId)
+  const task = showcaseRunPage().items.find((item) => item.account_id === accountId)
+  const day = today()
+  return {
+    account_id: accountId,
+    display_name: acc?.display_name ?? `账号${(task?.account_phone_masked ?? '0001').slice(-4)}`,
+    phone_masked: acc?.phone_masked ?? task?.account_phone_masked ?? '138****8001',
+    account_status: acc?.status ?? 'active',
+    state: task?.state ?? null,
+    run_at: task?.run_at ?? null,
+    attempts: task?.attempts ?? 0,
+    result: task?.result ?? '',
+    next_retry_at: task?.state === 'failed' ? iso(day, 9 * 60 + 40) : null,
+    suggestion: task?.state === 'failed' ? 'retry_now' : 'wait',
+    window: {
+      start: iso(day, 8 * 60 + 30),
+      end: iso(day, 9 * 60),
+      source: 'cache',
+      version: 2,
+    },
+    egress: { identity: 'https://eg-demo-1' },
   }
 }
