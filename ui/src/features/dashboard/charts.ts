@@ -12,7 +12,7 @@
  * 趋势只画三天主序列；待签/进行中只在窗口内出现过时才进图例。
  */
 
-import type { ChartConfiguration } from 'chart.js'
+import type { ChartConfiguration, Plugin } from 'chart.js'
 import type { PrefStatsReport, SignStatsReport } from '@/lib/api/stats'
 
 export type ChartPalette = {
@@ -166,6 +166,31 @@ export function distributionConfig(
   }
 }
 
+/** 容量阈值线：横贯绘图区左右边缘，不受分类轴半格内缩影响。 */
+function prefCapacityLine(report: PrefStatsReport, palette: ChartPalette): Plugin {
+  const cap = report.slots[0]?.cap ?? 0
+  return {
+    id: 'prefCapacityLine',
+    afterDraw(chart) {
+      if (cap <= 0) return
+      const scale = chart.scales.y
+      if (!scale) return
+      const y = scale.getPixelForValue(cap)
+      if (!Number.isFinite(y)) return
+      const { ctx, chartArea } = chart
+      ctx.save()
+      ctx.setLineDash([6, 4])
+      ctx.lineWidth = 2
+      ctx.strokeStyle = palette.warning
+      ctx.beginPath()
+      ctx.moveTo(chartArea.left, y)
+      ctx.lineTo(chartArea.right, y)
+      ctx.stroke()
+      ctx.restore()
+    },
+  }
+}
+
 export function prefConfig(
   report: PrefStatsReport | undefined,
   palette: ChartPalette,
@@ -182,19 +207,9 @@ export function prefConfig(
           backgroundColor: palette.primary,
           order: 2,
         },
-        {
-          type: 'line',
-          label: '每片容量',
-          data: report.slots.map((slot) => slot.cap),
-          borderColor: palette.warning,
-          backgroundColor: palette.warning,
-          borderDash: [6, 4],
-          pointRadius: 0,
-          borderWidth: 2,
-          order: 1,
-        },
       ],
     },
+    plugins: [prefCapacityLine(report, palette)],
     options: {
       ...BASE_OPTIONS,
       plugins: {

@@ -487,8 +487,10 @@ test('the preference chart pairs counts with per-slice capacity', () => {
   }
   const config = prefConfig(report, CHART_PALETTE)
   assert.deepEqual(config.data.labels, ['08:30', '08:35'])
-  assert.equal(config.data.datasets.length, 2)
-  assert.deepEqual(config.data.datasets[1].data, [5, 5])
+  // 容量阈值改由插件横贯绘图区绘制：数据只留自选人数一条。
+  assert.equal(config.data.datasets.length, 1)
+  assert.deepEqual(config.data.datasets[0].data, [2, 0])
+  assert.equal(config.plugins?.[0]?.id, 'prefCapacityLine')
   assert.deepEqual(prefSummary(report), { users: 2, hottest: { label: '08:30', count: 2 } })
 })
 

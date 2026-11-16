@@ -1679,11 +1679,11 @@ a.kpi-card {
   background: var(--bg-card);
 }
 .app-health-bar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px 16px;
+  column-gap: 16px;
+  row-gap: 8px;
 }
 .app-health-zone {
   display: flex;
@@ -1930,6 +1930,7 @@ a.kpi-card {
 /* 健康条窄屏：两组各占一行，标签列对齐，行数齐平。 */
 @media (max-width: 1100px) {
   .app-health-bar {
+    display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: 8px;
@@ -1961,6 +1962,8 @@ a.kpi-card {
 
 /* Radix 下拉：触发器复用 .select 视觉，菜单令牌化。 */
 .app-select-trigger {
+  background-image: none;
+  padding-right: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
