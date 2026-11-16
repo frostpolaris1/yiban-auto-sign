@@ -43,7 +43,7 @@ test('invariant 1: master reaches the run page from the navigation', async ({ pa
   const api = await mockRunApi(page, { role: 'master' })
   await page.goto('/')
   // 队列入口在 B2 落地前临时重定向到运行页。
-  const link = page.locator('.d-sidebar').getByRole('link', { name: '队列', exact: true })
+  const link = page.locator('.d-sidebar').getByRole('link', { name: '待办', exact: true })
   await expect(link).toHaveCount(1)
   await link.click()
   await expect(page).toHaveURL(/\/run$/)
@@ -56,7 +56,7 @@ test('invariant 1: the user role has no entry and no task request', async ({ pag
   await installFakeEventSource(page)
   const api = await mockRunApi(page, { role: 'user' })
   await page.goto('/')
-  await expect(page.locator('.d-sidebar').getByRole('link', { name: '队列', exact: true })).toHaveCount(0)
+  await expect(page.locator('.d-sidebar').getByRole('link', { name: '待办', exact: true })).toHaveCount(0)
 
   await page.goto('/run')
   await expect(page.getByText('无权访问')).toBeVisible()
@@ -90,7 +90,7 @@ test('invariant 1: the admin role reaches the same page', async ({ page }) => {
   await installFakeEventSource(page)
   await mockRunApi(page, { role: 'admin' })
   await page.goto('/')
-  const link = page.locator('.d-sidebar').getByRole('link', { name: '队列', exact: true })
+  const link = page.locator('.d-sidebar').getByRole('link', { name: '待办', exact: true })
   await expect(link).toHaveCount(1)
   await link.click()
   await expect(page).toHaveURL(/\/run$/)

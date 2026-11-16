@@ -64,7 +64,7 @@ for (const role of ['master', 'admin'] as const) {
   test(`invariant 1: ${role} reaches the schedule list from the navigation`, async ({ page }) => {
     await mockScheduleApi(page, { role })
     await page.goto('/')
-    const link = page.locator('.d-sidebar').getByRole('link', { name: '时间片', exact: true })
+    const link = page.locator('.d-sidebar').getByRole('link', { name: '签到计划', exact: true })
     await expect(link).toHaveCount(1)
     await link.click()
     await expect(page).toHaveURL(/\/schedule/)
@@ -76,7 +76,7 @@ test('invariant 1: a user has no schedule entry and sends no schedule request', 
   const api = await mockScheduleApi(page, { role: 'user' })
   await page.goto('/')
   await expect(
-    page.locator('.d-sidebar').getByRole('link', { name: '时间片', exact: true }),
+    page.locator('.d-sidebar').getByRole('link', { name: '签到计划', exact: true }),
   ).toHaveCount(0)
 
   await page.goto(`/schedule?day=${SCHEDULE_DAY}`)

@@ -117,7 +117,7 @@ test('navigation moves between shell routes and marks the active item', async ({
   await page.goto('/')
 
   const activeLink = page.locator('.d-sidebar a[aria-current="page"]')
-  await expect(activeLink).toContainText('仪表盘')
+  await expect(activeLink).toContainText('总览')
 
   const group = page.locator('.d-sidebar').getByRole('button', { name: '设计系统' })
   await expect(group, 'the group starts collapsed').toHaveAttribute('aria-expanded', 'false')
@@ -131,9 +131,9 @@ test('navigation moves between shell routes and marks the active item', async ({
   await expect(page).toHaveURL(/\/design$/)
   await expect(activeLink).toContainText('组件画廊')
 
-  await page.locator('.d-sidebar').getByRole('link', { name: '仪表盘' }).click()
+  await page.locator('.d-sidebar').getByRole('link', { name: '总览' }).click()
   await expect(page).toHaveURL(/\/$/)
-  await expect(activeLink).toContainText('仪表盘')
+  await expect(activeLink).toContainText('总览')
 })
 
 test('gallery: modal traps focus and closes on Escape', async ({ page }) => {

@@ -24,6 +24,7 @@ import { displayNameFor, initialsFor, roleLabel } from '@/lib/identity'
 import { SHOWCASE } from '@/lib/session'
 import { showcaseAccountSummary } from '@/lib/showcase'
 import { BrandMark } from '@/components/ui/BrandMark'
+import { APP_VERSION } from '@/lib/version'
 import { Icon } from '@/components/ui/Icon'
 import { isNavGroup, visibleNav, type NavGroup, type NavLeaf } from './nav'
 
@@ -67,7 +68,7 @@ export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
         </div>
         <div className="brand-text">
           <div className="brand-name">易班自动签到</div>
-          <div className="brand-tag">v0.1.0 · skeleton</div>
+          <div className="brand-tag">v{APP_VERSION} · 管理端</div>
         </div>
       </div>
 
@@ -86,10 +87,14 @@ export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
           </div>
           {section.items.map((item) => {
             if (!isNavGroup(item)) {
+              if (item.pendingNote) {
+                return <PendingLeafView key={item.key} item={item} />
+              }
               return (
                 <NavLeafView
                   key={item.key}
                   item={item}
+                  pathname={pathname}
                   badge={item.key === 'accounts' ? accountsBadge : null}
                   onNavigate={onNavigate}
                 />
@@ -127,20 +132,41 @@ export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
   )
 }
 
+/** 未上线入口：不可点、无跳转，title 说明原因；不进 Tab 序。 */
+function PendingLeafView({ item }: { item: NavLeaf }) {
+  return (
+    <span
+      className="nav-link is-pending"
+      role="link"
+      aria-disabled="true"
+      tabIndex={-1}
+      title={item.pendingNote}
+    >
+      <Icon name={item.icon} />
+      <span>{item.text}</span>
+    </span>
+  )
+}
+
 function NavLeafView({
   item,
+  pathname,
   badge,
   onNavigate,
 }: {
   item: NavLeaf
+  /** 当前路径：入口合并期的别名也点亮本项。 */
+  pathname: string
   /** 动态计数：0 已收敛为 null，不渲染。 */
   badge: number | null
   onNavigate: () => void
 }) {
+  const aliasActive = item.alsoActive?.includes(pathname) ?? false
   return (
     <Link
       to={item.to}
-      className="nav-link"
+      title={item.text}
+      className={aliasActive ? 'nav-link is-active' : 'nav-link'}
       aria-label={badge !== null ? `${item.text}，待处理账号 ${badge}` : undefined}
       activeProps={{ className: 'nav-link is-active' }}
       activeOptions={{ exact: true }}
@@ -177,6 +203,7 @@ function NavGroupView({ item, open, onToggle, onNavigate }: NavGroupViewProps) {
         className="nav-link"
         data-nav-toggle
         aria-expanded={open}
+        title={item.text}
         onClick={onToggle}
       >
         <Icon name={item.icon} />

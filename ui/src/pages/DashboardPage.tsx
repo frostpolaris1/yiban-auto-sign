@@ -25,7 +25,7 @@ export function DashboardPage() {
   return (
     <>
       <PageHeader
-        eyebrow="今日 · 概览"
+        eyebrow="今日 · 总览"
         title={
           <>
             签到运行 <span className="accent">总览</span>

@@ -213,10 +213,10 @@ export function ScheduleView({ day, onDayChange }: ScheduleViewProps) {
   return (
     <>
       <PageHeader
-        eyebrow="系统 · 时间片"
+        eyebrow="系统 · 签到计划"
         title={
           <>
-            签到 <span className="accent">窗口</span>
+            签到 <span className="accent">计划</span>
           </>
         }
         subtitle="按日查看任务窗口。预览只读；落库与覆盖会写库，覆盖会立即重排 pending 行。"

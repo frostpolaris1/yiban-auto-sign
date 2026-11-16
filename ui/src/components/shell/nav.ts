@@ -45,6 +45,10 @@ export type NavLeaf = {
   crumbs: string[]
   /** 缺省＝全体可见。给出时只对这些角色渲染。 */
   roles?: readonly Role[]
+  /** 入口合并期：这些路径也点亮本项（如 /queue 临时落到 /run）。 */
+  alsoActive?: readonly string[]
+  /** 页面未上线：渲染为不可点条目，title 说明原因。 */
+  pendingNote?: string
 }
 
 export type NavGroup = {
@@ -71,18 +75,19 @@ export const NAV: NavSection[] = [
     items: [
       {
         key: 'dashboard',
-        text: '仪表盘',
+        text: '总览',
         to: '/',
         icon: 'dashboard',
-        crumbs: ['今日', '仪表盘'],
+        crumbs: ['今日', '总览'],
       },
       {
         key: 'queue',
-        text: '队列',
+        text: '待办',
         to: '/queue',
         icon: 'listTodo',
         roles: RUN_VIEW_ROLES,
-        crumbs: ['今日', '队列'],
+        alsoActive: ['/run'],
+        crumbs: ['今日', '待办'],
       },
     ],
   },
@@ -98,11 +103,11 @@ export const NAV: NavSection[] = [
       },
       {
         key: 'users',
-        text: '用户管理',
+        text: '用户',
         to: '/users',
         icon: 'userCog',
         roles: USER_VIEW_ROLES,
-        crumbs: ['管理', '用户管理'],
+        crumbs: ['管理', '用户'],
       },
       {
         key: 'schools',
@@ -127,20 +132,21 @@ export const NAV: NavSection[] = [
       },
       {
         key: 'audit',
-        text: '审计',
+        text: '审计日志',
         to: '/audit',
         icon: 'shield',
         roles: RUN_VIEW_ROLES,
-        crumbs: ['系统', '审计'],
+        pendingNote: '审计页将在 B4 上线；审计端点已就绪。',
+        crumbs: ['系统', '审计日志'],
       },
       {
         // 时间片在 B5 并入设置·签到计划；在那之前保留直达入口。
         key: 'schedule',
-        text: '时间片',
+        text: '签到计划',
         to: '/schedule',
         icon: 'calendar',
         roles: SCHEDULE_VIEW_ROLES,
-        crumbs: ['系统', '时间片'],
+        crumbs: ['系统', '签到计划'],
       },
       {
         key: 'settings',
@@ -167,6 +173,15 @@ export const NAV: NavSection[] = [
     ],
   },
 ]
+
+/**
+ * 不在导航表内的直达路由：仍需要面包屑与标题。
+ * 入口合并期（B2–B4）由它们给旧页一个体面的名字，页面就绪后删除。
+ */
+const LEGACY_ROUTES: Record<string, { crumbs: string[]; title: string }> = {
+  '/run': { crumbs: ['今日', '待办'], title: '待办' },
+  '/engine': { crumbs: ['系统', '签到台账'], title: '签到台账' },
+}
 
 /** 可导航叶子的平铺表。面包屑查找用。 */
 export const NAV_LEAVES: NavLeaf[] = NAV.flatMap((section) =>
@@ -196,10 +211,11 @@ export function visibleNav(role: Role | null | undefined): NavSection[] {
 
 export function crumbsFor(pathname: string): string[] {
   const leaf = NAV_LEAVES.find((item) => item.to === pathname)
-  return leaf?.crumbs ?? ['工作区', '未命名页面']
+  return leaf?.crumbs ?? LEGACY_ROUTES[pathname]?.crumbs ?? ['系统', '未命名页面']
 }
 
 export function documentTitleFor(pathname: string): string {
   const leaf = NAV_LEAVES.find((item) => item.to === pathname)
-  return leaf ? `${leaf.text} · 易班自动签到` : '易班自动签到'
+  const title = leaf?.text ?? LEGACY_ROUTES[pathname]?.title
+  return title ? `${title} · 易班自动签到` : '易班自动签到'
 }

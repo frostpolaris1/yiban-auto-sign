@@ -2290,3 +2290,12 @@ a.kpi-card {
     padding: 0 10px;
   }
 }
+
+.d-sidebar .nav-link.is-pending {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.d-sidebar .nav-link.is-pending:hover {
+  background: transparent;
+  color: var(--t-muted);
+}
