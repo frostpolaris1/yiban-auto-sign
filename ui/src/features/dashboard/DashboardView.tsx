@@ -25,7 +25,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { describeApiError } from '@/lib/api/client'
-import { getAccountSummary } from '@/lib/api/account'
 import { getAuditStatus } from '@/lib/api/audit'
 import { getEngineSnapshot } from '@/lib/api/engine'
 import { getDiagnostics, getSignStatus } from '@/lib/api/me'
@@ -35,7 +34,6 @@ import { getPrefStats, getSignStats } from '@/lib/api/stats'
 import { dayOf } from '@/lib/format'
 import { SHOWCASE } from '@/lib/session'
 import {
-  showcaseAccountSummary,
   showcaseAuditStatus,
   showcaseCapacity,
   showcaseEngineSnapshot,
@@ -49,14 +47,12 @@ import { PrefCrowdingCard, SignTrendCard } from './ChartCards'
 import { DiagnosticsCard } from './DiagnosticsCard'
 import { KpiGrid } from './KpiGrid'
 import { SignStatusCard } from './SignStatusCard'
-import { TodoStrip } from './TodoStrip'
 import {
   capacityOptions,
   signCounts,
   signKpiCards,
   todayKpiCards,
   todayStats,
-  todoItems,
   windowCounts,
 } from './display'
 
@@ -146,15 +142,7 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     retry: false,
   })
 
-  // 待处理账号汇总：独立查询，读数失败只挂本项（显「—」）。
-  // 账号页的建号/审核/删除/恢复会失效这个键，回到看板即取新计数。
-  const accountSummaryQuery = useQuery({
-    queryKey: ['account-summary'],
-    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseAccountSummary()) : getAccountSummary()),
-    enabled: !isUser,
-    staleTime: 0,
-    retry: false,
-  })
+
 
   // 审计链巡检：按需复算全链，耗时随行数线性增长，故不轮询；
   // 只在挂载、重试或缓存过期后取一次。展示构建读合成结论，零请求。
@@ -206,14 +194,6 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
   const diagnosticsItems = diagnosticsQuery.data?.items ?? []
   // master/admin 的四张 KPI 与图表共用这份 30 天报告；只读末两天作今日终态。
   const stats = todayStats(signStatsQuery.data)
-  // 待办横幅只在「有活」时出现：无活让位结论 KPI，有活行动优先。
-  // 失败计数留在 KPI（带直达链接），横幅只承载审核与容量缺口，避免同数双显。
-  const todo = todoItems(
-    accountSummaryQuery.data ?? null,
-    stats,
-    windowsQuery.data?.items ?? null,
-  ).filter((item) => item.key !== 'failed')
-  const showTodo = todo.some((item) => (item.value ?? 0) > 0)
 
   if (isUser) {
     return (
@@ -250,14 +230,8 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
       </>
     )
   }
-
   return (
     <>
-      {showTodo ? (
-        <div className="app-todo-pair">
-          <TodoStrip items={todo} />
-        </div>
-      ) : null}
       <KpiGrid cards={todayKpiCards(stats)} />
       <div className="grid app-dashboard-workbench">
         <CapacityCard

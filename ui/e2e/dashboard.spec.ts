@@ -333,8 +333,8 @@ test('invariant 5: capacity defaults to the first usable task and follows the pi
 
   const card = capacityCard(page)
   const gap = card.locator('.app-metric').filter({ hasText: '缺口' })
-  await expect(gap.locator('.badge')).toHaveClass(/success/)
-  await expect.poll(() => visibleText(gap.locator('.badge'))).toBe('0')
+  await expect(gap.locator('.app-metric-value')).toHaveClass(/is-success/)
+  await expect.poll(() => visibleText(gap.locator('.app-metric-value'))).toBe('0')
   await expect(card).toContainText('08:30–09:00')
   await expect(card.locator('.badge').filter({ hasText: '平台' })).toBeVisible()
 
@@ -342,8 +342,8 @@ test('invariant 5: capacity defaults to the first usable task and follows the pi
   await expect.poll(() => capacityParams(lastCapacityCall(api), 'school_id')).toBe('school-beta')
   expect(capacityParams(lastCapacityCall(api), 'task_id')).toBe('task-night')
   expect(capacityParams(lastCapacityCall(api), 'day')).toMatch(/^\d{4}-\d{2}-\d{2}$/)
-  await expect.poll(() => visibleText(gap.locator('.badge'))).toBe('6')
-  await expect(gap.locator('.badge')).toHaveClass(/danger/)
+  await expect.poll(() => visibleText(gap.locator('.app-metric-value'))).toBe('6')
+  await expect(gap.locator('.app-metric-value')).toHaveClass(/is-danger/)
 })
 
 test('invariant 5: a channel-bound shortfall suggests a worker count and copies it', async ({
@@ -738,43 +738,7 @@ test('invariant 9: the header creates an account and exports nothing', async ({ 
   await expectKpi(page, '今日成功', '3个')
   await expectKpi(page, '今日成功率', '100%')
   await expect(page.getByRole('button', { name: '导出' })).toHaveCount(0)
-
-  await page.getByRole('button', { name: '新建账号' }).click()
-  await expect(page).toHaveURL(/\/accounts$/)
-})
-
-test('invariant 9: review workload lives in the conditional banner and links to accounts', async ({
-  page,
-}) => {
-  const api = await mockDashboardApi(page, {
-    role: 'admin',
-    accountSummary: { pending: 2, rejected: 1 },
-  })
-  await openDashboard(page)
-
-  // KPI 行只放结论四卡；待处理计数只在横幅出现一次。
-  const labels = await page.locator('.kpi-card .kpi-label').allTextContents()
-  expect(labels).toEqual(['今日成功', '今日失败', '进行中/待签', '今日成功率'])
-
-  const card = page.locator('.app-todo-card').filter({ hasText: '待审核 / 已驳回' })
-  await expect(card).toContainText('3')
-  await expect(card).toContainText('待审核 2 · 已拒绝 1')
-  expect(accountSummaryCalls(api), 'one summary read').toHaveLength(1)
-
-  await card.click()
-  await expect(page).toHaveURL(/\/accounts$/)
-})
-
-test('invariant 9: a clean day hides the banner and lets the verdict lead', async ({ page }) => {
-  await mockDashboardApi(page, {
-    role: 'admin',
-    accountSummary: { pending: 0, rejected: 0 },
-    windows: [],
-  })
-  await openDashboard(page)
-
-  await expect(page.locator('.app-todo-strip')).toHaveCount(0)
-  await expect(page.locator('.kpi-card').first()).toContainText('今日成功')
+  await expect(page.getByRole('button', { name: '新建账号' })).toHaveCount(0)
 })
 
 test('invariant 9: the trend card switches between trend and distribution tabs', async ({

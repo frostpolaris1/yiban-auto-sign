@@ -1888,9 +1888,11 @@ a.kpi-card {
   background: var(--primary);
 }
 
-/* 合并稿：待办横幅双卡（有活才出现）；趋势/分布页签；拥挤度多片横滚；健康条链接。 */
-.app-todo-pair .app-todo-strip { grid-template-columns: repeat(2, 1fr); }
-@media (max-width: 720px) { .app-todo-pair .app-todo-strip { grid-template-columns: 1fr; } }
+@media (max-width: 720px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .app-card-tabs { display: inline-flex; gap: 4px; }
 .app-card-tabs button { border: 1px solid var(--border); background: var(--bg-muted); color: var(--t-muted); border-radius: 999px; padding: 2px 12px; font-size: 12px; cursor: pointer; }
 .app-card-tabs button.on { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); font-weight: 700; }
@@ -1900,82 +1902,5 @@ a.kpi-card {
 .app-health-link { font-size: 12.5px; color: var(--primary); text-decoration: none; white-space: nowrap; }
 .app-health-link:hover { text-decoration: underline; }
 
-/* 待办行动区基础样式（合并稿恢复：横幅组件复用 B1 卡片语言）。 */
-.app-todo-strip {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-bottom: 14px;
-}
-.app-todo-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--primary);
-  border-radius: 10px;
-  background: var(--bg-card);
-  box-shadow: var(--shadow-card);
-  color: var(--t-base);
-  text-decoration: none;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-.app-todo-card:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-lg);
-}
-.app-todo-card.t-purple {
-  border-left-color: var(--purple);
-}
-.app-todo-card.t-danger {
-  border-left-color: var(--danger);
-}
-.app-todo-card.t-warning {
-  border-left-color: var(--warning);
-}
-/* 全零卡：降语义强调但不动文字。
-   opacity 会连注释一起压到 1.7:1（2026-11-15 实测），改只淡化
-   色条、图标与箭头，数值退到 --t-muted（大字号 ≥3:1）。 */
-.app-todo-card.is-zero {
-  border-left-color: var(--border);
-}
-.app-todo-card.is-zero .app-todo-value {
-  color: var(--t-muted);
-}
-.app-todo-card.is-zero .app-todo-head svg,
-.app-todo-card.is-zero .app-todo-go {
-  opacity: 0.62;
-}
-.app-todo-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12.5px;
-  color: var(--t-muted);
-}
-.app-todo-value {
-  font-size: 26px;
-  font-weight: 700;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-}
-.app-todo-note {
-  /* 初审 2026-11-15：--t-light 在卡面 2.56:1（浅）/3.60:1（深），抬到 --t-muted。 */
-  font-size: 11.5px;
-  color: var(--t-muted);
-}
-.app-todo-go {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  font-size: 13px;
-  color: var(--t-muted);
-}
-@media (max-width: 720px) {
-  .app-todo-strip {
-    grid-template-columns: 1fr;
-  }
-}
-
+.app-metric-value.is-danger { color: var(--danger); }
+.app-metric-value.is-success { color: var(--success); }

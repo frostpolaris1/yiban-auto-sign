@@ -204,10 +204,14 @@ export function CapacityCard({
                 </div>
                 <div className="app-metric">
                   <div className="app-metric-label">缺口</div>
-                  <div className="app-metric-value">
-                    <Badge tone={report.shortfall > 0 ? 'danger' : 'success'}>
-                      <AnimatedNumber value={report.shortfall} />
-                    </Badge>
+                  <div
+                    className={
+                      report.shortfall > 0
+                        ? 'app-metric-value is-danger'
+                        : 'app-metric-value is-success'
+                    }
+                  >
+                    <AnimatedNumber value={report.shortfall} />
                   </div>
                 </div>
               </div>

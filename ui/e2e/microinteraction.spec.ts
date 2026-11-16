@@ -359,13 +359,8 @@ test('invariant 3: number components keep the line box of plain text', async ({ 
   expect(Math.round(kpi!.height), 'KPI 行盒').toBe(44)
   expect(Math.round(metric!.height), '指标行盒').toBe(24)
 
-  // 徽章高度由内容撑开：负边距若落进来会把徽章压得比内容还小。
-  const badge = page.locator('.app-metric .badge').first()
-  const badgeBox = await badge.boundingBox()
-  const hostBox = await badge.locator('.app-number').boundingBox()
-  expect(badgeBox, '缺口徽章已渲染').not.toBeNull()
-  expect(hostBox, '徽章内的数字已渲染').not.toBeNull()
-  expect(badgeBox!.height, '徽章容纳其内容').toBeGreaterThan(hostBox!.height)
+  // 缺口已是纯色数字（用户裁决）：容量指标里不再有徽章。
+  await expect(page.locator('.app-metric .badge')).toHaveCount(0)
 })
 
 test('invariant 4: rows stay clickable and focus returns after a delete', async ({ page }) => {
