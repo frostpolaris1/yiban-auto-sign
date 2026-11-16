@@ -1904,3 +1904,12 @@ a.kpi-card {
 
 .app-metric-value.is-danger { color: var(--danger); }
 .app-metric-value.is-success { color: var(--success); }
+
+@media (max-width: 720px) {
+  .kpi-compare {
+    flex-wrap: wrap;
+  }
+  .kpi-compare > span:last-child {
+    flex-basis: 100%;
+  }
+}
