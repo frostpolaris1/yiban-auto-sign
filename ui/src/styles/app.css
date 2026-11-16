@@ -2050,3 +2050,243 @@ a.kpi-card {
     animation: none;
   }
 }
+
+/* ---------- 静默线侧栏 ----------
+ * 来源：侧边栏实验室「静默线」交接（v1，用户裁决默认方案）。
+ * 只覆盖壳层：宽度沿用 248；激活＝浮卡＋3px 左色条；分组用留白＋延长线；
+ * 计数徽标改主色，侧栏不使用语义红；不引入新色值。
+ */
+.d-sidebar {
+  padding: 18px 14px 14px;
+  border-right: 1px solid var(--border-soft);
+  background: linear-gradient(180deg, var(--bg-sidebar), var(--bg-hover));
+}
+.d-sidebar .brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 6px 14px;
+  min-width: 0;
+}
+.d-sidebar .brand-logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: var(--primary);
+  color: var(--t-inverse);
+  box-shadow: 0 0 0 4px var(--primary-soft);
+}
+.d-sidebar .brand-name {
+  color: var(--t-base);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.d-sidebar .brand-tag {
+  color: var(--t-muted);
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.13em;
+}
+.d-sidebar .nav-section {
+  margin: 0;
+}
+.d-sidebar .nav-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 6px 7px;
+  color: var(--t-muted);
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.d-sidebar .nav-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+.d-sidebar .nav-label-count {
+  margin-left: auto;
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  opacity: 0.72;
+}
+.d-sidebar .nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  height: 37px;
+  margin: 1px 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--t-muted);
+  font-size: 12.8px;
+  font-weight: 500;
+  line-height: 1;
+  transition: background 0.16s, color 0.16s, border-color 0.16s, box-shadow 0.16s;
+}
+.d-sidebar .nav-link > svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+.d-sidebar .nav-link:hover {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+.d-sidebar .nav-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.d-sidebar .nav-link.is-active {
+  border-color: var(--border);
+  background: var(--bg-card);
+  color: var(--t-base);
+  box-shadow: var(--shadow-sm), var(--shadow-card);
+}
+.d-sidebar .nav-link.is-active::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--primary);
+}
+.d-sidebar .nav-link.is-active > svg {
+  color: var(--primary);
+}
+.d-sidebar .nav-link.is-active > span:first-of-type {
+  font-weight: 600;
+}
+.d-sidebar .nav-badge--count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.d-sidebar .nav-link .chev {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  color: var(--t-light);
+}
+.d-sidebar .nav-submenu {
+  margin: 1px 0 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-soft);
+}
+.d-sidebar .nav-submenu a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px 0 16px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--t-muted);
+  font-size: 12.4px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.d-sidebar .nav-submenu a:hover {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+.d-sidebar .nav-submenu a.is-active {
+  border-color: var(--border);
+  background: var(--bg-card);
+  color: var(--t-base);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.d-sidebar .sidebar-footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.d-sidebar .workspace {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px;
+  border-radius: 9px;
+}
+.d-sidebar .workspace:hover {
+  background: var(--bg-hover);
+}
+.d-sidebar .workspace-avatar {
+  width: 30px;
+  height: 30px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+.d-sidebar .workspace-name {
+  color: var(--t-base);
+  font-size: 12px;
+  font-weight: 600;
+}
+.d-sidebar .workspace-role {
+  color: var(--t-muted);
+  font-size: 10px;
+}
+@media (min-width: 721px) and (max-width: 1100px) {
+  .d-sidebar {
+    padding: 12px 8px 10px;
+  }
+  .d-sidebar .brand {
+    justify-content: center;
+    padding: 4px 0 10px;
+  }
+  .d-sidebar .nav-label {
+    display: none;
+  }
+  .d-sidebar .nav-link {
+    justify-content: center;
+    height: 40px;
+    padding: 10px;
+  }
+  .d-sidebar .nav-link.is-active::before {
+    left: -8px;
+  }
+  .d-sidebar .nav-submenu {
+    display: none;
+  }
+}
+@media (max-width: 720px) {
+  .d-sidebar {
+    padding: 18px 14px 14px;
+  }
+  .d-sidebar .brand {
+    justify-content: flex-start;
+    padding: 4px 6px 14px;
+  }
+  .d-sidebar .nav-link {
+    justify-content: flex-start;
+    padding: 0 10px;
+  }
+}

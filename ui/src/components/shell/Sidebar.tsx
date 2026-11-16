@@ -73,7 +73,17 @@ export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
 
       {sections.map((section) => (
         <nav className="nav-section" key={section.label} aria-label={section.label}>
-          <div className="nav-label">{section.label}</div>
+          <div className="nav-label">
+            {section.label}
+            <span className="nav-label-count" aria-hidden="true">
+              {String(
+                section.items.reduce(
+                  (sum, item) => sum + (isNavGroup(item) ? item.children.length : 1),
+                  0,
+                ),
+              ).padStart(2, '0')}
+            </span>
+          </div>
           {section.items.map((item) => {
             if (!isNavGroup(item)) {
               return (

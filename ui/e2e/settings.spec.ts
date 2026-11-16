@@ -275,7 +275,7 @@ test('settings: the profile menu has one account entry and the sidebar lists it'
   await page.goto('/')
 
   const sidebar = page.locator('.d-sidebar')
-  await expect(sidebar.getByRole('link', { name: '账号设置' })).toBeVisible()
+  await expect(sidebar.getByRole('link', { name: '设置', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: '账号菜单' }).click()
   const menu = page.getByRole('menu')

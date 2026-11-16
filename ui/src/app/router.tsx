@@ -11,7 +11,14 @@
  * 公开认证页（登录、忘记密码、重置密码）挂在根路由下：不套壳。
  */
 
-import { createRootRoute, createRoute, createRouter, Outlet, useNavigate } from '@tanstack/react-router'
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  redirect,
+  useNavigate,
+} from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -137,6 +144,35 @@ function UsersRouteComponent() {
  * 时间片路由的自定义 search：`?day=YYYY-MM-DD`。
  * 校验即净化：非法日期在解析时丢弃，容器回落到今天。
  */
+/**
+ * 目标目录的占位入口：B2/B3/B4 落地前重定向到现有承载页。
+ * /queue → /run（今日失败/未签在运行页）；/logs → /run；/audit → /。
+ * 页面就绪时把重定向换成真 page 组件。
+ */
+const queueRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/queue',
+  beforeLoad: () => {
+    throw redirect({ to: '/run' })
+  },
+})
+
+const logsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/logs',
+  beforeLoad: () => {
+    throw redirect({ to: '/run' })
+  },
+})
+
+const auditRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/audit',
+  beforeLoad: () => {
+    throw redirect({ to: '/' })
+  },
+})
+
 const scheduleRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/schedule',
@@ -219,6 +255,9 @@ const routeTree = rootRoute.addChildren([
     usersRoute,
     runRoute,
     engineRoute,
+    queueRoute,
+    logsRoute,
+    auditRoute,
     scheduleRoute,
   ]),
   loginRoute,

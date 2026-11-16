@@ -16,7 +16,6 @@
 import type { IconName } from '@/components/ui/Icon'
 import type { Role } from '@/lib/api/auth'
 import {
-  ENGINE_VIEW_ROLES,
   RUN_VIEW_ROLES,
   SCHOOL_VIEW_ROLES,
   SCHEDULE_VIEW_ROLES,
@@ -78,20 +77,12 @@ export const NAV: NavSection[] = [
         crumbs: ['今日', '仪表盘'],
       },
       {
-        key: 'run',
-        text: '运行',
-        to: '/run',
-        icon: 'activity',
+        key: 'queue',
+        text: '队列',
+        to: '/queue',
+        icon: 'listTodo',
         roles: RUN_VIEW_ROLES,
-        crumbs: ['今日', '运行'],
-      },
-      {
-        key: 'engine',
-        text: '执行监控',
-        to: '/engine',
-        icon: 'gauge',
-        roles: ENGINE_VIEW_ROLES,
-        crumbs: ['今日', '执行监控'],
+        crumbs: ['今日', '队列'],
       },
     ],
   },
@@ -127,6 +118,23 @@ export const NAV: NavSection[] = [
     label: '系统',
     items: [
       {
+        key: 'logs',
+        text: '签到台账',
+        to: '/logs',
+        icon: 'scrollText',
+        roles: RUN_VIEW_ROLES,
+        crumbs: ['系统', '签到台账'],
+      },
+      {
+        key: 'audit',
+        text: '审计',
+        to: '/audit',
+        icon: 'shield',
+        roles: RUN_VIEW_ROLES,
+        crumbs: ['系统', '审计'],
+      },
+      {
+        // 时间片在 B5 并入设置·签到计划；在那之前保留直达入口。
         key: 'schedule',
         text: '时间片',
         to: '/schedule',
@@ -136,10 +144,10 @@ export const NAV: NavSection[] = [
       },
       {
         key: 'settings',
-        text: '账号设置',
+        text: '设置',
         to: '/settings',
         icon: 'settings',
-        crumbs: ['系统', '账号设置'],
+        crumbs: ['系统', '设置'],
       },
       {
         key: 'design',

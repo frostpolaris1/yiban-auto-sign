@@ -28,8 +28,9 @@ test('lease remaining never leaks a negative value', () => {
 })
 
 test('engine sources never call it a queue', () => {
+  // nav.ts 不在禁令内：队列是独立的今日工作流页（/queue，旧线习惯），
+  // 不是把执行监控改叫队列；引擎三件套仍严禁出现「队列」。
   const sources = [
-    '../../src/components/shell/nav.ts',
     '../../src/features/run/EngineView.tsx',
     '../../src/features/run/engineDisplay.ts',
     '../../src/pages/EnginePage.tsx',
