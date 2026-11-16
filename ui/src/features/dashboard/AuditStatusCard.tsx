@@ -57,7 +57,8 @@ function AuditSummaryInline({ report }: { report: AuditStatusReport }) {
   return (
     <div className="app-health-inline">
       <Badge tone={auditVerdictTone(verdict)}>{AUDIT_VERDICT_LABELS[verdict]}</Badge>
-      <span className="app-health-meta">
+      <span className="app-health-sub">
+        <span className="app-health-meta">
         {verdict === 'empty' ? (
           <>链内还没有可校验的行；空链不算通过{anchorNote}</>
         ) : (
@@ -67,6 +68,7 @@ function AuditSummaryInline({ report }: { report: AuditStatusReport }) {
             {anchorNote}
           </>
         )}
+        </span>
       </span>
     </div>
   )
@@ -115,10 +117,12 @@ export function AuditStatusCard({
               <Link to="/engine" className="app-health-chip app-health-chip-link">
                 待重试 <strong>{pulse.retryingText}</strong>
               </Link>
-              {pulse.lastTickClock ? (
-                <span className="app-health-meta">最近一轮 {pulse.lastTickClock}</span>
-              ) : null}
-              <Link to="/run" className="app-health-link">运行台账 →</Link>
+              <span className="app-health-sub">
+                {pulse.lastTickClock ? (
+                  <span className="app-health-meta">最近一轮 {pulse.lastTickClock}</span>
+                ) : null}
+                <Link to="/run" className="app-health-link">运行台账 →</Link>
+              </span>
             </div>
           )}
         </div>

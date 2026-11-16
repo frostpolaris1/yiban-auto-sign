@@ -19,6 +19,7 @@
  */
 
 import type { Tone } from '@/components/ui/Badge'
+import type { AccountSummary } from '@/lib/api/account'
 import type { IconName } from '@/components/ui/Icon'
 import type { EngineSnapshot } from '@/lib/api/engine'
 import type { SignStatusItem } from '@/lib/api/me'
@@ -286,7 +287,13 @@ export function todayStats(report: SignStatsReport | null | undefined): TodaySta
  * master/admin 四卡：今日成功（附成功率与环比）、今日失败、进行中/待签、待处理账号。
  * 待处理＝pending+rejected（未软删），读数未到或失败显「—」不编 0。
  */
-export function todayKpiCards(stats: TodayStats | null): KpiCard[] {
+export function todayKpiCards(
+  stats: TodayStats | null,
+  summary?: AccountSummary | null,
+): KpiCard[] {
+  const pending = summary?.pending ?? null
+  const rejected = summary?.rejected ?? null
+  const review = pending === null || rejected === null ? null : pending + rejected
   return [
     {
       tone: 'success',
@@ -321,12 +328,15 @@ export function todayKpiCards(stats: TodayStats | null): KpiCard[] {
     },
     {
       tone: 'purple',
-      icon: 'gauge',
-      label: '今日成功率',
-      value: stats?.rate ?? null,
-      unit: '%',
-      note: '成功 ÷（成功 + 失败）',
-      pill: stats?.pill ?? null,
+      icon: 'edit',
+      label: '待处理账号',
+      value: review,
+      unit: '个',
+      href: '/accounts',
+      note:
+        pending === null || rejected === null
+          ? '等待读取'
+          : `待审核 ${pending} · 已拒绝 ${rejected} →`,
     },
   ]
 }

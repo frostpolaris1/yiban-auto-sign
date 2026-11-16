@@ -669,76 +669,48 @@ test('invariant 9: the manager KPI reads today from the same stats report', asyn
   await expectKpi(page, '今日成功', '5个')
   await expectKpi(page, '今日失败', '2个')
   await expectKpi(page, '进行中/待签', '4个')
-  await expectKpi(page, '今日成功率', '71.4%')
+  await expectKpi(page, '待处理账号', '3个')
 
-  // 昨日 50 → 今日 71.4：差 21.4 个百分点，向上 pill 挂在今日成功率卡。
-  const rateCard = kpiCard(page, '今日成功率')
-  const pill = rateCard.locator('.kpi-pill')
-  await expect(pill).toContainText('较昨日 +21.4pp')
-  await expect(pill).toHaveClass(/up/)
+  // 口径裁决：总览不再展示成功率卡；待处理计数来自 summary。
+  await expect(page.locator('.kpi-card').filter({ hasText: '今日成功率' })).toHaveCount(0)
+  await expect(kpiCard(page, '待处理账号')).toContainText('待审核 2 · 已拒绝 1 →')
 
   // KPI 复用图表那份报告：一次读取，不新增请求。
   expect(signStatsCalls(api), 'KPI and charts share one read').toHaveLength(1)
 })
 
-test('invariant 9: skipped states never enter the rate denominator', async ({ page }) => {
-  await mockDashboardApi(page, {
-    role: 'admin',
-    // 今日 3/3/跳9：跳过不计入 → 3÷6=50%；昨日只有跳过 → 无终态，无对比。
-    signStats: statsWithTail(
-      { skipped: 5 },
-      { success: 3, failed: 3, skipped: 9 },
-    ),
-  })
-  await openDashboard(page)
-
-  const rateCard = kpiCard(page, '今日成功率')
-  await expectKpi(page, '今日成功率', '50%')
-  const pill = rateCard.locator('.kpi-pill')
-  await expect(pill).toContainText('无昨日对比')
-  await expect(pill).toHaveClass(/flat/)
-})
-
-test('invariant 9: a zero denominator shows no rate pill on today success', async ({ page }) => {
-  await mockDashboardApi(page, {
-    role: 'admin',
-    // 今日只有待签：成功+失败为 0 → 无对比 pill；昨日有终态也不出对比。
-    signStats: statsWithTail({ success: 1 }, { pending: 2 }),
-  })
-  await openDashboard(page)
-
-  await expectKpi(page, '今日成功', '0个')
-  await expectKpi(page, '今日失败', '0个')
-  await expect(kpiCard(page, '今日成功').locator('.kpi-pill')).toHaveCount(0)
-})
-
-test('invariant 9: the rate pill turns down when today trails yesterday', async ({ page }) => {
-  await mockDashboardApi(page, {
-    role: 'admin',
-    // 昨日 4/1（80%）；今日 2/3（40%）：差 -40 个百分点，向下 pill。
-    signStats: statsWithTail(
-      { success: 4, failed: 1 },
-      { success: 2, failed: 3 },
-    ),
-  })
-  await openDashboard(page)
-
-  const rateCard = kpiCard(page, '今日成功率')
-  await expectKpi(page, '今日成功率', '40%')
-  const pill = rateCard.locator('.kpi-pill')
-  await expect(pill).toContainText('较昨日 -40pp')
-  await expect(pill).toHaveClass(/down/)
-})
-
-test('invariant 9: the header creates an account and exports nothing', async ({ page }) => {
+test('invariant 9: the dashboard header carries no create entry (old-line habit)', async ({
+  page,
+}) => {
   await mockDashboardApi(page, { role: 'master' })
   await openDashboard(page)
 
-  // master 与 admin 同口径：KPI 来自缺省报告的末两天。
+  // master 与 admin 同口径：KPI 来自缺省报告的末两天 + 待处理汇总。
   await expectKpi(page, '今日成功', '3个')
-  await expectKpi(page, '今日成功率', '100%')
+  await expectKpi(page, '待处理账号', '3个')
   await expect(page.getByRole('button', { name: '导出' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '新建账号' })).toHaveCount(0)
+})
+
+test('invariant 9: the pending KPI sits in slot 4 and links straight to accounts', async ({
+  page,
+}) => {
+  const api = await mockDashboardApi(page, {
+    role: 'admin',
+    accountSummary: { pending: 2, rejected: 1 },
+  })
+  await openDashboard(page)
+
+  const labels = await page.locator('.kpi-card .kpi-label').allTextContents()
+  expect(labels).toEqual(['今日成功', '今日失败', '进行中/待签', '待处理账号'])
+
+  const card = kpiCard(page, '待处理账号')
+  await expectKpi(page, '待处理账号', '3个')
+  await expect(card).toContainText('待审核 2 · 已拒绝 1 →')
+  expect(accountSummaryCalls(api), 'one summary read').toHaveLength(1)
+
+  await card.click()
+  await expect(page).toHaveURL(/\/accounts$/)
 })
 
 test('invariant 9: the trend card switches between trend and distribution tabs', async ({
@@ -785,18 +757,16 @@ test('invariant 9: a user never reads the account summary nor sees the pending a
   await expect(page.locator('.kpi-card').filter({ hasText: '待处理账号' })).toHaveCount(0)
 })
 
-test('invariant 9: a failed summary hides the banner without breaking the verdict KPI', async ({
-  page,
-}) => {
+test('invariant 9: a failed summary keeps the pending KPI at an em dash', async ({ page }) => {
   await mockDashboardApi(page, {
     role: 'admin',
     accountSummaryError: { status: 500, code: 'internal_error', message: '汇总不可用' },
-    windows: [],
   })
   await openDashboard(page)
 
-  // 汇总未知＝不知道有没有活：横幅不出现，也不编 0；结论 KPI 照常。
-  await expect(page.locator('.app-todo-strip')).toHaveCount(0)
+  // 汇总未知：待处理卡显「—」，不编 0；其余 KPI 照常。
+  await expectKpi(page, '待处理账号', '—')
+  await expect(kpiCard(page, '待处理账号')).toContainText('等待读取')
   await expectKpi(page, '今日成功', '3个')
 })
 

@@ -24,6 +24,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { getAccountSummary } from '@/lib/api/account'
 import { describeApiError } from '@/lib/api/client'
 import { getAuditStatus } from '@/lib/api/audit'
 import { getEngineSnapshot } from '@/lib/api/engine'
@@ -34,6 +35,7 @@ import { getPrefStats, getSignStats } from '@/lib/api/stats'
 import { dayOf } from '@/lib/format'
 import { SHOWCASE } from '@/lib/session'
 import {
+  showcaseAccountSummary,
   showcaseAuditStatus,
   showcaseCapacity,
   showcaseEngineSnapshot,
@@ -195,6 +197,15 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
   // master/admin 的四张 KPI 与图表共用这份 30 天报告；只读末两天作今日终态。
   const stats = todayStats(signStatsQuery.data)
 
+  // 待处理账号：与账号页提示条共用缓存键；读数失败只挂该卡（显「—」）。
+  const accountSummaryQuery = useQuery({
+    queryKey: ['account-summary'],
+    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseAccountSummary()) : getAccountSummary()),
+    enabled: !isUser,
+    staleTime: 0,
+    retry: false,
+  })
+
   if (isUser) {
     return (
       <>
@@ -232,7 +243,9 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
   }
   return (
     <>
-      <KpiGrid cards={todayKpiCards(stats)} />
+      <KpiGrid
+        cards={todayKpiCards(stats, accountSummaryQuery.data ?? null)}
+      />
       <div className="grid app-dashboard-workbench">
         <CapacityCard
           options={options}
