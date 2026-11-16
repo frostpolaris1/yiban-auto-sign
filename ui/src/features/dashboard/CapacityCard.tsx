@@ -26,7 +26,7 @@ import { AnimatedNumber } from '@/components/ui/AnimatedNumber'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
-import { SelectInput } from '@/components/ui/Input'
+import { Select } from '@/components/ui/Select'
 import { notifySuccess } from '@/components/ui/toast'
 import type { CapacityReport } from '@/lib/api/schedule'
 import { formatClock } from '@/lib/format'
@@ -155,13 +155,13 @@ export function CapacityCard({
       ) : (
         <>
           <div className="app-schedule-toolbar">
-            <SelectInput
+            <Select
               id="capacity-task"
               label="任务"
               options={options.map((option) => ({ value: option.value, label: option.label }))}
               value={selectedValue}
               disabled={capacityLoading}
-              onChange={(event) => onSelect(event.target.value)}
+              onChange={onSelect}
             />
             {report ? (
               <div className="app-capacity-window-chip">

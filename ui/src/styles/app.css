@@ -1958,3 +1958,92 @@ a.kpi-card {
   .app-health-sub { flex-basis: 100%; }
   .app-health-zone--grow { flex: 1 1 auto; }
 }
+
+/* Radix 下拉：触发器复用 .select 视觉，菜单令牌化。 */
+.app-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 220px;
+  text-align: left;
+  cursor: pointer;
+}
+.app-select-trigger[data-state='open'] {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-ring);
+}
+.app-select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-select-content {
+  z-index: 80;
+  min-width: var(--radix-select-trigger-width);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  animation: app-select-in 0.14s ease;
+}
+.app-select-viewport {
+  max-height: 280px;
+  overflow: auto;
+}
+.app-select-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  color: var(--t-base);
+  font-size: 13.5px;
+  cursor: pointer;
+  outline: none;
+}
+.app-select-item[data-highlighted] {
+  background: var(--bg-hover);
+}
+.app-select-item[data-state='checked'] {
+  color: var(--primary);
+  font-weight: 600;
+}
+.app-select-check {
+  display: inline-flex;
+}
+@keyframes app-select-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 趋势/分布页签切换：轻量淡入上移，减动效时直切。 */
+.app-chart-swap {
+  position: relative;
+  height: 100%;
+  animation: app-chart-swap 0.18s ease;
+}
+@keyframes app-chart-swap {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-select-content,
+  .app-chart-swap {
+    animation: none;
+  }
+}

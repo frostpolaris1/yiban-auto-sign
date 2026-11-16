@@ -193,7 +193,7 @@ for (const theme of THEMES) {
           )
           await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4个', '1个', '1个', '1个'])
         } else {
-          await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+          await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
           // 容量三指标只数容量卡：运行状态卡另有自己的 metric，不再全局计数。
           const capacity = page.locator('.card').filter({ hasText: '容量体检' })
           await expect(capacity.locator('.app-metric')).toHaveCount(3)
@@ -467,7 +467,7 @@ for (const theme of THEMES) {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/', theme)
     // 背景是看板：滚动数字全部落定再拍，菜单态不能带中间帧。
-    await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+    await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
     const capacity = page.locator('.card').filter({ hasText: '容量体检' })
     await expectNumbers(capacity.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
     await expectNumbers(page.locator('.kpi-card .kpi-value'), ['3个', '0个', '1个', '3个'])

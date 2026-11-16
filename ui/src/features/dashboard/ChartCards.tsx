@@ -121,14 +121,16 @@ export function SignTrendCard({ report, loading, error, onRetry }: SignReportPro
       empty={empty}
     >
       <div className="app-chart-box">
-        <ChartCanvas
-          ariaLabel={
-            tab === 'trend'
-              ? '近 30 天每日签到终态堆叠柱状图'
-              : '窗口内账号终态分布环形图'
-          }
-          build={build}
-        />
+        <div key={tab} className="app-chart-swap">
+          <ChartCanvas
+            ariaLabel={
+              tab === 'trend'
+                ? '近 30 天每日签到终态堆叠柱状图'
+                : '窗口内账号终态分布环形图'
+            }
+            build={build}
+          />
+        </div>
       </div>
       {tab === 'trend' && totals ? (
         <p className="app-muted app-chart-foot">

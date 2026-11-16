@@ -317,8 +317,8 @@ test('invariant 5: capacity defaults to the first usable task and follows the pi
   const api = await mockDashboardApi(page, { role: 'admin' })
   await openDashboard(page)
 
-  const select = page.getByLabel('任务')
-  await expect(select).toHaveValue('school-alpha:task-daily')
+  const taskPicker = page.getByLabel('任务')
+  await expect(taskPicker).toContainText('合成学校甲 · 每日签到')
   await expect.poll(() => capacityParams(lastCapacityCall(api), 'school_id')).toBe('school-alpha')
   expect(capacityParams(lastCapacityCall(api), 'task_id')).toBe('task-daily')
   // 请求日按渲染时计算；只钉形状，避免跨 00:00 的假红。
@@ -326,10 +326,13 @@ test('invariant 5: capacity defaults to the first usable task and follows the pi
     /^\d{4}-\d{2}-\d{2}$/,
   )
 
-  const options = select.locator('option')
+  // 选项清单只在打开时可见：断言后先关菜单，选乙放到下方步骤。
+  await taskPicker.click()
+  const options = page.getByRole('option')
   await expect(options).toHaveCount(2)
   await expect(options.nth(0)).toHaveText('合成学校甲 · 每日签到')
   await expect(options.nth(1)).toHaveText('合成学校乙 · 夜间签到')
+  await page.keyboard.press('Escape')
 
   const card = capacityCard(page)
   const gap = card.locator('.app-metric').filter({ hasText: '缺口' })
@@ -338,7 +341,9 @@ test('invariant 5: capacity defaults to the first usable task and follows the pi
   await expect(card).toContainText('08:30–09:00')
   await expect(card.locator('.badge').filter({ hasText: '平台' })).toBeVisible()
 
-  await select.selectOption('school-beta:task-night')
+  await taskPicker.click()
+  await page.getByRole('option', { name: '合成学校乙 · 夜间签到' }).click()
+  await expect(taskPicker).toContainText('合成学校乙 · 夜间签到')
   await expect.poll(() => capacityParams(lastCapacityCall(api), 'school_id')).toBe('school-beta')
   expect(capacityParams(lastCapacityCall(api), 'task_id')).toBe('task-night')
   expect(capacityParams(lastCapacityCall(api), 'day')).toMatch(/^\d{4}-\d{2}-\d{2}$/)
@@ -370,7 +375,8 @@ test('invariant 5: a channel-bound shortfall suggests a worker count and copies 
   await expect(card.locator('.app-capacity-hint')).toHaveCount(0)
   await expect(card.getByText(/YIBAN_WORKERS/)).toHaveCount(0)
 
-  await page.getByLabel('任务').selectOption('school-beta:task-night')
+  await page.getByLabel('任务').click()
+  await page.getByRole('option', { name: '合成学校乙 · 夜间签到' }).click()
   const hint = card.locator('.app-capacity-hint')
   await expect(hint).toContainText('通道是瓶颈：把 YIBAN_WORKERS 提到 4。')
   await expect(hint.locator('code')).toHaveText('YIBAN_WORKERS=4')
@@ -399,7 +405,8 @@ test('invariant 5: a failed copy leaves a visible hint instead of a silent no-op
   await mockDashboardApi(page, { role: 'admin' })
   await openDashboard(page)
 
-  await page.getByLabel('任务').selectOption('school-beta:task-night')
+  await page.getByLabel('任务').click()
+  await page.getByRole('option', { name: '合成学校乙 · 夜间签到' }).click()
   const hint = capacityCard(page).locator('.app-capacity-hint')
   await hint.getByRole('button', { name: '复制' }).click()
   await expect(hint.getByRole('alert')).toHaveText('复制失败，请手动选择文本')
@@ -634,7 +641,8 @@ test('invariant 8: the crowding chart follows the selected task', async ({ page 
   await openDashboard(page)
   await expect.poll(() => prefStatsCalls(api).length).toBe(1)
 
-  await page.getByLabel('任务').selectOption('school-beta:task-night')
+  await page.getByLabel('任务').click()
+  await page.getByRole('option', { name: '合成学校乙 · 夜间签到' }).click()
   await expect
     .poll(() => prefStatsCalls(api).at(-1)?.params['task_id'])
     .toBe('task-night')

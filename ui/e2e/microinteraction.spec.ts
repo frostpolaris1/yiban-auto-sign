@@ -313,13 +313,14 @@ test('invariant 3: dashboard KPI numbers settle on the exact counts', async ({ p
 test('invariant 3: capacity numbers settle on the exact report', async ({ page }) => {
   await mockDashboardApi(page, { role: 'admin' })
   await page.goto('/')
-  await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+  await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
 
   await expect.poll(() => visibleText(metric(page, '容量'))).toBe('容量40')
   await expect.poll(() => visibleText(metric(page, '需求'))).toBe('需求12')
   await expect.poll(() => visibleText(metric(page, '缺口'))).toBe('缺口0')
 
-  await page.getByLabel('任务').selectOption('school-beta:task-night')
+  await page.getByLabel('任务').click()
+  await page.getByRole('option', { name: '合成学校乙 · 夜间签到' }).click()
   await expect.poll(() => visibleText(metric(page, '容量'))).toBe('容量20')
   await expect.poll(() => visibleText(metric(page, '需求'))).toBe('需求26')
   await expect.poll(() => visibleText(metric(page, '缺口'))).toBe('缺口6')
@@ -350,7 +351,7 @@ test('invariant 3: number components keep the line box of plain text', async ({ 
   // 行盒高度是布局契约，不是动画细节。44px 与 20px 分别代表 KPI 与指标。
   await mockDashboardApi(page, { role: 'admin' })
   await page.goto('/')
-  await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+  await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
 
   const kpi = await page.locator('.kpi-card .kpi-value').first().boundingBox()
   const metric = await page.locator('.app-metric-value').first().boundingBox()
