@@ -2606,6 +2606,37 @@ type SignCalendarDayDetail struct {
 	Timezone string `json:"timezone"`
 }
 
+// SignFailureBucket defines model for SignFailureBucket.
+type SignFailureBucket struct {
+	// Count Number of failed task rows with this result.
+	Count int `json:"count"`
+
+	// Result Failure result token; empty result maps to unknown, out-of-vocabulary values stay verbatim.
+	Result string `json:"result"`
+}
+
+// SignFailuresReport defines model for SignFailuresReport.
+type SignFailuresReport struct {
+	// Day Effective business day YYYY-MM-DD.
+	Day openapi_types.Date `json:"day"`
+
+	// Items Failure result buckets ordered by count descending then result ascending.
+	Items []SignFailureBucket `json:"items"`
+	Scope SignFailuresScope   `json:"scope"`
+
+	// Total Total failed task rows across all buckets.
+	Total int `json:"total"`
+}
+
+// SignFailuresScope defines model for SignFailuresScope.
+type SignFailuresScope struct {
+	// SchoolId Selected school filter when provided.
+	SchoolId *string `json:"school_id,omitempty"`
+
+	// TaskId Selected school task filter when provided.
+	TaskId *string `json:"task_id,omitempty"`
+}
+
 // SignStatsCounts defines model for SignStatsCounts.
 type SignStatsCounts struct {
 	Failed  int `json:"failed"`
@@ -3621,6 +3652,18 @@ type SignStatsParams struct {
 	Days *int `form:"days,omitempty" json:"days,omitempty"`
 }
 
+// SignStatsFailuresParams defines parameters for SignStatsFailures.
+type SignStatsFailuresParams struct {
+	// Day Business day YYYY-MM-DD; defaults to today in the server time zone.
+	Day *string `form:"day,omitempty" json:"day,omitempty"`
+
+	// SchoolId Optional school UUID to narrow the aggregation.
+	SchoolId *string `form:"school_id,omitempty" json:"school_id,omitempty"`
+
+	// TaskId Optional school task UUID to narrow the aggregation.
+	TaskId *string `form:"task_id,omitempty" json:"task_id,omitempty"`
+}
+
 // TimePrefStatsParams defines parameters for TimePrefStats.
 type TimePrefStatsParams struct {
 	SchoolId SchoolIDQuery `form:"school_id" json:"school_id"`
@@ -4244,6 +4287,9 @@ type ServerInterface interface {
 	// SignStats Report per-account sign results for a day range.
 	// (GET /api/sign-stats)
 	SignStats(c *gin.Context, params SignStatsParams)
+	// SignStatsFailures Report per-task-row terminal failure counts by result for one business day.
+	// (GET /api/sign-stats/failures)
+	SignStatsFailures(c *gin.Context, params SignStatsFailuresParams)
 	// TimePrefStats Report time-preference crowding for one school task.
 	// (GET /api/time-prefs/stats)
 	TimePrefStats(c *gin.Context, params TimePrefStatsParams)
@@ -7724,6 +7770,49 @@ func (siw *ServerInterfaceWrapper) SignStats(c *gin.Context) {
 	siw.Handler.SignStats(c, params)
 }
 
+// SignStatsFailures operation middleware
+func (siw *ServerInterfaceWrapper) SignStatsFailures(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SignStatsFailuresParams
+
+	// ------------- Optional query parameter "day" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "day", c.Request.URL.Query(), &params.Day, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter day: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "school_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "school_id", c.Request.URL.Query(), &params.SchoolId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter school_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "task_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "task_id", c.Request.URL.Query(), &params.TaskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter task_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SignStatsFailures(c, params)
+}
+
 // TimePrefStats operation middleware
 func (siw *ServerInterfaceWrapper) TimePrefStats(c *gin.Context) {
 
@@ -8386,6 +8475,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/capacity", wrapper.CapacityGet)
 	router.POST(options.BaseURL+"/api/capacity/refresh", wrapper.CapacityRefresh)
 	router.GET(options.BaseURL+"/api/sign-stats", wrapper.SignStats)
+	router.GET(options.BaseURL+"/api/sign-stats/failures", wrapper.SignStatsFailures)
 	router.GET(options.BaseURL+"/api/time-prefs/stats", wrapper.TimePrefStats)
 	router.GET(options.BaseURL+"/api/me/photos", wrapper.PhotoList)
 	router.POST(options.BaseURL+"/api/me/photos", wrapper.PhotoUpload)

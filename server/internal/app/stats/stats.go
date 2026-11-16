@@ -43,6 +43,9 @@ const maxWindowDays = 90
 type Store interface {
 	SignStats(ctx context.Context, scope corescope.Scope, from, to string) (coreschedule.SignStats, error)
 	OffsetCounts(ctx context.Context, schoolID, taskID, day string) (map[int]int, error)
+	FailureCounts(ctx context.Context, scope corescope.Scope, filter coreschedule.SignFailureFilter) ([]coreschedule.SignFailureBucket, error)
+	SchoolExists(ctx context.Context, schoolID string) (bool, error)
+	TaskSchoolID(ctx context.Context, taskID string) (string, error)
 }
 
 // Service 是看板聚合服务。

@@ -183,6 +183,8 @@ either side drifts.
 | POST | `/api/capacity/refresh` | master/admin | abs R1 |
 |  |  |  | 先发现平台窗口并落缓存，再返回容量报告；响应体与 GET 同 schema。 |
 | GET | `/api/sign-stats` | master/admin | M8C |
+| GET | `/api/sign-stats/failures` | master/admin | 07 |
+|  |  |  | 按**任务行**计数（不做账号去重）；只统计当日终态失败（`state=failed`，排除已软删账号）；`result` 空串归 `unknown` 合并，词表外原样返回；`day` 缺省或空串取服务端业务日今天；`school_id`/`task_id` 跨校或不存在返回 404，两者都在作用域内但不配套返回 400；空日回 `items:[]`、`total:0`。 |
 | GET | `/api/time-prefs/stats` | master/admin | M8C |
 | POST | `/api/accounts/:id/sign` | master/admin/user | P4 |
 | GET | `/api/me/photos` | master/admin/user | P5 |
