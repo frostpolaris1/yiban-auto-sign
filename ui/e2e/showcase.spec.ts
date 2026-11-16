@@ -24,6 +24,8 @@ import { visibleText } from './support/visible-text'
  *
  * invariant 10：账号抽屉的照片区在展示构建里显示合成占位，零 `/api/` 请求。
  * 照片区在正式构建只对 user/admin 渲染；展示会话是 master，故靠展示分支放行。
+ *
+ * invariant 12：审计日志页取合成台账与巡检结论，筛选项与详情抽屉照常可读，零 `/api/` 请求。
  */
 
 /** 界面上的只读原因。断言用户可见文本，不导入实现常量。 */
@@ -313,4 +315,25 @@ test('invariant 11: the showcase queue page renders fixtures with zero requests 
   await expect(drawer).toContainText('credential_invalid')
 
   expect(apiRequests, 'the showcase queue page never touches the API').toEqual([])
+})
+
+test('invariant 12: the showcase audit page renders fixtures with zero requests', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/audit')
+  await expect(page.getByRole('heading', { level: 1, name: /审计\s*日志/ })).toBeVisible()
+  await expect(page.locator('[data-audit-row]')).toHaveCount(8)
+  await expect(page.locator('[data-audit-verdict]')).toContainText('链完好')
+  await expect(page.getByText('auth.login', { exact: true })).toBeVisible()
+
+  // 只读台账：筛选与详情仍可用，且都不发网络请求。
+  await expect(page.getByLabel('动作筛选')).toBeEnabled()
+  await page.getByRole('button', { name: '查看详情 #1042' }).click()
+  const drawer = page.getByRole('dialog', { name: '审计详情' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer).toContainText('"result":"ok"')
+
+  expect(apiRequests, 'the audit fixture never touches the API').toEqual([])
 })

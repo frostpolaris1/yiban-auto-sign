@@ -15,7 +15,7 @@
  */
 
 import type { Account, AccountPage, AccountStatus, AccountSummary } from './api/account'
-import type { AuditStatusReport } from './api/audit'
+import type { AuditLogItem, AuditLogPage, AuditStatusReport } from './api/audit'
 import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
 import type { EngineSnapshot } from './api/engine'
@@ -412,10 +412,21 @@ export function showcasePrefStats(query: {
 }
 
 /**
- * 看板审计链巡检的合成结论：完好态。
+ * 看板审计链巡检的合成结论：缺省完好态；`broken` 供展示机切换断链样本。
  * 链头是小写十六进制的重复串，明示合成；时刻固定，展示机不随日历漂移。
  */
-export function showcaseAuditStatus(): AuditStatusReport {
+export function showcaseAuditStatus(broken = false): AuditStatusReport {
+  if (broken) {
+    return {
+      ok: false,
+      empty: false,
+      checked_rows: 86,
+      last_hash: 'cd'.repeat(32),
+      broken_at: 87,
+      checked_at: '2026-10-31T09:05:00+08:00',
+      anchor_status: 'not_checked',
+    }
+  }
   return {
     ok: true,
     empty: false,
@@ -423,6 +434,117 @@ export function showcaseAuditStatus(): AuditStatusReport {
     last_hash: 'ab'.repeat(32),
     broken_at: null,
     checked_at: '2026-10-31T09:00:00+08:00',
+  }
+}
+
+/** 审计台账的合成行：固定时刻与合成标识，详情是脱敏后的 JSON 文本。 */
+const SHOWCASE_AUDIT_ROWS: AuditLogItem[] = [
+  {
+    id: 1042,
+    at: '2026-10-31T09:12:00+08:00',
+    action: 'auth.login',
+    actor: 'm***@example.com',
+    target: 'user-1',
+    detail: '{"ip":"eg-demo-1","result":"ok"}',
+  },
+  {
+    id: 1041,
+    at: '2026-10-31T09:08:00+08:00',
+    action: 'account.review',
+    actor: 'o***@example.com',
+    target: 'acc-0002',
+    detail: '{"decision":"approve","reason":""}',
+  },
+  {
+    id: 1040,
+    at: '2026-10-31T09:05:00+08:00',
+    action: 'task.rearm',
+    actor: 'o***@example.com',
+    target: 'task-demo-1',
+    detail: '{"attempts":2,"result":"transient"}',
+  },
+  {
+    id: 1039,
+    at: '2026-10-31T08:58:00+08:00',
+    action: 'settings.engine_paused',
+    actor: 'm***@example.com',
+    target: 'engine',
+    detail: '{"paused":true}',
+  },
+  {
+    id: 1038,
+    at: '2026-10-31T08:41:00+08:00',
+    action: 'school.default_photo_set',
+    actor: 'm***@example.com',
+    target: 'school-a',
+    detail: '{"photo_id":"photo-demo-gate"}',
+  },
+  {
+    id: 1037,
+    at: '2026-10-31T08:30:00+08:00',
+    action: 'user.role_change',
+    actor: 'm***@example.com',
+    target: 'user-b',
+    detail: '{"from":"user","to":"admin"}',
+  },
+  {
+    id: 1036,
+    at: '2026-10-31T08:12:00+08:00',
+    action: 'account.credential_error',
+    actor: 'system',
+    target: 'acc-0003',
+    detail:
+      '{"code":"credential_invalid","note":"合成详情：用于验证长文换行与抽屉内滚动，不包含任何真实凭据或个人信息。"}',
+  },
+  {
+    id: 1035,
+    at: '2026-10-30T21:40:00+08:00',
+    action: 'auth.logout',
+    actor: 'a***@example.com',
+    target: 'user-9',
+    detail: '{}',
+  },
+]
+
+/**
+ * 审计台账（展示构建）：按契约参数在夹具内筛选与游标切片。
+ * 展示机零网络；动作精确匹配，操作者忽略大小写，时间按 RFC3339 闭区间比较。
+ */
+export function showcaseAuditLogs(
+  query: {
+    action?: string
+    actor?: string
+    from?: string
+    to?: string
+    cursor?: string
+    limit?: number
+  } = {},
+): AuditLogPage {
+  const action = (query.action ?? '').trim()
+  const actor = (query.actor ?? '').trim().toLowerCase()
+  const from = query.from ? Date.parse(query.from) : null
+  const to = query.to ? Date.parse(query.to) : null
+  const filtered = SHOWCASE_AUDIT_ROWS.filter((row) => {
+    if (action !== '' && row.action !== action) return false
+    if (actor !== '' && row.actor.toLowerCase() !== actor) return false
+    const at = Date.parse(row.at)
+    if (from !== null && at < from) return false
+    if (to !== null && at > to) return false
+    return true
+  })
+  const limit = query.limit && query.limit > 0 ? query.limit : 20
+  const cursorIndex = query.cursor?.startsWith('demo-audit-')
+    ? Number(query.cursor.slice('demo-audit-'.length))
+    : 0
+  const start = Number.isFinite(cursorIndex) && cursorIndex > 0 ? cursorIndex : 0
+  const items = filtered.slice(start, start + limit)
+  const nextIndex = start + items.length
+  const nextCursor = nextIndex < filtered.length ? `demo-audit-${nextIndex}` : ''
+  return {
+    items,
+    next_cursor: nextCursor,
+    total: filtered.length,
+    has_more: nextCursor !== '',
   }
 }
 

@@ -1,5 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { ACCOUNTS, mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
+import { mockAuditApi } from './support/fake-audit-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockRunApi, installFakeEventSource } from './support/fake-run-api'
@@ -27,6 +28,7 @@ import { visibleText } from './support/visible-text'
 
 const ROUTES = [
   { path: '/queue', name: 'queue' },
+  { path: '/audit', name: 'audit' },
   { path: '/run?day=2030-01-01', name: 'run' },
   { path: '/engine', name: 'engine' },
   { path: '/design', name: 'design' },
@@ -105,6 +107,10 @@ async function mockSessionFor(
     await installFakeEventSource(page)
     await mockQueueApi(page, { role })
   }
+  // 审计页：固定合成台账与巡检结论，不依赖时钟。
+  if (path === '/audit') {
+    await mockAuditApi(page, { role })
+  }
 }
 
 async function openWithTheme(
@@ -149,6 +155,10 @@ async function expectData(page: Page, path: string) {
     await expect(page.locator('[data-queue-group="failed"]')).toContainText('138****8003')
     await expect(page.locator('[data-queue-group="unsigned"]')).toContainText('138****8004')
     await expectNumbers(page.locator('[data-queue-summary] .q-tele-value .app-number'), ['3', '1', '1'])
+  } else if (path === '/audit') {
+    // 账本六行与页头完好结论都到位再拍；总数徽标与 fixtures 同源。
+    await expect(page.locator('[data-audit-row]')).toHaveCount(6)
+    await expect(page.locator('[data-audit-verdict]')).toContainText('链完好')
   } else if (path === '/engine') {
     // 数据态到位：四指标与两条在飞行渲染完成再拍。
     await expect(page.locator('dl', { hasText: '待执行' })).toContainText('3')

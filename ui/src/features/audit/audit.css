@@ -1,0 +1,642 @@
+/*
+ * audit.css — 审计日志页样式层。
+ *
+ * **归属**
+ * `features/audit` 专属样式：仅消费 `tokens.css` 变量，零颜色字面量（满足 token-gate）。
+ * 列头与行共用 `--a-cols` 网格；窄屏整表在 `.a-table-scroll` 内横向滚动，页面零横向溢出。
+ */
+
+.a-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* 页头动作区（结论徽标 + 巡检摘要）在窄屏靠左，不悬浮。 */
+.a-page > .hero {
+  margin-bottom: 0;
+}
+
+.a-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.a-verdict-meta {
+  min-width: 0;
+  max-width: 52ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 浅色下 --t-muted 对页面底色仅 4.31:1；混入正文色抬到 4.5:1 以上。 */
+  color: color-mix(in srgb, var(--t-muted) 60%, var(--t-base));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.a-chain-alert {
+  margin-top: -4px;
+}
+
+/* ---------- 卡片与卡头（标题、计数、筛选同行，窄屏堆叠） ---------- */
+
+.a-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  min-width: 0;
+  scroll-margin-top: 12px;
+  @media (prefers-reduced-motion: no-preference) {
+    animation: rise-in 480ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+}
+
+.a-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px 16px;
+  min-height: 58px;
+  padding: 13px 20px;
+  background: color-mix(in srgb, var(--bg-hover) 65%, var(--bg-card));
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.a-card-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 22px;
+}
+
+.a-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  line-height: 1;
+}
+
+.a-card-title {
+  margin: 0;
+  font-family: inherit;
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--t-base);
+  line-height: 20px;
+}
+
+.a-card-desc {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--t-muted);
+}
+
+.a-count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border));
+  color: var(--primary);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.a-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: var(--t-light);
+}
+
+.a-dot.is-primary {
+  background: var(--primary);
+}
+
+/* ---------- 筛选（卡头右侧，输入 32px 紧凑高度） ---------- */
+
+.a-filters {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+  min-width: 0;
+}
+
+.a-filters .field {
+  gap: 4px;
+}
+
+.a-filters .field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--t-muted);
+}
+
+.a-filters .input {
+  width: 150px;
+  height: 32px;
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+
+/* vendor 的 placeholder 用 --t-light（2.56:1）；筛选面抬到 --t-muted。 */
+.a-filters .input::placeholder {
+  color: var(--t-muted);
+}
+
+/* 字段错误沿用 FilterField 的 role=alert 与 aria-describedby；
+ * vendor 的 --danger 直接压在卡面上仅 3.76:1，混入正文色抬到 4.5:1 以上。 */
+.a-filters .field-error {
+  color: color-mix(in srgb, var(--danger) 70%, var(--t-base));
+}
+
+.a-filters .a-input-wide {
+  width: 176px;
+}
+
+.a-filters .a-date {
+  width: 142px;
+}
+
+.a-filter-error {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.a-clear {
+  position: relative;
+  height: 32px;
+  min-height: 32px;
+}
+
+/* 透明命中区：可见 28–32px，触控高度 ≥44px。 */
+.a-detail-btn::before,
+.a-pager-btn::before,
+.a-clear::before {
+  content: "";
+  position: absolute;
+  inset: -8px 0;
+}
+
+/* ---------- 列表：列头与行共用 --a-cols，窄屏整表横向滚动 ---------- */
+
+.a-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.a-table-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+
+.a-table-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.a-table {
+  --a-cols: 150px minmax(140px, 0.9fr) minmax(150px, 1fr) minmax(110px, 0.7fr) minmax(220px, 1.5fr);
+  min-width: 940px;
+}
+
+.a-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.a-list-head,
+.a-row {
+  display: grid;
+  grid-template-columns: var(--a-cols);
+  align-items: center;
+  gap: 14px;
+}
+
+.a-list-head {
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-hover) 70%, var(--bg-card));
+  color: color-mix(in srgb, var(--t-base) 72%, var(--t-muted));
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.a-list-head > span:last-child {
+  text-align: right;
+}
+
+.a-row-wrap {
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.a-row-wrap:last-child {
+  border-bottom: 0;
+}
+
+.a-row {
+  min-height: 62px;
+  padding: 12px 20px;
+  transition: background-color 140ms ease;
+}
+
+.a-row:hover {
+  background: var(--bg-hover);
+}
+
+.a-time {
+  font-size: 12px;
+  color: var(--t-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.a-action {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-base);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.a-actor {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-base);
+  font-size: 12px;
+}
+
+.a-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-muted);
+}
+
+.a-detail-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.a-detail-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t-muted);
+  font-size: 12px;
+}
+
+.a-detail-btn {
+  position: relative;
+  flex: 0 0 auto;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.a-mono {
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+/* ---------- 状态区（错误 / 加载 / 空态） ---------- */
+
+.a-state {
+  padding: 16px 18px;
+}
+
+/* 列表错误里的「重试」：outline-danger 的纯色文字仅 3.76:1。 */
+.a-state .btn--outline-danger {
+  color: color-mix(in srgb, var(--danger) 70%, var(--t-base));
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--border));
+}
+
+.a-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 168px;
+  padding: 30px 20px;
+  text-align: center;
+}
+
+.a-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--bg-muted);
+  color: var(--t-muted);
+}
+
+.a-empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--t-base);
+}
+
+.a-empty-desc {
+  margin: 0;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+
+/* ---------- 游标分页页脚 ---------- */
+
+.a-pager-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-hover) 60%, var(--bg-card));
+}
+
+.a-pager-info {
+  font-size: 12px;
+  color: var(--t-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.a-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.a-pager-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-card);
+  color: var(--t-base);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.a-pager-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--t-light);
+}
+
+.a-pager-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.a-pager-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ---------- 行详情抽屉 ---------- */
+
+.a-detail-dl {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.a-detail-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.a-detail-item:last-child {
+  border-bottom: 0;
+}
+
+.a-detail-item dt {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: var(--t-muted);
+}
+
+.a-detail-item dd {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--t-base);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.a-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.a-detail-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--t-muted);
+}
+
+.a-detail-text {
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-muted);
+  color: var(--t-base);
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 长详情可键盘滚动：焦点环必须可见，否则看不出 pre 已获得焦点。 */
+.a-detail-text:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ---------- 移动端 390：筛选纵向堆叠，页头结论靠左 ---------- */
+
+@media (max-width: 720px) {
+  .a-page {
+    gap: 14px;
+  }
+
+  .a-page > .hero {
+    gap: 12px;
+  }
+
+  .a-verdict {
+    justify-content: flex-start;
+  }
+
+  .a-verdict-meta {
+    white-space: normal;
+  }
+
+  .a-card-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 9px;
+    min-height: auto;
+    padding: 12px 16px;
+  }
+
+  .a-filters {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .a-filters .field {
+    width: 100%;
+  }
+
+  /* iOS 聚焦缩放的判据是 <16px：移动端输入统一 16px。 */
+  .a-filters .input {
+    width: 100%;
+    height: 36px;
+    min-height: 36px;
+    font-size: 16px;
+  }
+
+  .a-clear {
+    align-self: flex-start;
+    height: 34px;
+    min-height: 34px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+
+  .a-pager-foot {
+    padding: 10px 16px;
+  }
+
+  /* 移动端：行可点开详情，详情列常驻右缘，避免横向滚走后丢失入口。 */
+  .a-row {
+    padding: 12px 16px;
+    cursor: pointer;
+  }
+
+  .a-list-head {
+    padding: 9px 16px;
+  }
+
+  .a-table {
+    --a-cols: 150px minmax(120px, 0.9fr) minmax(140px, 1fr) minmax(90px, 0.7fr) 96px;
+    min-width: 816px;
+  }
+
+  .a-detail-preview {
+    display: none;
+  }
+
+  .a-list-head > span:last-child,
+  .a-detail-cell {
+    position: sticky;
+    right: 0;
+    z-index: 2;
+    padding-left: 12px;
+    padding-right: 16px;
+    border-left: 1px solid var(--border-soft);
+    background: var(--bg-card);
+    box-shadow: -6px 0 8px -6px color-mix(in srgb, var(--t-base) 18%, transparent);
+  }
+
+  .a-list-head > span:last-child {
+    background: color-mix(in srgb, var(--bg-hover) 70%, var(--bg-card));
+  }
+
+  .a-row:hover .a-detail-cell {
+    background: var(--bg-hover);
+  }
+
+  /* 移动端按钮抬到 34px 视觉高度；::before 再补 5px ⇒ 触控高 44px。 */
+  .a-detail-btn,
+  .a-pager-btn {
+    height: 34px;
+    min-height: 34px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+
+  .a-detail-btn::before,
+  .a-pager-btn::before,
+  .a-clear::before {
+    inset: -5px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .a-card {
+    animation: none;
+  }
+}

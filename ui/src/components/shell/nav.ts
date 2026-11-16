@@ -135,7 +135,6 @@ export const NAV: NavSection[] = [
         to: '/audit',
         icon: 'shield',
         roles: RUN_VIEW_ROLES,
-        pendingNote: '审计页将在 B4 上线；审计端点已就绪。',
         crumbs: ['系统', '审计日志'],
       },
       {

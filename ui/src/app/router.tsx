@@ -21,6 +21,7 @@ import {
 } from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
 import { AccountsPage } from '@/pages/AccountsPage'
+import { AuditPage } from '@/pages/AuditPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
 import { EnginePage } from '@/pages/EnginePage'
@@ -155,9 +156,8 @@ const queueRoute = createRoute({
 })
 
 /**
- * 目标目录的占位入口：B3/B4 落地前重定向到现有承载页。
- * /logs → /run；/audit → /。
- * 页面就绪时把重定向换成真 page 组件。
+ * 目标目录的占位入口：B3 落地前重定向到现有承载页。
+ * /logs → /run；页面就绪时把重定向换成真 page 组件。
  */
 const logsRoute = createRoute({
   getParentRoute: () => shellRoute,
@@ -167,12 +167,11 @@ const logsRoute = createRoute({
   },
 })
 
+/** 审计日志：master/admin。权限门由 AuditView 内部执行，user 不发审计请求。 */
 const auditRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/audit',
-  beforeLoad: () => {
-    throw redirect({ to: '/' })
-  },
+  component: AuditPage,
 })
 
 const scheduleRoute = createRoute({
