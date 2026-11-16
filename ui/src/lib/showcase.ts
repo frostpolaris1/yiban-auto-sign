@@ -571,17 +571,39 @@ export function showcaseEngineSnapshot(): EngineSnapshot {
 }
 
 /** 待办页（展示构建）：按状态筛选账号夹具，与侧栏待处理徽标同源。 */
-export function showcaseQueueAccounts(status: 'pending' | 'rejected'): AccountPage {
+export function showcaseQueueAccounts(
+  status: 'pending' | 'rejected',
+  filters: { schoolId?: string; q?: string } = {},
+): AccountPage {
+  const keyword = (filters.q ?? '').trim().toLowerCase()
   return {
-    items: showcaseAccounts().items.filter((item) => item.status === status),
+    items: showcaseAccounts().items.filter((item) => {
+      if (item.status !== status) return false
+      if (filters.schoolId && item.school_id !== filters.schoolId) return false
+      if (!keyword) return true
+      return [item.display_name, item.name, item.phone_masked, item.owner_email_masked].some(
+        (field) => field.toLowerCase().includes(keyword),
+      )
+    }),
     next_cursor: '',
   }
 }
 
-/** 待办页（展示构建）：按任务态筛选当日任务夹具。 */
-export function showcaseQueueTasks(state: 'failed' | 'pending' | 'running'): TaskPage {
+/** 待办页（展示构建）：按任务态与筛选条件筛当日任务夹具。 */
+export function showcaseQueueTasks(
+  state: 'failed' | 'pending' | 'running',
+  filters: { schoolId?: string; q?: string } = {},
+): TaskPage {
+  const keyword = (filters.q ?? '').trim().toLowerCase()
   return {
-    items: showcaseRunPage().items.filter((item) => item.state === state),
+    items: showcaseRunPage().items.filter((item) => {
+      if (item.state !== state) return false
+      if (filters.schoolId && item.school_id !== filters.schoolId) return false
+      if (!keyword) return true
+      return [item.task_name, item.school_name, item.account_phone_masked].some((field) =>
+        field.toLowerCase().includes(keyword),
+      )
+    }),
     next_cursor: '',
   }
 }

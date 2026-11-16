@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 队列顶部遥测条：业务日、今日窗口、待审核、今日失败、今日未签五项概览。
+ * 队列顶部遥测条：业务日、今日窗口、待处理、今日失败、今日未签五项概览。
  *
  * **归属**
  * `features/queue` 展示组件：只呈现与锚点跳转，不直接发请求。
@@ -78,7 +78,7 @@ export function QueueTelemetryStrip({
       >
         <span className="q-tele-label">
           <span className="q-dot is-warning" aria-hidden="true" />
-          待审核
+          待处理
         </span>
         <div className={`q-tele-value ${pendingTotal && pendingTotal > 0 ? 'is-warning' : ''}`}>
           <QueueAnimatedNumber value={pendingTotal} />

@@ -162,3 +162,89 @@ export function schoolNameMap(schools: readonly School[]): Map<string, string> {
   }
   return map
 }
+
+export type TaskResultGuide = {
+  label: string
+  hint: string
+}
+
+/**
+ * 只登记「会落到 failed 的任务结果码」。
+ * 权威词表是 `server/internal/signing/contract/contract.go` 的 `Outcome`；
+ * 落 failed 的路径见 `server/internal/app/worker/worker.go` 的 `settleOutcome`：
+ * 确定性失败 rejected／photo_rejected／blocked、凭据错 credential_invalid，
+ * 以及重试预算耗尽的 transient／pending_upstream／unknown。
+ * 后端新增词表时先改后端，再补这里；单元测试会拿契约词表校验本表。
+ */
+const TASK_RESULT_GUIDES: Record<string, TaskResultGuide> = {
+  credential_invalid: {
+    label: '凭据无效',
+    hint: '需用户更新账号密码或设备信息，盲目重试通常仍失败',
+  },
+  rejected: {
+    label: '平台拒绝请求',
+    hint: '平台判定本次签到无效，先核对账号与签到点位',
+  },
+  photo_rejected: {
+    label: '照片未通过',
+    hint: '平台驳回上传照片，需更换照片后重新提交',
+  },
+  blocked: {
+    label: '请求被拦截',
+    hint: '命中平台风控或 WAF 拦截，先核查出口与账号状态',
+  },
+  transient: {
+    label: '临时网络波动',
+    hint: '重试预算已用尽，可手动重签',
+  },
+  pending_upstream: {
+    label: '平台处理未完成',
+    hint: '平台上仍在处理，稍后再重签',
+  },
+  unknown: {
+    label: '平台返回未知结果',
+    hint: '结果不明，打开诊断确认后再决定是否重试',
+  },
+}
+
+/** 将服务端任务结果码映射为中文短句与处置建议，保留原码排查能力。 */
+export function describeTaskResult(code: string): TaskResultGuide {
+  const normalized = code.trim()
+  if (!normalized) {
+    return { label: '执行失败', hint: '请打开诊断查看详细信息' }
+  }
+  const hit = TASK_RESULT_GUIDES[normalized]
+  if (hit) return hit
+  return { label: '平台返回异常', hint: '可打开诊断确认是否值得重试' }
+}
+
+/** 供单元测试校验：本表登记的码必须已在契约词表里。 */
+export function taskResultGuideCodes(): string[] {
+  return Object.keys(TASK_RESULT_GUIDES)
+}
+
+/** 分页页脚诚实摘要，不拿末页条数冒充全量总数。 */
+export function formatPagedSummary(pageIndex: number, count: number, hasNext: boolean): string {
+  const base = `第 ${pageIndex + 1} 页 · 本页 ${count} 条`
+  return hasNext ? `${base}（还有更多）` : base
+}
+
+/**
+ * 驳回理由预设标签点选：芯片的选中态就代表「理由里含这条」，点击即切换。
+ * - 空输入 → 填入该预设；
+ * - 已含该预设 → 从理由里移除（分隔符一并收干净）；
+ * - 手写内容 + 未含该预设 → 末尾追加，超 200 字则不追加。
+ */
+export function applyRejectPreset(current: string, preset: string): string {
+  const trimmed = current.trim()
+  if (trimmed === '') return preset
+  const parts = trimmed
+    .split('；')
+    .map((part) => part.trim())
+    .filter(Boolean)
+  if (parts.includes(preset)) {
+    return parts.filter((part) => part !== preset).join('；')
+  }
+  const combined = `${trimmed}；${preset}`
+  return combined.length <= REJECT_REASON_MAX ? combined : current
+}

@@ -17,7 +17,7 @@ import { TextAreaInput } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { cx } from '@/lib/cx'
 import type { Account } from '@/lib/api/account'
-import { REJECT_REASON_MAX, REJECT_REASON_PRESETS } from './queueDisplay'
+import { REJECT_REASON_MAX, REJECT_REASON_PRESETS, applyRejectPreset } from './queueDisplay'
 import { usePresence } from './usePresence'
 
 type QueueRejectModalProps = {
@@ -93,13 +93,13 @@ export function QueueRejectModal({
       <div className="app-form-stack">
         <div className="q-presets" role="group" aria-label="常用驳回理由">
           {REJECT_REASON_PRESETS.map((preset) => {
-            const selected = trimmed === preset
+            const selected = trimmed.split('；').some((part) => part.trim() === preset)
             return (
               <button
                 key={preset}
                 type="button"
                 className={cx('q-preset-chip', selected && 'is-selected')}
-                onClick={() => setReason(preset)}
+                onClick={() => setReason((current) => applyRejectPreset(current, preset))}
               >
                 {preset}
               </button>

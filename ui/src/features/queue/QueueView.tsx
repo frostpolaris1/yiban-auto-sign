@@ -58,7 +58,7 @@ import {
 } from '@/lib/showcase'
 import {
   QUEUE_PAGE_SIZE,
-  accountStatusMeta,
+  describeTaskResult,
   formatWindowSummary,
   schoolNameMap,
   taskStateMeta,
@@ -69,6 +69,7 @@ import { QueueDiagnosticsDrawer, type QueueDiagnosticsTarget } from './QueueDiag
 import { QueueGroup } from './QueueGroup'
 import { QueueRejectModal } from './QueueRejectModal'
 import { QueueTelemetryStrip } from './QueueTelemetryStrip'
+import { useQueueFilters } from './useQueueFilters'
 import './queue.css'
 
 const EMPTY_ACCOUNTS: Account[] = []
@@ -203,6 +204,11 @@ export function QueueView() {
   const failedCursor = currentCursor(failedStack)
   const unsignedCursor = currentCursor(unsignedStack)
 
+  // 组内筛选：学校 + 关键字各自独立，提交即回第一页
+  const reviewFilters = useQueueFilters(() => setReviewStack(emptyCursorStack()))
+  const failedFilters = useQueueFilters(() => setFailedStack(emptyCursorStack()))
+  const unsignedFilters = useQueueFilters(() => setUnsignedStack(emptyCursorStack()))
+
   const summaryQuery = useQuery({
     queryKey: ['account-summary'],
     queryFn: () =>
@@ -230,12 +236,26 @@ export function QueueView() {
   })
 
   const reviewQuery = useQuery({
-    queryKey: ['queue', 'accounts', reviewSegment, reviewCursor ?? null],
+    queryKey: [
+      'queue',
+      'accounts',
+      reviewSegment,
+      reviewFilters.schoolId,
+      reviewFilters.q,
+      reviewCursor ?? null,
+    ],
     queryFn: () =>
       SHOWCASE
-        ? Promise.resolve(showcaseQueueAccounts(reviewSegment))
+        ? Promise.resolve(
+            showcaseQueueAccounts(reviewSegment, {
+              schoolId: reviewFilters.schoolId,
+              q: reviewFilters.q,
+            }),
+          )
         : listAccounts({
             status: reviewSegment,
+            school_id: reviewFilters.schoolId || undefined,
+            q: reviewFilters.q || undefined,
             cursor: reviewCursor,
             limit: QUEUE_PAGE_SIZE,
           }),
@@ -246,13 +266,28 @@ export function QueueView() {
   })
 
   const failedQuery = useQuery({
-    queryKey: ['queue', 'tasks', 'failed', today, failedCursor ?? null],
+    queryKey: [
+      'queue',
+      'tasks',
+      'failed',
+      today,
+      failedFilters.schoolId,
+      failedFilters.q,
+      failedCursor ?? null,
+    ],
     queryFn: () =>
       SHOWCASE
-        ? Promise.resolve(showcaseQueueTasks('failed'))
+        ? Promise.resolve(
+            showcaseQueueTasks('failed', {
+              schoolId: failedFilters.schoolId,
+              q: failedFilters.q,
+            }),
+          )
         : listTasks({
             day: today,
             state: 'failed',
+            school_id: failedFilters.schoolId || undefined,
+            q: failedFilters.q || undefined,
             cursor: failedCursor,
             limit: QUEUE_PAGE_SIZE,
           }),
@@ -263,13 +298,29 @@ export function QueueView() {
   })
 
   const unsignedQuery = useQuery({
-    queryKey: ['queue', 'tasks', 'unsigned', unsignedSegment, today, unsignedCursor ?? null],
+    queryKey: [
+      'queue',
+      'tasks',
+      'unsigned',
+      unsignedSegment,
+      today,
+      unsignedFilters.schoolId,
+      unsignedFilters.q,
+      unsignedCursor ?? null,
+    ],
     queryFn: () =>
       SHOWCASE
-        ? Promise.resolve(showcaseQueueTasks(unsignedSegment))
+        ? Promise.resolve(
+            showcaseQueueTasks(unsignedSegment, {
+              schoolId: unsignedFilters.schoolId,
+              q: unsignedFilters.q,
+            }),
+          )
         : listTasks({
             day: today,
             state: unsignedSegment,
+            school_id: unsignedFilters.schoolId || undefined,
+            q: unsignedFilters.q || undefined,
             cursor: unsignedCursor,
             limit: QUEUE_PAGE_SIZE,
           }),
@@ -337,7 +388,8 @@ export function QueueView() {
     return <DeniedCard eyebrow="今日 · 待办" title="无权访问" reason="你的角色无权查看待办队列" />
   }
 
-  const schoolsById = schoolNameMap(schoolsQuery.data ?? EMPTY_SCHOOLS)
+  const schools = schoolsQuery.data ?? EMPTY_SCHOOLS
+  const schoolsById = schoolNameMap(schools)
   const reviewRows = reviewQuery.data?.items ?? EMPTY_ACCOUNTS
   const failedRows = failedQuery.data?.items ?? EMPTY_TASKS
   const unsignedRows = unsignedQuery.data?.items ?? EMPTY_TASKS
@@ -451,13 +503,17 @@ export function QueueView() {
         description={reviewSegment === 'pending' ? '新提交账号' : '待用户修改重提'}
         tone="warning"
         badgeCount={
-          summaryQuery.data
-            ? reviewSegment === 'pending'
-              ? summaryQuery.data.pending
-              : summaryQuery.data.rejected
-            : reviewQuery.data
-              ? reviewRows.length
+          reviewFilters.hasActive
+            ? reviewQuery.data
+              ? `${reviewQuery.data.next_cursor ? '≥' : ''}${reviewRows.length}`
               : null
+            : summaryQuery.data
+              ? reviewSegment === 'pending'
+                ? summaryQuery.data.pending
+                : summaryQuery.data.rejected
+              : reviewQuery.data
+                ? reviewRows.length
+                : null
         }
         segments={[
           {
@@ -477,6 +533,25 @@ export function QueueView() {
           setReviewSegment(next)
           setReviewStack(emptyCursorStack())
         }}
+        schools={schools}
+        selectedSchoolId={reviewFilters.schoolId}
+        onSchoolChange={reviewFilters.setSchoolId}
+        searchInput={reviewFilters.input}
+        searchPlaceholder="备注名 / 手机号 / 邮箱"
+        searchAriaLabel="搜索待审核账号"
+        onSearchInputChange={reviewFilters.setInput}
+        onSearchCommit={reviewFilters.commitNow}
+        hasActiveFilters={reviewFilters.hasActive}
+        onClearFilters={reviewFilters.clear}
+        columnHeaders={[
+          '账号与归属',
+          '手机号',
+          '学校',
+          reviewSegment === 'pending' ? '提交时间' : '驳回理由',
+          '操作',
+        ]}
+        pageIndex={reviewStack.index}
+        rowCount={reviewRows.length}
         hasPrevious={hasPreviousPage(reviewStack)}
         hasNext={Boolean(reviewQuery.data?.next_cursor)}
         pagingDisabled={reviewQuery.isFetching}
@@ -499,7 +574,6 @@ export function QueueView() {
         }
       >
         {reviewRows.map((account) => {
-          const meta = accountStatusMeta(account.status)
           const schoolName = schoolsById.get(account.school_id) ?? account.school_id
           const approvingThis =
             approveMutation.isPending && approveMutation.variables?.id === account.id
@@ -507,29 +581,35 @@ export function QueueView() {
             rejectMutation.isPending && rejectTarget?.account.id === account.id
           const busy = approvingThis || rejectingThis
           const rowError = rowErrors[account.id]
+          const displayName = account.display_name || `账号${account.phone_masked.slice(-4)}`
 
           return (
             <li key={account.id} className="q-row-wrap" data-queue-row data-account-id={account.id}>
-              <div className="q-row">
-                <div className="q-row-main">
-                  <div className="q-row-top">
-                    <span className="q-row-title">
-                      {account.display_name || `账号${account.phone_masked.slice(-4)}`}
+              <div className="q-row is-pending">
+                <div className="q-col-primary">
+                  <span className="q-row-title" title={displayName}>
+                    {displayName}
+                  </span>
+                  <span className="q-row-sub q-mono-code" title={account.owner_email_masked}>
+                    {account.owner_email_masked}
+                  </span>
+                </div>
+                <div className="q-col-phone">
+                  <span className="q-phone">{account.phone_masked}</span>
+                </div>
+                <div className="q-col-school">
+                  <span className="q-school-tag" title={schoolName}>
+                    {schoolName}
+                  </span>
+                </div>
+                <div className="q-col-meta">
+                  {account.status === 'rejected' && account.reject_reason ? (
+                    <span className="q-row-reason" title={account.reject_reason}>
+                      {account.reject_reason}
                     </span>
-                    <span className="q-phone">{account.phone_masked}</span>
-                    <span className="q-school-tag">{schoolName}</span>
-                    <Badge tone={meta.tone} dot>
-                      {meta.label}
-                    </Badge>
-                  </div>
-                  <div className="q-row-meta">
-                    <span>{account.owner_email_masked}</span>
-                    {account.status === 'rejected' && account.reject_reason ? (
-                      <span className="q-row-reason">驳回：{account.reject_reason}</span>
-                    ) : (
-                      <span>提交于 {formatDateTime(account.created_at)}</span>
-                    )}
-                  </div>
+                  ) : (
+                    <span className="q-row-time">{formatDateTime(account.created_at)}</span>
+                  )}
                 </div>
 
                 <div className="q-row-actions">
@@ -608,6 +688,19 @@ export function QueueView() {
             ? `${failedQuery.data.next_cursor ? '≥' : ''}${failedRows.length}`
             : null
         }
+        schools={schools}
+        selectedSchoolId={failedFilters.schoolId}
+        onSchoolChange={failedFilters.setSchoolId}
+        searchInput={failedFilters.input}
+        searchPlaceholder="任务名 / 学校 / 手机号"
+        searchAriaLabel="搜索今日失败任务"
+        onSearchInputChange={failedFilters.setInput}
+        onSearchCommit={failedFilters.commitNow}
+        hasActiveFilters={failedFilters.hasActive}
+        onClearFilters={failedFilters.clear}
+        columnHeaders={['任务与计划', '手机号', '学校', '失败原因与建议', '操作']}
+        pageIndex={failedStack.index}
+        rowCount={failedRows.length}
         hasPrevious={hasPreviousPage(failedStack)}
         hasNext={Boolean(failedQuery.data?.next_cursor)}
         pagingDisabled={failedQuery.isFetching}
@@ -628,30 +721,44 @@ export function QueueView() {
         emptyDescription="今日未出现失败任务"
       >
         {failedRows.map((task) => {
-          const meta = taskStateMeta(task.state)
           const retryingThis =
             retryMutation.isPending && retryMutation.variables?.id === task.id
           const rowError = rowErrors[task.id]
+          const guide = describeTaskResult(task.result)
 
           return (
             <li key={task.id} className="q-row-wrap" data-queue-row data-task-id={task.id}>
-              <div className="q-row">
-                <div className="q-row-main">
-                  <div className="q-row-top">
-                    <span className="q-row-title">{task.task_name}</span>
-                    <span className="q-phone">{task.account_phone_masked}</span>
-                    <span className="q-school-tag">{task.school_name}</span>
-                    <Badge tone={meta.tone} dot>
-                      {meta.label}
-                    </Badge>
-                  </div>
-                  <div className="q-row-meta">
-                    <span>计划 {formatClock(task.run_at)}</span>
-                    <span>尝试 {task.attempts} 次</span>
-                    {task.result ? (
-                      <span className="q-row-reason q-mono-code">{task.result}</span>
-                    ) : null}
-                  </div>
+              <div className="q-row is-failed">
+                <div className="q-col-primary">
+                  <span className="q-row-title" title={task.task_name}>
+                    {task.task_name}
+                  </span>
+                  <span className="q-row-sub">
+                    计划 {formatClock(task.run_at)} · 尝试 {task.attempts} 次
+                  </span>
+                </div>
+                <div className="q-col-phone">
+                  <span className="q-phone">{task.account_phone_masked}</span>
+                </div>
+                <div className="q-col-school">
+                  <span className="q-school-tag" title={task.school_name}>
+                    {task.school_name}
+                  </span>
+                </div>
+                <div className="q-col-meta">
+                  {task.result ? (
+                    <>
+                      <span className="q-reason-label" title={guide.hint}>
+                        {guide.label}
+                      </span>
+                      <span className="q-row-sub q-mono-code">{task.result}</span>
+                      <span className="q-reason-hint" title={guide.hint}>
+                        {guide.hint}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="q-row-time">—</span>
+                  )}
                 </div>
 
                 <div className="q-row-actions">
@@ -727,6 +834,19 @@ export function QueueView() {
           setUnsignedSegment(next)
           setUnsignedStack(emptyCursorStack())
         }}
+        schools={schools}
+        selectedSchoolId={unsignedFilters.schoolId}
+        onSchoolChange={unsignedFilters.setSchoolId}
+        searchInput={unsignedFilters.input}
+        searchPlaceholder="任务名 / 学校 / 手机号"
+        searchAriaLabel="搜索今日未签任务"
+        onSearchInputChange={unsignedFilters.setInput}
+        onSearchCommit={unsignedFilters.commitNow}
+        hasActiveFilters={unsignedFilters.hasActive}
+        onClearFilters={unsignedFilters.clear}
+        columnHeaders={['任务与状态', '手机号', '学校', '计划与认领', '操作']}
+        pageIndex={unsignedStack.index}
+        rowCount={unsignedRows.length}
         hasPrevious={hasPreviousPage(unsignedStack)}
         hasNext={Boolean(unsignedQuery.data?.next_cursor)}
         pagingDisabled={unsignedQuery.isFetching}
@@ -753,23 +873,30 @@ export function QueueView() {
 
           return (
             <li key={task.id} className="q-row-wrap" data-queue-row data-task-id={task.id}>
-              <div className="q-row">
-                <div className="q-row-main">
-                  <div className="q-row-top">
-                    <span className="q-row-title">{task.task_name}</span>
-                    <span className="q-phone">{task.account_phone_masked}</span>
-                    <span className="q-school-tag">{task.school_name}</span>
-                    <Badge tone={meta.tone} dot>
-                      {meta.label}
-                    </Badge>
-                  </div>
-                  <div className="q-row-meta">
-                    <span>计划 {formatClock(task.run_at)}</span>
-                    {task.claimed_at ? (
-                      <span>认领 {formatClock(task.claimed_at)}</span>
-                    ) : null}
-                    {task.attempts > 0 ? <span>尝试 {task.attempts} 次</span> : null}
-                  </div>
+              <div className="q-row is-unsigned">
+                <div className="q-col-primary">
+                  <span className="q-row-title" title={task.task_name}>
+                    {task.task_name}
+                  </span>
+                  <Badge tone={meta.tone} dot>
+                    {meta.label}
+                  </Badge>
+                </div>
+                <div className="q-col-phone">
+                  <span className="q-phone">{task.account_phone_masked}</span>
+                </div>
+                <div className="q-col-school">
+                  <span className="q-school-tag" title={task.school_name}>
+                    {task.school_name}
+                  </span>
+                </div>
+                <div className="q-col-meta">
+                  <span className="q-row-time">计划 {formatClock(task.run_at)}</span>
+                  {task.claimed_at ? (
+                    <span className="q-row-time">认领 {formatClock(task.claimed_at)}</span>
+                  ) : task.attempts > 0 ? (
+                    <span className="q-row-time">尝试 {task.attempts} 次</span>
+                  ) : null}
                 </div>
 
                 <div className="q-row-actions">

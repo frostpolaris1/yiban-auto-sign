@@ -298,10 +298,13 @@ test('invariant 11: the showcase queue page renders fixtures with zero requests 
   const approveBtn = page.getByRole('button', { name: '通过 138****8000' })
   await expect(approveBtn).toBeDisabled()
   await expect(approveBtn).toHaveAttribute('title', READ_ONLY_REASON)
+  // 只读必须看得出来：禁用态要有视觉与指针差异，不能只看 disabled 属性
+  expect(await approveBtn.evaluate((el) => getComputedStyle(el).cursor)).toBe('not-allowed')
 
   const retryBtn = page.getByRole('button', { name: '重试 138****8003' })
   await expect(retryBtn).toBeDisabled()
   await expect(retryBtn).toHaveAttribute('title', READ_ONLY_REASON)
+  expect(await retryBtn.evaluate((el) => getComputedStyle(el).cursor)).toBe('not-allowed')
 
   // 详情抽屉在展示模式下仍可读合成诊断
   await page.getByRole('button', { name: '详情 138****8003' }).click()

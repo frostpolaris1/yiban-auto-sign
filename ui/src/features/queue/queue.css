@@ -142,11 +142,13 @@
   line-height: 1.2;
 }
 
-/* 沿用全局默认字体（System / Noto Sans），与正文和标题保持完全一致 */
+/* 沿用全局默认字体（System / Noto Sans），与正文和标题保持完全一致。
+   固定 30px 数值行高，让 16px 上下文值与 22px 计数落在同一条视觉基线上。 */
 .q-tele-value {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 4px;
+  min-block-size: 30px;
   font-family: inherit;
   font-size: 22px;
   font-weight: 700;
@@ -194,6 +196,7 @@
 /* ---------- 队列分组卡片（固定头部与行高，垂直居中对齐） ---------- */
 
 .q-card {
+  container-type: inline-size;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--bg-card);
@@ -299,9 +302,48 @@
 
 .q-card-controls {
   display: flex;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
+}
+
+/* 组内筛选：学校下拉与关键字搜索，随卡片宽度换行。
+   选择器带容器前缀，压过 vendor `.select` / `.input` 的 9px 内边距，否则 30px 高会裁字。 */
+.q-card-controls .q-filter-select {
+  width: auto;
+  min-width: 124px;
+  max-width: 180px;
+  height: 30px;
+  min-height: 30px;
+  padding: 4px 26px 4px 10px;
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+
+.q-card-controls .q-filter-search {
+  flex: 0 0 200px;
+  width: 200px;
+  min-width: 170px;
+}
+
+.q-card-controls .q-search-input {
+  height: 30px;
+  min-height: 30px;
+  padding: 4px 12px 4px 34px;
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+
+/* vendor 没有通用的 `.btn:disabled` 规则：队列内的禁用动作必须看得出来。
+   透明度与 app.css 既有的 0.45 保持一致，不另立一套。 */
+.q-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.q-action-btn:disabled::before {
+  content: none;
 }
 
 /* ---------- 状态圆点 ---------- */
@@ -483,12 +525,64 @@
   outline-offset: 2px;
 }
 
-/* ---------- 行列表（固定行高 68px，恰当留白更易扫读） ---------- */
+/* ---------- 分页页脚：诚实摘要 + 翻页 ---------- */
+
+.q-pager-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-hover) 60%, var(--bg-card));
+}
+
+.q-pager-info {
+  font-size: 12px;
+  color: var(--t-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 行列表：列头与行共用同一套列宽，跨行垂直对齐 ---------- */
 
 .q-list {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+.q-list-head {
+  display: grid;
+  grid-template-columns: var(--q-cols);
+  align-items: center;
+  gap: 14px;
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg-hover) 70%, var(--bg-card));
+  color: color-mix(in srgb, var(--t-base) 72%, var(--t-muted));
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.q-list-head > span:last-child {
+  text-align: right;
+}
+
+.q-list-head.is-pending,
+.q-row.is-pending {
+  --q-cols: minmax(150px, 1.45fr) 108px minmax(96px, 0.95fr) minmax(120px, 1.1fr) 190px;
+}
+
+.q-list-head.is-failed,
+.q-row.is-failed {
+  --q-cols: minmax(150px, 1.35fr) 108px minmax(96px, 0.9fr) minmax(150px, 1.35fr) 140px;
+}
+
+.q-list-head.is-unsigned,
+.q-row.is-unsigned {
+  --q-cols: minmax(150px, 1.45fr) 108px minmax(96px, 0.95fr) minmax(130px, 1.2fr) 74px;
 }
 
 .q-row-wrap {
@@ -500,12 +594,12 @@
 }
 
 .q-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--q-cols);
   align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  min-height: 68px;
-  padding: 14px 20px;
+  gap: 14px;
+  min-height: 62px;
+  padding: 12px 20px;
   transition: background-color 140ms ease;
 }
 
@@ -513,26 +607,64 @@
   background: var(--bg-hover);
 }
 
-.q-row-main {
+.q-col-primary,
+.q-col-phone,
+.q-col-school,
+.q-col-meta {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  align-items: flex-start;
+  gap: 3px;
   min-width: 0;
-  flex: 1;
 }
 
-.q-row-top {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
+.q-col-meta {
+  font-size: 12px;
+  color: var(--t-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .q-row-title {
+  display: block;
+  max-width: 100%;
   font-size: 13.5px;
   font-weight: 600;
   color: var(--t-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.q-row-sub {
+  display: block;
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--t-muted);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.q-row-time {
+  font-size: 12px;
+  color: var(--t-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.q-reason-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+/* 处置建议必须可读，不能只藏在 title 里（触屏没有 hover） */
+.q-reason-hint {
+  display: block;
+  max-width: 100%;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--t-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -551,17 +683,6 @@
   white-space: nowrap;
 }
 
-.q-row-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  font-size: 12px;
-  color: var(--t-muted);
-  line-height: 1.4;
-  font-variant-numeric: tabular-nums;
-}
-
 .q-row-reason {
   color: var(--danger);
   overflow-wrap: anywhere;
@@ -570,6 +691,7 @@
 .q-row-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   flex-shrink: 0;
 }
@@ -636,7 +758,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  height: 68px;
+  height: 62px;
   padding: 0 20px;
   border-bottom: 1px solid var(--border-soft);
 }
@@ -652,6 +774,26 @@
   @media (prefers-reduced-motion: no-preference) {
     animation: q-shimmer 1.4s ease-in-out infinite;
   }
+}
+
+/* 骨架行结构：两行文案条 + 右侧一条；尺寸写死，不依赖任何工具类 */
+.q-skel-col {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.q-skel-line-a {
+  width: 11rem;
+}
+
+.q-skel-line-b {
+  width: 16rem;
+}
+
+.q-skel-line-c {
+  width: 6rem;
 }
 
 @keyframes q-shimmer {
@@ -960,21 +1102,156 @@
   }
 
   .q-card-controls {
-    justify-content: space-between;
     width: 100%;
   }
+}
 
-  .q-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 11px;
+/* ---------- 卡片容器查询：窄卡（手机或窄侧栏）切为两列堆叠 ---------- */
+
+@container (max-width: 760px) {
+  .q-list-head {
+    display: none;
+  }
+
+  .q-card-controls {
+    flex-wrap: wrap;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  /* 移动端控件加高：24px 只满足 WCAG 2.2 AA 下限，34/36 才是好点的拇指目标。
+     分段组外高 36 与下拉/搜索齐平，按钮本体 34 与行内动作按钮同档。 */
+  .q-seg {
+    min-height: 36px;
+    padding: 0;
+  }
+
+  .q-seg-btn {
+    position: relative;
+    height: 34px;
+    padding: 0 12px;
+    font-size: 12.5px;
+  }
+
+  .q-seg-btn::before {
+    content: "";
+    position: absolute;
+    inset: -5px 0;
+  }
+
+  .q-card-controls .q-filter-select {
+    height: 36px;
+    min-height: 36px;
+    font-size: 13px;
+  }
+
+  .q-card-controls .q-search-input {
+    height: 36px;
+    min-height: 36px;
+    font-size: 13px;
+  }
+
+  /* 主列两行（名称 + 副行）与右列两行（手机 + 时间/计划）对齐，避免右列悬空 */
+  .q-row.is-pending,
+  .q-row.is-unsigned {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "primary phone"
+      "primary meta"
+      "school school"
+      "actions actions";
+    align-items: start;
+    gap: 6px 12px;
     min-height: auto;
     padding: 13px 16px;
   }
 
+  /* 失败行原因块较长，留在整行；把学校提到右列第二行补位 */
+  .q-row.is-failed {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "primary phone"
+      "primary school"
+      "meta meta"
+      "actions actions";
+    align-items: start;
+    gap: 6px 12px;
+    min-height: auto;
+    padding: 13px 16px;
+  }
+
+  .q-row.is-failed .q-col-meta {
+    align-items: flex-start;
+  }
+
+  .q-col-primary {
+    grid-area: primary;
+  }
+
+  .q-col-phone {
+    grid-area: phone;
+    align-items: flex-end;
+  }
+
+  .q-col-school {
+    grid-area: school;
+  }
+
+  .q-col-meta {
+    grid-area: meta;
+    align-items: flex-end;
+  }
+
+  .q-row.is-failed .q-col-meta {
+    align-items: flex-start;
+  }
+
   .q-row-actions {
+    grid-area: actions;
+    justify-content: flex-end;
     flex-wrap: wrap;
-    justify-content: flex-start;
+    gap: 10px;
+    padding-top: 3px;
+  }
+
+  /* 移动端把可见高度抬到 34px、字号 13px；::before 再补 5px ⇒ 触控高 44px */
+  .q-row-actions .q-action-btn {
+    height: 34px;
+    min-height: 34px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+
+  .q-row-actions .q-action-btn::before {
+    inset: -5px 0;
+  }
+
+  .q-row.is-failed .q-col-school {
+    align-items: flex-end;
+    max-width: 100%;
+  }
+
+  .q-row.is-failed .q-school-tag {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .q-pager-foot {
+    padding: 10px 16px;
+  }
+}
+
+@container (max-width: 520px) {
+  .q-card-controls {
+    gap: 6px;
+  }
+
+  .q-card-controls .q-filter-select,
+  .q-card-controls .q-filter-search {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: none;
   }
 }
 

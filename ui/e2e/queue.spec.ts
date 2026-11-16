@@ -25,6 +25,8 @@ import { visibleText } from './support/visible-text'
  * 6. 负向（全空与接口报错）：三组全空时分别呈现组专属空态，无整页空态；读失败出错误与重试。
  * 7. 诊断抽屉与 390px 无横向溢出。
  * 8. SSE 实时合并：突发多次 task.progress 只触发一次任务组重取，不连带重取学校列表。
+ * 9. 组内列头：三组各有一套列名；失败行同屏给中文结论与原始码；空组不渲染列头。
+ * 10. 组内筛选独立：学校与关键字只作用于本组请求，清除后回到无过滤查询。
  */
 
 async function openQueue(page: Page) {
@@ -157,9 +159,21 @@ test('invariant 3 & 4: approve removes row & decrements summary; reject opens mo
   const confirmReject = modal.getByRole('button', { name: '确认驳回' })
   await expect(confirmReject).toBeDisabled()
 
+  // 手写内容不被预设静默覆盖：点预设改为末尾追加
+  const reasonBox = modal.getByRole('textbox', { name: '驳回理由' })
+  await reasonBox.fill('账号归属人联系不上')
+  await modal.getByRole('button', { name: '手机号码有误' }).click()
+  await expect(reasonBox).toHaveValue('账号归属人联系不上；手机号码有误')
+  await reasonBox.fill('')
+
   await modal.getByRole('button', { name: '所属学校不匹配' }).click()
+  await expect(reasonBox).toHaveValue('所属学校不匹配')
   await expect(confirmReject).toBeEnabled()
   await confirmReject.click()
+  expect(reviewCalls(api).at(-1)?.body).toMatchObject({
+    decision: 'reject',
+    reason: '所属学校不匹配',
+  })
 
   await expect(modal).toBeHidden()
   await expect(page.locator('[data-sonner-toast]').filter({ hasText: '已驳回 南区教学楼' })).toBeVisible()
@@ -280,4 +294,79 @@ test('invariant 8: SSE bursts coalesce into a single task refresh without refetc
   await expect(page.getByText(/实时同步已断开/)).toBeVisible()
   await page.getByRole('button', { name: '重连' }).click()
   await expect(page.locator('.q-live-pill')).toContainText('实时')
+})
+
+test('invariant 9: each group carries its own column head, and a failed row pairs guidance with the raw code', async ({
+  page,
+}) => {
+  await installFakeEventSource(page)
+  await mockQueueApi(page, { role: 'master' })
+  await page.goto('/queue')
+  await openQueue(page)
+
+  const pendingHead = page.locator('[data-queue-group="pending"] .q-list-head')
+  await expect(pendingHead).toContainText('账号与归属')
+  await expect(pendingHead).toContainText('手机号')
+  await expect(pendingHead).toContainText('学校')
+  await expect(pendingHead).toContainText('提交时间')
+  await expect(pendingHead).toContainText('操作')
+
+  const failedHead = page.locator('[data-queue-group="failed"] .q-list-head')
+  await expect(failedHead).toContainText('任务与计划')
+  await expect(failedHead).toContainText('失败原因与建议')
+
+  const unsignedHead = page.locator('[data-queue-group="unsigned"] .q-list-head')
+  await expect(unsignedHead).toContainText('任务与状态')
+  await expect(unsignedHead).toContainText('计划与认领')
+
+  // 失败行同屏给出中文结论与原始码，排查与扫读各取所需
+  const failedRow = page.locator('[data-queue-group="failed"] [data-task-id="q-task-fail-1"]')
+  await expect(failedRow).toContainText('凭据无效')
+  await expect(failedRow).toContainText('credential_invalid')
+
+  // 负向：空组不渲染列头，避免空表头孤悬
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+  await mockQueueApi(page, { role: 'master', accounts: [], tasks: [] })
+  await page.goto('/queue')
+  await openQueue(page)
+  await expect(page.locator('[data-queue-group="pending"] .q-list-head')).toHaveCount(0)
+  await expect(page.locator('[data-queue-group="failed"] .q-list-head')).toHaveCount(0)
+  await expect(page.getByText('待审核已清空')).toBeVisible()
+})
+
+test('invariant 10: school and keyword filters are per group and never leak into another group request', async ({
+  page,
+}) => {
+  await installFakeEventSource(page)
+  const api = await mockQueueApi(page, { role: 'master' })
+  await page.goto('/queue')
+  await openQueue(page)
+
+  const taskCallsBefore = taskListCalls(api).length
+
+  await page.getByLabel('待审核学校筛选').selectOption('school-alpha')
+  await expect
+    .poll(() => accountListCalls(api).at(-1)?.params.school_id)
+    .toBe('school-alpha')
+
+  const reviewSearch = page.getByLabel('搜索待审核账号')
+  await reviewSearch.fill('东区')
+  await reviewSearch.press('Enter')
+  await expect.poll(() => accountListCalls(api).at(-1)?.params.q).toBe('东区')
+
+  // 失败组一点没被带着走：没有新增任务列表请求，输入框也保持空
+  expect(taskListCalls(api).length, '待审核筛选不得触发失败组重取').toBe(taskCallsBefore)
+  await expect(page.getByLabel('搜索今日失败任务')).toHaveValue('')
+  await expect(page.getByLabel('今日失败学校筛选')).toHaveValue('')
+
+  // 清除筛选回到无过滤查询
+  await page.getByRole('button', { name: '清除筛选', exact: true }).click()
+  await expect.poll(() => accountListCalls(api).at(-1)?.params.q ?? '').toBe('')
+  await expect(reviewSearch).toHaveValue('')
+
+  // 不按回车也应提交：走 250ms 防抖路径
+  await reviewSearch.fill('东区')
+  await expect
+    .poll(() => accountListCalls(api).at(-1)?.params.q, { timeout: 3000 })
+    .toBe('东区')
 })
