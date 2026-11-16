@@ -312,7 +312,7 @@ test('predicate 6: 390 stacks filters, keeps detail reachable, restores focus, a
   await expect(drawer).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(drawer).toBeHidden()
-  await expect(firstRow.locator('.a-row')).toBeFocused()
+  await expect(firstRow).toBeFocused()
 
   // 翻页后横向滚动归零，列表身份从第一列重新开始。
   const tableScroll = page.locator('.a-table-scroll')

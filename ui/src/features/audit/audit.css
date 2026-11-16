@@ -3,7 +3,7 @@
  *
  * **归属**
  * `features/audit` 专属样式：仅消费 `tokens.css` 变量，零颜色字面量（满足 token-gate）。
- * 列头与行共用 `--a-cols` 网格；窄屏整表在 `.a-table-scroll` 内横向滚动，页面零横向溢出。
+ * 语义化 `<table>` 共用 `--a-cols` 网格；窄屏整表在 `.a-table-scroll` 内横向滚动，页面零横向溢出。
  */
 
 .a-page {
@@ -44,7 +44,7 @@
   margin-top: -4px;
 }
 
-/* ---------- 卡片与卡头（标题、计数、筛选同行，窄屏堆叠） ---------- */
+/* ---------- 卡片、卡头与独立筛选工具条 ---------- */
 
 .a-card {
   border: 1px solid var(--border);
@@ -62,11 +62,11 @@
 .a-card-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px 16px;
-  min-height: 58px;
-  padding: 13px 20px;
+  gap: 8px 16px;
+  min-height: 46px;
+  padding: 11px 20px;
   background: color-mix(in srgb, var(--bg-hover) 65%, var(--bg-card));
   border-bottom: 1px solid var(--border-soft);
 }
@@ -135,34 +135,48 @@
   background: var(--primary);
 }
 
-/* ---------- 筛选（卡头右侧，输入 32px 紧凑高度） ---------- */
+/* ---------- 筛选工具条（顶对齐防报错错位，输入 34px 舒适高度） ---------- */
+
+.a-toolbar {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-card);
+}
 
 .a-filters {
-  display: flex;
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 8px 10px;
+  display: grid;
+  grid-template-columns: minmax(170px, 1.15fr) minmax(170px, 1.15fr) minmax(146px, 0.9fr) minmax(146px, 0.9fr) auto;
+  align-items: flex-start;
+  gap: 10px 12px;
+  min-width: 0;
+}
+
+.a-field-item {
   min-width: 0;
 }
 
 .a-filters .field {
-  gap: 4px;
+  gap: 5px;
 }
 
 .a-filters .field-label {
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--t-muted);
+  line-height: 16px;
 }
 
 .a-filters .input {
-  width: 150px;
-  height: 32px;
-  min-height: 32px;
-  padding: 4px 10px;
+  width: 100%;
+  height: 34px;
+  min-height: 34px;
+  padding: 5px 10px;
   font-size: 12.5px;
   line-height: 1.2;
+}
+
+.a-filters .a-input-search {
+  padding-left: 34px;
 }
 
 /* vendor 的 placeholder 用 --t-light（2.56:1）；筛选面抬到 --t-muted。 */
@@ -176,31 +190,20 @@
   color: color-mix(in srgb, var(--danger) 70%, var(--t-base));
 }
 
-.a-filters .a-input-wide {
-  width: 176px;
-}
-
-.a-filters .a-date {
-  width: 142px;
-}
-
-.a-filter-error {
-  flex-basis: 100%;
+.a-filter-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: var(--danger);
-  font-size: 11.5px;
-  line-height: 1.4;
+  padding-top: 21px;
 }
 
 .a-clear {
   position: relative;
-  height: 32px;
-  min-height: 32px;
+  height: 34px;
+  min-height: 34px;
+  white-space: nowrap;
 }
 
-/* 透明命中区：可见 28–32px，触控高度 ≥44px。 */
+/* 透明命中区：可见 28–34px，触控高度 ≥44px。 */
 .a-detail-btn::before,
 .a-pager-btn::before,
 .a-clear::before {
@@ -209,12 +212,17 @@
   inset: -8px 0;
 }
 
-/* ---------- 列表：列头与行共用 --a-cols，窄屏整表横向滚动 ---------- */
+/* ---------- 语义化表格：thead/tbody 共用 --a-cols，窄屏整表横向滚动 ---------- */
 
 .a-table-scroll {
   width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+.a-table-scroll:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
 }
 
 .a-table-scroll::-webkit-scrollbar {
@@ -227,14 +235,17 @@
 }
 
 .a-table {
-  --a-cols: 150px minmax(140px, 0.9fr) minmax(150px, 1fr) minmax(110px, 0.7fr) minmax(220px, 1.5fr);
-  min-width: 940px;
+  --a-cols: 148px minmax(160px, 1.05fr) minmax(150px, 1fr) minmax(110px, 0.7fr) minmax(240px, 1.6fr);
+  display: block;
+  width: 100%;
+  min-width: 920px;
+  border-collapse: collapse;
 }
 
-.a-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.a-table thead,
+.a-table tbody {
+  display: block;
+  width: 100%;
 }
 
 .a-list-head,
@@ -249,14 +260,16 @@
   padding: 9px 20px;
   border-bottom: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--bg-hover) 70%, var(--bg-card));
+}
+
+.a-list-head > th {
+  padding: 0;
+  border: 0;
   color: color-mix(in srgb, var(--t-base) 72%, var(--t-muted));
   font-size: 11.5px;
   font-weight: 600;
   line-height: 1.2;
-}
-
-.a-list-head > span:last-child {
-  text-align: right;
+  text-align: left;
 }
 
 .a-row-wrap {
@@ -268,13 +281,24 @@
 }
 
 .a-row {
-  min-height: 62px;
-  padding: 12px 20px;
+  min-height: 48px;
+  padding: 8px 20px;
+  cursor: pointer;
   transition: background-color 140ms ease;
+}
+
+.a-row > td {
+  padding: 0;
+  border: 0;
 }
 
 .a-row:hover {
   background: var(--bg-hover);
+}
+
+.a-row:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
 }
 
 .a-time {
@@ -290,7 +314,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--t-base);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -314,8 +338,8 @@
 .a-detail-cell {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -326,7 +350,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--t-muted);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 
 .a-detail-btn {
@@ -522,7 +546,20 @@
   outline-offset: 2px;
 }
 
-/* ---------- 移动端 390：筛选纵向堆叠，页头结论靠左 ---------- */
+/* ---------- 中等屏幕（平板/窄笔记本）：筛选自动切为 2 列 ---------- */
+
+@media (max-width: 1080px) {
+  .a-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .a-filter-actions {
+    grid-column: 1 / -1;
+    padding-top: 0;
+  }
+}
+
+/* ---------- 移动端 390：筛选紧凑堆叠，尾列满高贯通无断层 ---------- */
 
 @media (max-width: 720px) {
   .a-page {
@@ -530,7 +567,7 @@
   }
 
   .a-page > .hero {
-    gap: 12px;
+    gap: 10px;
   }
 
   .a-verdict {
@@ -542,34 +579,37 @@
   }
 
   .a-card-head {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 9px;
-    min-height: auto;
-    padding: 12px 16px;
+    padding: 10px 16px;
+    min-height: 42px;
+  }
+
+  .a-toolbar {
+    padding: 10px 16px;
   }
 
   .a-filters {
-    width: 100%;
-    flex-direction: column;
-    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
   }
 
-  .a-filters .field {
-    width: 100%;
-  }
-
-  /* iOS 聚焦缩放的判据是 <16px：移动端输入统一 16px。 */
+  /* iOS 聚焦缩放的判据是 <16px：移动端输入统一 16px，高度收在紧凑的 34px。 */
   .a-filters .input {
     width: 100%;
-    height: 36px;
-    min-height: 36px;
+    height: 34px;
+    min-height: 34px;
+    padding: 4px 10px;
     font-size: 16px;
   }
 
+  .a-filters .a-input-search {
+    padding-left: 34px;
+  }
+
+  .a-filter-actions {
+    padding-top: 2px;
+  }
+
   .a-clear {
-    align-self: flex-start;
     height: 34px;
     min-height: 34px;
     padding: 0 14px;
@@ -580,38 +620,43 @@
     padding: 10px 16px;
   }
 
-  /* 移动端：行可点开详情，详情列常驻右缘，避免横向滚走后丢失入口。 */
-  .a-row {
-    padding: 12px 16px;
-    cursor: pointer;
+  /* 移动端：行高全宽贯通，右内边距交给 sticky 尾列，彻底消除双倍留白与半截阴影断层。 */
+  .a-list-head {
+    min-height: 34px;
+    padding: 0 0 0 16px;
   }
 
-  .a-list-head {
-    padding: 9px 16px;
+  .a-row {
+    min-height: 48px;
+    padding: 0 0 0 16px;
   }
 
   .a-table {
-    --a-cols: 150px minmax(120px, 0.9fr) minmax(140px, 1fr) minmax(90px, 0.7fr) 96px;
-    min-width: 816px;
+    --a-cols: 144px minmax(140px, 0.95fr) minmax(140px, 1fr) minmax(90px, 0.7fr) 76px;
+    min-width: 740px;
   }
 
   .a-detail-preview {
     display: none;
   }
 
-  .a-list-head > span:last-child,
+  .a-list-head > th:last-child,
   .a-detail-cell {
     position: sticky;
     right: 0;
     z-index: 2;
-    padding-left: 12px;
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-left: 10px;
     padding-right: 16px;
     border-left: 1px solid var(--border-soft);
     background: var(--bg-card);
-    box-shadow: -6px 0 8px -6px color-mix(in srgb, var(--t-base) 18%, transparent);
   }
 
-  .a-list-head > span:last-child {
+  .a-list-head > th:last-child {
+    justify-content: flex-end;
     background: color-mix(in srgb, var(--bg-hover) 70%, var(--bg-card));
   }
 
@@ -619,19 +664,19 @@
     background: var(--bg-hover);
   }
 
-  /* 移动端按钮抬到 34px 视觉高度；::before 再补 5px ⇒ 触控高 44px。 */
+  /* 移动端按钮抬到 32px 视觉高度；::before 再补 6px ⇒ 触控高 44px。 */
   .a-detail-btn,
   .a-pager-btn {
-    height: 34px;
-    min-height: 34px;
-    padding: 0 14px;
-    font-size: 13px;
+    height: 32px;
+    min-height: 32px;
+    padding: 0 12px;
+    font-size: 12.5px;
   }
 
   .a-detail-btn::before,
   .a-pager-btn::before,
   .a-clear::before {
-    inset: -5px 0;
+    inset: -6px 0;
   }
 }
 

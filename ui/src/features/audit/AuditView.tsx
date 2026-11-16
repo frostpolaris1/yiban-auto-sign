@@ -133,15 +133,19 @@ export function AuditView() {
   const filters = useAuditFilters(() => setStack(emptyCursorStack()))
   const cursor = currentCursor(stack)
 
-  // 筛选或翻页后：表格横向回零，列表回到视口顶部。
+  // 翻页或筛选变化后：表格横向滚动归零；翻页时列表回到视口顶部（输入防抖时不强制滚动视口，避免输入抖动）。
+  useEffect(() => {
+    if (!mountedRef.current) return
+    if (tableScrollRef.current) tableScrollRef.current.scrollLeft = 0
+  }, [stack.index, filters.action, filters.actor, filters.from, filters.to])
+
   useEffect(() => {
     if (!mountedRef.current) {
       mountedRef.current = true
       return
     }
-    if (tableScrollRef.current) tableScrollRef.current.scrollLeft = 0
     cardRef.current?.scrollIntoView({ block: 'start', behavior: 'auto' })
-  }, [stack.index, filters.action, filters.actor, filters.from, filters.to])
+  }, [stack.index])
 
   const statusQuery = useQuery({
     queryKey: ['audit-status'],
@@ -251,8 +255,12 @@ export function AuditView() {
             </div>
           </div>
 
-          <AuditFilters controls={filters} />
+          <span className="app-caption">游标分页</span>
         </header>
+
+        <div className="a-toolbar">
+          <AuditFilters controls={filters} />
+        </div>
 
         {logsQuery.isError ? (
           <div
@@ -312,67 +320,75 @@ export function AuditView() {
             </div>
           )
         ) : (
-          <div className="a-table-scroll" ref={tableScrollRef}>
-            <div className="a-table">
-              <div className="a-list-head" aria-hidden="true">
-                {COLUMN_HEADERS.map((header) => (
-                  <span key={header}>{header}</span>
-                ))}
-              </div>
+          <div
+            className="a-table-scroll"
+            ref={tableScrollRef}
+            tabIndex={0}
+            role="region"
+            aria-labelledby="audit-list-title"
+          >
+            <table className="a-table">
+              <caption className="app-visually-hidden">审计行列表</caption>
+              <thead>
+                <tr className="a-list-head">
+                  {COLUMN_HEADERS.map((header) => (
+                    <th key={header} scope="col">
+                      {header}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
 
-              <ul className="a-list">
+              <tbody className="a-list">
                 {rows.map((item) => (
-                  <li
+                  <tr
                     key={auditRowKey(item)}
-                    className="a-row-wrap"
+                    className="a-row-wrap a-row"
                     data-audit-row
                     data-audit-id={item.id}
+                    tabIndex={-1}
+                    onClick={(event) => {
+                      // 行本身可点开详情；点内层按钮或用户拖拽选中文本时不触发。
+                      if ((event.target as HTMLElement).closest('button, a, input')) return
+                      if ((window.getSelection()?.toString() ?? '') !== '') return
+                      setDetailItem(item)
+                      setDetailTrigger(event.currentTarget)
+                    }}
                   >
-                    <div
-                      className="a-row"
-                      tabIndex={-1}
-                      onClick={(event) => {
-                        // 行本身可点开详情；点内层按钮时由按钮自己处理，避免重复触发。
-                        if ((event.target as HTMLElement).closest('button, a, input')) return
-                        setDetailItem(item)
-                        setDetailTrigger(event.currentTarget)
-                      }}
-                    >
-                      <span className="a-time">{formatDateTime(item.at)}</span>
-                      <span className="a-action" title={item.action}>
-                        {item.action}
+                    <td className="a-time">{formatDateTime(item.at)}</td>
+                    <td className="a-action a-mono" title={item.action}>
+                      {item.action}
+                    </td>
+                    <td className="a-actor a-mono" title={item.actor}>
+                      {item.actor === '' ? '—' : item.actor}
+                    </td>
+                    <td className="a-target a-mono" title={item.target}>
+                      {item.target === '' ? '—' : item.target}
+                    </td>
+                    <td className="a-detail-cell">
+                      <span
+                        className="a-detail-preview a-mono"
+                        title={item.detail === '' ? undefined : item.detail}
+                      >
+                        {detailPreview(item.detail)}
                       </span>
-                      <span className="a-actor" title={item.actor}>
-                        {item.actor === '' ? '—' : item.actor}
-                      </span>
-                      <span className="a-target a-mono" title={item.target}>
-                        {item.target === '' ? '—' : item.target}
-                      </span>
-                      <div className="a-detail-cell">
-                        <span
-                          className="a-detail-preview"
-                          title={item.detail === '' ? undefined : item.detail}
-                        >
-                          {detailPreview(item.detail)}
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="a-detail-btn"
-                          aria-label={`查看详情 #${item.id}`}
-                          onClick={(event) => {
-                            setDetailItem(item)
-                            setDetailTrigger(event.currentTarget)
-                          }}
-                        >
-                          详情
-                        </Button>
-                      </div>
-                    </div>
-                  </li>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="a-detail-btn"
+                        aria-label={`查看详情 #${item.id}`}
+                        onClick={(event) => {
+                          setDetailItem(item)
+                          setDetailTrigger(event.currentTarget)
+                        }}
+                      >
+                        详情
+                      </Button>
+                    </td>
+                  </tr>
                 ))}
-              </ul>
-            </div>
+              </tbody>
+            </table>
           </div>
         )}
 

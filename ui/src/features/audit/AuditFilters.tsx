@@ -15,6 +15,7 @@
 
 import { Button } from '@/components/ui/Button'
 import { FilterField } from '@/components/ui/FilterField'
+import { Icon } from '@/components/ui/Icon'
 import type { AuditFiltersControls } from './useAuditFilters'
 
 type AuditFiltersProps = {
@@ -27,60 +28,76 @@ export function AuditFilters({ controls }: AuditFiltersProps) {
 
   return (
     <div className="a-filters" role="search" aria-label="审计筛选">
-      <FilterField id="audit-filter-action" label="动作筛选">
-        <input
-          className="input a-input"
-          type="search"
-          placeholder="例如 auth.login"
-          value={controls.actionInput}
-          onChange={(event) => controls.setActionInput(event.target.value)}
-          onKeyDown={(event) => {
-            // 输入法用回车选词时不能当成提交：先看组合态。
-            if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
-            event.preventDefault()
-            controls.commitNow()
-          }}
-        />
-      </FilterField>
+      <div className="a-field-item a-field-text">
+        <FilterField id="audit-filter-action" label="动作筛选">
+          <div className="input-icon">
+            <span className="ico">
+              <Icon name="search" size={14} />
+            </span>
+            <input
+              className="input a-input a-input-search"
+              type="search"
+              placeholder="例如 auth.login"
+              value={controls.actionInput}
+              onChange={(event) => controls.setActionInput(event.target.value)}
+              onKeyDown={(event) => {
+                // 输入法用回车选词时不能当成提交：先看组合态。
+                if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+                event.preventDefault()
+                controls.commitNow()
+              }}
+            />
+          </div>
+        </FilterField>
+      </div>
 
-      <FilterField id="audit-filter-actor" label="操作者筛选">
-        <input
-          className="input a-input a-input-wide"
-          type="search"
-          placeholder="邮箱或掩码"
-          value={controls.actorInput}
-          onChange={(event) => controls.setActorInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
-            event.preventDefault()
-            controls.commitNow()
-          }}
-        />
-      </FilterField>
+      <div className="a-field-item a-field-actor">
+        <FilterField id="audit-filter-actor" label="操作者筛选">
+          <input
+            className="input a-input"
+            type="search"
+            placeholder="邮箱或掩码"
+            value={controls.actorInput}
+            onChange={(event) => controls.setActorInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+              event.preventDefault()
+              controls.commitNow()
+            }}
+          />
+        </FilterField>
+      </div>
 
-      <FilterField id="audit-filter-from" label="起始日期" error={fromError}>
-        <input
-          className="input a-input a-date"
-          type="date"
-          value={controls.fromDraft}
-          onChange={(event) => controls.setFrom(event.target.value)}
-        />
-      </FilterField>
+      <div className="a-field-item a-field-date">
+        <FilterField id="audit-filter-from" label="起始日期" error={fromError}>
+          <input
+            className="input a-input a-date"
+            type="date"
+            value={controls.fromDraft}
+            onChange={(event) => controls.setFrom(event.target.value)}
+          />
+        </FilterField>
+      </div>
 
-      <FilterField id="audit-filter-to" label="结束日期" error={toError}>
-        <input
-          className="input a-input a-date"
-          type="date"
-          value={controls.toDraft}
-          onChange={(event) => controls.setTo(event.target.value)}
-        />
-      </FilterField>
+      <div className="a-field-item a-field-date">
+        <FilterField id="audit-filter-to" label="结束日期" error={toError}>
+          <input
+            className="input a-input a-date"
+            type="date"
+            value={controls.toDraft}
+            onChange={(event) => controls.setTo(event.target.value)}
+          />
+        </FilterField>
+      </div>
 
       {controls.hasActive ? (
-        <Button variant="ghost" size="sm" className="a-clear" onClick={controls.clear}>
-          清除筛选
-        </Button>
+        <div className="a-filter-actions">
+          <Button variant="ghost" size="sm" className="a-clear" onClick={controls.clear}>
+            清除筛选
+          </Button>
+        </div>
       ) : null}
     </div>
   )
 }
+

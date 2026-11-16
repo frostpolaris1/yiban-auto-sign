@@ -10,6 +10,7 @@
  * 焦点在关闭后回到触发行（由 `Drawer` 的 `returnFocusTo` 负责）。
  */
 
+import { Button } from '@/components/ui/Button'
 import { Drawer } from '@/components/ui/Drawer'
 import type { AuditLogItem } from '@/lib/api/audit'
 import { formatDateTime } from '@/lib/format'
@@ -30,6 +31,11 @@ export function AuditDetail({ item, returnFocusTo, onClose }: AuditDetailProps) 
       title="审计详情"
       description={item ? `#${item.id} · ${item.action}` : undefined}
       returnFocusTo={returnFocusTo}
+      footer={
+        <Button variant="ghost" onClick={onClose}>
+          关闭
+        </Button>
+      }
     >
       {item ? (
         <div className="a-detail">
@@ -67,3 +73,4 @@ export function AuditDetail({ item, returnFocusTo, onClose }: AuditDetailProps) 
     </Drawer>
   )
 }
+
