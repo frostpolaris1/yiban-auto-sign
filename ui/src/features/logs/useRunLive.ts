@@ -1,9 +1,9 @@
 /**
  * **功能**
- * 运行域的实时刷新钩子（重导出共享实现 `@/lib/adminEvents`）。
+ * 台账域的实时刷新钩子（重导出共享实现 `@/lib/adminEvents`）。
  *
  * **归属**
- * `features/run` 域钩子：保持既有导入路径兼容。
+ * `features/logs` 域钩子：供台账容器与页签引用。
  */
 
 export {

@@ -3,10 +3,11 @@
  * 行诊断抽屉：调单账号诊断端点，展示状态、建议与窗口。
  *
  * **归属**
- * `features/run` 域组件：只取单账号诊断，不改数据。
+ * `features/logs` 域组件：只取单账号诊断，不改数据。
  *
  * **口径**
- * 数据来自 `GET /api/accounts/{id}/diagnostics`（lib/api/task）。
+ * 数据来自 `GET /api/accounts/{id}/diagnostics`（lib/api/task）；
+ * 展示模式（`VITE_SHOWCASE=1`）走合成夹具，零网络请求。
  * 加载、错误、数据三态分开：失败不渲染成「暂无」。
  * 跨校或账号已删回 404：文案给出「账号不可达」，不再重试同一 id。
  * 组件不 import 其它功能目录；诊断类型取生成的 schema。
@@ -19,6 +20,8 @@ import { Drawer } from '@/components/ui/Drawer'
 import { ApiError, describeApiError } from '@/lib/api/client'
 import { getAccountDiagnostics, type AdminTaskRow } from '@/lib/api/task'
 import { formatDateTime } from '@/lib/format'
+import { SHOWCASE } from '@/lib/session'
+import { showcaseQueueDiagnostics } from '@/lib/showcase'
 import { runStateLabel, runStateTone } from './display'
 
 type RunDiagnosticsDrawerProps = {
@@ -37,7 +40,11 @@ const SUGGESTION_LABELS: Record<string, string> = {
 export function RunDiagnosticsDrawer({ row, returnFocusTo, onClose }: RunDiagnosticsDrawerProps) {
   const query = useQuery({
     queryKey: ['run-diagnostics', row?.account_id ?? null],
-    queryFn: () => getAccountDiagnostics(row?.account_id ?? ''),
+    queryFn: () => {
+      const accountId = row?.account_id ?? ''
+      if (SHOWCASE) return Promise.resolve(showcaseQueueDiagnostics(accountId))
+      return getAccountDiagnostics(accountId)
+    },
     enabled: row !== null,
     // 抽屉每次打开都要新数：任务状态随时在变。
     staleTime: 0,

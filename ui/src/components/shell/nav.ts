@@ -172,15 +172,6 @@ export const NAV: NavSection[] = [
   },
 ]
 
-/**
- * 不在导航表内的直达路由：仍需要面包屑与标题。
- * 入口合并期（B2–B4）由它们给旧页一个体面的名字，页面就绪后删除。
- */
-const LEGACY_ROUTES: Record<string, { crumbs: string[]; title: string }> = {
-  '/run': { crumbs: ['今日', '待办'], title: '待办' },
-  '/engine': { crumbs: ['系统', '签到台账'], title: '签到台账' },
-}
-
 /** 可导航叶子的平铺表。面包屑查找用。 */
 export const NAV_LEAVES: NavLeaf[] = NAV.flatMap((section) =>
   section.items.flatMap((item) => (isNavGroup(item) ? item.children : [item])),
@@ -209,11 +200,11 @@ export function visibleNav(role: Role | null | undefined): NavSection[] {
 
 export function crumbsFor(pathname: string): string[] {
   const leaf = NAV_LEAVES.find((item) => item.to === pathname)
-  return leaf?.crumbs ?? LEGACY_ROUTES[pathname]?.crumbs ?? ['系统', '未命名页面']
+  return leaf?.crumbs ?? ['系统', '未命名页面']
 }
 
 export function documentTitleFor(pathname: string): string {
   const leaf = NAV_LEAVES.find((item) => item.to === pathname)
-  const title = leaf?.text ?? LEGACY_ROUTES[pathname]?.title
+  const title = leaf?.text
   return title ? `${title} · 易班自动签到` : '易班自动签到'
 }

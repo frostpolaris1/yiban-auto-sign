@@ -48,7 +48,16 @@ export function KpiGrid({ cards }: { cards: KpiCard[] }) {
   return (
     <section className="kpi-grid" aria-label="关键指标">
       {cards.map((card) =>
-        card.href ? (
+        card.href === '/logs?tab=events' ? (
+          <Link
+            key={card.label}
+            className={`kpi-card c-${card.tone}`}
+            to="/logs"
+            search={{ tab: 'events' }}
+          >
+            {cardBody(card)}
+          </Link>
+        ) : card.href ? (
           <Link key={card.label} className={`kpi-card c-${card.tone}`} to={card.href}>
             {cardBody(card)}
           </Link>

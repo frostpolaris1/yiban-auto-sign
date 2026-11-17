@@ -1,9 +1,9 @@
 /**
  * **功能**
- * 运行页筛选条：业务日、任务状态、学校下拉、检索词与导出按钮。
+ * 签到事件筛选条：业务日、任务状态、学校下拉、检索词与导出按钮。
  *
  * **归属**
- * `features/run` 展示组件：只呈现控件，不取数。
+ * `features/logs` 展示组件：只呈现控件，不取数。
  *
  * **口径**
  * 标签用 UX-0 的 FilterField：label htmlFor 与 aria-describedby 由它合并。
@@ -11,7 +11,7 @@
  * 学校是下拉：选项来自 `GET /api/schools`（master 全量、admin 绑定范围），
  * URL 存学校 id——自由文本 UUID 会在服务端回 400，也把内部 id 暴露成输入面。
  * 检索词按学校/任务名子串或 11 位完整手机号匹配；回车立即生效。
- * 筛选写回一律由调用方（RunView → 路由）完成，本组件不发请求。
+ * 筛选写回一律由调用方（EventsTab → LogsView → 路由）完成，本组件不发请求。
  */
 
 import { FilterField } from '@/components/ui/FilterField'

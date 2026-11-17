@@ -108,20 +108,34 @@ export function AuditStatusCard({
               <Badge tone={pulse.tone} dot>
                 {engineLoading && engine === undefined ? '读取中…' : pulse.label}
               </Badge>
-              <Link to="/engine" className="app-health-chip app-health-chip-link">
+              <Link
+                to="/logs"
+                search={{ tab: 'patrol' }}
+                className="app-health-chip app-health-chip-link"
+              >
                 在飞 <strong>{pulse.inflight ?? '—'}</strong>
               </Link>
-              <Link to="/engine" className="app-health-chip app-health-chip-link">
+              <Link
+                to="/logs"
+                search={{ tab: 'patrol' }}
+                className="app-health-chip app-health-chip-link"
+              >
                 待执行 <strong>{pulse.dueNow ?? '—'}</strong>
               </Link>
-              <Link to="/engine" className="app-health-chip app-health-chip-link">
+              <Link
+                to="/logs"
+                search={{ tab: 'patrol' }}
+                className="app-health-chip app-health-chip-link"
+              >
                 待重试 <strong>{pulse.retryingText}</strong>
               </Link>
               <span className="app-health-sub">
                 {pulse.lastTickClock ? (
                   <span className="app-health-meta">最近一轮 {pulse.lastTickClock}</span>
                 ) : null}
-                <Link to="/run" className="app-health-link">运行台账 →</Link>
+                <Link to="/logs" search={{ tab: 'events' }} className="app-health-link">
+                  运行台账 →
+                </Link>
               </span>
             </div>
           )}

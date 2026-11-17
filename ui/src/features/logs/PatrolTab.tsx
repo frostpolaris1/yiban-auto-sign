@@ -1,57 +1,41 @@
 /**
  * **功能**
- * 执行监控装配：四指标、在飞清单、待重试与最近事件，一段一卡。
+ * 运行巡检页签：四指标、进程时刻、在飞清单（租约倒计时）、待重试与最近事件流。
  *
  * **归属**
- * `features/run` 域容器：页面只引用它。与运行页共用
- * `useRunLive` 的连接纪律与 `AsyncState` 的状态呈现。
+ * `features/logs` 页签组件：由 `LogsView` 在 `tab=patrol` 时挂载。
  *
  * **口径**
- * 角色来自 `GET /api/auth/me`。无 view 权限时不发快照请求，
- * 只渲染无权限卡片；导航项由 `nav.ts` 的角色元数据隐藏。
  * 快照是单进程读数：无分页、无筛选，错误给 alert 与重试，
  * 空列表给各自的空态文案，失败不得渲染成「暂无」。
  * 待重试行以 sign_tasks 行 ID 为行身份（同账号同日可有多条），
  * 超过 200 条服务端截断并以 retrying_truncated 显式提示。
  * 租约剩余按客户端时钟每秒递减：服务端只给绝对到期时间。
- * 最近事件是本页开机以来经 SSE 收到的业务与控制事件，容量 20 条，
- * 新事件在后；heartbeat 不列，行内带 lastEventId 证明续传位置。
- * 断线出横幅并可重连，断线期间快照每 10 秒轮询；补发提示与
- * 结束原因也走同一块横幅，补发/结束不轮询。
- * SSE 到达失效 `['engine-page']` 前缀查询；学校下拉不参与。
- * 展示构建（`VITE_SHOWCASE=1`）取合成夹具，零网络请求。
+ * 最近事件由容器层 `LogsView` 维护（切页签不丢），容量 20 条，
+ * 最新在前；heartbeat 不列，行内带 lastEventId 证明续传位置。
+ * 断线期间仅在本页签激活时每 10 秒轮询一次 `['engine-page']`。
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AsyncState } from '@/components/ui/AsyncState'
 import { Card } from '@/components/ui/Card'
-import { DeniedCard } from '@/components/ui/DeniedCard'
-import { PageHeader } from '@/components/ui/PageHeader'
 import { describeApiError } from '@/lib/api/client'
 import { getEngineSnapshot, type EngineSnapshot } from '@/lib/api/engine'
 import { formatClock, formatDateTime } from '@/lib/format'
-import { ENGINE_VIEW_ROLES, roleAllowed } from '@/lib/roles'
-import { SHOWCASE, useMe } from '@/lib/session'
+import { SHOWCASE } from '@/lib/session'
 import { showcaseEngineSnapshot } from '@/lib/showcase'
 import { leaseRemainingText, useNow } from './engineDisplay'
-import { RunLiveBanner } from './RunLiveBanner'
 import {
   RUN_LIVE_STATUS_LABELS,
   RUN_POLL_INTERVAL_MS,
-  useRunLive,
   type RunLiveStatus,
 } from './useRunLive'
-
-const DENY_REASON = '你的角色无权查看执行监控'
-
-/** 最近事件列表的容量。 */
-const EVENT_LIMIT = 20
 
 /** 时钟推进间隔：租约剩余按秒展示。 */
 const NOW_TICK_MS = 1000
 
-type EngineEvent = { key: number; type: string; at: Date; id?: string }
+export type EngineEvent = { key: number; type: string; at: Date; id?: string }
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   'task.progress': '任务重排',
@@ -64,25 +48,14 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   end: '流结束',
 }
 
-export function EngineView() {
+export type PatrolTabProps = {
+  allowed: boolean
+  liveStatus: RunLiveStatus
+  events: EngineEvent[]
+}
+
+export function PatrolTab({ allowed, liveStatus, events }: PatrolTabProps) {
   const queryClient = useQueryClient()
-  const meQuery = useMe()
-  const role = meQuery.data?.role ?? null
-  const allowed = roleAllowed(role, ENGINE_VIEW_ROLES)
-
-  const [events, setEvents] = useState<EngineEvent[]>([])
-  const eventKey = useRef(0)
-  const onEvent = (type: string, id?: string) => {
-    eventKey.current += 1
-    setEvents((previous) =>
-      [...previous, { key: eventKey.current, type, at: new Date(), id }].slice(-EVENT_LIMIT),
-    )
-  }
-
-  const live = useRunLive(queryClient, allowed, undefined, {
-    onEvent,
-    invalidateKey: ['engine-page'],
-  })
 
   const engineQuery = useQuery({
     queryKey: ['engine-page', 'snapshot'],
@@ -94,51 +67,33 @@ export function EngineView() {
     enabled: allowed,
   })
 
-  // 断线降级：快照每 10 秒轮询一次。连接正常时刷新只由 SSE 驱动。
+  // 断线降级：仅在本页签激活期间，快照每 10 秒轮询一次。连接正常时刷新只由 SSE 驱动。
   useEffect(() => {
-    if (!allowed || live.status !== 'disconnected') return
+    if (!allowed || SHOWCASE || liveStatus !== 'disconnected') return
     const timer = window.setInterval(() => {
       void queryClient.invalidateQueries({ queryKey: ['engine-page'] })
     }, RUN_POLL_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [allowed, live.status, queryClient])
+  }, [allowed, liveStatus, queryClient])
 
   const now = useNow(NOW_TICK_MS)
   const snap = engineQuery.data ?? null
   const error = engineQuery.isError ? describeApiError(engineQuery.error) : null
 
   return (
-    <>
-      <PageHeader
-        eyebrow="Engine · 执行监控"
-        title={
-          <>
-            执行<span className="accent">监控</span>
-          </>
-        }
-        subtitle="此刻谁在签、今天签成了多少、哪些在等重试，都在这一页。"
-      />
-
-      <RunLiveBanner live={live} />
-
-      {!allowed ? (
-        <DeniedCard eyebrow="Engine" reason={DENY_REASON} />
-      ) : (
-        <AsyncState
-          status={engineQuery.isPending ? 'loading' : engineQuery.isError ? 'error' : 'data'}
-          error={error ?? undefined}
-          onRetry={
-            engineQuery.isError
-              ? () => {
-                  void engineQuery.refetch()
-                }
-              : undefined
-          }
-        >
-          {snap ? <EngineBody snapshot={snap} now={now} live={live.status} events={events} /> : null}
-        </AsyncState>
-      )}
-    </>
+    <AsyncState
+      status={engineQuery.isPending ? 'loading' : engineQuery.isError ? 'error' : 'data'}
+      error={error ?? undefined}
+      onRetry={
+        engineQuery.isError
+          ? () => {
+              void engineQuery.refetch()
+            }
+          : undefined
+      }
+    >
+      {snap ? <EngineBody snapshot={snap} now={now} live={liveStatus} events={events} /> : null}
+    </AsyncState>
   )
 }
 
@@ -184,32 +139,34 @@ function EngineBody({ snapshot, now, live, events }: EngineBodyProps) {
             <span className="app-muted">执行循环空闲，或有任务在等待下一个落点。</span>
           </p>
         ) : (
-          <table className="table run-table engine-table">
-            <thead>
-              <tr>
-                <th scope="col">账号</th>
-                <th scope="col">学校</th>
-                <th scope="col">认领时刻</th>
-                <th scope="col">租约剩余</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshot.inflight.map((row) => (
-                <tr key={row.account_id}>
-                  <td>{row.account_phone_masked}</td>
-                  <td>{row.school_name}</td>
-                  <td>
-                    <time dateTime={row.claimed_at}>{formatClock(row.claimed_at)}</time>
-                  </td>
-                  <td>
-                    <span className="engine-lease">
-                      {leaseRemainingText(new Date(row.lease_expires_at).getTime(), now)}
-                    </span>
-                  </td>
+          <div className="table-scroll">
+            <table className="table run-table engine-table engine-inflight-table">
+              <thead>
+                <tr>
+                  <th scope="col">账号</th>
+                  <th scope="col">学校</th>
+                  <th scope="col">认领时刻</th>
+                  <th scope="col">租约剩余</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {snapshot.inflight.map((row) => (
+                  <tr key={row.account_id}>
+                    <td>{row.account_phone_masked}</td>
+                    <td>{row.school_name}</td>
+                    <td>
+                      <time dateTime={row.claimed_at}>{formatClock(row.claimed_at)}</time>
+                    </td>
+                    <td>
+                      <span className="engine-lease">
+                        {leaseRemainingText(new Date(row.lease_expires_at).getTime(), now)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 
@@ -226,32 +183,34 @@ function EngineBody({ snapshot, now, live, events }: EngineBodyProps) {
                 待重试超过 200 条，仅显示最先到期的 200 条。
               </p>
             ) : null}
-            <table className="table run-table engine-table">
-              <thead>
-                <tr>
-                  <th scope="col">账号</th>
-                  <th scope="col">学校</th>
-                  <th scope="col">任务</th>
-                  <th scope="col">已试</th>
-                  <th scope="col">下次执行</th>
-                  <th scope="col">结果</th>
-                </tr>
-              </thead>
-              <tbody>
-                {snapshot.retrying.map((row) => (
-                  <tr key={row.task_id}>
-                    <td>{row.account_phone_masked}</td>
-                    <td>{row.school_name}</td>
-                    <td>{row.task_name}</td>
-                    <td>{row.attempts} 次</td>
-                    <td>
-                      <time dateTime={row.run_at}>{formatDateTime(row.run_at)}</time>
-                    </td>
-                    <td className="run-table-result">{row.result || '—'}</td>
+            <div className="table-scroll">
+              <table className="table run-table engine-table">
+                <thead>
+                  <tr>
+                    <th scope="col">账号</th>
+                    <th scope="col">学校</th>
+                    <th scope="col">任务</th>
+                    <th scope="col">已试</th>
+                    <th scope="col">下次执行</th>
+                    <th scope="col">结果</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {snapshot.retrying.map((row) => (
+                    <tr key={row.task_id}>
+                      <td>{row.account_phone_masked}</td>
+                      <td>{row.school_name}</td>
+                      <td>{row.task_name}</td>
+                      <td>{row.attempts} 次</td>
+                      <td>
+                        <time dateTime={row.run_at}>{formatDateTime(row.run_at)}</time>
+                      </td>
+                      <td className="run-table-result">{row.result || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </>
         )}
       </Card>

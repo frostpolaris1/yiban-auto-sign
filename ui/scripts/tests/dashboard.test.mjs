@@ -240,9 +240,9 @@ test('the manager KPI cards order active before pending review and carry rate pi
     cards.map((card) => card.value),
     [5, 2, 2, 5],
   )
-  assert.equal(cards[1].href, '/run')
+  assert.equal(cards[1].href, '/logs?tab=events')
   assert.equal(cards[1].note, '失败原因与重试 →')
-  assert.equal(cards[2].href, '/run')
+  assert.equal(cards[2].href, '/logs?tab=events')
   assert.equal(cards[3].href, '/accounts')
   assert.equal(cards[3].note, '待审核 3 · 已拒绝 2 →')
 

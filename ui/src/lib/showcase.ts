@@ -755,3 +755,11 @@ export function showcaseQueueDiagnostics(accountId: string): AccountDiagnostics 
     egress: { identity: 'https://eg-demo-1' },
   }
 }
+
+/** 签到台账（展示构建）：组合签到事件与运行巡检两页签的合成夹具单入口。 */
+export function showcaseLogs(): { events: TaskPage; patrol: EngineSnapshot } {
+  return {
+    events: showcaseRunPage(),
+    patrol: showcaseEngineSnapshot(),
+  }
+}

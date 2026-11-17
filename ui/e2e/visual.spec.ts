@@ -3,8 +3,12 @@ import { ACCOUNTS, mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-
 import { mockAuditApi } from './support/fake-audit-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
-import { mockRunApi, installFakeEventSource } from './support/fake-run-api'
-import { mockEngineApi, ENGINE_VISUAL_SNAPSHOT, VISUAL_NOW } from './support/fake-engine-api'
+import {
+  ENGINE_VISUAL_SNAPSHOT,
+  VISUAL_NOW,
+  installFakeEventSource,
+  mockLogsApi,
+} from './support/fake-logs-api'
 import { mockQueueApi } from './support/fake-queue-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 import { mockUsersApi } from './support/fake-users-api'
@@ -29,8 +33,8 @@ import { visibleText } from './support/visible-text'
 const ROUTES = [
   { path: '/queue', name: 'queue' },
   { path: '/audit', name: 'audit' },
-  { path: '/run?day=2030-01-01', name: 'run' },
-  { path: '/engine', name: 'engine' },
+  { path: '/logs?tab=events', name: 'logs-events' },
+  { path: '/logs?tab=patrol', name: 'logs-patrol' },
   { path: '/design', name: 'design' },
   { path: '/settings', name: 'settings' },
   { path: '/accounts', name: 'accounts' },
@@ -86,20 +90,12 @@ async function mockSessionFor(
   if (path === '/users') {
     await mockUsersApi(page, { role })
   }
-  // 运行页需要任务与诊断端点；SSE 用假体钉住「实时」态，
-  // 不注入时 EventSource 打到 JSON 路由会随机出断线横幅。
-  if (path.startsWith('/run')) {
-    await installFakeEventSource(page)
-    await mockRunApi(page, { role })
-  }
-  // 执行监控页同样钉「实时」态；页内 Date 冻结在 VISUAL_NOW：
-  // setFixedTime 不碰定时器（React 调度照常），useNow 的 setInterval
-  // 每秒读到的都是同一时刻，租约剩余恒为「1 时 30 分」、
-  // 相对时刻恒落 formatClock 分支，跨分钟、跨日都不漂。
-  if (path.startsWith('/engine')) {
+  // 签到台账（签到事件 + 运行巡检）：SSE 用假体钉住「实时」态，
+  // 页内 Date 冻结在 VISUAL_NOW（2030-01-01），事件页签缺省业务日与巡检页签租约剩余跨日不漂。
+  if (path.startsWith('/logs')) {
     await page.clock.setFixedTime(new Date(VISUAL_NOW))
     await installFakeEventSource(page)
-    await mockEngineApi(page, { role, snapshot: ENGINE_VISUAL_SNAPSHOT })
+    await mockLogsApi(page, { role, snapshot: ENGINE_VISUAL_SNAPSHOT })
   }
   // 待办页的业务日取当前日期：同样冻结在 VISUAL_NOW 避免跨日基线漂移，并钉住 SSE 实时态。
   if (path === '/queue') {
@@ -148,7 +144,7 @@ async function expectData(page: Page, path: string) {
     )
   } else if (path.startsWith('/schedule')) {
     await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
-  } else if (path.startsWith('/run')) {
+  } else if (path === '/logs?tab=events') {
     await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toBeVisible()
   } else if (path === '/queue') {
     await expect(page.locator('[data-queue-group="pending"]')).toContainText('138****8000')
@@ -159,7 +155,7 @@ async function expectData(page: Page, path: string) {
     // 账本六行与页头完好结论都到位再拍；总数徽标与 fixtures 同源。
     await expect(page.locator('[data-audit-row]')).toHaveCount(6)
     await expect(page.locator('[data-audit-verdict]')).toContainText('链完好')
-  } else if (path === '/engine') {
+  } else if (path === '/logs?tab=patrol') {
     // 数据态到位：四指标与两条在飞行渲染完成再拍。
     await expect(page.locator('dl', { hasText: '待执行' })).toContainText('3')
     await expect(page.locator('.engine-lease').first()).toContainText('时')
