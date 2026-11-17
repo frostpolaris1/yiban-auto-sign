@@ -29,7 +29,6 @@ import (
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
-	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
@@ -148,8 +147,10 @@ func newWtStack(t *testing.T, signer *wtSigner) *wtStack {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	// 业务日按 UTC 算（worker 注入 UTC 时区），种子时刻也取 UTC。
-	now := coreclock.System{}.Now().UTC().Truncate(time.Second)
+	// 业务日按 UTC 算（worker 注入 UTC 时区），固定取当天中段时刻：
+	// 用例会向前拨假时钟 40 分钟；若取真实墙钟，在 UTC 23:20–23:59 跑会跨过
+	// 零点触发 ClaimDue 的跨日过滤（s.day >= today），导致间歇漏领。
+	now := time.Date(2026, 10, 29, 10, 0, 0, 0, time.UTC)
 	clk := &wtClock{t: now}
 	users := pg.NewUserRepo(db)
 	var owner coreuser.Record
@@ -337,8 +338,8 @@ func TestWaitTargetWindowEndLandsSkipped(t *testing.T) {
 	if _, err := w.worker.Request(w.ctx, w.acct.ID, appaudit.Actor{UserID: w.ownerID, Role: coreauth.RoleUser, Label: "wt-e2e"}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	if _, err := w.worker.Step(w.ctx, 1); err != nil {
-		t.Fatalf("Step: %v", err)
+	if n, err := w.worker.Step(w.ctx, 1); err != nil || n != 1 {
+		t.Fatalf("Step = (%d,%v), want (1,nil)", n, err)
 	}
 	state, result, _, _ := w.taskRow()
 	if state != string(corestatus.TaskSkipped) || result != "no_target" {
@@ -356,8 +357,8 @@ func TestWaitTargetKExhaustedLandsSkipped(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		// 推过当前 run_at：模拟退避等待。
 		w.clk.Advance(10 * time.Minute)
-		if _, err := w.worker.Step(w.ctx, 1); err != nil {
-			t.Fatalf("Step %d: %v", i, err)
+		if n, err := w.worker.Step(w.ctx, 1); err != nil || n != 1 {
+			t.Fatalf("Step %d = (%d,%v), want (1,nil)", i, n, err)
 		}
 		state, result, _, attempts := w.taskRow()
 		if state != string(corestatus.TaskPending) {
@@ -372,8 +373,8 @@ func TestWaitTargetKExhaustedLandsSkipped(t *testing.T) {
 	}
 	// 第 4 次到点：K 已耗尽，落终态。
 	w.clk.Advance(10 * time.Minute)
-	if _, err := w.worker.Step(w.ctx, 1); err != nil {
-		t.Fatalf("final Step: %v", err)
+	if n, err := w.worker.Step(w.ctx, 1); err != nil || n != 1 {
+		t.Fatalf("final Step = (%d,%v), want (1,nil)", n, err)
 	}
 	state, result, _, attempts := w.taskRow()
 	if state != string(corestatus.TaskSkipped) || result != "no_target" {
@@ -397,8 +398,8 @@ func TestWaitTargetExplicitNoTargetStaysTerminal(t *testing.T) {
 	if _, err := w.worker.Request(w.ctx, w.acct.ID, appaudit.Actor{UserID: w.ownerID, Role: coreauth.RoleUser, Label: "wt-e2e"}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	if _, err := w.worker.Step(w.ctx, 1); err != nil {
-		t.Fatalf("Step: %v", err)
+	if n, err := w.worker.Step(w.ctx, 1); err != nil || n != 1 {
+		t.Fatalf("Step = (%d,%v), want (1,nil)", n, err)
 	}
 	state, result, _, _ := w.taskRow()
 	if state != string(corestatus.TaskSkipped) || result != "no_target" {
