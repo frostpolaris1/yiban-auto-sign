@@ -142,8 +142,16 @@ async function expectData(page: Page, path: string) {
     await expect(page.getByRole('table', { name: '用户列表' })).toContainText(
       'master-one@example.com',
     )
-  } else if (path.startsWith('/schedule') || path.startsWith('/system')) {
+  } else if (path.startsWith('/schedule')) {
     await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
+  } else if (path.startsWith('/system')) {
+    await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
+    await expect(page.locator('#policy-registration-card')).toContainText('允许新用户公开注册')
+    await expect(page.locator('#policy-auto-approve-card')).toContainText('开启新号自动审核')
+    await expect(page.locator('#policy-quota-card')).toContainText('全站活跃用户上限')
+    await expect(page.locator('#policy-schedule-card')).toContainText('前边界缩进')
+    await expect(page.locator('#announcement')).toContainText('示例公告')
+    await expect(page.locator('#channels')).toContainText('测试邮件')
   } else if (path === '/logs?tab=events') {
     await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toBeVisible()
   } else if (path === '/queue') {

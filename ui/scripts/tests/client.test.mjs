@@ -409,3 +409,29 @@ test('a 304 hit refreshes the cache order so polling keys survive eviction', asy
     'the key that was actually oldest is evicted',
   )
 })
+
+test('ApiError captures numeric Retry-After seconds from 429 responses', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({ error: { code: 'rate_limited', message: 'cooldown active' } }),
+      {
+        status: 429,
+        headers: { 'Content-Type': 'application/json', 'Retry-After': '42' },
+      },
+    )
+  try {
+    await assert.rejects(
+      () => apiRequest('/api/admin/mail/test', { method: 'POST', body: '{"current_password":"x"}' }),
+      (error) => {
+        assert.ok(error instanceof ApiError)
+        assert.equal(error.status, 429)
+        assert.equal(error.code, 'rate_limited')
+        assert.equal(error.retryAfterSec, 42)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = original
+  }
+})

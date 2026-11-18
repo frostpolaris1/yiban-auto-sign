@@ -298,18 +298,24 @@ func (r *Resolver) ResolveInt(ctx context.Context, key string, envValue int) (in
 // ResolveBool 返回生效的布尔值：DB 行存在且是真字面→行值；
 // 行缺失或坏行→envValue（坏行先 Warn 一次）；存储故障→原样上抛。
 func (r *Resolver) ResolveBool(ctx context.Context, key string, envValue bool) (bool, error) {
+	value, _, err := r.BoolSetting(ctx, key, envValue)
+	return value, err
+}
+
+// BoolSetting 读取布尔覆盖键并附带来源（db/default）；坏行 Warn 一次后回退。
+func (r *Resolver) BoolSetting(ctx context.Context, key string, fallback bool) (bool, ScheduleSource, error) {
 	value, found, err := r.store.BoolOverride(ctx, key)
 	if err != nil {
 		if isSettingValueInvalid(err) {
 			r.warnOnce(key, "bool")
-			return envValue, nil
+			return fallback, ScheduleSourceDefault, nil
 		}
-		return false, err
+		return false, "", err
 	}
 	if !found {
-		return envValue, nil
+		return fallback, ScheduleSourceDefault, nil
 	}
-	return value, nil
+	return value, ScheduleSourceDB, nil
 }
 
 // ResolveEnginePaused 读全局暂停开关，坏行 fail-closed（视为暂停）。
@@ -409,41 +415,49 @@ func (r *Resolver) warnSignWindowPairOnce(reason string) {
 // 每进程 Warn 一次——半对配置不得使用，防止跨语义拼接；
 // 存储故障原样上抛（故障不是配置状态）。
 func (r *Resolver) ResolveSignWindow(ctx context.Context, fallbackStart, fallbackEnd int) (int, int, error) {
+	start, end, _, err := r.SignWindowSetting(ctx, fallbackStart, fallbackEnd)
+	return start, end, err
+}
+
+// SignWindowSetting 解析全局默认签到窗口对并附带来源（db/default）。
+// 仅当 start/end 两行均存在、在 [0,1439] 且满足 start < end 时报 db；其余（含半对/坏行）
+// 整对回退 fallback pair 并报 default，存储故障原样上抛。
+func (r *Resolver) SignWindowSetting(ctx context.Context, fallbackStart, fallbackEnd int) (int, int, ScheduleSource, error) {
 	start, startFound, err := r.store.IntOverride(ctx, KeyScheduleDefaultSignStartMin)
 	if err != nil {
 		if isSettingValueInvalid(err) {
 			r.warnSignWindowPairOnce("bad_row")
-			return fallbackStart, fallbackEnd, nil
+			return fallbackStart, fallbackEnd, ScheduleSourceDefault, nil
 		}
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	end, endFound, err := r.store.IntOverride(ctx, KeyScheduleDefaultSignEndMin)
 	if err != nil {
 		if isSettingValueInvalid(err) {
 			r.warnSignWindowPairOnce("bad_row")
-			return fallbackStart, fallbackEnd, nil
+			return fallbackStart, fallbackEnd, ScheduleSourceDefault, nil
 		}
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	switch {
 	case !startFound && !endFound:
 		// 双缺行是常态：静默用常量对（对齐覆盖链「缺行→传参缺省」口径）。
-		return fallbackStart, fallbackEnd, nil
+		return fallbackStart, fallbackEnd, ScheduleSourceDefault, nil
 	case startFound != endFound:
 		// 半对：一侧有行一侧缺行。整对回退，不与常量拼接另一侧行值。
 		r.warnSignWindowPairOnce("half_pair")
-		return fallbackStart, fallbackEnd, nil
+		return fallbackStart, fallbackEnd, ScheduleSourceDefault, nil
 	}
 	if start < signWindowMinuteMin || start > signWindowMinuteMax ||
 		end < signWindowMinuteMin || end > signWindowMinuteMax {
 		r.warnSignWindowPairOnce("out_of_domain")
-		return fallbackStart, fallbackEnd, nil
+		return fallbackStart, fallbackEnd, ScheduleSourceDefault, nil
 	}
 	if start >= end {
 		r.warnSignWindowPairOnce("start_not_before_end")
-		return fallbackStart, fallbackEnd, nil
+		return fallbackStart, fallbackEnd, ScheduleSourceDefault, nil
 	}
-	return start, end, nil
+	return start, end, ScheduleSourceDB, nil
 }
 
 // ResolveSignDist 解析铺点分布档（批 3c，消费点＝日切构建铺点）。
@@ -453,19 +467,25 @@ func (r *Resolver) ResolveSignWindow(ctx context.Context, fallbackStart, fallbac
 // （沿用 3b 坏行语义：坏值不生效、回退内置默认档并留痕）；存储故障原样上抛——
 // 故障不是配置状态，错档位比不铺更糟。
 func (r *Resolver) ResolveSignDist(ctx context.Context, fallback SignDist) (SignDist, error) {
+	value, _, err := r.SignDistSetting(ctx, fallback)
+	return value, err
+}
+
+// SignDistSetting 解析铺点分布档并附带来源（db/default）；坏行 Warn 一次后回退。
+func (r *Resolver) SignDistSetting(ctx context.Context, fallback SignDist) (SignDist, ScheduleSource, error) {
 	raw, found, err := r.store.StringOverride(ctx, KeyScheduleSignDist)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if !found {
-		return fallback, nil
+		return fallback, ScheduleSourceDefault, nil
 	}
 	value, ok := ParseSignDist(raw)
 	if !ok {
 		r.warnOnce(KeyScheduleSignDist, "string")
-		return fallback, nil
+		return fallback, ScheduleSourceDefault, nil
 	}
-	return value, nil
+	return value, ScheduleSourceDB, nil
 }
 
 // QuotaSetting 解析配额键并报告来源（批 r4r，消费点＝GET 配额回显）。
