@@ -64,7 +64,7 @@ const SIGN_POLL_MS = 30_000
 
 type DashboardViewProps = {
   role: Role
-  /** user 视角的附加卡（时间偏好在 `features/schedule`，由页面传入）。 */
+  /** user 视角的附加卡（时间偏好在 `features/system/plans`，由页面传入）。 */
   extraCards?: ReactNode
 }
 

@@ -128,7 +128,7 @@ export function windowCounts(windows: readonly ScheduleWindow[]): WindowCounts {
   return { total: windows.length, reported, disabled, usable }
 }
 
-/** 与 `features/schedule/display.ts` 的 `SOURCE_LABELS` 逐字相同。 */
+/** 与 `features/system/plans/display.ts` 的 `SOURCE_LABELS` 逐字相同。 */
 export const CAPACITY_SOURCE_LABELS: Record<ScheduleWindowSource, string> = {
   platform: '平台',
   cache: '缓存',

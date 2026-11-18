@@ -19,6 +19,9 @@ export const SCHOOL_VIEW_ROLES: readonly Role[] = ['master', 'admin']
 /** `/api/schedule/*` 与 `/api/capacity` 的 `x-roles`：时间片是管理页。 */
 export const SCHEDULE_VIEW_ROLES: readonly Role[] = ['master', 'admin']
 
+/** `/system` 系统设置页准入角色：master/admin 进页，user 落拒绝卡。 */
+export const SYSTEM_VIEW_ROLES: readonly Role[] = ['master', 'admin']
+
 /** `GET /api/users` 的 `x-roles`：用户管理只归 master。 */
 export const USER_VIEW_ROLES: readonly Role[] = ['master']
 

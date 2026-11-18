@@ -17,15 +17,14 @@ import { visibleText } from './support/visible-text'
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：10 条常驻路由（UX-3 起 /run 固定业务日入矩阵；UX-5 起 /engine
- * 入矩阵，页内 Date 冻结在 VISUAL_NOW，快照时刻全部派生自它）与看板的两个视角（user/admin），
- * × 2 套主题 × 2 个宽度 = 48 张；另有抽屉／模态／菜单、
- * 无权限页与溢出判据，文件合计 97 条用例（2026-11-03 win32 实数）。
- * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
- * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
- * 补 1440 与 390 两个宽度。
- * 另有抽屉／模态／菜单态、无权限页与时间偏好卡等按需快照。
- * 溢出判据跑全部常驻路由与时间片页；`/` 另跑 user 视角（另一套布局）。
+ * 矩阵：13 条常驻路由（含 `/logs` 两页签与固定业务日 `/system?day=...`，页内 Date 冻结在
+ * VISUAL_NOW，快照时刻全部派生自它）与看板的两个视角（user/admin），
+ * × 2 套主题 × 2 个宽度 = 60 张；另有抽屉／模态／菜单、
+ * 无权限页与溢出判据，文件合计 105 条用例（2026-11-18 实数）。
+ * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检；
+ * 系统设置按固定业务日入常驻矩阵（缺省日期会随日历漂移）。
+ * 另有抽屉／模态／菜单态、无权限页与时间偏好卡等按需快照（合计 104 张／平台）。
+ * 溢出判据跑全部常驻路由；`/` 另跑 user 视角（另一套布局）。
  * 基线随 spec 入库，目录是 `e2e/visual.spec.ts-snapshots/`。
  * 首次运行 `npm run test:visual:update`。此后每次必须 0 差异。
  */
@@ -37,6 +36,7 @@ const ROUTES = [
   { path: '/logs?tab=patrol', name: 'logs-patrol' },
   { path: '/design', name: 'design' },
   { path: '/settings', name: 'settings' },
+  { path: `/system?day=${SCHEDULE_DAY}`, name: 'system' },
   { path: '/accounts', name: 'accounts' },
   { path: '/schools', name: 'schools' },
   { path: '/users', name: 'users' },
@@ -71,8 +71,8 @@ async function mockSessionFor(
     await mockAccountsApi(page, { role: null })
     return
   }
-  // 时间片页需要窗口、预览与时间偏好端点；路径可能带 `?day=`。
-  if (path.startsWith('/schedule')) {
+  // 系统设置·签到计划分区需要窗口、预览与时间偏好端点；路径可能带 `?day=`。
+  if (path.startsWith('/schedule') || path.startsWith('/system')) {
     await mockScheduleApi(page, { role })
     return
   }
@@ -142,7 +142,7 @@ async function expectData(page: Page, path: string) {
     await expect(page.getByRole('table', { name: '用户列表' })).toContainText(
       'master-one@example.com',
     )
-  } else if (path.startsWith('/schedule')) {
+  } else if (path.startsWith('/schedule') || path.startsWith('/system')) {
     await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
   } else if (path === '/logs?tab=events') {
     await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toBeVisible()
@@ -420,28 +420,9 @@ for (const theme of THEMES) {
 }
 
 for (const theme of THEMES) {
-  test(`visual schedule page ${theme}`, async ({ page }) => {
+  test(`visual system preview ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
-    const table = page.getByRole('table', { name: '时间片窗口' })
-    await expect(table).toBeVisible()
-    await expect(table).toContainText('合成学校甲')
-    await expect(page).toHaveScreenshot(`schedule-${theme}-1440.png`, { fullPage: true })
-  })
-
-  test(`visual schedule narrow ${theme}`, async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
-    // 表格在取数前就以「加载中…」占位存在：等首行数据到位再拍。
-    const table = page.getByRole('table', { name: '时间片窗口' })
-    await expect(table).toBeVisible()
-    await expect(table).toContainText('合成学校甲')
-    await expect(page).toHaveScreenshot(`schedule-${theme}-390.png`, { fullPage: true })
-  })
-
-  test(`visual schedule preview ${theme}`, async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
+    await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme)
     await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
     const dialog = page.getByRole('dialog', { name: '计划预览' })
     await expect(dialog).toBeVisible()
@@ -449,25 +430,25 @@ for (const theme of THEMES) {
     await expect(dialog).toContainText('v0')
     // 三个数字并行滚动：三格都落定再拍，避免高负载下拍到中间帧。
     await expectNumbers(dialog.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
-    await expect(page).toHaveScreenshot(`schedule-preview-${theme}-1440.png`)
+    await expect(page).toHaveScreenshot(`system-preview-${theme}-1440.png`)
   })
 
-  test(`visual schedule override ${theme}`, async ({ page }) => {
+  test(`visual system override ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
+    await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme)
     await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
     await page.getByRole('dialog', { name: '计划预览' }).getByRole('button', { name: '写入覆盖' }).click()
     const dialog = page.getByRole('dialog', { name: '写入窗口覆盖？' })
     await expect(dialog).toBeVisible()
     await expect(dialog.getByLabel('开始时间')).toHaveValue('2026-10-28T08:10')
-    await expect(page).toHaveScreenshot(`schedule-override-${theme}-1440.png`)
+    await expect(page).toHaveScreenshot(`system-override-${theme}-1440.png`)
   })
 
-  test(`visual schedule denied ${theme}`, async ({ page }) => {
+  test(`visual system denied ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme, 'user')
-    await expect(page.getByText('你的角色无权查看时间片管理')).toBeVisible()
-    await expect(page).toHaveScreenshot(`schedule-denied-${theme}-1440.png`, { fullPage: true })
+    await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme, 'user')
+    await expect(page.getByText('你的角色无权查看系统设置')).toBeVisible()
+    await expect(page).toHaveScreenshot(`system-denied-${theme}-1440.png`, { fullPage: true })
   })
 
   test(`visual dashboard time preference card ${theme}`, async ({ page }) => {
@@ -509,11 +490,9 @@ for (const theme of THEMES) {
 }
 
 test('no horizontal overflow at either width, in either theme', async ({ page }) => {
-  // 时间片页不进口径矩阵（缺省日期会漂移），但溢出判据一样要钉：固定业务日补拍。
   // 看板的 user 视角是另一套布局：`/` 追加 user 一遍；其余路由 master 即可。
   const targets = [
     ...ROUTES.map((route) => ({ path: route.path, role: 'master' as const })),
-    { path: `/schedule?day=${SCHEDULE_DAY}`, role: 'master' as const },
     { path: '/', role: 'user' as const },
   ]
   for (const theme of THEMES) {

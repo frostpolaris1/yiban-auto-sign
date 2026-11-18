@@ -19,7 +19,7 @@ import {
   todayStats,
   windowCounts,
 } from '../../src/features/dashboard/display.ts'
-import { SOURCE_LABELS, sourceTone } from '../../src/features/schedule/display.ts'
+import { SOURCE_LABELS, sourceTone } from '../../src/features/system/plans/display.ts'
 
 /**
  * 看板纯逻辑的不变式。

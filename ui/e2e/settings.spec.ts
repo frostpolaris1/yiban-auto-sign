@@ -278,7 +278,7 @@ test('settings: the profile menu has one account entry and the sidebar lists it'
   await page.goto('/')
 
   const sidebar = page.locator('.d-sidebar')
-  await expect(sidebar.getByRole('link', { name: '设置', exact: true })).toBeVisible()
+  await expect(sidebar.getByRole('link', { name: '账号设置', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: '账号菜单' }).click()
   const menu = page.getByRole('menu')
@@ -467,10 +467,16 @@ test('settings: initial notification load error offers retry and recovers', asyn
   )
 })
 
-test('settings: user role lands on the denied card with zero business requests', async ({
+test('settings: user role has no sidebar entry and lands on the denied card with zero business requests', async ({
   page,
 }) => {
   const api = await mockAccountsApi(page, { role: 'user' })
+  await page.goto('/')
+  await expect(
+    page.locator('.d-sidebar').getByRole('link', { name: '账号设置', exact: true }),
+  ).toHaveCount(0)
+
+  const beforeSettings = api.calls.length
   await page.goto('/settings')
 
   await expect(page.getByRole('heading', { name: '无权访问' })).toBeVisible()
@@ -479,7 +485,9 @@ test('settings: user role lands on the denied card with zero business requests',
   await expect(page.getByRole('heading', { name: '修改密码' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: '通知订阅' })).toHaveCount(0)
 
-  const businessCalls = api.calls.filter((call) => call.path !== '/api/auth/me')
+  const businessCalls = api.calls
+    .slice(beforeSettings)
+    .filter((call) => call.path !== '/api/auth/me')
   expect(businessCalls, 'user role sends zero business requests on /settings').toEqual([])
 })
 

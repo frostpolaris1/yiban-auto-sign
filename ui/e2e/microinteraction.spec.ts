@@ -208,7 +208,7 @@ test('invariant 1: a build toasts and a 409 build keeps its error in the confirm
   page,
 }) => {
   const api = await mockScheduleApi(page, { role: 'master' })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const preview = page.getByRole('dialog', { name: '计划预览' })
   await preview.getByRole('button', { name: '落库此计划' }).click()
@@ -226,7 +226,7 @@ test('invariant 1: a 409 build leaves the error in the confirm and sends no toas
     role: 'master',
     planError: { status: 409, code: 'conflict', message: 'task disabled' },
   })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const preview = page.getByRole('dialog', { name: '计划预览' })
   await preview.getByRole('button', { name: '落库此计划' }).click()
@@ -239,7 +239,7 @@ test('invariant 1: a 409 build leaves the error in the confirm and sends no toas
 
 test('invariant 1: an override toasts the rebuilt version', async ({ page }) => {
   const api = await mockScheduleApi(page, { role: 'master' })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const preview = page.getByRole('dialog', { name: '计划预览' })
   await preview.getByRole('button', { name: '写入覆盖' }).click()
@@ -328,7 +328,7 @@ test('invariant 3: capacity numbers settle on the exact report', async ({ page }
 
 test('invariant 3: preview numbers settle on the exact plan', async ({ page }) => {
   await mockScheduleApi(page, { role: 'master' })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const dialog = page.getByRole('dialog', { name: '计划预览' })
   await expect(dialog.locator('.app-metric')).toHaveCount(3)
@@ -415,7 +415,7 @@ test('invariant 4: a newly created school row opens the drawer', async ({ page }
 
 test('invariant 4: schedule rows stay clickable after an override rebuild', async ({ page }) => {
   await mockScheduleApi(page, { role: 'master' })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const preview = page.getByRole('dialog', { name: '计划预览' })
   await preview.getByRole('button', { name: '写入覆盖' }).click()

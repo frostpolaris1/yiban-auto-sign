@@ -1,0 +1,81 @@
+/*
+ * system.css — 系统设置页分区与页顶锚链样式层。
+ *
+ * **归属**
+ * `features/system` 专属样式：仅消费 `tokens.css` 变量，零颜色字面量（满足 token-gate）。
+ * 布局为单列分区卡；锚链在窄屏自动折行，触控指针目标高度 >= 44px，
+ * 锚点滚动留足顶栏偏移，不遮挡分区标题。
+ */
+
+.sys-anchors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.sys-anchor {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 36px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-decoration: none;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.sys-anchor:hover {
+  background: var(--bg-hover);
+  border-color: var(--t-light);
+  color: var(--t-base);
+}
+
+.sys-anchor.is-active,
+.sys-anchor[aria-current='location'] {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.sys-anchor:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .sys-anchor {
+    min-block-size: 44px;
+  }
+}
+
+.sys-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.sys-section {
+  scroll-margin-top: 84px;
+}
+
+.sys-section:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.sys-section:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+  border-radius: 12px;
+}
+
+.sys-section-desc {
+  margin: 0 0 16px;
+}
