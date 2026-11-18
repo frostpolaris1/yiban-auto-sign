@@ -1579,6 +1579,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .run-task-row .btn {
+    margin-left: 0;
+  }
+
   .run-table-result {
     max-width: none;
   }
