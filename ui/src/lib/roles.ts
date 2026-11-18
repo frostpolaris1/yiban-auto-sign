@@ -25,6 +25,9 @@ export const USER_VIEW_ROLES: readonly Role[] = ['master']
 /** `GET /api/admin/tasks` 的 `x-roles`：运行页是管理页（UX-3）。 */
 export const RUN_VIEW_ROLES: readonly Role[] = ['master', 'admin']
 
+/** `/api/admin/notify` 的 `x-roles`：账号设置仅开放管理角色（user 由 App 承接）。 */
+export const SETTINGS_VIEW_ROLES: readonly Role[] = ['master', 'admin']
+
 /** 角色为 null（会话未识别）时一律拒绝。 */
 export function roleAllowed(role: Role | null | undefined, allowed: readonly Role[]): boolean {
   return role ? allowed.includes(role) : false

@@ -353,3 +353,21 @@ test('invariant 13: the showcase logs page renders both tabs with zero requests'
 
   expect(apiRequests, 'the logs fixture never touches the API').toEqual([])
 })
+
+test('invariant 14: the showcase settings notify matrix renders fixtures with zero requests', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/settings')
+  const card = page.locator('.card').filter({ hasText: '通知订阅' })
+  await expect(card).toBeVisible()
+  await expect(card).toContainText(READ_ONLY_REASON)
+
+  const toggle = card.getByRole('switch', { name: '凭据失效 · 站内信' })
+  await expect(toggle).toBeDisabled()
+  await expect(toggle).toHaveAttribute('title', READ_ONLY_REASON)
+  await toggle.click({ force: true })
+
+  expect(apiRequests, 'a read-only showcase sends no admin notify request').toEqual([])
+})

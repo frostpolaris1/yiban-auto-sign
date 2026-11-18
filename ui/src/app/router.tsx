@@ -72,7 +72,7 @@ const accountsRoute = createRoute({
   component: AccountsPage,
 })
 
-/** 账号设置：账号信息与自助改密。三种角色都能进。 */
+/** 账号设置（个人域）：账号信息、改密与本人通知订阅。master/admin 进页，user 渲染无权限卡片。 */
 const settingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/settings',
