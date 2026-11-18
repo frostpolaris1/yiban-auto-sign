@@ -37,6 +37,9 @@ export function AuditFilters({ controls }: AuditFiltersProps) {
             <input
               className="input a-input a-input-search"
               type="search"
+              // 包装层吃掉了 FilterField 注入的 id，label 落不到 input；
+              // 照账号筛选与队列搜索的先例直接命名。
+              aria-label="动作筛选"
               placeholder="例如 auth.login"
               value={controls.actionInput}
               onChange={(event) => controls.setActionInput(event.target.value)}
