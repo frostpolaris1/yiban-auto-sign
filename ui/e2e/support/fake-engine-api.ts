@@ -1,6 +1,7 @@
 import type { Page, Route } from '@playwright/test'
 import type { EngineSnapshot } from '../../src/lib/api/engine'
 import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 
 /**
  * 执行监控页的假 API（UX-5）。
@@ -174,6 +175,8 @@ export async function mockEngineApi(page: Page, options: MockEngineOptions): Pro
       // 壳在每页为 master/admin 读一次；执行监控页不关心计数。
       return json(route, EMPTY_ACCOUNT_SUMMARY)
     }
+
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/admin/engine' && request.method() === 'GET') {
       if (sessionRole !== 'master' && sessionRole !== 'admin') {

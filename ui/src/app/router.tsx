@@ -20,6 +20,7 @@ import {
   useNavigate,
 } from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
+import { NotifyInbox } from '@/features/notify/InboxDrawer'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
@@ -48,10 +49,14 @@ const rootRoute = createRootRoute({
  * **无路径**布局路由：URL 不出现前缀，子路由共用 Adminator 壳。
  * 改成带路径会让 URL 多一层前缀，面包屑与深链都要跟着改。
  */
+function ShellRouteComponent() {
+  return <AppShell renderInbox={(me) => <NotifyInbox me={me} />} />
+}
+
 const shellRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: '_shell',
-  component: AppShell,
+  component: ShellRouteComponent,
 })
 
 const dashboardRoute = createRoute({

@@ -5,6 +5,7 @@ import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockRunApi, installFakeEventSource } from './support/fake-run-api'
 import { mockEngineApi, ENGINE_VISUAL_SNAPSHOT, VISUAL_NOW } from './support/fake-engine-api'
 import { mockQueueApi } from './support/fake-queue-api'
+import { mockNotifyApi, visualNotifications } from './support/fake-notify-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 import { mockUsersApi } from './support/fake-users-api'
 import { visibleText } from './support/visible-text'
@@ -498,6 +499,35 @@ for (const theme of THEMES) {
     await openWithTheme(page, '/accounts', theme)
     await expect(page.getByText('会话已过期，请重新登录')).toBeVisible()
     await expect(page).toHaveScreenshot(`session-expired-${theme}-1440.png`)
+  })
+
+  test(`visual inbox drawer ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.clock.setFixedTime(new Date(VISUAL_NOW))
+    await mockNotifyApi(page, {
+      role: 'master',
+      notifications: visualNotifications(VISUAL_NOW),
+    })
+    await openWithTheme(page, '/design', theme)
+    await expectData(page, '/design')
+    const bell = page.locator('.topbar-actions').getByRole('button', { name: /通知/ })
+    await expect(bell.locator('.count')).toHaveText('3')
+    await bell.click()
+    const drawer = page.getByRole('dialog', { name: '通知收件箱' })
+    await expect(drawer).toBeVisible()
+    await expect(drawer.locator('.app-inbox-item')).toHaveCount(4)
+    await expect(drawer).toContainText('5 分钟前')
+    await expect(drawer).toContainText('昨天 18:20')
+    await page.waitForFunction(() =>
+      document
+        .getAnimations()
+        .every(
+          (animation) =>
+            animation.playState !== 'running' ||
+            animation.effect?.getTiming().iterations === Infinity,
+        ),
+    )
+    await expect(page).toHaveScreenshot(`inbox-drawer-${theme}-1440.png`)
   })
 }
 

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { Page, Request, Route } from '@playwright/test'
 import type { User, UserCounts } from '../../src/lib/api/user'
 import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 
 /**
  * 用户管理页的假 API。
@@ -239,6 +240,8 @@ export async function mockUsersApi(
       // 壳在每页为 master/admin 读一次；用户管理页不关心计数。
       return json(route, request, EMPTY_ACCOUNT_SUMMARY)
     }
+
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/users/lookup' && request.method() === 'GET') {
       if (sessionRole !== 'master' && sessionRole !== 'admin') {

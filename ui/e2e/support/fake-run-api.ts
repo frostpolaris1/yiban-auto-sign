@@ -1,6 +1,7 @@
 import type { Page, Route } from '@playwright/test'
 import type { AdminTaskRow } from '../../src/lib/api/task'
 import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 import { SCHOOLS } from './fake-schools-api'
 
 /**
@@ -179,6 +180,8 @@ export async function mockRunApi(page: Page, options: MockRunOptions): Promise<F
       // 壳在每页为 master/admin 读一次；运行页不关心计数。
       return json(route, EMPTY_ACCOUNT_SUMMARY)
     }
+
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/schools' && request.method() === 'GET') {
       // 学校下拉的选项源；服务端按角色收敛，这里全量回。

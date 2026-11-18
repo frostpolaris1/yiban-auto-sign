@@ -1,4 +1,5 @@
 import type { Page, Route } from '@playwright/test'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 import type { AccountSummary } from '../../src/lib/api/account'
 import type { AuditStatusReport } from '../../src/lib/api/audit'
 import type { EngineSnapshot } from '../../src/lib/api/engine'
@@ -454,6 +455,8 @@ export async function mockDashboardApi(
         csrf_token: SESSION_CSRF,
       })
     }
+
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/me/sign-status' && request.method() === 'GET') {
       if (!(await deny(route, ['user']))) return

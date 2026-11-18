@@ -3,6 +3,7 @@ import type { AccountSummary } from '../../src/lib/api/account'
 import type { School, SchoolAdmin } from '../../src/lib/api/school'
 import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 
 /**
  * 学校页的假 API。
@@ -155,6 +156,7 @@ export async function mockSchoolsApi(
 
     // 照片域先接管：学校缺省图的读写走这里，其余请求落到本文件的路由表。
     if (await handlePhotoRoute(route, request, url, photos, () => sessionRole)) return
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/auth/me') {
       if (!sessionRole) return fail(route, 401, 'unauthorized', '会话失效')

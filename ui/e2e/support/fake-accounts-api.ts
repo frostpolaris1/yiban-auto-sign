@@ -3,6 +3,7 @@ import type { Page, Request, Route } from '@playwright/test'
 import type { Account, AccountSummary, AccountVerifyResult } from '../../src/lib/api/account'
 import type { AuditStatusReport } from '../../src/lib/api/audit'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 
 /**
  * 账号页的假 API。
@@ -401,6 +402,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
 
     // 照片域先接管：账号抽屉的图片区与图片字节都走这里。
     if (await handlePhotoRoute(route, request, url, photos, () => sessionRole)) return
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     const sessionUser = (role: Role) => ({
       id: 'user-1',

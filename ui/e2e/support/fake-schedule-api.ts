@@ -1,6 +1,7 @@
 import type { Page, Route } from '@playwright/test'
 import type { SchedulePlan, ScheduleWindow, TimePref } from '../../src/lib/api/schedule'
 import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 
 /**
  * 时间片页与时间偏好卡的假 API。
@@ -227,6 +228,8 @@ export async function mockScheduleApi(
       // 壳在每页为 master/admin 读一次；时间片页不关心计数。
       return json(route, EMPTY_ACCOUNT_SUMMARY)
     }
+
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/schedule/windows' && request.method() === 'GET') {
       if (!(await requireManager(route))) return
