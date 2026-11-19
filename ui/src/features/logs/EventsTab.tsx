@@ -118,7 +118,15 @@ export function EventsTab({
     ],
     staleTime: 0,
     queryFn: () => {
-      if (SHOWCASE) return Promise.resolve(showcaseRunPage())
+      if (SHOWCASE) {
+        return Promise.resolve(
+          showcaseRunPage({
+            state: urlState.state,
+            school_id: urlState.school,
+            q: urlState.q,
+          }),
+        )
+      }
       return listTasks({
         day,
         state: urlState.state,

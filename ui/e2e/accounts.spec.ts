@@ -341,7 +341,7 @@ test('invariant 4: sign waits for confirmation and shows the conflict envelope',
   await dialog.getByRole('button', { name: '确认签到' }).click()
   await expect.poll(() => postCalls(api, 'acc-2', 'sign').length).toBe(1)
   await expect(dialog).toContainText('签到窗口已关闭')
-  await expect(dialog).toContainText('window_closed')
+  await expect(dialog).not.toContainText('window_closed')
 })
 
 test('invariant 4: verify waits for confirmation and reports the conclusion', async ({ page }) => {
@@ -373,8 +373,8 @@ for (const conflict of [
     const dialog = page.getByRole('dialog', { name: '立即签到？' })
     await dialog.getByRole('button', { name: '确认签到' }).click()
     await expect.poll(() => postCalls(api, 'acc-2', 'sign').length).toBe(1)
-    await expect(dialog).toContainText(conflict.code)
     await expect(dialog).toContainText(conflict.message)
+    await expect(dialog).not.toContainText(conflict.code)
   })
 }
 
@@ -389,8 +389,8 @@ test('verify reports upstream_unavailable', async ({ page }) => {
   const dialog = page.getByRole('dialog', { name: '验证凭据？' })
   await dialog.getByRole('button', { name: '确认验证' }).click()
   await expect.poll(() => postCalls(api, 'acc-1', 'verify').length).toBe(1)
-  await expect(dialog).toContainText('upstream_unavailable')
   await expect(dialog).toContainText('平台不可达')
+  await expect(dialog).not.toContainText('upstream_unavailable')
 })
 
 test('verify reports a platform rejection without a transport error', async ({ page }) => {

@@ -33,6 +33,7 @@ import {
   ANNOUNCEMENT_MAX_CHARS,
   countAnnouncementChars,
   formatAnnouncementError,
+  hasAnnouncementLineBreak,
   validateAnnouncementDraft,
 } from './drafts'
 
@@ -145,11 +146,25 @@ export function AnnouncementSection({ canWrite, readOnlyReason }: AnnouncementSe
                   value={value}
                   placeholder="输入单行公告内容，不超过 200 字…"
                   hint={`仅支持单行，最多 ${ANNOUNCEMENT_MAX_CHARS} 字（当前 ${charCount}/${ANNOUNCEMENT_MAX_CHARS}）`}
+                  keepHint
                   error={fieldError ?? undefined}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                      e.preventDefault()
+                      setFieldError('公告仅支持单行文本，不能包含换行')
+                    }
+                  }}
                   onChange={(e) => {
-                    setFieldError(null)
+                    const next = e.target.value
                     setSubmitError(null)
-                    setDraft(e.target.value)
+                    setDraft(next)
+                    if (hasAnnouncementLineBreak(next)) {
+                      setFieldError('公告仅支持单行文本，不能包含换行')
+                    } else if (countAnnouncementChars(next) > ANNOUNCEMENT_MAX_CHARS) {
+                      setFieldError(`公告最多 ${ANNOUNCEMENT_MAX_CHARS} 个字符，请精简后再试`)
+                    } else {
+                      setFieldError(null)
+                    }
                   }}
                 />
 

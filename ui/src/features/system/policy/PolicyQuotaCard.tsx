@@ -71,7 +71,14 @@ export function PolicyQuotaCard({ canWrite, readOnlyReason }: PolicyCardAccessPr
     },
   })
 
-  const effectiveDraft = draft ?? (query.data ? createQuotaPolicyDraft(query.data) : null)
+  const initialDraft = query.data ? createQuotaPolicyDraft(query.data) : null
+  const effectiveDraft = draft ?? initialDraft
+  const isDirty = Boolean(
+    initialDraft &&
+      effectiveDraft &&
+      (effectiveDraft.maxUsers !== initialDraft.maxUsers ||
+        effectiveDraft.maxAccounts !== initialDraft.maxAccounts),
+  )
   const rawErrors = effectiveDraft ? validateQuotaPolicyDraft(effectiveDraft) : {}
   const shownErrors = {
     maxUsers: submitted || touched.maxUsers ? rawErrors.maxUsers : undefined,
@@ -220,6 +227,11 @@ export function PolicyQuotaCard({ canWrite, readOnlyReason }: PolicyCardAccessPr
               >
                 恢复默认 (1)
               </Button>
+              {canWrite && isDirty && !mutation.isPending ? (
+                <span className="sys-dirty-note" role="status">
+                  有未保存变更
+                </span>
+              ) : null}
               {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
             </div>
           </form>

@@ -21,6 +21,7 @@ type FieldShellProps = {
   label: string
   hint?: string
   error?: string
+  keepHint?: boolean
   required?: boolean
   /** 标签行右侧的附加操作，例如「忘记密码」。 */
   labelAction?: ReactNode
@@ -29,9 +30,18 @@ type FieldShellProps = {
 
 /**
  * 三个控件共用字段壳。标签、提示、错误的 id 都在这里生成。
- * 错误与提示互斥，故控件只关联当前可见的一条。
+ * 默认错误与提示互斥；设 `keepHint` 时保留实时计数等辅助提示与错误并存。
  */
-function FieldShell({ id, label, hint, error, required, labelAction, children }: FieldShellProps) {
+function FieldShell({
+  id,
+  label,
+  hint,
+  error,
+  keepHint,
+  required,
+  labelAction,
+  children,
+}: FieldShellProps) {
   const labelNode = (
     <label className="field-label" htmlFor={id}>
       {label}
@@ -54,7 +64,7 @@ function FieldShell({ id, label, hint, error, required, labelAction, children }:
         labelNode
       )}
       {children}
-      {hint && !error ? (
+      {hint && (!error || keepHint) ? (
         <div className="field-help" id={fieldHintId(id)}>
           {hint}
         </div>
@@ -74,6 +84,7 @@ type CommonFieldProps = {
   label: string
   hint?: string
   error?: string
+  keepHint?: boolean
 }
 
 export type TextInputProps = CommonFieldProps &
@@ -216,10 +227,26 @@ export function SelectInput({ id, label, hint, error, required, options, classNa
 
 export type TextAreaInputProps = CommonFieldProps & Omit<ComponentPropsWithoutRef<'textarea'>, 'id'>
 
-export function TextAreaInput({ id, label, hint, error, required, className, ...rest }: TextAreaInputProps) {
-  const describedBy = fieldDescribedBy(id, hint, error)
+export function TextAreaInput({
+  id,
+  label,
+  hint,
+  error,
+  keepHint,
+  required,
+  className,
+  ...rest
+}: TextAreaInputProps) {
+  const describedBy = fieldDescribedBy(id, hint, error, keepHint)
   return (
-    <FieldShell id={id} label={label} hint={hint} error={error} required={required}>
+    <FieldShell
+      id={id}
+      label={label}
+      hint={hint}
+      error={error}
+      keepHint={keepHint}
+      required={required}
+    >
       <textarea
         id={id}
         className={cx('textarea', error && 'is-invalid', className)}

@@ -797,3 +797,29 @@ test('invariant 9: the stats read refetches once when the business day rolls ove
   await page.clock.runFor(60_000)
   await expect(signStatsCalls(api).length, 'the same business day does not refetch').toBe(2)
 })
+
+test('invariant 10: failed KPI links to failed events and quick links reach queue/audit/system', async ({
+  page,
+}) => {
+  await mockDashboardApi(page, {
+    role: 'admin',
+    signStats: {
+      days: [
+        { day: '2026-10-27', pending: 0, running: 0, success: 4, failed: 0, skipped: 0 },
+        { day: '2026-10-28', pending: 1, running: 0, success: 3, failed: 2, skipped: 0 },
+      ],
+      total: 6,
+      by_status: { pending: 1, running: 0, success: 3, failed: 2, skipped: 0 },
+      days_missing: [],
+    },
+  })
+  await openDashboard(page)
+
+  const quickNav = page.getByRole('navigation', { name: '管理常用直达' })
+  await expect(quickNav.getByRole('link', { name: '待办处理' })).toHaveAttribute('href', '/queue')
+  await expect(quickNav.getByRole('link', { name: '审计链巡检' })).toHaveAttribute('href', '/audit')
+  await expect(quickNav.getByRole('link', { name: '系统设置' })).toHaveAttribute('href', '/system')
+
+  await kpiCard(page, '今日失败').click()
+  await expect(page).toHaveURL(/\/logs\?.*tab=events.*state=failed|\/logs\?.*state=failed.*tab=events/)
+})

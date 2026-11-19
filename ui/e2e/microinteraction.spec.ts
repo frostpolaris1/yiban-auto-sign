@@ -104,7 +104,7 @@ test('invariant 1: a failed sign keeps its error in the dialog and sends no toas
   const dialog = page.getByRole('dialog', { name: '立即签到？' })
   await dialog.getByRole('button', { name: '确认签到' }).click()
   await expect(dialog).toContainText('签到窗口已关闭')
-  await expect(dialog).toContainText('window_closed')
+  await expect(dialog).not.toContainText('window_closed')
   await expect(toast(page)).toHaveCount(0)
 })
 

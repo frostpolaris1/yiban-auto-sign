@@ -225,7 +225,7 @@ test('error text maps the pinned HTTP failures to plain words', () => {
   )
   assert.equal(
     timePrefErrorText(new ApiError(500, { code: 'internal_error', message: '坏了' })),
-    'internal_error · 坏了',
+    '坏了',
   )
   assert.equal(
     scheduleErrorText(new ApiError(409, { code: 'conflict', message: 'task disabled' })),

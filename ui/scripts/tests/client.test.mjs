@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ApiError, apiRequest, describeReauthError } from '../../src/lib/api/client.ts'
+import { ApiError, apiRequest, describeApiError, describeReauthError } from '../../src/lib/api/client.ts'
 
 /**
  * Fetch-level checks for apiRequest.
@@ -407,6 +407,29 @@ test('a 304 hit refreshes the cache order so polling keys survive eviction', asy
     sentHeader(capture.calls[103], 'If-None-Match'),
     null,
     'the key that was actually oldest is evicted',
+  )
+})
+
+test('describeApiError strips internal code prefixes and maps raw English errors to Chinese', () => {
+  assert.equal(
+    describeApiError(new ApiError(500, { code: 'internal_error', message: '统计读取失败' })),
+    '统计读取失败',
+  )
+  assert.equal(
+    describeApiError(new ApiError(500, { code: 'internal_error', message: 'db down' })),
+    '服务暂不可用，请稍后重试',
+  )
+  assert.equal(
+    describeApiError(new ApiError(400, { code: 'validation_failed', message: 'bad pair' })),
+    '请求参数不符合要求，请核对后重试',
+  )
+  assert.equal(
+    describeApiError(new ApiError(413, { code: 'validation_failed', message: 'request body too large' })),
+    '提交内容超出大小限制，请精简后重试',
+  )
+  assert.equal(
+    describeApiError(new ApiError(429, { code: 'rate_limited', message: 'too fast' }, 30)),
+    '请求过于频繁，请在 30 秒后重试',
   )
 })
 

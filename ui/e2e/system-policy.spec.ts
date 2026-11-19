@@ -565,3 +565,45 @@ test('390px mobile viewport on /system has zero horizontal overflow', async ({ p
   }))
   expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth)
 })
+
+test('announcement gives live over-limit and Enter-key feedback while keeping counter visible', async ({
+  page,
+}) => {
+  await visitSystem(page, { role: 'master' })
+  const section = page.locator('#announcement')
+  const textarea = section.getByLabel('公告正文')
+
+  await textarea.fill('甲'.repeat(201))
+  await expect(section.getByRole('alert')).toContainText('最多 200 个字符')
+  await expect(section.locator('#announcement-text-hint')).toContainText('201/200')
+
+  await textarea.fill('正常公告内容')
+  await expect(section.getByRole('alert')).toHaveCount(0)
+  await textarea.press('Enter')
+  await expect(textarea).toHaveValue('正常公告内容')
+  await expect(section.getByRole('alert')).toContainText('不能包含换行')
+})
+
+test('policy card shows unsaved indicator after toggling and clears it after saving', async ({
+  page,
+}) => {
+  await visitSystem(page, { role: 'master' })
+  const card = page.locator('#policy-registration-card')
+  await expect(card.locator('.sys-dirty-note')).toHaveCount(0)
+  await card.getByRole('switch', { name: '允许新用户公开注册' }).click()
+  await expect(card.locator('.sys-dirty-note')).toContainText('有未保存变更')
+  await card.getByRole('button', { name: '保存设置' }).click()
+  await expect(card.locator('.sys-dirty-note')).toHaveCount(0)
+})
+
+test('reauth modal expands to fullscreen at 390px mobile viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await visitSystem(page, { role: 'master' })
+  await page.locator('#channels').getByRole('button', { name: '测试邮件' }).click()
+  const dialog = page.getByRole('dialog', { name: '确认发送测试邮件' })
+  await expect(dialog).toBeVisible()
+  const box = await dialog.boundingBox()
+  expect(box).not.toBeNull()
+  expect(box!.width).toBeGreaterThanOrEqual(388)
+  expect(box!.height).toBeGreaterThanOrEqual(840)
+})
