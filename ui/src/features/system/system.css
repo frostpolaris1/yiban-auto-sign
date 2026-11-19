@@ -279,6 +279,12 @@
   content: none;
 }
 
+@media (pointer: coarse) {
+  .sys-card-actions .btn {
+    min-block-size: 44px;
+  }
+}
+
 /* 策略卡开关行：轨道视觉不变，行触控高度抬到 44（同队列页表单档）。 */
 .sys-switch-field .app-switch {
   min-block-size: 44px;

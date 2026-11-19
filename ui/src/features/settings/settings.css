@@ -91,12 +91,30 @@
 }
 
 .s-notify-switch {
+  position: relative;
   justify-content: center;
   min-inline-size: 44px;
   min-block-size: 32px;
   padding: 6px 5px;
   border-radius: 999px;
   gap: 0;
+}
+
+.s-notify-switch::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+.s-notify-switch:disabled::after,
+.s-notify-switch[aria-disabled='true']::after {
+  content: none;
+}
+
+@media (pointer: coarse) {
+  .s-notify-switch {
+    min-block-size: 44px;
+  }
 }
 
 .s-notify-switch[aria-disabled='true'] {

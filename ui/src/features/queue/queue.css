@@ -80,7 +80,26 @@
 }
 
 .q-refresh-btn {
+  position: relative;
   font-weight: 600;
+}
+
+.q-refresh-btn::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+.q-refresh-btn:disabled::after {
+  content: none;
+}
+
+@media (pointer: coarse) {
+  .q-refresh-btn,
+  .q-pager-btn {
+    min-block-size: 44px;
+    height: auto;
+  }
 }
 
 /* ---------- 顶部遥测条（默认字体 + 固定高度 + 细线分隔） ---------- */

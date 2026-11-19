@@ -2065,11 +2065,108 @@ html {
 }
 
 .app-quick-links .app-inline-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   text-decoration: none;
+}
+
+.app-quick-links .app-inline-link::after {
+  content: "";
+  position: absolute;
+  inset: -13px -4px;
 }
 
 .app-quick-links .app-inline-link:hover {
   text-decoration: underline;
+}
+
+/* ---------- 08 批 2：全站触达 ≥44px 热区扩充（F-05） ----------
+ * 桌面端用 ::after 透明扩区保持视觉紧凑，不改组件外观与表行 48px 高度；
+ * 禁用态取消扩区避免假命中；粗指针（touch）与移动抽屉抬高实体高度避免相邻热区互叠。
+ */
+.d-topbar .topbar-actions {
+  gap: 8px;
+}
+
+.d-topbar .hamburger,
+.d-topbar .avatar {
+  position: relative;
+}
+
+.d-topbar .icon-btn::after,
+.d-topbar .hamburger::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+
+.d-topbar .avatar::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+}
+
+.app-row-actions .btn,
+.app-account-actions .btn,
+.run-task-row .btn,
+.run-table .btn,
+.run-pager .btn,
+.app-page-actions .btn {
+  position: relative;
+}
+
+.app-row-actions .btn::after,
+.app-account-actions .btn::after,
+.run-task-row .btn::after,
+.run-table .btn::after,
+.run-pager .btn::after,
+.app-page-actions .btn::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+.app-row-actions .btn:disabled::after,
+.app-account-actions .btn:disabled::after,
+.run-task-row .btn:disabled::after,
+.run-table .btn:disabled::after,
+.run-pager .btn:disabled::after,
+.app-page-actions .btn:disabled::after {
+  content: none;
+}
+
+.app-card-tabs button {
+  position: relative;
+}
+
+.app-card-tabs button::after {
+  content: "";
+  position: absolute;
+  inset: -10px 0;
+}
+
+@media (max-width: 720px) {
+  .d-topbar .topbar-actions {
+    gap: 8px;
+  }
+
+  .d-sidebar .nav-link,
+  .d-sidebar .nav-submenu a {
+    min-height: 44px;
+    height: auto;
+  }
+}
+
+@media (pointer: coarse) {
+  .d-sidebar .nav-link,
+  .d-sidebar .nav-submenu a,
+  .app-page-actions .btn,
+  .run-pager .btn,
+  .app-card-tabs button {
+    min-block-size: 44px;
+    height: auto;
+  }
 }
 
 @media (max-width: 720px) {
