@@ -11,7 +11,8 @@
  * Esc 关闭并把焦点交还触发按钮。键盘模型自实现，参考 `Menu` 的
  * 「焦点自己管、高亮一个点」思路——但搜索要管的是结果列表而非菜单项，
  * 故用 combobox/listbox 语义自己接键。不引新依赖（任务书明令）。
- * 输入防抖 250ms；旧请求以序号作废，迟到的响应不得覆盖新结果。
+ * 输入防抖 250ms；旧请求以序号作废，迟到的响应不得覆盖新结果；
+ * 清空输入或关闭面板同样作废在途请求。
  * 结果按角色收敛（见 searchResults）；无结果给提示词与示例。
  * 点击跳转：账号→`/accounts`（q+locate 高亮），用户→`/users?q=`，
  * 任务→`/run?q=`（本基点台账在 /run；`/logs` 仍是重定向桩）。
@@ -54,6 +55,7 @@ export function GlobalSearch({ me }: { me: SessionUser }) {
   const seqRef = useRef(0)
 
   const close = useCallback(() => {
+    seqRef.current += 1
     setOpen(false)
     setTerm('')
     setResults([])
@@ -97,6 +99,7 @@ export function GlobalSearch({ me }: { me: SessionUser }) {
     if (!open) return
     const trimmed = term.trim()
     if (trimmed === '') {
+      seqRef.current += 1
       setResults([])
       setPartial(false)
       setLoading(false)
@@ -148,6 +151,7 @@ export function GlobalSearch({ me }: { me: SessionUser }) {
     } else if (row.route === 'users') {
       void navigate({ to: '/users', search: { q: row.query || undefined } })
     } else {
+      // 当 02/04 链合入后此路由此处改为 /logs?tab=events&q=
       void navigate({ to: '/run', search: { q: row.query || undefined } })
     }
   }
@@ -207,7 +211,7 @@ export function GlobalSearch({ me }: { me: SessionUser }) {
                 type="text"
                 className="app-search-input"
                 role="combobox"
-                aria-expanded={results.length > 0}
+                aria-expanded={open}
                 aria-controls={listId}
                 aria-activedescendant={active >= 0 ? `search-option-${active}` : undefined}
                 aria-label="搜索账号、用户或任务"

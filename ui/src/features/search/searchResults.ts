@@ -113,6 +113,7 @@ function mapTasks(items: AdminTaskRow[], term: string): SearchResult[] {
     id: item.id,
     title: `${item.task_name} · ${item.school_name}`,
     subtitle: `${item.account_phone_masked} · ${item.state}`,
+    // 当 02/04 链合入后此路由此处改为 /logs?tab=events&q=
     route: 'run' as const,
     query,
   }))

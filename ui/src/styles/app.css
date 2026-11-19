@@ -2556,6 +2556,8 @@ a.kpi-card {
   right: 32px;
   z-index: 110;
   width: min(440px, calc(100vw - 24px));
+  max-block-size: min(480px, 70vh);
+  overflow-y: auto;
   padding: 12px;
   background: var(--bg-card);
   border: 1px solid var(--border);

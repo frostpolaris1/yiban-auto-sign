@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { mockAccountsApi, type FakeApi } from './support/fake-accounts-api'
+import { mockAccountsApi, ACCOUNTS, type FakeApi } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 
 /**
@@ -83,8 +83,10 @@ type SearchFixture = {
  */
 async function mockSearchEndpoints(
   page: Page,
-  role: 'master' | 'admin',
+  role: 'master' | 'admin' | 'user',
+  extraTasks: typeof SEARCH_TASKS = [],
 ): Promise<SearchFixture> {
+  const tasks = [...SEARCH_TASKS, ...extraTasks]
   const paths: string[] = []
   page.on('request', (request) => {
     const pathname = new URL(request.url()).pathname
@@ -132,8 +134,8 @@ async function mockSearchEndpoints(
       const q = new URL(request.url()).searchParams.get('q') ?? ''
       const items =
         q === ''
-          ? SEARCH_TASKS
-          : SEARCH_TASKS.filter((t) => t.task_name.includes(q) || t.school_name.includes(q))
+          ? tasks
+          : tasks.filter((t) => t.task_name.includes(q) || t.school_name.includes(q))
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -243,6 +245,7 @@ test.describe('global search', () => {
       .getByRole('option', { name: /晚自习签到/ })
     await expect(taskOption).toBeVisible()
     await page.keyboard.press('Enter')
+    // 当 02/04 链合入后此路由此处改为 /logs?tab=events&q=
     // 底本不符：本基点台账在 `/run`（`/logs` 仍是重定向桩），故落 /run?q=。
     await expect(page).toHaveURL(/\/run\?q=%E7%AD%BE%E5%88%B0|\/run\?q=签到/)
   })
@@ -277,11 +280,73 @@ test.describe('global search', () => {
     const dialog = page.getByRole('dialog', { name: '全局搜索' })
     await expect(dialog.getByText('没有匹配结果')).toBeVisible()
     await expect(dialog.getByText(/138\*\*\*\*8000/)).toBeVisible()
+    await expect(
+      dialog.getByRole('combobox'),
+      'the combobox stays expanded while the popup is open, hits or not',
+    ).toHaveAttribute('aria-expanded', 'true')
 
     await page.keyboard.press('Escape')
     await expect(dialog).toBeHidden()
     const focused = await page.evaluate(() => document.activeElement?.className ?? '')
     expect(focused, 'focus returns to the topbar search button').toContain('cmd')
+  })
+
+  test('clearing the input while a query is in flight drops the stale response', async ({
+    page,
+  }) => {
+    await mockAccountsApi(page, { role: 'master' })
+    await mockSearchEndpoints(page, 'master')
+    // 慢响应：只拖住带 q 的账号检索，其余请求照常放行。
+    await page.route(
+      (url) => url.pathname === '/api/accounts' && url.searchParams.has('q'),
+      async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+        await route.fallback()
+      },
+    )
+    await page.goto('/design')
+
+    await openSearch(page)
+    const requestSeen = page.waitForRequest((request) => {
+      const url = new URL(request.url())
+      return url.pathname === '/api/accounts' && url.searchParams.get('q') === '138'
+    })
+    await typeQuery(page, '138')
+    await requestSeen
+
+    // 旧响应还在延迟窗口里，清空输入让序号作废。
+    await (await searchInput(page)).fill('')
+    const dialog = page.getByRole('dialog', { name: '全局搜索' })
+    await expect(dialog.getByText(/输入即搜/)).toBeVisible()
+
+    // 等过延迟窗口再断言：旧响应落地也不得把结果写回面板。
+    await page.waitForTimeout(800)
+    await expect(dialog.getByRole('option')).toHaveCount(0)
+    await expect(dialog.getByText('东区宿舍')).toHaveCount(0)
+  })
+
+  test('user role gets no search group and issues no request', async ({ page }) => {
+    const accounts = await mockAccountsApi(page, { role: 'user' })
+    const fixture = await mockSearchEndpoints(page, 'user')
+    await page.goto('/design')
+
+    await openSearch(page)
+    // 从面板打开起记录所有 /api 请求：user 角色没有任何检索组。
+    const during: string[] = []
+    page.on('request', (request) => {
+      const pathname = new URL(request.url()).pathname
+      if (pathname.startsWith('/api/')) during.push(pathname)
+    })
+
+    const dialog = page.getByRole('dialog', { name: '全局搜索' })
+    await typeQuery(page, '签到')
+    await expect(dialog.getByText('当前角色不启用全局检索。')).toBeVisible()
+    await expect(dialog.getByRole('option')).toHaveCount(0)
+    await expect(dialog.getByRole('group')).toHaveCount(0)
+
+    expect(fixture.paths, 'no role-gated search endpoint is called').toEqual([])
+    expect(qAccountCalls(accounts), 'no account query is issued').toEqual([])
+    expect(during, 'no /api request at all while a user searches').toEqual([])
   })
 })
 
@@ -353,8 +418,22 @@ test.describe('mobile', () => {
   test('at 390 the search trigger and density toggle hit at least 44px and the open panel does not overflow', async ({
     page,
   }) => {
-    await mockAccountsApi(page, { role: 'master' })
-    await mockSearchEndpoints(page, 'master')
+    // 给「限高＋内部滚动」造足量结果：账号侧 11 条同词、任务侧 3 条同词。
+    const overflowAccounts = Array.from({ length: 11 }, (_, index) => ({
+      ...ACCOUNTS[2],
+      id: `acc-overflow-${index}`,
+      display_name: '签到账号0001',
+    }))
+    const overflowTasks = ['午间签到', '夜间签到', '课前签到'].map((taskName, index) => ({
+      ...SEARCH_TASKS[0],
+      id: `task-overflow-${index}`,
+      task_name: taskName,
+    }))
+    await mockAccountsApi(page, {
+      role: 'master',
+      accounts: [...ACCOUNTS, ...overflowAccounts],
+    })
+    await mockSearchEndpoints(page, 'master', overflowTasks)
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/design')
 
@@ -376,6 +455,27 @@ test.describe('mobile', () => {
       .first()
       .boundingBox()
     expect(optionBox && optionBox.height).toBeGreaterThanOrEqual(44)
+
+    // 面板限高与内部滚动：10 条结果（每组上限 5）超出 480px，末项必须可达。
+    await (await searchInput(page)).fill('签到')
+    const panel = page.getByRole('dialog', { name: '全局搜索' })
+    await expect(panel.getByRole('option')).toHaveCount(10)
+    const panelBox = await panel.boundingBox()
+    expect(panelBox && panelBox.height).toBeLessThanOrEqual(480)
+    const scroll = await panel.evaluate((element) => ({
+      overflowY: getComputedStyle(element).overflowY,
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    }))
+    expect(scroll.overflowY).toBe('auto')
+    expect(scroll.scrollHeight, 'the capped panel must own the overflow').toBeGreaterThan(
+      scroll.clientHeight,
+    )
+    const lastOption = panel.getByRole('option').last()
+    await lastOption.scrollIntoViewIfNeeded()
+    await expect(lastOption).toBeVisible()
+    const lastBox = await lastOption.boundingBox()
+    expect(lastBox && lastBox.y + lastBox.height).toBeLessThanOrEqual(844)
 
     const metrics = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
