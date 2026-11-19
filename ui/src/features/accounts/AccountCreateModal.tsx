@@ -305,7 +305,7 @@ function SchoolSelect({
   )
 }
 
-/** 第 2 页：自动读一次设备，成功只读展示；失败不阻断；机型可选。 */
+/** 第 2 页：按需读取设备信息，成功只读展示；失败不阻断；机型可选。 */
 function WizardStepTwo({
   open,
   account,

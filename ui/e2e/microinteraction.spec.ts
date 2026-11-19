@@ -199,7 +199,7 @@ test('invariant 1: adding a school admin toasts inside the open modal', async ({
   await fillReauth(dialog)
   await dialog.getByRole('button', { name: '添加管理员' }).click()
 
-  await expect(toast(page).filter({ hasText: '已添加管理员 user-9' })).toBeVisible()
+  await expect(toast(page).filter({ hasText: '已添加管理员 a***@example.com' })).toBeVisible()
   await expect(page.getByText('操作结果')).toHaveCount(0)
 
   await dialog.getByRole('button', { name: '移除 admin-candidate@example.com' }).click()

@@ -65,6 +65,10 @@ export function UserBatchModal({
   useEffect(() => {
     setPassword('')
   }, [action])
+  // 成功态保留结果页期间操作者口令已无用：结果一到即清。
+  useEffect(() => {
+    if (result) setPassword('')
+  }, [result])
 
   const labels = new Map(rows.map((row) => [row.id, row.email]))
   const label = action ? USER_BATCH_LABELS[action] : '批量操作'
@@ -73,8 +77,8 @@ export function UserBatchModal({
     <Modal
       open={open}
       onOpenChange={(next) => {
-        // 在途锁关：X/Esc/遮罩都不得丢弃正在进行的批量结果。
-        if (!next && !pending) onClose()
+        // 在途与结果态都锁关：X/Esc/遮罩不得丢弃进行中或一次性口令结果；只有「完成」关闭。
+        if (!next && !pending && !result) onClose()
       }}
       title={`批量${label}？`}
       description={
