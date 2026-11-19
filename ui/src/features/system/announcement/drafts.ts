@@ -11,7 +11,7 @@
  * - 发布动作不接受空串（空串只能由「清空公告」显式触发 `{ text: '' }`），防止误清空线上公告。
  */
 
-import { ApiError, describeApiError } from '@/lib/api/client'
+import { ApiError } from '@/lib/api/client'
 
 export const ANNOUNCEMENT_MAX_CHARS = 200
 
@@ -49,15 +49,25 @@ export function validateAnnouncementDraft(raw: string): AnnouncementValidationRe
   return { valid: true, text: trimmed }
 }
 
+/**
+ * 公告接口的失败文案：已知状态给对应中文话术，其余状态兜底中文；
+ * 后端 `code · message` 原文不外泄。
+ */
 export function formatAnnouncementError(error: unknown): string {
   if (error instanceof ApiError) {
+    if (error.status === 401) {
+      return '登录已过期，请重新登录后再试'
+    }
     if (error.status === 403) {
-      return `仅主管理员可发布或清空公告（${describeApiError(error)}）`
+      return '仅主管理员可发布或清空公告'
     }
     if (error.status === 400) {
-      return `公告内容格式未通过校验（${describeApiError(error)}）`
+      return '公告内容格式未通过校验，请检查换行与字数后重试'
     }
-    return describeApiError(error)
+    if (error.status === 429) {
+      return '请求过于频繁，请稍后重试'
+    }
+    return '发布失败，请稍后重试'
   }
   return '保存公告时网络异常，请稍后重试'
 }

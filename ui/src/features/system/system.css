@@ -17,6 +17,7 @@
 }
 
 .sys-anchor {
+  position: relative;
   display: inline-flex;
   align-items: center;
   min-block-size: 36px;
@@ -30,6 +31,13 @@
   line-height: 1.2;
   text-decoration: none;
   transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+/* 锚链 pill 视觉保持 36，::before 补 ±4 ⇒ 触控 44；横向不扩，行间距 8 不互叠。 */
+.sys-anchor::before {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
 }
 
 .sys-anchor:hover {
@@ -245,6 +253,35 @@
 
 .sys-card-actions .app-deny-note {
   white-space: normal;
+}
+
+/* vendor 没有通用的 `.btn:disabled` 规则：禁用动作必须看得出来。
+   透明度与光标照 app.css 既有补丁的 0.45 档，不引新令牌。 */
+.sys-card-actions .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 触达口径照队列页：动作按钮视觉高度 34，::before 补 ±5 ⇒ 触控 44。
+   禁用态去掉热区扩展，与 queue.css 的 `:disabled::before` 处理一致。 */
+.sys-card-actions .btn {
+  position: relative;
+  min-block-size: 34px;
+}
+
+.sys-card-actions .btn::before {
+  content: "";
+  position: absolute;
+  inset: -5px 0;
+}
+
+.sys-card-actions .btn:disabled::before {
+  content: none;
+}
+
+/* 策略卡开关行：轨道视觉不变，行触控高度抬到 44（同队列页表单档）。 */
+.sys-switch-field .app-switch {
+  min-block-size: 44px;
 }
 
 .sys-status-note {

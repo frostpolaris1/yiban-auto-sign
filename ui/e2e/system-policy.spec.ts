@@ -445,6 +445,12 @@ test('admin sees read-only disabled controls with reason and triggers zero write
     await button.click({ force: true })
   }
 
+  // 禁用主按钮必须视觉降级（照 app.css 既有 0.45 档，防止假可点）。
+  await expect(page.locator('#policy-quota-card').getByRole('button', { name: '保存配额' })).toHaveCSS(
+    'opacity',
+    '0.45',
+  )
+
   for (const control of [
     page.locator('#policy-registration-card').getByRole('switch'),
     page.locator('#policy-auto-approve-card').getByRole('switch'),
@@ -482,7 +488,8 @@ test('server write errors on policy and announcement display inline alerts and p
   const quotaCard = page.locator('#policy-quota-card')
   await quotaCard.getByLabel('全站活跃用户上限').fill('88')
   await quotaCard.getByRole('button', { name: '保存配额' }).click()
-  await expect(quotaCard.getByRole('alert')).toContainText('db write failed')
+  await expect(quotaCard.getByRole('alert')).toContainText('保存失败，请稍后重试')
+  await expect(quotaCard.getByRole('alert')).not.toContainText('internal_error')
   await expect(quotaCard.getByLabel('全站活跃用户上限')).toHaveValue('88')
 
   const annSection = page.locator('#announcement')

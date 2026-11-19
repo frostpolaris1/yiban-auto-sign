@@ -11,7 +11,7 @@
  * - 未改动字段不写入补丁；若无任何改动，返回 `null` 避免发出空 JSON `{}` 触发 400。
  */
 
-import { ApiError, describeApiError } from '@/lib/api/client'
+import { ApiError } from '@/lib/api/client'
 import type {
   AdminQuotaSettingsUpdate,
   AdminScheduleSettingsUpdate,
@@ -236,20 +236,26 @@ export function buildQuotaResetPatch(): AdminQuotaSettingsUpdate {
   return { max_users: null, max_accounts: null }
 }
 
-/** 把系统运行策略接口的失败收拢成可读中文说明。 */
+/**
+ * 把系统运行策略接口的失败收拢成可读中文说明。
+ * 后端 `code · message` 原文不外泄：已知状态给对应话术，其余状态兜底中文。
+ */
 export function formatSystemWriteError(error: unknown): string {
   if (error instanceof ApiError) {
+    if (error.status === 401) {
+      return '登录已过期，请重新登录后再试'
+    }
     if (error.status === 403) {
-      return `权限不足：${POLICY_READ_ONLY_REASON}（${describeApiError(error)}）`
+      return `权限不足：${POLICY_READ_ONLY_REASON}`
     }
     if (error.status === 400) {
-      return `参数不符合要求，请核对输入范围与格式（${describeApiError(error)}）`
+      return '参数不符合要求，请核对输入范围与格式'
     }
     if (error.status === 429) {
       const wait = error.retryAfterSec ? `，请约 ${error.retryAfterSec} 秒后再试` : ''
-      return `请求过于频繁${wait}（${describeApiError(error)}）`
+      return `请求过于频繁${wait || '，请稍后重试'}`
     }
-    return describeApiError(error)
+    return '保存失败，请稍后重试'
   }
   return '网络异常或服务不可达，请稍后重试'
 }
