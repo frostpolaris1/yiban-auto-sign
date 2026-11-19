@@ -2861,3 +2861,39 @@ html {
   color: var(--t-base);
   font-size: 12px;
 }
+
+/* ---------- 执行引擎暂停开关（健康条与巡检页头） ---------- */
+.app-announcement-banner {
+  margin-bottom: 16px;
+}
+
+.app-pause-banner {
+  margin-bottom: 12px;
+}
+
+.app-pause-banner-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.app-pause-impact {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  color: var(--t-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.app-health-action {
+  margin-left: 12px;
+}
+
+.app-pause-banner .btn:disabled,
+.app-health-action:disabled,
+.app-engine-pause:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

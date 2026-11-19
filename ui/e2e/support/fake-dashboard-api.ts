@@ -71,6 +71,8 @@ export type MockDashboardOptions = {
   auditStatusError?: Failure
   /** 引擎运行快照。缺省运行中（1 在飞、0 待领、1 待重试）；视觉基线使用固定时刻。 */
   engineSnapshot?: EngineSnapshot
+  /** 公告正文；缺省空串＝无公告（横幅不渲染）。 */
+  announcementText?: string
   engineError?: Failure
 }
 
@@ -379,7 +381,7 @@ export async function mockDashboardApi(
   }))
   const timePref: TimePref = { ...(options.timePref ?? DEFAULT_TIME_PREF) }
   const auditStatus: AuditStatusReport = { ...(options.auditStatus ?? DEFAULT_AUDIT_STATUS) }
-  const engineSnapshot: EngineSnapshot = { ...(options.engineSnapshot ?? DEFAULT_ENGINE_SNAPSHOT) }
+  let engineSnapshot: EngineSnapshot = { ...(options.engineSnapshot ?? DEFAULT_ENGINE_SNAPSHOT) }
   const failures: Record<
     | 'signStatus'
     | 'diagnostics'
@@ -538,10 +540,34 @@ export async function mockDashboardApi(
       return json(route, engineSnapshot)
     }
 
+    if (url.pathname === '/api/announcement' && request.method() === 'GET') {
+      const text = options.announcementText ?? ''
+      return json(route, { text, updated_at: text === '' ? null : '2026-11-19T10:00:00Z' })
+    }
+
+    if (url.pathname === '/api/admin/engine/pause' && request.method() === 'PUT') {
+      if (!(await deny(route, ['master', 'admin']))) return
+      const update = body as { paused?: boolean; current_password?: string }
+      // 方向门先于口令校验，与服务端同序。
+      if (typeof update.paused !== 'boolean') return fail(route, 400, 'validation_failed', '缺少目标状态')
+      if (update.paused === false && sessionRole !== 'master') {
+        return fail(route, 403, 'forbidden', '仅主管理员可恢复')
+      }
+      if (!update.current_password) return fail(route, 400, 'validation_failed', '缺少口令')
+      engineSnapshot = { ...engineSnapshot, paused: update.paused === true }
+      return json(route, { paused: engineSnapshot.paused })
+    }
+
     return fail(route, 404, 'not_found', '未找到资源')
   })
 
   return { calls }
+}
+
+export function pauseCalls(api: FakeDashboardApi): DashboardApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'PUT' && call.path === '/api/admin/engine/pause',
+  )
 }
 
 export function engineSnapshotCalls(api: FakeDashboardApi): DashboardApiCall[] {

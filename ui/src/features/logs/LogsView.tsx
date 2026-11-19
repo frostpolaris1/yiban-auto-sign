@@ -101,7 +101,14 @@ export function LogsView({ urlState, onSearchChange }: LogsViewProps) {
             {
               value: 'patrol',
               label: '运行巡检',
-              content: <PatrolTab allowed={allowed} liveStatus={live.status} events={events} />,
+              content: (
+                  <PatrolTab
+                    allowed={allowed}
+                    role={role ?? 'user'}
+                    liveStatus={live.status}
+                    events={events}
+                  />
+                ),
             },
           ]}
         />

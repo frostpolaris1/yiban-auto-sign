@@ -16,6 +16,7 @@ import {
   installFakeEventSource,
   listTaskCalls,
   mockLogsApi,
+  pauseCalls,
   schoolsCalls,
 } from './support/fake-logs-api'
 
@@ -792,4 +793,75 @@ test('patrol invariant 7: the monitor never says queue and fits 390px', async ({
     const clientWidth = await narrow.evaluate((el) => el.clientWidth)
     expect(scrollWidth).toBeLessThanOrEqual(clientWidth)
   }).toPass()
+})
+
+
+test('invariant 8: a master resumes the paused engine from the patrol header', async ({
+  page,
+}) => {
+  const api = await mockLogsApi(page, {
+    role: 'master',
+    snapshot: { ...ENGINE_SNAPSHOT, paused: true },
+  })
+  await page.goto('/logs?tab=patrol')
+  await openPatrolTab(page)
+
+  const banner = page.getByText('执行引擎已暂停')
+  await expect(banner).toBeVisible()
+  await page.getByRole('button', { name: '恢复引擎' }).click()
+  const dialog = page.getByRole('dialog', { name: '恢复执行引擎' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('textbox', { name: '你的登录口令' }).fill('p@ssword')
+  await dialog.getByRole('button', { name: '恢复引擎' }).click()
+
+  await expect(dialog).toBeHidden()
+  const pauses = pauseCalls(api)
+  expect(pauses, 'one resume PUT per confirm').toHaveLength(1)
+  expect(JSON.parse(pauses[0].body as string)).toEqual({
+    paused: false,
+    current_password: 'p@ssword',
+  })
+  await expect(page.getByText('执行引擎已暂停')).toBeHidden()
+})
+
+
+test('invariant 8: an admin cannot resume from the patrol header and sends nothing', async ({
+  page,
+}) => {
+  const api = await mockLogsApi(page, {
+    role: 'admin',
+    snapshot: { ...ENGINE_SNAPSHOT, paused: true },
+  })
+  await page.goto('/logs?tab=patrol')
+  await openPatrolTab(page)
+
+  await expect(page.getByText('执行引擎已暂停')).toBeVisible()
+  const resume = page.getByRole('button', { name: '恢复引擎' })
+  await expect(resume).toBeDisabled()
+  await expect(resume).toHaveAttribute('title', '仅主管理员可恢复')
+  await resume.click({ force: true })
+  expect(pauseCalls(api), 'a disabled resume must not reach the server').toHaveLength(0)
+})
+
+test('invariant 8: a master pauses from the patrol header and the banner appears', async ({
+  page,
+}) => {
+  const api = await mockLogsApi(page, { role: 'master' })
+  await page.goto('/logs?tab=patrol')
+  await openPatrolTab(page)
+
+  await page.getByRole('button', { name: '暂停引擎' }).click()
+  const dialog = page.getByRole('dialog', { name: '暂停执行引擎' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('恢复仅主管理员')
+  await dialog.getByRole('textbox', { name: '你的登录口令' }).fill('p@ssword')
+  await dialog.getByRole('button', { name: '暂停引擎' }).click()
+
+  const pauses = pauseCalls(api)
+  expect(pauses, 'one pause PUT per confirm').toHaveLength(1)
+  expect(JSON.parse(pauses[0].body as string)).toEqual({
+    paused: true,
+    current_password: 'p@ssword',
+  })
+  await expect(page.getByText('执行引擎已暂停')).toBeVisible()
 })

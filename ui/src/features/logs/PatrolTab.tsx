@@ -16,12 +16,16 @@
  * 断线期间仅在本页签激活时每 10 秒轮询一次 `['engine-page']`。
  */
 
-import { useEffect } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AsyncState } from '@/components/ui/AsyncState'
+import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
-import { describeApiError } from '@/lib/api/client'
-import { getEngineSnapshot, type EngineSnapshot } from '@/lib/api/engine'
+import { PauseBanner } from '@/components/ui/PauseBanner'
+import { ReauthDialog } from '@/components/ui/ReauthDialog'
+import { describeApiError, describeReauthError } from '@/lib/api/client'
+import { getEngineSnapshot, setEnginePause, type EngineSnapshot } from '@/lib/api/engine'
+import type { Role } from '@/lib/api/auth'
 import { formatClock, formatDateTime } from '@/lib/format'
 import { SHOWCASE } from '@/lib/session'
 import { showcaseEngineSnapshot } from '@/lib/showcase'
@@ -50,11 +54,12 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
 
 export type PatrolTabProps = {
   allowed: boolean
+  role: Role
   liveStatus: RunLiveStatus
   events: EngineEvent[]
 }
 
-export function PatrolTab({ allowed, liveStatus, events }: PatrolTabProps) {
+export function PatrolTab({ allowed, role, liveStatus, events }: PatrolTabProps) {
   const queryClient = useQueryClient()
 
   const engineQuery = useQuery({
@@ -66,6 +71,31 @@ export function PatrolTab({ allowed, liveStatus, events }: PatrolTabProps) {
     },
     enabled: allowed,
   })
+
+  // 全局暂停开关：暂停 master+admin 可发，恢复仅 master；二次口令走 ReauthDialog。
+  const [pauseDialog, setPauseDialog] = useState<'pause' | 'resume' | null>(null)
+  const [pauseError, setPauseError] = useState<string | null>(null)
+  const paused = engineQuery.data?.paused === true
+  const pauseMutation = useMutation({
+    mutationFn: (vars: { paused: boolean; password: string }) =>
+      setEnginePause(vars.paused, vars.password),
+    onSuccess: () => {
+      setPauseDialog(null)
+      setPauseError(null)
+      void queryClient.invalidateQueries({ queryKey: ['engine-page'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard-engine'] })
+    },
+    onError: (error) => setPauseError(describeReauthError(error)),
+  })
+  const pauseBlockedReason =
+    engineQuery.data === undefined
+      ? '引擎状态读取中'
+      : SHOWCASE
+        ? '展示模式只读'
+        : paused && role !== 'master'
+          ? '仅主管理员可恢复'
+          : undefined
+  const pauseCanToggle = pauseBlockedReason === undefined
 
   // 断线降级：仅在本页签激活期间，快照每 10 秒轮询一次。连接正常时刷新只由 SSE 驱动。
   useEffect(() => {
@@ -92,7 +122,48 @@ export function PatrolTab({ allowed, liveStatus, events }: PatrolTabProps) {
           : undefined
       }
     >
-      {snap ? <EngineBody snapshot={snap} now={now} live={liveStatus} events={events} /> : null}
+      {snap ? (
+        <EngineBody
+          snapshot={snap}
+          now={now}
+          live={liveStatus}
+          events={events}
+          paused={paused}
+          pauseCanToggle={pauseCanToggle}
+          pauseBlockedReason={pauseBlockedReason}
+          onTogglePause={() => {
+            setPauseError(null)
+            setPauseDialog(paused ? 'resume' : 'pause')
+          }}
+        />
+      ) : null}
+      <ReauthDialog
+        open={pauseDialog !== null}
+        title={pauseDialog === 'resume' ? '恢复执行引擎' : '暂停执行引擎'}
+        description={
+          pauseDialog === 'resume'
+            ? '恢复后待执行任务按序补跑。'
+            : '暂停后执行器不再领取新任务，在飞任务会跑完；恢复仅主管理员，暂停后由巡检页头横幅恢复。'
+        }
+        confirmText={pauseDialog === 'resume' ? '恢复引擎' : '暂停引擎'}
+        pending={pauseMutation.isPending}
+        error={pauseError}
+        onClose={() => {
+          if (pauseMutation.isPending) return
+          setPauseDialog(null)
+          setPauseError(null)
+        }}
+        onConfirm={(password) =>
+          pauseMutation.mutate({ paused: pauseDialog === 'pause', password })
+        }
+      >
+        <ul className="app-pause-impact">
+          <li>在飞 {engineQuery.data?.inflight.length ?? 0} 条（本管辖范围）继续完成，不会中断。</li>
+          <li>待执行 {engineQuery.data?.due_now ?? 0} 条（本管辖范围）暂停领取，恢复后按序补跑。</li>
+          <li>暂停是全局开关，影响所有管辖范围；恢复仅主管理员。</li>
+          <li>开关写入设置并记一条审计，重启进程不丢失。</li>
+        </ul>
+      </ReauthDialog>
     </AsyncState>
   )
 }
@@ -102,10 +173,23 @@ type EngineBodyProps = {
   now: number
   live: RunLiveStatus
   events: EngineEvent[]
+  paused: boolean
+  pauseCanToggle: boolean
+  pauseBlockedReason?: string
+  onTogglePause: () => void
 }
 
 /** 快照正文：四指标、在飞、待重试与最近事件。只在有数据时渲染。 */
-function EngineBody({ snapshot, now, live, events }: EngineBodyProps) {
+function EngineBody({
+  snapshot,
+  now,
+  live,
+  events,
+  paused,
+  pauseCanToggle,
+  pauseBlockedReason,
+  onTogglePause,
+}: EngineBodyProps) {
   const metrics = [
     { key: 'due', label: '待执行', value: snapshot.due_now },
     { key: 'inflight', label: '在飞', value: snapshot.inflight.length },
@@ -114,7 +198,33 @@ function EngineBody({ snapshot, now, live, events }: EngineBodyProps) {
   ]
   return (
     <>
-      <Card eyebrow="Engine · 总览" title="执行概览">
+      {paused ? (
+        <PauseBanner
+          inflight={snapshot.inflight.length}
+          dueNow={snapshot.due_now}
+          canResume={pauseCanToggle}
+          resumeBlockedReason={pauseBlockedReason}
+          onResume={onTogglePause}
+        />
+      ) : null}
+      <Card
+        eyebrow="Engine · 总览"
+        title="执行概览"
+        action={
+          paused ? undefined : (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="app-engine-pause"
+              disabled={!pauseCanToggle}
+              title={pauseCanToggle ? undefined : pauseBlockedReason}
+              onClick={onTogglePause}
+            >
+              暂停引擎
+            </Button>
+          )
+        }
+      >
         <dl className="run-summary engine-summary">
           {metrics.map((cell) => (
             <div className="run-summary-cell" key={cell.key}>
