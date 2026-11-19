@@ -2544,3 +2544,121 @@ a.kpi-card {
   display: flex;
   justify-content: center;
 }
+
+/* ---------- 全局搜索面板（任务书 06） ----------
+ * 顶栏 `.cmd` 触发的轻量下拉，不是命令面板：只列结果、不做指令执行。
+ * 挂 body 的浮层：宽度按视口收敛，390 下不产生横向溢出。
+ * 颜色全部取令牌；分组标签用 --t-muted，活动项复用 dd-menu 的高亮口径。
+ */
+.app-search-panel {
+  position: fixed;
+  top: 56px;
+  right: 32px;
+  z-index: 110;
+  width: min(440px, calc(100vw - 24px));
+  padding: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+}
+
+.app-search-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-body);
+  color: var(--t-base);
+  font: inherit;
+  font-size: 13px;
+}
+
+.app-search-input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.app-search-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 4px 2px;
+  color: var(--t-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.app-search-option {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.app-search-option[aria-selected="true"] {
+  background: var(--bg-hover);
+}
+
+.app-search-option-title {
+  color: var(--t-base);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+
+.app-search-option-sub {
+  color: var(--t-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+@media (max-width: 720px) {
+  .app-search-panel {
+    right: 12px;
+  }
+}
+
+/* ---------- 顶栏移动端触达（任务书 06） ----------
+ * 搜索触发与密度切换在 720 以下抬到 44×44：触摸口径（初审 2026-11-15 同和）。
+ * 只抬这两个本批新增可用的控件；其余顶栏按钮维持现网格，不在本批扩张。
+ */
+@media (max-width: 720px) {
+  .d-topbar .cmd {
+    width: 44px;
+    height: 44px;
+  }
+
+  .d-topbar .app-density-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* ---------- 密度覆盖层（任务书 06） ----------
+ * 缺省 standard：不写任何覆盖，现几何与基线逐像素不变。
+ * compact 只缩两处：`.app-row-table` 行高 48→40、卡片 padding 22→14（窄屏 18→12）。
+ * 字号与导航行高不动——可读性下限；KPI 数字的 44px 字号是拍板值，更不碰。
+ */
+html[data-density="compact"] .app-row-table tbody tr {
+  height: 40px;
+}
+
+html[data-density="compact"] .card {
+  padding: 14px;
+}
+
+@media (max-width: 720px) {
+  html[data-density="compact"] .card {
+    padding: 12px;
+  }
+}

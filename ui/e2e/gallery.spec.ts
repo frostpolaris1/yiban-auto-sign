@@ -80,7 +80,12 @@ test('theme is applied before the first paint and survives a reload', async ({ p
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
 
   const keys = await page.evaluate(() => Object.keys(localStorage).sort())
-  expect(keys, 'localStorage must hold the theme key only').toEqual(['dash26-theme'])
+  // 白名单断言（任务书 06 显式改判）：旧断言是「无杂键」的代理——
+  // 当时只有主题一个偏好，代理恰好等价于单键。密度偏好是任务书 06 的
+  // 真实需求（紧凑档持久化），代理不得升级成判据；这里改为枚举允许键。
+  // 键名白名单 + 空杂键判据都保留：新增未登记键仍会红。
+  const extras = keys.filter((key) => key !== 'dash26-theme' && key !== 'dash26-density')
+  expect(extras, 'localStorage must hold no keys outside the preference whitelist').toEqual([])
 
   // 同上下文的新标签页读到持久化值。不要重载本页：
   // 它的 init 脚本会重新种入深色值。

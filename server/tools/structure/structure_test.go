@@ -250,7 +250,8 @@ func TestStructureRowsPinned(t *testing.T) {
 	// R3（审计锚点）：adapters 增 anchor（库外锚点文件读写）。
 	// admin-ia-b1：ui/src/features 增 queue（三组待办工作台）。
 	// admin-inbox：ui/src/features 增 notify（顶栏通知收件箱）。
-	const want = "66043b1f90c45d0f15ca62b6658d10d11ff9a77538b8afe1db147a8b7c7ee699"
+	// admin-search-06：ui/src/features 增 search（顶栏全局搜索面板）。
+	const want = "c657b9a13d969995e3d7fbd7f9956f2adfd3eed7e162b5eadf44b968610244fa"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}
