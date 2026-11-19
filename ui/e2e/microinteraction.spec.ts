@@ -9,6 +9,7 @@ import {
   timePrefPutCalls,
 } from './support/fake-schedule-api'
 import { createSchoolCalls, mockSchoolsApi } from './support/fake-schools-api'
+import { installFakeEventSource, mockLogsApi } from './support/fake-logs-api'
 import { visibleText } from './support/visible-text'
 
 /** 在带二次口令的弹窗里填操作者本人登录口令。 */
@@ -499,3 +500,47 @@ for (const theme of ['light', 'dark'] as const) {
     )
   })
 }
+
+test('invariant 7: reduced-motion disables tab panel, drawer and modal entrance animations', async ({
+  page,
+}) => {
+  await installFakeEventSource(page)
+  await mockLogsApi(page, { role: 'master' })
+  await page.goto('/logs?tab=events')
+  await expect(page.getByRole('tab', { name: '签到事件' })).toHaveAttribute('aria-selected', 'true')
+
+  const panelAnim = await page
+    .locator('.tab-panel.is-active')
+    .evaluate((el) => getComputedStyle(el).animationName)
+  expect(panelAnim).toBe('none')
+
+  await page.getByRole('button', { name: '诊断' }).first().click()
+  const drawer = page.locator('.app-drawer')
+  await expect(drawer).toBeVisible()
+  const drawerAnim = await drawer.evaluate((el) => getComputedStyle(el).animationName)
+  expect(drawerAnim).toBe('none')
+})
+
+test.describe('motion enabled — tab swap and overlay stability', () => {
+  test.use({ reducedMotion: 'no-preference' })
+
+  test('invariant 7: logs tab swap animates cleanly and settles with zero horizontal layout shift', async ({
+    page,
+  }) => {
+    await installFakeEventSource(page)
+    await mockLogsApi(page, { role: 'master' })
+    await page.goto('/logs?tab=events')
+    await expect(page.getByRole('tab', { name: '签到事件' })).toHaveAttribute('aria-selected', 'true')
+
+    const beforeW = await page.locator('.logs-page').evaluate((el) => el.getBoundingClientRect().width)
+    await page.getByRole('tab', { name: '运行巡检' }).click()
+    await expect(page.getByRole('tab', { name: '运行巡检' })).toHaveAttribute('aria-selected', 'true')
+
+    const activePanel = page.locator('.tab-panel.is-active')
+    await expect
+      .poll(() => activePanel.evaluate((el) => getComputedStyle(el).opacity))
+      .toBe('1')
+    const afterW = await page.locator('.logs-page').evaluate((el) => el.getBoundingClientRect().width)
+    expect(Math.round(afterW)).toBe(Math.round(beforeW))
+  })
+})

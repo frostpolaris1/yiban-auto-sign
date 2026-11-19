@@ -68,10 +68,19 @@ export function AsyncState({
       </div>
     )
   }
+  if (status === 'loading') {
+    return (
+      <div className={cx('app-async-skeleton', className)} role="status" aria-busy="true">
+        <span className="app-visually-hidden">{loadingLabel}</span>
+        <span className="app-skeleton-line app-skeleton-line--sm" aria-hidden="true" />
+        <span className="app-skeleton-line app-skeleton-line--lg" aria-hidden="true" />
+        <span className="app-skeleton-line app-skeleton-line--md" aria-hidden="true" />
+      </div>
+    )
+  }
   return (
     <div className={cx('app-async-state', className)} role="status">
-      {status === 'loading' ? <span className="spinner sm" aria-hidden="true" /> : null}
-      {status === 'loading' ? loadingLabel : emptyLabel}
+      {emptyLabel}
     </div>
   )
 }
