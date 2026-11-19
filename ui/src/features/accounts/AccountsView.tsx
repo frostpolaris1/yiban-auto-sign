@@ -14,7 +14,7 @@
  * 危险写（删除、恢复、设备刷新、凭据编辑、批量）要求操作者二次口令；
  * 400/403/429 用统一文案，口令只存在于当前模态内。
  * 编辑账号总是带 `expected_updated_at`；409 时弹窗不关，
- * 给「载入最新」与「用我的版本重试」两条出路。
+ * 给「载入最新」与「用我的版本重试」两条出路；重试发送的是当前表单值。
  * 批量动作一次最多 10 条；每项独立事务，部分失败回结果清单。
  * 列表每 10 秒条件轮询一次；模态或抽屉打开时暂停，展示模式不发请求。
  * 角色来自 `GET /api/auth/me`。取不到时一切写操作置灰并给原因。
@@ -232,9 +232,9 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     setSelectedIds(checked ? new Set(ids) : new Set<string>())
   }
 
-  // 编辑并发：expected_updated_at 用打开时的快照；重试时换成最新行。
+  // 编辑并发：expected_updated_at 用打开时的快照；重试时换成最新行，
+  // 请求体永远取弹窗当前表单值，不重放提交过的旧草稿。
   const editBaselineRef = useRef<Account | null>(null)
-  const lastEditDraftRef = useRef<AccountUpdateDraft | null>(null)
 
   // 任一模态或抽屉打开时暂停轮询：后台刷新不得改写用户正在操作的页面。
   const modalOpen =
@@ -339,7 +339,6 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
 
   const openEdit = (account: Account, opener: HTMLElement | null) => {
     editBaselineRef.current = account
-    lastEditDraftRef.current = null
     setEditConflict(false)
     setEditError(null)
     setEditReturnFocus(opener)
@@ -435,7 +434,6 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   const closeEdit = () => {
     shapeMutation.reset()
     editBaselineRef.current = null
-    lastEditDraftRef.current = null
     setEditConflict(false)
     setEditTarget(null)
     setEditError(null)
@@ -448,12 +446,15 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   }
 
   const closeDelete = () => {
+    // 在途锁关：删除结果不能因为 X/Esc 而丢弃操作者看不到结论。
+    if (shapeMutation.isPending && shapeMutation.variables?.op === 'delete') return
     shapeMutation.reset()
     setDeleteTarget(null)
     setDeleteError(null)
   }
 
   const closeRestore = () => {
+    if (shapeMutation.isPending && shapeMutation.variables?.op === 'restore') return
     shapeMutation.reset()
     setRestoreTarget(null)
     setRestoreError(null)
@@ -476,11 +477,17 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     }
   }
 
-  /** 409 出路二：取最新行只换基线，当前草稿原样重发。 */
-  const retryMineAccount = async () => {
+  /** 409 出路二：取最新行只换基线；请求体取弹窗当前表单值。 */
+  const retryMineAccount = async (draft: AccountUpdateDraft) => {
     if (!editTarget) return
-    const draft = lastEditDraftRef.current
-    if (!draft) return
+    // 先按当前表单构造：冲突期间的编辑也要生效；非法草稿留在弹窗内报错。
+    let body: AccountUpdate
+    try {
+      body = buildAccountUpdate(draft, editTarget.name)
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : '草稿校验失败')
+      return
+    }
     setEditConflictPending(true)
     try {
       const latest = await getAccount(editTarget.id)
@@ -490,10 +497,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
       shapeMutation.mutate({
         account: editTarget,
         op: 'update',
-        body: {
-          ...buildAccountUpdate(draft, editTarget.name),
-          expected_updated_at: latest.updated_at,
-        },
+        body: { ...body, expected_updated_at: latest.updated_at },
       })
     } catch (error) {
       setEditError(describeApiError(error))
@@ -784,12 +788,11 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
         onLoadLatest={() => {
           void loadLatestAccount()
         }}
-        onRetryMine={() => {
-          void retryMineAccount()
+        onRetryMine={(draft) => {
+          void retryMineAccount(draft)
         }}
         onConfirm={(draft: AccountUpdateDraft) => {
           if (!editTarget) return
-          lastEditDraftRef.current = draft
           setEditError(null)
           setEditConflict(false)
           shapeMutation.mutate({

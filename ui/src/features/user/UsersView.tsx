@@ -15,6 +15,7 @@
  * 任一筛选变化回到第一页：游标从 URL 移除。
  * 游标栈只在会话内记忆「上一页」；刷新后从 URL 游标重建，只能前进。
  * 写操作成功的反馈走 toast；失败留在原控件旁，可回看。
+ * 批量重置口令的临时口令只显示一次：全成功也保留结果清单，显式「完成」才关。
  * 列表每 10 秒条件轮询一次；模态或抽屉打开时暂停，展示模式不发请求。
  * 展示构建（`VITE_SHOWCASE=1`）取合成夹具，零网络请求。
  */
@@ -187,18 +188,20 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
         ids: input.ids,
         current_password: input.password,
       }),
-    onSuccess: (result) => {
+    onSuccess: (result, input) => {
       invalidateUsers()
       setSelectedIds(new Set<string>())
       const failed = result.items.filter((item) => item.status === 'error')
-      if (failed.length === 0) {
+      // reset_password 的临时口令只出现这一次：全成功也不自动关，
+      // 由操作者点「完成」显式关闭并清空；其余动作仍以 toast 收口。
+      if (failed.length === 0 && input.action !== 'reset_password') {
         setBatch(null)
         setBatchError(null)
         setBatchResult(null)
         notifySuccess(`批量操作完成：${result.items.length} 条成功`)
         return
       }
-      // 部分失败：弹窗保留；reset_password 的成功项把临时口令留在结果清单里。
+      // 部分失败或批量重置：弹窗保留，结果清单逐项列出。
       setBatchError(null)
       setBatchResult(result)
     },
@@ -341,16 +344,16 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
               >
                 启用
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={overBatchLimit || batchPending}
-                title={overBatchLimit ? '一次最多 10 条' : undefined}
-                onClick={() => openBatch('reset_password', selectedRows)}
-              >
-                重置口令
-              </Button>
               <span className="app-batch-danger">
+                <Button
+                  variant="outline-danger"
+                  size="sm"
+                  disabled={overBatchLimit || batchPending}
+                  title={overBatchLimit ? '一次最多 10 条' : undefined}
+                  onClick={() => openBatch('reset_password', selectedRows)}
+                >
+                  重置口令
+                </Button>
                 <Button
                   variant="outline-danger"
                   size="sm"

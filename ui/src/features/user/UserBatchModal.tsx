@@ -8,8 +8,8 @@
  * **口径**
  * 确认前零请求；口令只存在于本弹窗，关闭与成功都清空。
  * reset_password 成功项各带一枚一次性临时口令：只在结果清单出现一次，
- * 关闭弹窗即从父状态清掉，不留副本、不写日志。
- * 部分失败时弹窗不关：结果清单按请求顺序给 ok/error。
+ * 逐条可复制；全成功时弹窗也不自动关，操作者点「完成」才关闭并从父状态清掉。
+ * 部分失败时同样保留结果清单：按请求顺序给 ok/error。
  */
 
 import { useEffect, useState } from 'react'
@@ -18,6 +18,7 @@ import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { PasswordInput } from '@/components/ui/Input'
+import { notifySuccess } from '@/components/ui/toast'
 
 export const USER_BATCH_LABELS: Record<UserBatchAction, string> = {
   disable: '停用',
@@ -72,7 +73,8 @@ export function UserBatchModal({
     <Modal
       open={open}
       onOpenChange={(next) => {
-        if (!next) onClose()
+        // 在途锁关：X/Esc/遮罩都不得丢弃正在进行的批量结果。
+        if (!next && !pending) onClose()
       }}
       title={`批量${label}？`}
       description={
@@ -83,7 +85,7 @@ export function UserBatchModal({
       footer={
         result ? (
           <Button variant="ghost" onClick={onClose}>
-            关闭
+            完成
           </Button>
         ) : (
           <>
@@ -91,7 +93,7 @@ export function UserBatchModal({
               取消
             </Button>
             <Button
-              variant={action === 'delete' ? 'danger' : 'primary'}
+              variant={action === 'delete' || action === 'reset_password' ? 'danger' : 'primary'}
               disabled={pending || password.trim() === ''}
               onClick={() => onConfirm(password)}
             >
@@ -115,26 +117,43 @@ export function UserBatchModal({
             结果：{result.items.filter((item) => item.status === 'ok').length} 条成功，
             {result.items.filter((item) => item.status === 'error').length} 条失败
           </strong>
-          {result.items.map((item) => (
-            <div key={item.id} className="app-batch-result-row">
-              <span className="data-cell-mono">{labels.get(item.id) ?? item.id}</span>
-              {item.status === 'ok' ? (
-                item.temp_password ? (
-                  <span>
-                    成功 · 临时口令{' '}
-                    <span className="data-cell-mono">{item.temp_password}</span>
-                    <span className="app-muted">（关闭后不可再查看）</span>
-                  </span>
+          {result.items.map((item) => {
+            const email = labels.get(item.id) ?? item.id
+            const tempPassword = item.temp_password
+            return (
+              <div key={item.id} className="app-batch-result-row">
+                <span className="data-cell-mono">{email}</span>
+                {item.status === 'ok' ? (
+                  tempPassword ? (
+                    <span className="app-batch-result-secret">
+                      成功 · 临时口令{' '}
+                      <span className="data-cell-mono">{tempPassword}</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`复制 ${email} 的临时口令`}
+                        onClick={() => {
+                          void navigator.clipboard.writeText(tempPassword).then(
+                            () => notifySuccess('已复制临时口令'),
+                            () => notifySuccess('复制失败，请手动选择文本'),
+                          )
+                        }}
+                      >
+                        复制
+                      </Button>
+                      <span className="app-muted">（完成前请逐条保存；关闭后不可再查看）</span>
+                    </span>
+                  ) : (
+                    <span>成功</span>
+                  )
                 ) : (
-                  <span>成功</span>
-                )
-              ) : (
-                <span>
-                  {item.code ?? 'error'} · {item.message ?? '未提供原因'}
-                </span>
-              )}
-            </div>
-          ))}
+                  <span>
+                    {item.code ?? 'error'} · {item.message ?? '未提供原因'}
+                  </span>
+                )}
+              </div>
+            )
+          })}
         </div>
       ) : (
         <div className="app-form-stack">

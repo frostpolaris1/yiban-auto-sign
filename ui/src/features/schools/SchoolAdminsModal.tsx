@@ -53,7 +53,8 @@ type SchoolAdminsModalProps = {
   error: string | null
   returnFocusTo: HTMLElement | null
   onClose: () => void
-  onAdd: (userId: string, password: string) => void
+  /** label 是掩码邮箱，只用于成功 toast，不进请求体。 */
+  onAdd: (userId: string, password: string, label: string) => void
   onRemove: (admin: SchoolAdmin, opener: HTMLElement) => void
 }
 
@@ -136,6 +137,16 @@ export function SchoolAdminsModal({
 
   const trimmedQuery = query.trim()
   const searching = trimmedQuery !== ''
+
+  // 关闭即清空：口令、已选与检索词不跨次驻留（父层按同一实例复用本组件）。
+  useEffect(() => {
+    if (school === null) {
+      setPassword('')
+      setSelected(null)
+      setQuery('')
+      setDebounced('')
+    }
+  }, [school])
 
   // 成功信号以服务端列表为准：刷新后的绑定列表出现所选用户，
   // 才清空选择与口令。失败时选择保留，操作者改口令即可重试。
@@ -258,7 +269,7 @@ export function SchoolAdminsModal({
           title={readOnlyReason ?? undefined}
           onClick={() => {
             if (!selected) return
-            onAdd(selected.id, password)
+            onAdd(selected.id, password, selected.email_masked)
           }}
         >
           添加管理员

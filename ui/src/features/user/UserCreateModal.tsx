@@ -11,10 +11,10 @@
  * 提交在途时按钮禁用（BusyButton），防重复建号。
  * 409 是「邮箱已被活跃用户使用」：错误留在弹窗内，输入不丢。
  * 其余错误同样留在弹窗内，可回看后重试。
- * 成功即关弹窗：口令不驻留任何状态。
+ * 成功即关弹窗；取消/关闭同样清空全部字段，口令不跨次驻留。
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { BusyButton } from '@/components/ui/BusyButton'
@@ -42,6 +42,17 @@ export function UserCreateModal({ open, returnFocusTo, onClose, onCreated }: Use
   const [role, setRole] = useState<UserRole>('user')
   const [currentPassword, setCurrentPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  // 关闭即清空：两个口令与邮箱都不跨次回填；错误也不带到下一次打开。
+  useEffect(() => {
+    if (!open) {
+      setEmail('')
+      setPassword('')
+      setRole('user')
+      setCurrentPassword('')
+      setError(null)
+    }
+  }, [open])
 
   const createMut = useMutation({
     mutationFn: () =>

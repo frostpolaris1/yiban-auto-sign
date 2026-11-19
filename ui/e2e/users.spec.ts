@@ -437,6 +437,30 @@ test('UX-1: a duplicate email keeps the modal open with the input intact', async
   expect(callsTo(api, 'POST', '/api/users')).toHaveLength(1)
 })
 
+test('UX-1: closing the create modal discards every field, including both passwords', async ({
+  page,
+}) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  await page.getByRole('button', { name: '新建用户' }).click()
+  const dialog = page.getByRole('dialog', { name: '新建用户' })
+  await dialog.getByLabel('邮箱').fill('new-three@example.com')
+  await dialog.getByLabel('初始口令').fill('first-pass')
+  await dialog.getByLabel('角色').selectOption('admin')
+  await fillReauth(dialog, 'operator-pass')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+
+  // 重开：口令不回填，邮箱与角色也不留。
+  await page.getByRole('button', { name: '新建用户' }).click()
+  await expect(dialog.getByLabel('邮箱')).toHaveValue('')
+  await expect(dialog.getByLabel('初始口令')).toHaveValue('')
+  await expect(dialog.getByRole('textbox', { name: '你的登录口令' })).toHaveValue('')
+  await expect(dialog.getByLabel('角色')).toHaveValue('user')
+  expect(callsTo(api, 'POST', '/api/users'), 'a dismissed modal sends nothing').toHaveLength(0)
+})
+
 test('UX-1: filters, the deleted toggle and the cursor survive a reload', async ({ page }) => {
   const api = await mockUsersApi(page, {
     role: 'master',
@@ -759,8 +783,97 @@ test('batch: a partial reset shows the one-time temp password exactly once', asy
   await expect(result).toContainText('关闭后不可再查看')
   await expect(result).toContainText('conflict · 该用户不能重置口令')
   await expect(dialog).toBeVisible()
-  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await dialog.getByRole('button', { name: '完成', exact: true }).click()
   await expect(page.getByText(FAKE_TEMP_PASSWORD)).toHaveCount(0)
+})
+
+test('batch: an all-success reset keeps every one-time password until done', async ({ page }) => {
+  // 剪贴板用确定性替身：只断言页面把当前行的临时口令交给 writeText。
+  await page.addInitScript(() => {
+    const copied: string[] = []
+    Object.defineProperty(window, '__copiedTempPasswords', { value: copied, configurable: true })
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          copied.push(text)
+        },
+      },
+    })
+  })
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  await page.getByRole('checkbox', { name: '选择 master-one@example.com' }).check()
+  await page.getByRole('checkbox', { name: '选择 admin-one@example.com' }).check()
+  await page.getByRole('button', { name: '重置口令', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '批量重置口令？' })
+  await fillReauth(dialog)
+  await dialog.getByRole('button', { name: '确认重置口令' }).click()
+
+  await expect.poll(() => batchUserCalls(api).length).toBe(1)
+  // 全成功也不自动关：两条临时口令同屏可见，等待操作者逐条保存。
+  const result = page.getByRole('status', { name: '批量结果' })
+  await expect(result).toContainText('2 条成功，0 条失败')
+  await expect(page.getByText(FAKE_TEMP_PASSWORD)).toHaveCount(2)
+  await expect(dialog).toBeVisible()
+
+  await result
+    .getByRole('button', { name: '复制 master-one@example.com 的临时口令' })
+    .click()
+  await expect(page.getByText('已复制临时口令')).toBeVisible()
+  const copied = await page.evaluate(
+    () => (window as unknown as { __copiedTempPasswords: string[] }).__copiedTempPasswords,
+  )
+  expect(copied).toEqual([FAKE_TEMP_PASSWORD])
+
+  // 显式「完成」才关闭并清空。
+  await dialog.getByRole('button', { name: '完成', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByText(FAKE_TEMP_PASSWORD)).toHaveCount(0)
+})
+
+test('reauth: an empty password shows the confirm as disabled', async ({ page }) => {
+  await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  await openManage(page, 'member-one@example.com')
+
+  await page.getByRole('button', { name: '重置口令' }).click()
+  const reauth = page.getByRole('dialog', { name: '重置口令？' })
+  const confirm = reauth.getByRole('button', { name: '生成临时口令' })
+  await expect(confirm).toBeDisabled()
+  // vendor 没有 `.btn:disabled`：0.45 降级覆盖必须咬到确认键。
+  await expect(confirm).toHaveCSS('opacity', '0.45')
+
+  await fillReauth(reauth)
+  await expect(confirm).toBeEnabled()
+  await expect(confirm).toHaveCSS('opacity', '1')
+})
+
+test('reauth: an in-flight batch cannot be dismissed with Escape or the close button', async ({
+  page,
+}) => {
+  const api = await mockUsersApi(page, { role: 'master', writeDelayMs: 1500 })
+  await openUsers(page)
+
+  await page.getByRole('checkbox', { name: '选择 master-one@example.com' }).check()
+  await page.getByRole('button', { name: '停用', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '批量停用？' })
+  await fillReauth(dialog)
+  await dialog.getByRole('button', { name: '确认停用' }).click()
+  await expect(dialog.getByRole('button', { name: '执行中…' })).toBeVisible()
+
+  // 在途：Esc 与 X 都不得丢弃结果。
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(100)
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭弹窗' }).click()
+  await page.waitForTimeout(100)
+  await expect(dialog).toBeVisible()
+
+  // 落定后正常关闭。
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => batchUserCalls(api).length).toBe(1)
 })
 
 test('reauth: create with a wrong password keeps the form and shows the copy', async ({ page }) => {

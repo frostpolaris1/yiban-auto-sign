@@ -144,6 +144,8 @@ export type MockUsersOptions = {
   reauthThrottled?: boolean
   /** 批量动作的单条失败注入：命中的 id 只回该错误项。 */
   batchItemError?: { id: string; status: number; code: string; message: string }
+  /** 写端点的人为延迟（毫秒）；用来观察在途锁关。GET 不受影响。 */
+  writeDelayMs?: number
 }
 
 export type FakeUsersApi = {
@@ -250,6 +252,11 @@ export async function mockUsersApi(
       body,
       headers: request.headers(),
     })
+
+    // 写端点延迟：只在显式注入时生效，用来断言「在途锁关」。
+    if (options.writeDelayMs && request.method() !== 'GET') {
+      await new Promise((resolve) => setTimeout(resolve, options.writeDelayMs))
+    }
 
     if (url.pathname === '/api/auth/me') {
       if (!sessionRole) return fail(route, 401, 'unauthorized', '会话失效')

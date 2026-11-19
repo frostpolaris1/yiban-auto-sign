@@ -1933,6 +1933,31 @@ test('reauth: delete with a wrong password keeps the dialog open', async ({ page
   await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
 })
 
+test('reauth: an in-flight delete cannot be dismissed with Escape or the close button', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master', writeDelayMs: 1500 })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '135****0001')
+  await menu.getByRole('menuitem', { name: /删除/ }).click()
+  const dialog = page.getByRole('dialog', { name: '删除账号？' })
+  await fillReauth(dialog)
+  await dialog.getByRole('button', { name: '确认删除' }).click()
+  await expect(dialog.getByRole('button', { name: '处理中…' })).toBeVisible()
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(100)
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭弹窗' }).click()
+  await page.waitForTimeout(100)
+  await expect(dialog).toBeVisible()
+
+  // 落定后删除成功，弹窗随行消失。
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
+})
+
 test('reauth: restore with a wrong password keeps the dialog open', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
@@ -2067,7 +2092,9 @@ test('409: an external change offers load-latest and retry-mine without losing t
   await expect(dialog.getByText('这条记录已被他人修改')).toHaveCount(0)
 })
 
-test('409: retry-mine resubmits the same draft against the latest row', async ({ page }) => {
+test('409: retry-mine resubmits the current form values against the latest row', async ({
+  page,
+}) => {
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
 
@@ -2083,12 +2110,14 @@ test('409: retry-mine resubmits the same draft against the latest row', async ({
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect(dialog.getByText('这条记录已被他人修改')).toBeVisible()
 
+  // 冲突态下继续编辑：重试必须发送此刻的表单值，而不是提交过的旧草稿。
+  await dialog.getByLabel('备注名').fill('我的版本二')
   await dialog.getByRole('button', { name: '用我的版本重试' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(2)
   expect(patchCalls(api, 'acc-1')[1].body).toEqual({
-    name: '我的版本',
+    name: '我的版本二',
     expected_updated_at: '2026-11-01T00:00:00Z',
   })
   await expect(dialog).toBeHidden()
-  await expect(rowFor(page, '138****8000')).toContainText('我的版本')
+  await expect(rowFor(page, '138****8000')).toContainText('我的版本二')
 })

@@ -7,7 +7,8 @@
  *
  * **口径**
  * 骨架照用户端 App 的 `ReauthDialog`（只读参考）：一个口令框、
- * 一个取消、一个确认；确认在途时禁用。口令只存在于组件内，
+ * 一个取消、一个确认；确认在途时取消禁用，X/Esc/遮罩也锁关——
+ * 在途不得丢弃正在落定的危险写结果。口令只存在于组件内，
  * 关闭即清空；不写日志、不进 URL、不进任何持久层。
  * 400 缺口令、403 口令错、429 连续失败由调用方映射成可见文案；
  * 本组件只保证失败时弹窗不自动关闭。
@@ -66,7 +67,8 @@ export function ReauthDialog({
     <Modal
       open={open}
       onOpenChange={(next) => {
-        if (!next) onClose()
+        // 在途锁关：X、Esc 与遮罩都不得丢掉正在进行的写结果。
+        if (!next && !pending) onClose()
       }}
       title={title}
       description={description}

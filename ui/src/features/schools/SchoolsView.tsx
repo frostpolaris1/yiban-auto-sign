@@ -123,7 +123,8 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
   })
 
   const addMutation = useMutation({
-    mutationFn: (input: { schoolId: string; userId: string; password: string }) =>
+    // `label` 只用于成功文案（掩码邮箱），不进请求体、不暴露原始 userId。
+    mutationFn: (input: { schoolId: string; userId: string; password: string; label: string }) =>
       addSchoolAdmin(input.schoolId, {
         user_id: input.userId,
         current_password: input.password,
@@ -131,7 +132,7 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
     onSuccess: (_admin, input) => {
       void queryClient.invalidateQueries({ queryKey: ['school-admins', input.schoolId] })
       setAdminsError(null)
-      notifySuccess(`已添加管理员 ${input.userId}`)
+      notifySuccess(`已添加管理员 ${input.label}`)
     },
     onError: (error) => setAdminsError(describeReauthError(error)),
   })
@@ -302,10 +303,10 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
           setRemoveTarget(null)
           setRemoveError(null)
         }}
-        onAdd={(userId, password) => {
+        onAdd={(userId, password, label) => {
           if (!adminsTarget) return
           setAdminsError(null)
-          addMutation.mutate({ schoolId: adminsTarget.id, userId, password })
+          addMutation.mutate({ schoolId: adminsTarget.id, userId, password, label })
         }}
         onRemove={openRemove}
       />

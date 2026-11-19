@@ -243,6 +243,8 @@ export type MockOptions = {
   restoreError?: { status: number; code: string; message: string }
   /** 二次口令连续失败：任何危险写都回 429。 */
   reauthThrottled?: boolean
+  /** 写端点的人为延迟（毫秒）；用来观察在途锁关。GET 不受影响。 */
+  writeDelayMs?: number
   /**
    * 批量动作的单条失败注入：命中的 id 只回该错误项，其余照常处理。
    * 用来断言「部分失败给结果清单」。
@@ -456,6 +458,11 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       body,
       headers: request.headers(),
     })
+
+    // 写端点延迟：只在显式注入时生效，用来断言「在途锁关」。
+    if (options.writeDelayMs && request.method() !== 'GET') {
+      await new Promise((resolve) => setTimeout(resolve, options.writeDelayMs))
+    }
 
     // 会话过期：业务端点先失效一次，后续请求按未登录处理。
     if (

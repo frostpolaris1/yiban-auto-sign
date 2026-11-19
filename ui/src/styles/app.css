@@ -1105,8 +1105,11 @@
 }
 
 /* vendor 没有 `.btn:disabled` 样式：禁用动作必须看得出来，
- * 否则停用任务的两个写按钮看起来可点。 */
-.app-modal-scroll .modal-foot .btn:disabled,
+ * 否则写按钮（含批量条、确认弹窗与 C7 选择器）看起来可点。
+ * 统一沿用 0.45 档，覆盖本批新面时不引新令牌。 */
+.app-modal .modal-foot .btn:disabled,
+.app-batch-bar .btn:disabled,
+.app-admin-picker .btn:disabled,
 .app-time-pref-row .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -2466,6 +2469,14 @@ a.kpi-card {
 
 .app-batch-result .app-batch-result-row:last-child {
   border-bottom: 0;
+}
+
+/* 一次性临时口令与逐条复制钮同排：窄屏允许换行，口令不断行内跳位。 */
+.app-batch-result .app-batch-result-secret {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ---------- 学校管理员选择器 ----------

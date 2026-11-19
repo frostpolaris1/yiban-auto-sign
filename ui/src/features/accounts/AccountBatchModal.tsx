@@ -8,6 +8,7 @@
  * **口径**
  * 确认前零请求；驳回必须填理由（1..200 字，与契约一致）。
  * 二次口令是操作者本人本站登录口令，关闭即清空。
+ * 在途锁关：X/Esc/取消都不得丢弃正在落定的批量结果。
  * 部分失败时弹窗不关：结果清单按请求顺序给 ok/error，
  * 失败项带服务端稳定 code 与用户可读 message。
  */
@@ -82,7 +83,8 @@ export function AccountBatchModal({
     <Modal
       open={open}
       onOpenChange={(next) => {
-        if (!next) onClose()
+        // 在途锁关：X/Esc/遮罩都不得丢弃正在进行的批量结果。
+        if (!next && !pending) onClose()
       }}
       title={`批量${label}？`}
       description={

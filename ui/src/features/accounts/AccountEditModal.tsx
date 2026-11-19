@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 编辑账号模态：PATCH 四字段全 write-only，留空＝不修改。
+ * 编辑账号模态：除备注名外各字段只写不读，留空＝不修改。
  *
  * **归属**
  * `features/accounts` 展示层：表单状态与校验走 react-hook-form＋zod
@@ -18,6 +18,8 @@
  * 清除设备识别码是唯一发送空串的路径；勾选后输入禁用，取消即恢复。
  * 被拒账号的入口与标题写「修改并重新提交」，模态里展示驳回理由。
  * 只改备注名不重提；改凭据或改绑手机号才回待审核，模态文案先说清。
+ * 409 的「用我的版本重试」发送实时表单值，不重放提交时的旧草稿。
+ * 关闭即把表单重置为空：口令等凭据不跨次驻留。
  */
 
 import { useEffect } from 'react'
@@ -60,8 +62,8 @@ type AccountEditModalProps = {
   onConfirm: (draft: AccountUpdateDraft) => void
   /** 载入服务端最新版本（连同表单值一起重置）。 */
   onLoadLatest: () => void
-  /** 用当前草稿重试，基线换成服务端最新版本。 */
-  onRetryMine: () => void
+  /** 用当前表单值重试，基线换成服务端最新版本。 */
+  onRetryMine: (draft: AccountUpdateDraft) => void
 }
 
 export function AccountEditModal({
@@ -109,6 +111,7 @@ export function AccountEditModal({
 
   useEffect(() => {
     if (account) reset({ ...EMPTY_DRAFT, name: account.name })
+    else reset(EMPTY_DRAFT)
   }, [account, reset])
 
   return (
@@ -143,8 +146,15 @@ export function AccountEditModal({
             <Button variant="ghost" size="sm" onClick={onLoadLatest} disabled={conflictPending}>
               {conflictPending ? '载入中…' : '载入最新'}
             </Button>
-            <Button variant="primary" size="sm" onClick={onRetryMine} disabled={conflictPending}>
-              用我的版本重试
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => onRetryMine(getValues())}
+              disabled={
+                conflictPending || validation !== null || !hasAny || reauthMissing
+              }
+            >
+              {conflictPending ? '重试中…' : '用我的版本重试'}
             </Button>
           </div>
         </div>
