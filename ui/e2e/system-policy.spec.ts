@@ -2,17 +2,20 @@
  * `/system` 运行策略（#policy）、全站公告（#announcement）与渠道测试（#channels）行为守卫。
  *
  * 断言用户可见不变式：
- * 1. 分区锚点：页顶锚链含「计划 / 策略 / 公告 / 渠道」；点击锚链跳转对应分区并设 aria-current。
+ * 1. 分区锚点：页顶锚链含「计划 / 策略 / 公告 / 渠道 / 名册 / 版本」六锚（04d 补全）；
+ *    点击锚链跳转对应分区并设 aria-current，页底时末位锚点激活。
  * 2. 4 张策略卡显式保存：切换开关本身不发请求，点击各卡独立保存才发出精准契约负载并弹出成功提示；
  *    调度策略卡读写全部 8 键并在保存时同步更新；配额卡与调度卡支持 null 恢复默认；
  *    负例（配额越界、边届缩进越界、默认窗口 start>=end）在提交前拦截并聚焦首个错误控件。
- * 3. 全站公告：通过 `GET /api/announcement` 回显正文与更新时间（零依赖 `GET /api/admin/settings`）；
+ * 3. 全站公告：通过 `GET /api/announcement` 回显正文与更新时间；
+ *    `GET /api/admin/settings` 只来自 04d 名册分区、恰一次，公告读取不依赖它；
  *    拦截多行与超 200 字提交；支持发布与 `{ text: "" }` 清空。
  * 4. 渠道测试：测试邮件弹窗收集 `current_password`，`400/403` 与 reauth 节流 `429` 留在弹窗内，
  *    `409` / 冷却 `429`（含 Retry-After 秒数） / `502` 关闭弹窗并在按钮旁展示；
  *    Webhook 无弹窗直发空 POST 并内联展示结果。
  * 5. RBAC 与窄屏：`admin` 只读看到全部读数但所有写按钮置灰并标出原因且零写请求；
- *    `user` 仅渲染无权卡片、零管理读请求；390px 视口无水平溢出。
+ *    `user` 仅渲染无权卡片、零管理读请求；390px 视口六分区全渲染且无水平溢出。
+ *    名册与版本两分区自身行为守卫在 `system-roster.spec.ts`。
  */
 
 import { expect, test, type Locator, type Page } from '@playwright/test'
@@ -32,11 +35,11 @@ function callsTo(calls: ScheduleApiCall[], method: string, path: string): Schedu
   return calls.filter((call) => call.method === method && call.path === path)
 }
 
-test('system anchors render all 4 sections and navigate via hash', async ({ page }) => {
+test('system anchors render all 6 sections and navigate via hash', async ({ page }) => {
   await visitSystem(page, { role: 'master' })
 
   const nav = page.getByRole('navigation', { name: '系统设置分区' })
-  for (const label of ['计划', '策略', '公告', '渠道']) {
+  for (const label of ['计划', '策略', '公告', '渠道', '名册', '版本']) {
     await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible()
   }
 
@@ -59,10 +62,24 @@ test('system anchors render all 4 sections and navigate via hash', async ({ page
     'location',
   )
 
-  // 滚动至页底后「渠道」仍必须维持激活，不被上方的公告交集抢占。
+  await nav.getByRole('link', { name: '名册', exact: true }).click()
+  await expect(nav.getByRole('link', { name: '名册', exact: true })).toHaveAttribute(
+    'aria-current',
+    'location',
+  )
+  await expect(page.locator('#roster')).toBeFocused()
+
+  await nav.getByRole('link', { name: '版本', exact: true }).click()
+  await expect(nav.getByRole('link', { name: '版本', exact: true })).toHaveAttribute(
+    'aria-current',
+    'location',
+  )
+  await expect(page.locator('#version')).toBeFocused()
+
+  // 滚动至页底后末位锚点「版本」必须激活，不被上方的分区交集抢占。
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
   await page.waitForTimeout(950)
-  await expect(nav.getByRole('link', { name: '渠道', exact: true })).toHaveAttribute(
+  await expect(nav.getByRole('link', { name: '版本', exact: true })).toHaveAttribute(
     'aria-current',
     'location',
   )
@@ -250,7 +267,10 @@ test('announcement reads GET /api/announcement, rejects line breaks and >200 cha
   await expect(section).toContainText('初始维护公告')
   await expect(section).toContainText('2026/11/18')
   expect(callsTo(api.calls, 'GET', '/api/announcement').length).toBeGreaterThan(0)
-  expect(callsTo(api.calls, 'GET', '/api/admin/settings')).toEqual([])
+  // 04d 起 `/system` 的名册分区恰发一次 GET /api/admin/settings；公告读取仍不经它。
+  // 「名册恰一次」的完整守卫在 system-roster.spec.ts，这里只钉数量不漂移。
+  await expect(page.locator('#roster')).toContainText('YIBAN_MAIL_PASS')
+  expect(callsTo(api.calls, 'GET', '/api/admin/settings')).toHaveLength(1)
 
   // 负例：换行与超 200 字都拦在请求之前。
   await input.fill('第一行\n第二行')
@@ -520,6 +540,8 @@ test('390px mobile viewport on /system has zero horizontal overflow', async ({ p
   await expect(page.locator('#policy-schedule-card')).toContainText('前边界缩进')
   await expect(page.locator('#announcement')).toContainText('当前线上公告')
   await expect(page.locator('#channels')).toContainText('测试邮件')
+  await expect(page.locator('#roster')).toContainText('YIBAN_MAIL_PASS')
+  await expect(page.locator('#version')).toContainText('前端版本')
 
   const overflow = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,

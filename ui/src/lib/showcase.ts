@@ -25,6 +25,7 @@ import type {
 } from './api/adminSettings'
 import type { Announcement } from './api/announcement'
 import type { AuditLogItem, AuditLogPage, AuditStatusReport } from './api/audit'
+import type { HealthStatus } from './api/health'
 import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
 import type { EngineSnapshot } from './api/engine'
@@ -829,7 +830,10 @@ export function showcaseAnnouncement(): Announcement {
   }
 }
 
-/** 系统页（展示构建）：配置名册合成夹具（仅含合成示例键，敏感键脱敏）。 */
+/**
+ * 系统页（展示构建）：配置名册合成夹具（仅含合成示例键，敏感键脱敏）。
+ * 三态来源与敏感两态齐备：env/db/default/unknown × 已设置（固定掩码）/未设置（空掩码）。
+ */
 export function showcaseAdminSettings(): SettingsReport {
   return {
     groups: [
@@ -877,6 +881,13 @@ export function showcaseAdminSettings(): SettingsReport {
           {
             key: 'YIBAN_MAIL_PASS',
             group: '通知',
+            source: 'env',
+            value: null,
+            sensitive: { set: true, masked: '****', source: 'env' },
+          },
+          {
+            key: 'YIBAN_WEBHOOK_SECRET',
+            group: '通知',
             source: 'unknown',
             value: null,
             sensitive: { set: false, masked: '', source: 'unknown' },
@@ -890,6 +901,37 @@ export function showcaseAdminSettings(): SettingsReport {
           },
         ],
       },
+      {
+        name: '部署',
+        items: [
+          {
+            key: 'YIBAN_HTTP_ADDR',
+            group: '部署',
+            source: 'env',
+            value: ':8080',
+            sensitive: null,
+          },
+          {
+            key: 'YIBAN_DATABASE_URL',
+            group: '部署',
+            source: 'env',
+            value: null,
+            sensitive: { set: true, masked: '****', source: 'env' },
+          },
+          {
+            key: 'YIBAN_AUDIT_ANCHOR_FILE',
+            group: '部署',
+            source: 'default',
+            value: '',
+            sensitive: null,
+          },
+        ],
+      },
     ],
   }
+}
+
+/** 系统页（展示构建）：存活自检合成夹具。 */
+export function showcaseHealthStatus(): HealthStatus {
+  return { status: 'ok' }
 }

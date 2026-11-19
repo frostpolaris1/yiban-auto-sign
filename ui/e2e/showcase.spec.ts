@@ -187,6 +187,12 @@ test('invariant 8: the system plans preview opens read-only and blocks both writ
   page,
 }) => {
   const apiRequests = trackApiRequests(page)
+  // 04d 自检探针不带 /api 前缀：展示构建同样必须零网络。
+  const probeRequests: string[] = []
+  page.on('request', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname === '/healthz') probeRequests.push(url.pathname)
+  })
 
   await page.goto('/system')
   await expect(page.getByRole('heading', { level: 1 })).toContainText('系统设置')
@@ -213,6 +219,11 @@ test('invariant 8: the system plans preview opens read-only and blocks both writ
   // /system 04c：策略 / 公告 / 渠道全数展示合成数据且写操作全部置灰，零写请求。
   await expect(page.locator('#policy')).toContainText('全站活跃用户上限')
   await expect(page.locator('#announcement')).toContainText('示例公告')
+  // /system 04d：名册与版本两分区取合成夹具——敏感键只显掩码，自检零网络。
+  await expect(page.locator('#roster')).toContainText('YIBAN_MAIL_PASS')
+  await expect(page.locator('#roster')).toContainText('****')
+  await expect(page.locator('#roster')).toContainText('已设置')
+  await expect(page.locator('#version')).toContainText('进程在应答')
   for (const sectionButton of [
     page.locator('#policy-registration-card').getByRole('button', { name: '保存设置' }),
     page.locator('#policy-auto-approve-card').getByRole('button', { name: '保存设置' }),
@@ -236,6 +247,7 @@ test('invariant 8: the system plans preview opens read-only and blocks both writ
   await expect(page).toHaveURL(/\/design$/)
 
   expect(apiRequests, 'a read-only showcase sends no schedule write').toEqual([])
+  expect(probeRequests, 'a read-only showcase never probes /healthz').toEqual([])
 })
 
 test('invariant 8: the settings page shows the read-only reason and sends no password change', async ({

@@ -152,6 +152,9 @@ async function expectData(page: Page, path: string) {
     await expect(page.locator('#policy-schedule-card')).toContainText('前边界缩进')
     await expect(page.locator('#announcement')).toContainText('示例公告')
     await expect(page.locator('#channels')).toContainText('测试邮件')
+    // 04d 两分区：数据锚点防骨架/错误态伪基线。
+    await expect(page.locator('#roster')).toContainText('YIBAN_MAIL_PASS')
+    await expect(page.locator('#version')).toContainText('进程在应答')
   } else if (path === '/logs?tab=events') {
     await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toBeVisible()
   } else if (path === '/queue') {
