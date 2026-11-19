@@ -615,6 +615,9 @@ export async function mockScheduleApi(
               ? { value: 'front', source: 'default' }
               : { value: patch.sign_dist!, source: 'db' }
         }
+        // 与生产 PUT 同形（handlers.go AdminScheduleSettingsSet）：先写库，再回传
+        // 全量配置名册。前端把整份报告写入共享的 ['admin-settings'] 缓存；
+        // 只回调度组会让名册分区丢掉通知/部署组。
         const report: SettingsReport = {
           groups: [
             {
@@ -643,6 +646,7 @@ export async function mockScheduleApi(
                 },
               ],
             },
+            ...settings.groups.filter((group) => group.name !== '调度'),
           ],
         }
         return json(route, report)

@@ -8,7 +8,8 @@
  *    调度策略卡读写全部 8 键并在保存时同步更新；配额卡与调度卡支持 null 恢复默认；
  *    负例（配额越界、边届缩进越界、默认窗口 start>=end）在提交前拦截并聚焦首个错误控件。
  * 3. 全站公告：通过 `GET /api/announcement` 回显正文与更新时间；
- *    `GET /api/admin/settings` 只来自 04d 名册分区、恰一次，公告读取不依赖它；
+ *    `GET /api/admin/settings` 只来自 04d 名册分区、恰一次；名册读取失败时公告仍回显
+ *    且可发布/清空（公告不依赖该键）；
  *    拦截多行与超 200 字提交；支持发布与 `{ text: "" }` 清空。
  * 4. 渠道测试：测试邮件弹窗收集 `current_password`，`400/403` 与 reauth 节流 `429` 留在弹窗内，
  *    `409` / 冷却 `429`（含 Retry-After 秒数） / `502` 关闭弹窗并在按钮旁展示；
@@ -257,9 +258,12 @@ test('schedule policy card reads all 8 keys, rejects invalid inputs, saves patch
 test('announcement reads GET /api/announcement, rejects line breaks and >200 chars, publishes and clears', async ({
   page,
 }) => {
+  const settingsFailure = { status: 500, code: 'internal_error', message: 'settings exploded' }
+  let failSettings = false
   const api = await visitSystem(page, {
     role: 'master',
     announcement: { text: '初始维护公告', updated_at: '2026-11-18T10:00:00Z' },
+    onSettingsRead: () => (failSettings ? settingsFailure : undefined),
   })
   const section = page.locator('#announcement')
   const input = section.getByLabel('公告正文')
@@ -272,7 +276,19 @@ test('announcement reads GET /api/announcement, rejects line breaks and >200 cha
   await expect(page.locator('#roster')).toContainText('YIBAN_MAIL_PASS')
   expect(callsTo(api.calls, 'GET', '/api/admin/settings')).toHaveLength(1)
 
-  // 负例：换行与超 200 字都拦在请求之前。
+  // 负向守卫：settings 整体失败时公告正文/更新时间仍可见、输入与发布仍可用；
+  // 名册分区如实报读取错误。若公告与名册共享 query key，这里公告会一起落错误态。
+  failSettings = true
+  await page.reload()
+  await expect(section).toContainText('初始维护公告')
+  await expect(section).toContainText('2026/11/18')
+  await expect(input).toBeEnabled()
+  await expect(section.getByRole('button', { name: '发布公告' })).toBeEnabled()
+  const roster = page.locator('#roster')
+  await expect(roster.getByRole('alert')).toContainText('名册读取失败，请稍后重试')
+  await expect(roster.getByRole('alert')).not.toContainText('settings exploded')
+
+  // 负例：换行与超 200 字都拦在请求之前（以下操作均在名册读取失败态下完成）。
   await input.fill('第一行\n第二行')
   await section.getByRole('button', { name: '发布公告' }).click()
   await expect(section).toContainText('不能包含换行')

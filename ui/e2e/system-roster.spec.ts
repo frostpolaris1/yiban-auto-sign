@@ -4,7 +4,8 @@
  * 断言用户可见不变式：
  * 1. 名册恰一次 `GET /api/admin/settings` 全分组渲染；来源三态如实；
  *    数据态零编辑控件（input/select/textarea/button/switch 计数为 0）；读取失败给
- *    类别化文案与重试，重试后恢复且底层错误原文不回显。
+ *    类别化文案与重试，重试后恢复且底层错误原文不回显；
+ *    保存调度策略后 PUT 的全量名册写入共享缓存：调度值更新、其它组不丢、不补发名册请求。
  * 2. 敏感键只显「已设置 / 未设置＋固定掩码＋来源」；负例：畸形出包带原值也不渲染
  *    （innerText 与整页 HTML 均不含该串）。
  * 3. 版本区：前端版本取构建期常量（与 `ui/package.json` 同值）；后端版本无真来源，
@@ -120,6 +121,38 @@ test('roster read failure shows a classed alert with retry and recovers without 
   expect(callsTo(api.calls, 'GET', '/api/admin/settings')).toHaveLength(3)
 })
 
+test('schedule save refreshes the shared roster cache with the full report, keeping other groups', async ({
+  page,
+}) => {
+  const api = await visitSystem(page, { role: 'master' })
+  const roster = page.locator('#roster')
+  const scheduleGroup = roster.getByRole('region', { name: '名册分组 调度' })
+  const frontRow = scheduleGroup.locator('li').filter({ hasText: 'YIBAN_WINDOW_EDGE_FRONT_SEC' })
+
+  await expect(frontRow).toContainText('60')
+  await expect(roster.getByRole('region', { name: '名册分组 通知' })).toContainText(
+    'YIBAN_MAIL_PASS',
+  )
+  expect(callsTo(api.calls, 'GET', '/api/admin/settings')).toHaveLength(1)
+
+  // 保存调度策略：PUT 回传全量名册并写入共享 ['admin-settings'] 缓存。
+  const card = page.locator('#policy-schedule-card')
+  await card.getByLabel('前边界缩进（秒）').fill('45')
+  await card.getByRole('button', { name: '保存调度策略' }).click()
+  await expect(page.getByText('调度运行策略已保存')).toBeVisible()
+
+  // 调度组取新值，通知/部署组不因写回丢组；名册不补发 GET（缓存共享路径）。
+  await expect(frontRow).toContainText('45')
+  await expect(frontRow).toContainText('数据库覆盖')
+  await expect(roster.getByRole('region', { name: '名册分组 通知' })).toContainText(
+    'YIBAN_MAIL_PASS',
+  )
+  await expect(roster.getByRole('region', { name: '名册分组 部署' })).toContainText(
+    'YIBAN_HTTP_ADDR',
+  )
+  expect(callsTo(api.calls, 'GET', '/api/admin/settings')).toHaveLength(1)
+})
+
 test('version section shows build-time UI version, states backend absence honestly, and self-checks via /healthz', async ({
   page,
 }) => {
@@ -128,9 +161,12 @@ test('version section shows build-time UI version, states backend absence honest
 
   await expect(version.getByText('前端版本').first()).toBeVisible()
   await expect(version).toContainText(`v${pkgVersion}`)
-  // 后端版本无 HTTP 来源：显式陈述，不渲染任何数值。
-  await expect(version).toContainText('暂无来源')
-  await expect(version).toContainText('不渲染数值')
+  // 后端版本无 HTTP 来源：限定后端版本行，值格精确为「暂无来源」，
+  // 且整行不出现版本形状数字（防回归悄悄渲染臆造版本号）。
+  const backendRow = version.locator('.sys-version-row').filter({ hasText: '后端版本' })
+  await expect(backendRow.locator('.sys-version-value')).toHaveText('暂无来源')
+  await expect(backendRow).toContainText('不渲染数值')
+  await expect(backendRow).not.toContainText(/\d+\.\d+/)
 
   // 自检成功态恰一次探针请求。
   await expect(version).toContainText('进程在应答')
