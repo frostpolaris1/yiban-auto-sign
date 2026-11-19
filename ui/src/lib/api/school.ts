@@ -80,6 +80,7 @@ export function listSchoolAdmins(
   return apiRequest<SchoolAdminPage>(`${SCHOOL_PATHS.admins(id)}${cursorSearch(query)}`)
 }
 
+/** 绑定管理员。请求体带管理员 ID 与操作者二次口令。 */
 export function addSchoolAdmin(id: string, body: SchoolAdminCreate): Promise<SchoolAdmin> {
   return apiRequest<SchoolAdmin>(SCHOOL_PATHS.admins(id), {
     method: 'POST',
@@ -87,9 +88,16 @@ export function addSchoolAdmin(id: string, body: SchoolAdminCreate): Promise<Sch
   })
 }
 
-/** 204 解除绑定。成功后无响应体。 */
-export function removeSchoolAdmin(id: string, uid: string): Promise<void> {
-  return apiRequest<void>(SCHOOL_PATHS.adminMember(id, uid), { method: 'DELETE' })
+/** 204 解除绑定。请求体带操作者二次口令。 */
+export function removeSchoolAdmin(
+  id: string,
+  uid: string,
+  currentPassword: string,
+): Promise<void> {
+  return apiRequest<void>(SCHOOL_PATHS.adminMember(id, uid), {
+    method: 'DELETE',
+    body: JSON.stringify({ current_password: currentPassword }),
+  })
 }
 
 /**

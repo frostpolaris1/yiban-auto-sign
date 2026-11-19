@@ -2337,3 +2337,179 @@ a.kpi-card {
   background: transparent;
   color: var(--t-muted);
 }
+
+/* ---------- 下拉菜单的 Portal 定位 ----------
+ * vendor 的 `.dd-menu` 用 position:absolute + top:calc(100% + 10px) 服务
+ * 「菜单渲染在 .dd-wrap 内」的旧结构；实际菜单经 Radix Portal 到 body，
+ * 该规则会把菜单推入触发器十像素，并让包装层高度测量为 0——底行菜单
+ * 翻转时覆盖触发器，点击会误选第一项。恢复成包装层内的常规流，
+ * 间距交给 sideOffset（14px = 原 4 + vendor 10，视觉不变）。
+ */
+
+[data-radix-popper-content-wrapper] > .dd-menu {
+  position: relative;
+  top: 0;
+  right: auto;
+}
+
+/* ---------- 批量选择 ----------
+ * 选择列固定 36px：行高仍是 48px，勾选框只占一格，不吃表格内容。
+ * 批量条只在有选中行时出现，视觉上用卡片内的浅底块，不抢页头。
+ * 危险动作由页面用 `.app-batch-danger` 分组并加左侧分隔线。
+ */
+
+.app-selection-cell {
+  width: 36px;
+  min-width: 36px;
+  padding-right: 0;
+}
+
+.app-selection-cell input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.app-batch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-muted);
+}
+
+.app-batch-count {
+  color: var(--t-base);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.app-batch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.app-batch-danger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+/* ---------- 409 并发态 ----------
+ * 弹窗不关：状态条贴顶，两条出路各一枚按钮，表单原样留在下方。
+ */
+
+.app-conflict-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 10px;
+  background: var(--warning-soft);
+  color: var(--t-base);
+  font-size: 12.5px;
+}
+
+.app-conflict-bar .app-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---------- 批量确认与结果 ----------
+ * 影响范围用行式清单；结果清单只读，失败项与成功项同列。
+ */
+
+.app-batch-impact {
+  max-height: 180px;
+  margin: 10px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border-top: 1px solid var(--border-soft);
+}
+
+.app-batch-impact li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--t-base);
+  font-size: 12px;
+}
+
+.app-batch-result {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.app-batch-result .app-batch-result-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+
+.app-batch-result .app-batch-result-row:last-child {
+  border-bottom: 0;
+}
+
+/* ---------- 学校管理员选择器 ----------
+ * 候选与命中共用行式列表；选中态用浅主色底，可清除。
+ */
+
+.app-admin-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.app-admin-picker-results {
+  max-height: 180px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border-top: 1px solid var(--border-soft);
+}
+
+.app-admin-picker-results li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+
+.app-admin-picker-results li.is-selected {
+  background: var(--primary-soft);
+}
+
+.app-admin-picker-selected {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  background: var(--primary-soft);
+  color: var(--t-base);
+  font-size: 12px;
+}

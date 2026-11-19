@@ -29,6 +29,22 @@ export type AccountUpdateDraft = {
   phone_model?: string
   /** 清除哨兵：勾选后 PATCH 体带 device_code: ''，优先于输入值。 */
   clear_device_code?: boolean
+  /** 操作者本人本站登录口令：改动凭据面时必须随 PATCH 发送。 */
+  current_password?: string
+}
+
+/**
+ * PATCH 是否触到凭据面（phone/password/device_code）。
+ * 与服务端 touchesCredential 同判：只有这三类字段要求二次口令；
+ * 备注名、机型与学校不是凭据，不触发口令。
+ */
+export function draftNeedsReauth(draft: AccountUpdateDraft): boolean {
+  return (
+    clean(draft.phone) !== '' ||
+    (draft.password !== undefined && draft.password !== '') ||
+    draft.clear_device_code === true ||
+    clean(draft.device_code) !== ''
+  )
 }
 
 function clean(value: string | undefined): string {
@@ -71,6 +87,16 @@ export function buildAccountUpdate(draft: AccountUpdateDraft, originalName = '')
   }
   const phoneModel = clean(draft.phone_model)
   if (phoneModel !== '') body.phone_model = phoneModel
+  // 二次口令原样透传：空格在口令里是合法字符，不得 trim。
+  // 只在凭据面真的有改动时携带：用户先填凭据再清空后，口令不搭车。
+  const currentPassword = draft.current_password
+  if (
+    currentPassword !== undefined &&
+    currentPassword !== '' &&
+    draftNeedsReauth(draft)
+  ) {
+    body.current_password = currentPassword
+  }
   return body
 }
 

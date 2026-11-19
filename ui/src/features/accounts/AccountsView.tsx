@@ -1,31 +1,38 @@
 /**
  * **功能**
  * 账号页装配：角色、学校、筛选（含已删除）、待审提示条、游标、列表、
- * 创建、恢复、抽屉与写操作模态。
+ * 创建、恢复、抽屉、写操作模态、二次口令与批量动作。
  *
  * **归属**
  * `features/accounts` 域容器：页面只引用它。
  *
  * **口径**
- * 筛选变更重置游标栈。手机号输入防抖 250ms。
- * 列表与详情走 react-query；写操作成功后失效两者的缓存，
- * 并同时失效 `['account-summary']`（与看板第 5 卡同键），计数不滞后。
- * 待审提示条只对 master/admin 取数（user 不发 summary 请求），
- * 仅当 pending+rejected>0 显示；「只看待审核」把状态筛选设为 pending。
- * 写操作成功的反馈走 toast；错误反馈留在原模态内，可回看。
+ * 筛选变更重置游标栈；任一批量选择在筛选或翻页时清空。
+ * 手机号输入防抖 250ms。列表与详情走 react-query；写操作成功后失效两者
+ * 的缓存，并同时失效 `['account-summary']`（与看板第 5 卡同键）。
+ * 待审提示条只对 master/admin 取数；仅当 pending+rejected>0 显示。
+ * 危险写（删除、恢复、设备刷新、凭据编辑、批量）要求操作者二次口令；
+ * 400/403/429 用统一文案，口令只存在于当前模态内。
+ * 编辑账号总是带 `expected_updated_at`；409 时弹窗不关，
+ * 给「载入最新」与「用我的版本重试」两条出路。
+ * 批量动作一次最多 10 条；每项独立事务，部分失败回结果清单。
  * 列表每 10 秒条件轮询一次；模态或抽屉打开时暂停，展示模式不发请求。
  * 角色来自 `GET /api/auth/me`。取不到时一切写操作置灰并给原因。
  */
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { ReauthDialog } from '@/components/ui/ReauthDialog'
+import { SelectionBar } from '@/components/ui/SelectionBar'
 import { notifySuccess } from '@/components/ui/toast'
 import {
+  batchAccounts,
   deleteAccount,
+  getAccount,
   getAccountSummary,
   listAccounts,
   pauseAccount,
@@ -36,6 +43,8 @@ import {
   updateAccount,
   verifyAccount,
   type Account,
+  type AccountBatchAction,
+  type AccountBatchResult,
   type AccountLocation,
   type AccountLocationUpdate,
   type AccountStatus,
@@ -43,7 +52,7 @@ import {
   type AccountVerifyResult,
 } from '@/lib/api/account'
 import type { Role } from '@/lib/api/auth'
-import { describeApiError } from '@/lib/api/client'
+import { describeApiError, describeReauthError, isConflictError } from '@/lib/api/client'
 import { listAllSchools } from '@/lib/api/school'
 import { SHOWCASE, useMe } from '@/lib/session'
 import {
@@ -52,8 +61,8 @@ import {
   showcaseAllSchools,
 } from '@/lib/showcase'
 import { AccountActionModal, type AccountActionState, type ReviewInput } from './AccountActionModal'
+import { AccountBatchModal } from './AccountBatchModal'
 import { AccountCreateModal } from './AccountCreateModal'
-import { AccountDeleteModal } from './AccountDeleteModal'
 import { AccountDetailDrawer } from './AccountDetailDrawer'
 import { AccountEditModal } from './AccountEditModal'
 import { AccountFilters, type AccountFilterValues } from './AccountFilters'
@@ -62,14 +71,30 @@ import { AccountPendingBanner } from './AccountPendingBanner'
 import { AccountsTable } from './AccountsTable'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from '@/lib/cursor'
 import { LIST_POLL_INTERVAL_MS } from '@/lib/query'
-import { buildAccountUpdate, buildLocationUpdate, type AccountUpdateDraft, type LocationDraft } from './drafts'
+import {
+  buildAccountUpdate,
+  buildLocationUpdate,
+  type AccountUpdateDraft,
+  type LocationDraft,
+} from './drafts'
 import { can, denyReason, type AccountActionKind } from './permissions'
 import { exactMatchIds } from './search'
+import { statusLabel } from './display'
+
+/** 批量动作的中文名与确认文案由 `AccountBatchModal` 统一持有。 */
 
 type MutationInput = {
   account: Account
   kind: AccountActionKind
   review?: ReviewInput
+}
+
+type ShapeMutationInput = {
+  account: Account
+  op: 'update' | 'location' | 'delete' | 'restore'
+  body?: AccountUpdate | AccountLocationUpdate
+  /** 删除与恢复的二次口令。 */
+  password?: string
 }
 
 function successText(kind: AccountActionKind, account: Account): string {
@@ -168,16 +193,48 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   const [editTarget, setEditTarget] = useState<Account | null>(null)
   const [editReturnFocus, setEditReturnFocus] = useState<HTMLElement | null>(null)
   const [editError, setEditError] = useState<string | null>(null)
+  const [editConflict, setEditConflict] = useState(false)
+  const [editConflictPending, setEditConflictPending] = useState(false)
   const [locationTarget, setLocationTarget] = useState<Account | null>(null)
   const [locationReturnFocus, setLocationReturnFocus] = useState<HTMLElement | null>(null)
   const [locationErrorText, setLocationErrorText] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
   const [deleteReturnFocus, setDeleteReturnFocus] = useState<HTMLElement | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [restoreTarget, setRestoreTarget] = useState<Account | null>(null)
+  const [restoreReturnFocus, setRestoreReturnFocus] = useState<HTMLElement | null>(null)
+  const [restoreError, setRestoreError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [createReturnFocus, setCreateReturnFocus] = useState<HTMLElement | null>(null)
-  const [restoreError, setRestoreError] = useState<string | null>(null)
   const createReason = denyReason(role, 'create')
+  const batchReason = denyReason(role, 'batch')
+  // 展示构建只读：批量条与选择列都不出现。
+  const selectable = can(role, 'batch') && batchReason === null
+
+  // 批量选择与批量确认/结果状态。
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set<string>())
+  const [batch, setBatch] = useState<{ action: AccountBatchAction; rows: Account[] } | null>(null)
+  const [batchError, setBatchError] = useState<string | null>(null)
+  const [batchResult, setBatchResult] = useState<AccountBatchResult | null>(null)
+
+  const clearSelection = () => setSelectedIds(new Set<string>())
+
+  const toggleRow = (id: string) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleAll = (ids: string[], checked: boolean) => {
+    setSelectedIds(checked ? new Set(ids) : new Set<string>())
+  }
+
+  // 编辑并发：expected_updated_at 用打开时的快照；重试时换成最新行。
+  const editBaselineRef = useRef<Account | null>(null)
+  const lastEditDraftRef = useRef<AccountUpdateDraft | null>(null)
 
   // 任一模态或抽屉打开时暂停轮询：后台刷新不得改写用户正在操作的页面。
   const modalOpen =
@@ -186,7 +243,9 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     action !== null ||
     editTarget !== null ||
     locationTarget !== null ||
-    deleteTarget !== null
+    deleteTarget !== null ||
+    restoreTarget !== null ||
+    batch !== null
 
   const accountsQuery = useQuery({
     queryKey: [
@@ -213,6 +272,11 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     refetchInterval: SHOWCASE || modalOpen ? false : LIST_POLL_INTERVAL_MS,
     refetchIntervalInBackground: false,
   })
+
+  // 筛选或翻页都换一批行：选择不跨页、不跨视图。
+  useEffect(() => {
+    setSelectedIds(new Set<string>())
+  }, [filters, cursor])
 
   const mutation = useMutation({
     mutationFn: async (input: MutationInput) => {
@@ -274,6 +338,9 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   }
 
   const openEdit = (account: Account, opener: HTMLElement | null) => {
+    editBaselineRef.current = account
+    lastEditDraftRef.current = null
+    setEditConflict(false)
     setEditError(null)
     setEditReturnFocus(opener)
     setEditTarget(account)
@@ -291,21 +358,23 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     setDeleteTarget(account)
   }
 
+  const openRestore = (account: Account, opener: HTMLElement | null) => {
+    setRestoreError(null)
+    setRestoreReturnFocus(opener)
+    setRestoreTarget(account)
+  }
+
   const shapeMutation = useMutation({
-    mutationFn: async (input: {
-      account: Account
-      op: 'update' | 'location' | 'delete' | 'restore'
-      body?: AccountUpdate | AccountLocationUpdate
-    }) => {
+    mutationFn: async (input: ShapeMutationInput) => {
       switch (input.op) {
         case 'update':
           return updateAccount(input.account.id, input.body as AccountUpdate)
         case 'location':
           return setAccountLocation(input.account.id, input.body as AccountLocationUpdate)
         case 'delete':
-          return deleteAccount(input.account.id)
+          return deleteAccount(input.account.id, input.password ?? '')
         case 'restore':
-          return restoreAccount(input.account.id)
+          return restoreAccount(input.account.id, input.password ?? '')
       }
     },
     onSuccess: (result, input) => {
@@ -317,11 +386,12 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
         // 行将随刷新消失：先清还原点，让模态卸载的 onCloseAutoFocus
         // 不把焦点抢回已注定删除的触发器，再直接落筛选输入。
         setDeleteReturnFocus(null)
-        focusFilterInput()
         setDeleteTarget(null)
+        focusFilterInput()
         notifySuccess(`已删除 ${input.account.phone_masked}`)
       }
       if (input.op === 'update') {
+        setEditConflict(false)
         setEditTarget(null)
         // 两种编辑会把账号送回待审核：被拒账号重提、改绑手机号。
         // 状态迁移以响应为准，不在前端猜字段。
@@ -333,6 +403,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
         }
       }
       if (input.op === 'restore') {
+        setRestoreTarget(null)
         notifySuccess(`已恢复 ${input.account.phone_masked}`)
       }
       if (input.op === 'location') {
@@ -346,16 +417,26 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
       }
     },
     onError: (error, input) => {
-      const text = describeApiError(error)
-      if (input.op === 'update') setEditError(text)
-      if (input.op === 'location') setLocationErrorText(text)
-      if (input.op === 'delete') setDeleteError(text)
-      if (input.op === 'restore') setRestoreError(text)
+      if (input.op === 'update') {
+        // 409 是并发结论：弹窗不关，改走顶部状态条的两条出路。
+        if (isConflictError(error)) {
+          setEditError(null)
+          setEditConflict(true)
+          return
+        }
+        setEditError(describeReauthError(error))
+      }
+      if (input.op === 'location') setLocationErrorText(describeApiError(error))
+      if (input.op === 'delete') setDeleteError(describeReauthError(error))
+      if (input.op === 'restore') setRestoreError(describeReauthError(error))
     },
   })
 
   const closeEdit = () => {
     shapeMutation.reset()
+    editBaselineRef.current = null
+    lastEditDraftRef.current = null
+    setEditConflict(false)
     setEditTarget(null)
     setEditError(null)
   }
@@ -372,9 +453,53 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     setDeleteError(null)
   }
 
-  const openRestore = (account: Account) => {
+  const closeRestore = () => {
+    shapeMutation.reset()
+    setRestoreTarget(null)
     setRestoreError(null)
-    shapeMutation.mutate({ account, op: 'restore' })
+  }
+
+  /** 409 出路一：取最新行替换快照；表单随之重置为服务端版本。 */
+  const loadLatestAccount = async () => {
+    if (!editTarget) return
+    setEditConflictPending(true)
+    try {
+      const latest = await getAccount(editTarget.id)
+      editBaselineRef.current = latest
+      setEditTarget(latest)
+      setEditConflict(false)
+      setEditError(null)
+    } catch (error) {
+      setEditError(describeApiError(error))
+    } finally {
+      setEditConflictPending(false)
+    }
+  }
+
+  /** 409 出路二：取最新行只换基线，当前草稿原样重发。 */
+  const retryMineAccount = async () => {
+    if (!editTarget) return
+    const draft = lastEditDraftRef.current
+    if (!draft) return
+    setEditConflictPending(true)
+    try {
+      const latest = await getAccount(editTarget.id)
+      editBaselineRef.current = latest
+      setEditConflict(false)
+      setEditError(null)
+      shapeMutation.mutate({
+        account: editTarget,
+        op: 'update',
+        body: {
+          ...buildAccountUpdate(draft, editTarget.name),
+          expected_updated_at: latest.updated_at,
+        },
+      })
+    } catch (error) {
+      setEditError(describeApiError(error))
+    } finally {
+      setEditConflictPending(false)
+    }
   }
 
   const openCreate = (opener: HTMLElement | null) => {
@@ -387,6 +512,55 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   }
 
   const rows = accountsQuery.data?.items ?? []
+  const selectedRows = rows.filter((row) => selectedIds.has(row.id))
+  const overBatchLimit = selectedRows.length > 10
+  const allDeleted = selectedRows.length > 0 && selectedRows.every((row) => row.deleted_at != null)
+
+  const openBatch = (action: AccountBatchAction) => {
+    if (selectedRows.length === 0) return
+    batchMutation.reset()
+    setBatchError(null)
+    setBatchResult(null)
+    setBatch({ action, rows: selectedRows })
+  }
+
+  const closeBatch = () => {
+    batchMutation.reset()
+    setBatch(null)
+    setBatchError(null)
+    setBatchResult(null)
+  }
+
+  const batchMutation = useMutation({
+    mutationFn: (input: { action: AccountBatchAction; ids: string[]; password: string; reason?: string }) =>
+      batchAccounts({
+        action: input.action,
+        ids: input.ids,
+        current_password: input.password,
+        ...(input.reason ? { reason: input.reason } : {}),
+      }),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      void queryClient.invalidateQueries({ queryKey: ['account-summary'] })
+      clearSelection()
+      const failed = result.items.filter((item) => item.status === 'error')
+      if (failed.length === 0) {
+        setBatch(null)
+        setBatchError(null)
+        setBatchResult(null)
+        notifySuccess(`批量操作完成：${result.items.length} 条成功`)
+        return
+      }
+      // 部分失败：弹窗保留，结果清单逐项列出失败原因。
+      setBatchError(null)
+      setBatchResult(result)
+    },
+    onError: (error) => {
+      setBatchError(describeReauthError(error))
+    },
+  })
+  const batchPending = batchMutation.isPending
+
   const error = accountsQuery.isError ? describeApiError(accountsQuery.error) : null
   // 高亮只认已提交给服务端的 q：输入框还在防抖时不提前标。
   const highlightIds = exactMatchIds(rows, filters.q)
@@ -432,14 +606,6 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
           </div>
         ) : null}
 
-        {restoreError ? (
-          <div className="app-alert-block">
-            <Alert tone="danger" title="恢复失败">
-              {restoreError} 行保持已删状态，可重试。
-            </Alert>
-          </div>
-        ) : null}
-
         {/* 待审提示条在筛选栏上方：有未处理行才出现，不占空态位置。 */}
         {showPendingBanner ? (
           <AccountPendingBanner
@@ -469,6 +635,73 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
           }}
         />
 
+        {selectable && selectedRows.length > 0 ? (
+          <SelectionBar count={selectedRows.length} limit={10} onClear={clearSelection}>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={overBatchLimit || batchPending}
+              title={overBatchLimit ? '一次最多 10 条' : undefined}
+              onClick={() => openBatch('review_approve')}
+            >
+              审核通过
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={overBatchLimit || batchPending}
+              title={overBatchLimit ? '一次最多 10 条' : undefined}
+              onClick={() => openBatch('review_reject')}
+            >
+              驳回
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={overBatchLimit || batchPending}
+              title={overBatchLimit ? '一次最多 10 条' : undefined}
+              onClick={() => openBatch('pause')}
+            >
+              暂停
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={overBatchLimit || batchPending}
+              title={overBatchLimit ? '一次最多 10 条' : undefined}
+              onClick={() => openBatch('resume')}
+            >
+              恢复签到
+            </Button>
+            <span className="app-batch-danger">
+              <Button
+                variant="outline-danger"
+                size="sm"
+                disabled={overBatchLimit || batchPending}
+                title={overBatchLimit ? '一次最多 10 条' : undefined}
+                onClick={() => openBatch('delete')}
+              >
+                删除
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={overBatchLimit || batchPending || !allDeleted}
+                title={
+                  overBatchLimit
+                    ? '一次最多 10 条'
+                    : allDeleted
+                      ? undefined
+                      : '仅已删除账号可恢复账号'
+                }
+                onClick={() => openBatch('restore')}
+              >
+                恢复账号
+              </Button>
+            </span>
+          </SelectionBar>
+        ) : null}
+
         <AccountsTable
           rows={rows}
           loading={accountsQuery.isLoading || accountsQuery.isFetching}
@@ -478,6 +711,10 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
           hasActiveFilters={hasActiveFilters}
           onClearFilters={clearFilters}
           includeDeleted={filters.includeDeleted ?? false}
+          selectable={selectable}
+          selectedIds={selectedIds}
+          onToggleRow={toggleRow}
+          onToggleAll={toggleAll}
           pageIndex={stack.index}
           hasPrevious={hasPreviousPage(stack)}
           hasNext={Boolean(accountsQuery.data?.next_cursor) && !accountsQuery.isFetching}
@@ -540,15 +777,28 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
         role={role}
         pending={shapeMutation.isPending && shapeMutation.variables?.op === 'update'}
         error={editError}
+        conflict={editConflict}
+        conflictPending={editConflictPending}
         returnFocusTo={editReturnFocus}
         onClose={closeEdit}
+        onLoadLatest={() => {
+          void loadLatestAccount()
+        }}
+        onRetryMine={() => {
+          void retryMineAccount()
+        }}
         onConfirm={(draft: AccountUpdateDraft) => {
           if (!editTarget) return
+          lastEditDraftRef.current = draft
           setEditError(null)
+          setEditConflict(false)
           shapeMutation.mutate({
             account: editTarget,
             op: 'update',
-            body: buildAccountUpdate(draft, editTarget.name),
+            body: {
+              ...buildAccountUpdate(draft, editTarget.name),
+              expected_updated_at: (editBaselineRef.current ?? editTarget).updated_at,
+            },
           })
         }}
       />
@@ -570,16 +820,69 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
         }}
       />
 
-      <AccountDeleteModal
-        account={deleteTarget}
+      <ReauthDialog
+        open={deleteTarget !== null}
+        title="删除账号？"
+        description={
+          deleteTarget
+            ? `账号 ${deleteTarget.phone_masked} · 当前状态 ${statusLabel(deleteTarget.status)}`
+            : undefined
+        }
+        confirmText="确认删除"
+        danger
         pending={shapeMutation.isPending && shapeMutation.variables?.op === 'delete'}
         error={deleteError}
         returnFocusTo={deleteReturnFocus}
         onClose={closeDelete}
-        onConfirm={() => {
+        onConfirm={(password) => {
           if (!deleteTarget) return
           setDeleteError(null)
-          shapeMutation.mutate({ account: deleteTarget, op: 'delete' })
+          shapeMutation.mutate({ account: deleteTarget, op: 'delete', password })
+        }}
+      >
+        <Alert tone="danger" title="软删除">
+          删除后账号进入软删除状态，凭据将被级联隐藏。确认后本行从列表移除。
+        </Alert>
+      </ReauthDialog>
+
+      <ReauthDialog
+        open={restoreTarget !== null}
+        title="恢复账号？"
+        description={restoreTarget ? `账号 ${restoreTarget.phone_masked} · 已删除` : undefined}
+        confirmText="确认恢复"
+        pending={shapeMutation.isPending && shapeMutation.variables?.op === 'restore'}
+        error={restoreError}
+        returnFocusTo={restoreReturnFocus}
+        onClose={closeRestore}
+        onConfirm={(password) => {
+          if (!restoreTarget) return
+          setRestoreError(null)
+          shapeMutation.mutate({ account: restoreTarget, op: 'restore', password })
+        }}
+      >
+        <Alert tone="warning" title="恢复">
+          恢复后账号保持删除前状态；同属主已有活跃账号时服务端会拒绝。
+        </Alert>
+      </ReauthDialog>
+
+      <AccountBatchModal
+        open={batch !== null}
+        action={batch?.action ?? null}
+        rows={batch?.rows ?? []}
+        pending={batchPending}
+        error={batchError}
+        result={batchResult}
+        onClose={closeBatch}
+        onConfirm={(password, reason) => {
+          if (!batch) return
+          setBatchError(null)
+          setBatchResult(null)
+          batchMutation.mutate({
+            action: batch.action,
+            ids: batch.rows.map((row) => row.id),
+            password,
+            reason,
+          })
         }}
       />
     </>

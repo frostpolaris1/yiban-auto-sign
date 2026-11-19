@@ -1,7 +1,9 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import {
   ACCOUNTS,
   DEVICE_READ,
+  SESSION_PASSWORD,
+  batchCalls,
   deleteCalls,
   deviceRefreshCalls,
   createCalls,
@@ -14,6 +16,11 @@ import {
   restoreCalls,
   summaryCalls,
 } from './support/fake-accounts-api'
+
+/** 夹具 acc-1 的 updated_at；PATCH 的乐观锁基线按列表快照原样回传。 */
+const ACC1_UPDATED_AT = '2026-10-20T08:41:00Z'
+/** 假 API 写入成功后统一改成这个 updated_at。 */
+const UPDATED_AFTER_WRITE = '2026-10-28T09:30:00Z'
 
 /**
  * 账号页的 11 条不变式。
@@ -52,6 +59,13 @@ async function openAccounts(page: Page) {
   await page.goto('/accounts')
   await expect(page.getByRole('table', { name: '账号列表' })).toBeVisible()
   await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
+}
+
+/** 在带二次口令的弹窗里填操作者本人登录口令。 */
+async function fillReauth(dialog: Locator, password = SESSION_PASSWORD) {
+  // 用 textbox 角色而不是 getByLabel：显隐按钮的 aria-label 也含这段文字，
+  // 而必填字段的可访问名会追加 `*`，exact 匹配反而落空。
+  await dialog.getByRole('textbox', { name: '你的登录口令' }).fill(password)
 }
 
 /** 侧栏「账号」链接。按可访问名匹配，文案仍须是「账号」。 */
@@ -582,19 +596,29 @@ test('invariant 6: PATCH sends only the filled fields', async ({ page }) => {
 
   // exact：旁边的「清除设备识别码」开关也命中「设备识别码」子串。
   await dialog.getByLabel('设备识别码', { exact: true }).fill('dev-1')
+  await fillReauth(dialog)
   await expect(save).toBeEnabled()
   await save.click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
-  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ device_code: 'dev-1' })
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({
+    device_code: 'dev-1',
+    current_password: SESSION_PASSWORD,
+    expected_updated_at: ACC1_UPDATED_AT,
+  })
 
   // 第二次只改手机号：掩码号随列表刷新更新。
   const menu2 = await openRowMenu(page, '138****8000')
   await menu2.getByRole('menuitem', { name: /编辑/ }).click()
   const dialog2 = page.getByRole('dialog', { name: '编辑账号？' })
   await dialog2.getByLabel('手机号').fill('13800138001')
+  await fillReauth(dialog2)
   await dialog2.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(2)
-  expect(patchCalls(api, 'acc-1')[1].body).toEqual({ phone: '13800138001' })
+  expect(patchCalls(api, 'acc-1')[1].body).toEqual({
+    phone: '13800138001',
+    current_password: SESSION_PASSWORD,
+    expected_updated_at: UPDATED_AFTER_WRITE,
+  })
   await expect(page.getByRole('button', { name: '查看 138****8001' })).toBeVisible()
 })
 
@@ -634,9 +658,14 @@ test('invariant 6: a rejected account resubmits from its edit entry', async ({ p
   await expect(dialog, 'the modal shows why the account was rejected').toContainText('照片不清晰')
 
   await dialog.getByLabel('密码').fill('new-secret')
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
-  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ password: 'new-secret' })
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({
+    password: 'new-secret',
+    current_password: SESSION_PASSWORD,
+    expected_updated_at: ACC1_UPDATED_AT,
+  })
 
   // 保存后回到待审核：徽标与 toast 都要说出来，旧驳回理由不再可见。
   await expect(rowFor(page, '138****8000').getByText('待审核')).toBeVisible()
@@ -660,9 +689,14 @@ test('invariant 6: a phone change sends an active account back to review', async
   await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
   const dialog = page.getByRole('dialog', { name: '编辑账号？' })
   await dialog.getByLabel('手机号').fill('13800138001')
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
-  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ phone: '13800138001' })
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({
+    phone: '13800138001',
+    current_password: SESSION_PASSWORD,
+    expected_updated_at: ACC1_UPDATED_AT,
+  })
 
   await expect(rowFor(page, '138****8001').getByText('待审核')).toBeVisible()
   await expect(
@@ -681,6 +715,7 @@ test('invariant 6: a password edit keeps the active status', async ({ page }) =>
   await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
   const dialog = page.getByRole('dialog', { name: '编辑账号？' })
   await dialog.getByLabel('密码').fill('new-secret')
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
 
@@ -706,7 +741,10 @@ test('invariant 6: the name is prefilled and sent only when changed', async ({ p
   await name.fill('  宿舍改名  ')
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
-  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ name: '宿舍改名' })
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({
+    name: '宿舍改名',
+    expected_updated_at: ACC1_UPDATED_AT,
+  })
   await expect(rowFor(page, '138****8000')).toContainText('宿舍改名')
 
   // 清空 = 删除备注：空串要真的发出去，列表回落到占位符。
@@ -716,7 +754,10 @@ test('invariant 6: the name is prefilled and sent only when changed', async ({ p
   await dialog2.getByLabel('备注名').fill('')
   await dialog2.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(2)
-  expect(patchCalls(api, 'acc-1')[1].body).toEqual({ name: '' })
+  expect(patchCalls(api, 'acc-1')[1].body).toEqual({
+    name: '',
+    expected_updated_at: UPDATED_AFTER_WRITE,
+  })
   await expect(rowFor(page, '138****8000').getByText('账号8000')).toBeVisible()
 })
 
@@ -738,7 +779,10 @@ test('invariant 6: a name-only edit keeps a rejected account rejected', async ({
   await dialog.getByLabel('备注名').fill('待补照片')
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
-  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ name: '待补照片' })
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({
+    name: '待补照片',
+    expected_updated_at: ACC1_UPDATED_AT,
+  })
 
   // 备注不是审核材料：状态与驳回理由都不动，toast 说「已保存」而不是「已重新提交」。
   await expect(rowFor(page, '138****8000').getByText('已驳回')).toBeVisible()
@@ -770,7 +814,10 @@ test('device gate: a user edit hides the device code and keeps the model', async
   await dialog.getByLabel('机型').fill('Pixel')
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
-  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ phone_model: 'Pixel' })
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({
+    phone_model: 'Pixel',
+    expected_updated_at: ACC1_UPDATED_AT,
+  })
 })
 
 test('device gate: an admin clears the device code with the sentinel', async ({ page }) => {
@@ -787,9 +834,14 @@ test('device gate: an admin clears the device code with the sentinel', async ({ 
   await clear.check()
   await expect(device).toBeDisabled()
   // 只勾清除也算一次改动：保存可点，提交体是空串哨兵。
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
-  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ device_code: '' })
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({
+    device_code: '',
+    current_password: SESSION_PASSWORD,
+    expected_updated_at: ACC1_UPDATED_AT,
+  })
 
   // 取消清除恢复输入：只改机型时不再发送设备码。
   const menu2 = await openRowMenu(page, '138****8000')
@@ -802,7 +854,10 @@ test('device gate: an admin clears the device code with the sentinel', async ({ 
   await dialog2.getByLabel('机型').fill('Pixel')
   await dialog2.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(2)
-  expect(patchCalls(api, 'acc-1')[1].body).toEqual({ phone_model: 'Pixel' })
+  expect(patchCalls(api, 'acc-1')[1].body).toEqual({
+    phone_model: 'Pixel',
+    expected_updated_at: UPDATED_AFTER_WRITE,
+  })
 })
 
 test('device gate: an unticked clear keeps the typed device code after a toggle', async ({
@@ -818,9 +873,14 @@ test('device gate: an unticked clear keeps the typed device code after a toggle'
   // 勾选又取消：输入值保留，未勾清除时照常发送（S2 冻结判据补钉，2026-11-04）。
   await dialog.getByLabel('清除设备识别码').check()
   await dialog.getByLabel('清除设备识别码').uncheck()
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
-  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ device_code: 'dev-1' })
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({
+    device_code: 'dev-1',
+    current_password: SESSION_PASSWORD,
+    expected_updated_at: ACC1_UPDATED_AT,
+  })
 })
 
 test('invariant 10: the list shows the remark and the masked owner email', async ({ page }) => {
@@ -867,13 +927,14 @@ test('loading and empty rows span every column', async ({ page }) => {
   await page.goto('/accounts')
   const table = page.getByRole('table', { name: '账号列表' })
 
-  // 默认 8 列：备注名、手机号、机型、学校、状态、归属、更新时间、操作。
-  await expect(table.locator('td[colspan="8"]')).toContainText('加载中…')
-  await expect(table.locator('td[colspan="8"]')).toContainText('没有匹配的账号')
-
-  // 勾选含已删除后多一列删除时间：加载态行同步为 9。
-  await page.getByRole('checkbox', { name: '含已删除' }).check()
+  // master 有选择列：默认 9 列（选择 + 备注名、手机号、机型、学校、状态、
+  // 归属、更新时间、操作）。
   await expect(table.locator('td[colspan="9"]')).toContainText('加载中…')
+  await expect(table.locator('td[colspan="9"]')).toContainText('没有匹配的账号')
+
+  // 勾选含已删除后多一列删除时间：加载态行同步为 10。
+  await page.getByRole('checkbox', { name: '含已删除' }).check()
+  await expect(table.locator('td[colspan="10"]')).toContainText('加载中…')
 })
 
 test('invariant 11: a complete phone or email highlights the matching rows', async ({ page }) => {
@@ -1051,6 +1112,7 @@ test('invariant 6: a pending account keeps its queued status on a rebind', async
   await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
   const dialog = page.getByRole('dialog', { name: '编辑账号？' })
   await dialog.getByLabel('手机号').fill('13800138001')
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
 
@@ -1178,8 +1240,12 @@ test('invariant 8: delete waits for confirmation and removes the row', async ({ 
 
   const menu2 = await openRowMenu(page, '135****0001')
   await menu2.getByRole('menuitem', { name: /删除/ }).click()
+  // 危险写要二次口令：确认键在口令为空时禁用。
+  await expect(dialog.getByRole('button', { name: '确认删除' })).toBeDisabled()
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '确认删除' }).click()
   await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
+  expect(deleteCalls(api, 'acc-3')[0].body).toEqual({ current_password: SESSION_PASSWORD })
   await expect.poll(() => page.getByRole('button', { name: '查看 135****0001' }).count()).toBe(0)
   await expect(drawer).toBeHidden()
   await expect
@@ -1272,14 +1338,23 @@ test('ux2 user: the wizard has two pages, zero email fields and a readonly devic
   expect(create.body).toMatchObject({ phone: '13800000000' })
   expect(create.body).not.toHaveProperty('owner_user_id')
 
-  // 第 2 页：设备码是只读文本（非输入框）且带来源说明。
+  // 第 2 页：设备读取要二次口令（契约要求 current_password），不是自动请求。
   const dialog2 = page.getByRole('dialog')
+  await expect(dialog2.getByText('设备信息需要你的登录口令二次确认后读取')).toBeVisible()
+  await dialog2.getByRole('button', { name: '读取设备信息' }).click()
+  const reauth = page.getByRole('dialog', { name: '读取设备信息？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '读取', exact: true }).click()
+  // 设备码是只读文本（非输入框）且带来源说明。
   await expect(dialog2.getByText(DEVICE_READ.device_code_masked)).toBeVisible({
     timeout: 10_000,
   })
   await expect(dialog2.getByText('来自易班平台登记，不可修改')).toBeVisible()
   await expect(page.locator('#account-create-device input, #account-create-device textarea')).toHaveCount(0)
   await expect(deviceRefreshCalls(api, 'acc-new')).toHaveLength(1)
+  expect(deviceRefreshCalls(api, 'acc-new')[0].body).toEqual({
+    current_password: SESSION_PASSWORD,
+  })
 })
 
 test('ux2 user: a failed device read stays non-blocking and offers the later entry', async ({
@@ -1294,8 +1369,14 @@ test('ux2 user: a failed device read stays non-blocking and offers the later ent
   await page.getByRole('button', { name: '新建账号' }).click()
   await submitWizardPageOne(page)
 
-  await expect(page.getByRole('dialog').getByText('设备信息读取失败')).toBeVisible()
-  await expect(page.getByRole('dialog').getByText('可稍后在账号详情中补录')).toBeVisible()
+  // 读取失败留在二次口令弹窗里，不阻断跳过。
+  await page.getByRole('dialog').getByRole('button', { name: '读取设备信息' }).click()
+  const reauth = page.getByRole('dialog', { name: '读取设备信息？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '读取', exact: true }).click()
+  await expect(reauth.getByText('平台暂时不可用，请稍后再试。')).toBeVisible()
+  await reauth.getByRole('button', { name: '取消' }).click()
+
   // 跳过仍可达：完成不被阻断。
   await page.getByRole('dialog').getByRole('button', { name: '跳过' }).click()
   await expect(page.getByText('已创建 138****0000')).toBeVisible()
@@ -1314,12 +1395,14 @@ test('ux2 user: skip lands on the drawer device block with a reachable refresh',
 
   // 补录入口：详情抽屉的设备块与「刷新设备」可达（8v8③）。
   await page.getByRole('button', { name: '查看 138****0000' }).click()
-  await expect(page.getByRole('dialog', { name: '账号详情' }).getByText('设备信息')).toBeVisible()
-  await page.getByRole('dialog', { name: '账号详情' }).getByRole('button', { name: '刷新设备' }).click()
-  await expect(
-    page.getByRole('dialog', { name: '账号详情' }).getByText(DEVICE_READ.device_code_masked),
-  ).toBeVisible()
-  await expect(deviceRefreshCalls(api, 'acc-new')).toHaveLength(2)
+  const drawer = page.getByRole('dialog', { name: '账号详情' })
+  await expect(drawer.getByText('设备信息')).toBeVisible()
+  await drawer.getByRole('button', { name: '刷新设备' }).click()
+  const reauth = page.getByRole('dialog', { name: '刷新设备？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '刷新设备' }).click()
+  await expect(drawer.getByText(DEVICE_READ.device_code_masked)).toBeVisible()
+  await expect(deviceRefreshCalls(api, 'acc-new')).toHaveLength(1)
 })
 
 test('ux2 master: the single form resolves owner by email lookup and leaves it blank for self', async ({
@@ -1474,10 +1557,13 @@ test('ux2 user: the device block does not carry data across accounts', async ({ 
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
 
-  // 刷新 A：设备块出现掩码。
+  // 刷新 A：先过二次口令，设备块出现掩码。
   await page.getByRole('button', { name: '查看 138****8000' }).click()
   const drawerA = page.getByRole('dialog', { name: '账号详情' })
   await drawerA.getByRole('button', { name: '刷新设备' }).click()
+  const reauth = page.getByRole('dialog', { name: '刷新设备？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '刷新设备' }).click()
   await expect(drawerA.getByText(DEVICE_READ.device_code_masked)).toBeVisible()
   await page
     .getByRole('dialog', { name: '账号详情' })
@@ -1505,10 +1591,13 @@ test('ux2 master: a failed restore tells the user', async ({ page }) => {
 
   await deletedRow.getByRole('button', { name: '更多操作 131****0000' }).click()
   await page.getByRole('menuitem', { name: '恢复' }).click()
+  const reauth = page.getByRole('dialog', { name: '恢复账号？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '确认恢复' }).click()
   await expect(restoreCalls(api, 'acc-del')).toHaveLength(1)
   // 失败必须可见：容量满不是静默（M1）。
-  await expect(page.getByText('恢复失败')).toBeVisible()
-  await expect(page.getByText('容量已满')).toBeVisible()
+  await expect(reauth.getByText('容量已满')).toBeVisible()
+  await expect(reauth).toBeVisible()
 })
 
 test('ux2 master: a deleted row opens no drawer and exposes no detail read', async ({ page }) => {
@@ -1541,6 +1630,9 @@ test('ux2 master: the deleted filter reveals restore and the row returns to norm
   await deletedRow.getByRole('button', { name: '更多操作 131****0000' }).click()
   // 菜单渲染在行外的门户里：从页面根取菜单项。
   await page.getByRole('menuitem', { name: '恢复' }).click()
+  const reauth = page.getByRole('dialog', { name: '恢复账号？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '确认恢复' }).click()
   await expect(restoreCalls(api, 'acc-del')).toHaveLength(1)
   await expect.poll(() => lastListCall(api)?.params.include_deleted ?? 'absent').toBe('true')
   // 恢复后行回原状态：软删徽标消失。
@@ -1684,10 +1776,9 @@ test('n190: deleting the pending account refetches the summary and hides the ban
 
   const menu = await openRowMenu(page, '138****8000')
   await menu.getByRole('menuitem', { name: /删除/ }).click()
-  await page
-    .getByRole('dialog', { name: '删除账号？' })
-    .getByRole('button', { name: '确认删除' })
-    .click()
+  const deleteDialog = page.getByRole('dialog', { name: '删除账号？' })
+  await fillReauth(deleteDialog)
+  await deleteDialog.getByRole('button', { name: '确认删除' }).click()
   await expect.poll(() => deleteCalls(api, 'acc-1').length).toBe(1)
   await expect
     .poll(() => summaryCalls(api).length, 'the delete invalidates the summary')
@@ -1787,4 +1878,217 @@ test('polling: an open detail drawer pauses the list poll', async ({ page }) => 
   await expect(drawer).toBeHidden()
   await page.clock.runFor(10_000)
   await expect.poll(() => listCalls(api).length).toBe(base + 1)
+})
+
+// --- 二次口令负向、批量条与 409 并发 --------------------------------------
+
+test('reauth: a credential edit with a wrong password keeps the form and shows the copy', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog.getByLabel('密码').fill('new-secret')
+  await fillReauth(dialog, 'wrong-password')
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+
+  await expect(dialog.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByLabel('密码')).toHaveValue('new-secret')
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+  expect(patchCalls(api, 'acc-1')[0].body).toMatchObject({
+    password: 'new-secret',
+    current_password: 'wrong-password',
+  })
+})
+
+test('reauth: 429 on a dangerous write says try again later', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'master', reauthThrottled: true })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '查看 138****8000' }).click()
+  const drawer = page.getByRole('dialog', { name: '账号详情' })
+  await drawer.getByRole('button', { name: '刷新设备' }).click()
+  const reauth = page.getByRole('dialog', { name: '刷新设备？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '刷新设备' }).click()
+  await expect(reauth.getByText('尝试过多，请稍后再试。')).toBeVisible()
+})
+
+test('reauth: delete with a wrong password keeps the dialog open', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '135****0001')
+  await menu.getByRole('menuitem', { name: /删除/ }).click()
+  const dialog = page.getByRole('dialog', { name: '删除账号？' })
+  await fillReauth(dialog, 'wrong-password')
+  await dialog.getByRole('button', { name: '确认删除' }).click()
+
+  await expect(dialog.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect(dialog).toBeVisible()
+  await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
+})
+
+test('reauth: restore with a wrong password keeps the dialog open', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+  await page.getByRole('checkbox', { name: '含已删除' }).check()
+
+  const deletedRow = deletedRowFor(page, '131****0000')
+  await deletedRow.getByRole('button', { name: '更多操作 131****0000' }).click()
+  await page.getByRole('menuitem', { name: '恢复' }).click()
+  const dialog = page.getByRole('dialog', { name: '恢复账号？' })
+  await fillReauth(dialog, 'wrong-password')
+  await dialog.getByRole('button', { name: '确认恢复' }).click()
+
+  await expect(dialog.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect(dialog).toBeVisible()
+  await expect.poll(() => restoreCalls(api, 'acc-del').length).toBe(1)
+})
+
+test('batch: three selected rows send exactly one batch request and clear the bar', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  for (const phone of ['138****8000', '139****9000', '135****0001']) {
+    await page.getByRole('checkbox', { name: `选择 ${phone}` }).check()
+  }
+  await expect(page.getByRole('region', { name: '批量操作' })).toContainText('已选 3 条')
+
+  await page.getByRole('button', { name: '审核通过', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '批量审核通过？' })
+  await expect(dialog).toContainText('将作用于已选 3 个账号')
+  await fillReauth(dialog)
+  await dialog.getByRole('button', { name: '确认审核通过' }).click()
+
+  await expect.poll(() => batchCalls(api).length).toBe(1)
+  expect(batchCalls(api)[0].body).toEqual({
+    action: 'review_approve',
+    ids: ['acc-1', 'acc-2', 'acc-3'],
+    current_password: SESSION_PASSWORD,
+  })
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('region', { name: '批量操作' })).toHaveCount(0)
+  await expect(page.locator('[data-sonner-toast]').filter({ hasText: '批量操作完成' })).toBeVisible()
+})
+
+test('batch: a partial failure keeps the result list visible', async ({ page }) => {
+  const api = await mockAccountsApi(page, {
+    role: 'master',
+    batchItemError: {
+      id: 'acc-2',
+      status: 409,
+      code: 'conflict',
+      message: '状态不允许暂停',
+    },
+  })
+  await openAccounts(page)
+
+  await page.getByRole('checkbox', { name: '选择 138****8000' }).check()
+  await page.getByRole('checkbox', { name: '选择 139****9000' }).check()
+  await page.getByRole('checkbox', { name: '选择 135****0001' }).check()
+  await page.getByRole('button', { name: '暂停', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '批量暂停？' })
+  await fillReauth(dialog)
+  await dialog.getByRole('button', { name: '确认暂停' }).click()
+
+  await expect.poll(() => batchCalls(api).length).toBe(1)
+  const result = page.getByRole('status', { name: '批量结果' })
+  await expect(result).toContainText('2 条成功，1 条失败')
+  await expect(result).toContainText('139****9000')
+  await expect(result).toContainText('conflict · 状态不允许暂停')
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(dialog).toBeHidden()
+})
+
+test('batch: a filter change clears the selection', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  await page.getByRole('checkbox', { name: '选择 138****8000' }).check()
+  await expect(page.getByRole('region', { name: '批量操作' })).toContainText('已选 1 条')
+
+  await page.getByLabel('状态筛选').selectOption('active')
+  await expect(page.getByRole('region', { name: '批量操作' })).toHaveCount(0)
+})
+
+test('batch: more than ten rows disables every action with a reason', async ({ page }) => {
+  const many = Array.from({ length: 11 }, (_, index) => ({
+    ...ACCOUNTS[0],
+    id: `acc-many-${index}`,
+    phone_masked: `136****00${String(index).padStart(2, '0')}`,
+    name: `批量${index}`,
+    display_name: `批量${index}`,
+  }))
+  await mockAccountsApi(page, { role: 'master', accounts: many })
+  await page.goto('/accounts')
+  await expect(page.getByRole('table', { name: '账号列表' })).toBeVisible()
+
+  await page.getByRole('checkbox', { name: '全选本页账号' }).check()
+  const bar = page.getByRole('region', { name: '批量操作' })
+  await expect(bar).toContainText('已选 11 条')
+  await expect(bar).toContainText('一次最多 10 条')
+  await expect(bar.getByRole('button', { name: '审核通过', exact: true })).toBeDisabled()
+  await expect(bar.getByRole('button', { name: '删除', exact: true })).toBeDisabled()
+})
+
+test('409: an external change offers load-latest and retry-mine without losing the draft', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog.getByLabel('备注名').fill('我的版本')
+
+  // 外部先改：服务端最新行的 updated_at 变了，PATCH 的基线过期。
+  api.setAccounts([
+    { ...ACCOUNTS[0], name: '别人改的', display_name: '别人改的', updated_at: '2026-11-01T00:00:00Z' },
+    ...ACCOUNTS.slice(1),
+  ])
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+
+  const bar = dialog.getByText('这条记录已被他人修改')
+  await expect(bar).toBeVisible()
+  await expect(dialog.getByLabel('备注名')).toHaveValue('我的版本')
+
+  // 出路一：载入最新，表单换成服务端版本。
+  await dialog.getByRole('button', { name: '载入最新' }).click()
+  await expect(dialog.getByLabel('备注名')).toHaveValue('别人改的')
+  await expect(dialog.getByText('这条记录已被他人修改')).toHaveCount(0)
+})
+
+test('409: retry-mine resubmits the same draft against the latest row', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog.getByLabel('备注名').fill('我的版本')
+
+  api.setAccounts([
+    { ...ACCOUNTS[0], name: '别人改的', display_name: '别人改的', updated_at: '2026-11-01T00:00:00Z' },
+    ...ACCOUNTS.slice(1),
+  ])
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect(dialog.getByText('这条记录已被他人修改')).toBeVisible()
+
+  await dialog.getByRole('button', { name: '用我的版本重试' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(2)
+  expect(patchCalls(api, 'acc-1')[1].body).toEqual({
+    name: '我的版本',
+    expected_updated_at: '2026-11-01T00:00:00Z',
+  })
+  await expect(dialog).toBeHidden()
+  await expect(rowFor(page, '138****8000')).toContainText('我的版本')
 })

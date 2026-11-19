@@ -28,9 +28,9 @@ import type { Role } from '@/lib/api/auth'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
-import { TextInput } from '@/components/ui/Input'
+import { PasswordInput, TextInput } from '@/components/ui/Input'
 import { accountUpdateSchema, type AccountUpdateFormValues } from './schema'
-import type { AccountUpdateDraft } from './drafts'
+import { draftNeedsReauth, type AccountUpdateDraft } from './drafts'
 
 const EMPTY_DRAFT: Required<AccountUpdateDraft> = {
   phone: '',
@@ -39,6 +39,7 @@ const EMPTY_DRAFT: Required<AccountUpdateDraft> = {
   device_code: '',
   phone_model: '',
   clear_device_code: false,
+  current_password: '',
 }
 
 /** 备注名按码点比较，与服务端 trim + rune 计长同口径。 */
@@ -51,9 +52,16 @@ type AccountEditModalProps = {
   role: Role | null
   pending: boolean
   error: string | null
+  /** 409 并发态：他人已改这条记录，弹窗保持打开。 */
+  conflict: boolean
+  conflictPending: boolean
   returnFocusTo: HTMLElement | null
   onClose: () => void
   onConfirm: (draft: AccountUpdateDraft) => void
+  /** 载入服务端最新版本（连同表单值一起重置）。 */
+  onLoadLatest: () => void
+  /** 用当前草稿重试，基线换成服务端最新版本。 */
+  onRetryMine: () => void
 }
 
 export function AccountEditModal({
@@ -61,9 +69,13 @@ export function AccountEditModal({
   role,
   pending,
   error,
+  conflict,
+  conflictPending,
   returnFocusTo,
   onClose,
   onConfirm,
+  onLoadLatest,
+  onRetryMine,
 }: AccountEditModalProps) {
   const { register, watch, getValues, reset, handleSubmit, formState } =
     useForm<AccountUpdateFormValues>({
@@ -88,6 +100,9 @@ export function AccountEditModal({
     (values.password !== undefined && values.password !== '') ||
     clearingDevice ||
     [values.phone, values.device_code, values.phone_model].some((v) => (v ?? '').trim() !== '')
+  // 凭据面（手机号/密码/设备码）改动要二次口令；只改备注名或机型不要。
+  const needsReauth = draftNeedsReauth(values)
+  const reauthMissing = needsReauth && (values.current_password ?? '').trim() === ''
 
   // 校验入口在 zod（schema.ts）。历史 UX：校验文案统一挂在手机号字段下。
   const validation = formState.errors.phone?.message ?? formState.errors.name?.message ?? null
@@ -112,7 +127,7 @@ export function AccountEditModal({
           </Button>
           <Button
             variant="primary"
-            disabled={pending || validation !== null || !hasAny}
+            disabled={pending || validation !== null || !hasAny || reauthMissing || conflict}
             onClick={handleSubmit(() => onConfirm(getValues()))}
           >
             保存修改
@@ -120,6 +135,20 @@ export function AccountEditModal({
         </>
       }
     >
+      {conflict ? (
+        <div className="app-conflict-bar" role="status">
+          <strong>这条记录已被他人修改</strong>
+          <span className="app-muted">表单内容保留。载入最新会替换为服务端版本；用我的版本重试会以最新版本为基线提交当前内容。</span>
+          <div className="app-conflict-actions">
+            <Button variant="ghost" size="sm" onClick={onLoadLatest} disabled={conflictPending}>
+              {conflictPending ? '载入中…' : '载入最新'}
+            </Button>
+            <Button variant="primary" size="sm" onClick={onRetryMine} disabled={conflictPending}>
+              用我的版本重试
+            </Button>
+          </div>
+        </div>
+      ) : null}
       {resubmit ? (
         <Alert tone="warning" title="已驳回">
           驳回理由：{account?.reject_reason || '未填写'}。修改凭据后重新提交；
@@ -176,6 +205,15 @@ export function AccountEditModal({
           maxLength={64}
           {...register('phone_model')}
         />
+        {needsReauth ? (
+          <PasswordInput
+            id="account-edit-current-password"
+            label="你的登录口令"
+            hint="改动手机号、密码或设备识别码需要二次确认；口令不会保存。"
+            autoComplete="current-password"
+            {...register('current_password')}
+          />
+        ) : null}
       </div>
       {error ? (
         <div className="app-modal-error">

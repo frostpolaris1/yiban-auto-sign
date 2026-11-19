@@ -76,6 +76,27 @@ export function describeApiError(error: unknown): string {
   return String(error)
 }
 
+/** 409 是业务结论（并发、最后一名 master、名下有账号），不是传输故障。 */
+export function isConflictError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409
+}
+
+/**
+ * 危险写二次口令的失败文案。400 缺口令、403 口令错、429 连续失败
+ * 三条各自可读；其余状态仍回统一信封，便于定位非口令类失败。
+ */
+export function describeReauthError(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 400) return '缺少本站登录口令，或填写内容不合法。'
+    if (error.status === 403) return '口令不正确，或当前状态不允许这个操作。'
+    // 429 有两种来源：二次口令连续失败，或业务容量拒绝。只有前者换成口令文案。
+    if (error.status === 429 && error.code === 'rate_limited') return '尝试过多，请稍后再试。'
+    if (error.status === 502) return '平台暂时不可用，请稍后再试。'
+    if (error.status === 503) return '系统维护中，请稍后再试。'
+  }
+  return describeApiError(error)
+}
+
 function parseRetryAfterSeconds(response: Response): number | undefined {
   const raw = response.headers.get('Retry-After')?.trim()
   if (!raw || !/^\d+$/.test(raw)) return undefined

@@ -39,7 +39,9 @@ export function Menu({ trigger, children, align = 'end', profile }: MenuProps) {
           <DropdownMenu.Content
             className={cx('dd-menu', profile && 'dd-profile')}
             align={align}
-            sideOffset={4}
+            // vendor 旧间距是 top:calc(100% + 10px)；Portal 后由 Radix 定位，
+            // 用 14px 侧距维持同一视觉（4 + 10）。
+            sideOffset={14}
             collisionPadding={8}
           >
             {children}

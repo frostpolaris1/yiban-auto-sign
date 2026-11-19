@@ -21,7 +21,8 @@ import { BusyButton } from '@/components/ui/BusyButton'
 import { Button } from '@/components/ui/Button'
 import { FilterField } from '@/components/ui/FilterField'
 import { Modal } from '@/components/ui/Modal'
-import { describeApiError } from '@/lib/api/client'
+import { PasswordInput } from '@/components/ui/Input'
+import { describeReauthError } from '@/lib/api/client'
 import { createUser, type User, type UserRole } from '@/lib/api/user'
 import { USER_ROLE_OPTIONS } from './display'
 import { isConflict } from './apiErrors'
@@ -39,26 +40,34 @@ export function UserCreateModal({ open, returnFocusTo, onClose, onCreated }: Use
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState<UserRole>('user')
+  const [currentPassword, setCurrentPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const createMut = useMutation({
-    mutationFn: () => createUser({ email: email.trim(), password, role }),
+    mutationFn: () =>
+      createUser({
+        email: email.trim(),
+        password,
+        role,
+        current_password: currentPassword,
+      }),
     onSuccess: (user) => {
-      // 口令不驻留：立即清空三个字段再交给容器。
+      // 口令不驻留：立即清空字段再交给容器。
       setEmail('')
       setPassword('')
       setRole('user')
+      setCurrentPassword('')
       setError(null)
       onCreated(user)
     },
     onError: (cause) => {
-      setError(isConflict(cause) ? TAKEN_EMAIL_TEXT : describeApiError(cause))
+      setError(isConflict(cause) ? TAKEN_EMAIL_TEXT : describeReauthError(cause))
     },
   })
 
   const submit = () => {
-    if (!email.trim() || !password) {
-      setError('邮箱与口令都是必填')
+    if (!email.trim() || !password || !currentPassword.trim()) {
+      setError('邮箱、初始口令与你的登录口令都是必填')
       return
     }
     setError(null)
@@ -124,6 +133,16 @@ export function UserCreateModal({ open, returnFocusTo, onClose, onCreated }: Use
             ))}
           </select>
         </FilterField>
+
+        <PasswordInput
+          id="user-create-current-password"
+          label="你的登录口令"
+          hint="建号是危险写，需要二次确认；口令不会保存。"
+          required
+          autoComplete="current-password"
+          value={currentPassword}
+          onChange={(event) => setCurrentPassword(event.target.value)}
+        />
       </div>
       {error ? (
         <div className="app-modal-error">

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ApiError, apiRequest } from '../../src/lib/api/client.ts'
+import { ApiError, apiRequest, describeReauthError } from '../../src/lib/api/client.ts'
 
 /**
  * Fetch-level checks for apiRequest.
@@ -434,4 +434,18 @@ test('ApiError captures numeric Retry-After seconds from 429 responses', async (
   } finally {
     globalThis.fetch = original
   }
+})
+
+/**
+ * 二次口令的失败文案：400/403 与「口令连续失败」的 429 各有一条固定文案；
+ * 业务容量拒绝的 429 不得冒用口令文案。
+ */
+test('describeReauthError maps password failures and leaves business 429 alone', () => {
+  const error = (status, code) => new ApiError(status, { code, message: 'detail' })
+
+  assert.equal(describeReauthError(error(400, 'validation_failed')), '缺少本站登录口令，或填写内容不合法。')
+  assert.equal(describeReauthError(error(403, 'forbidden')), '口令不正确，或当前状态不允许这个操作。')
+  assert.equal(describeReauthError(error(429, 'rate_limited')), '尝试过多，请稍后再试。')
+  assert.equal(describeReauthError(error(429, 'capacity_exceeded')), 'capacity_exceeded · detail')
+  assert.equal(describeReauthError(new Error('offline')), 'offline')
 })
