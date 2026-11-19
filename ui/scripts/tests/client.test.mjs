@@ -464,11 +464,16 @@ test('ApiError captures numeric Retry-After seconds from 429 responses', async (
  * 业务容量拒绝的 429 不得冒用口令文案。
  */
 test('describeReauthError maps password failures and leaves business 429 alone', () => {
-  const error = (status, code) => new ApiError(status, { code, message: 'detail' })
+  const error = (status, code, message = 'detail') => new ApiError(status, { code, message })
 
   assert.equal(describeReauthError(error(400, 'validation_failed')), '缺少本站登录口令，或填写内容不合法。')
   assert.equal(describeReauthError(error(403, 'forbidden')), '口令不正确，或当前状态不允许这个操作。')
   assert.equal(describeReauthError(error(429, 'rate_limited')), '尝试过多，请稍后再试。')
-  assert.equal(describeReauthError(error(429, 'capacity_exceeded')), 'capacity_exceeded · detail')
-  assert.equal(describeReauthError(new Error('offline')), 'offline')
+  // 业务 429 走服务端中文消息原样透出，不得被口令文案或英文兜底吞掉。
+  assert.equal(
+    describeReauthError(error(429, 'capacity_exceeded', '容量不足，无法排入当前窗口')),
+    '容量不足，无法排入当前窗口',
+  )
+  // 非 ApiError 走中文兜底，不再直出原始错误正文。
+  assert.equal(describeReauthError(new Error('offline')), '请求异常，请稍后重试')
 })
