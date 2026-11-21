@@ -1,14 +1,15 @@
 /**
  * **功能**
- * 系统设置页（全站域）：页级角色门、页顶分区锚链与单列分区容器（计划 / 策略 / 公告 / 渠道）。
+ * 系统设置页（全站域）：页级角色门、页顶分区锚链与单列分区容器
+ * （计划 / 策略 / 公告 / 渠道 / 名册 / 版本）。
  *
  * **归属**
  * `features/system` 域容器：页面 `SystemPage` 只引用它。
  *
  * **口径**
  * 权限由 `SYSTEM_VIEW_ROLES`（master/admin）控制；user 渲染无权限卡片且零业务请求。
- * 页顶锚链覆盖 `#plans`、`#policy`、`#announcement`、`#channels` 四个单列分区，
- * URL 携带 hash 时自动滚动并聚焦目标分区，滚动时同步更新当前可见锚点。
+ * 页顶锚链覆盖 `#plans`、`#policy`、`#announcement`、`#channels`、`#roster`、`#version`
+ * 六个单列分区，URL 携带 hash 时自动滚动并聚焦目标分区，滚动时同步更新当前可见锚点。
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -24,6 +25,8 @@ import { ChannelsSection } from './channels/ChannelsSection'
 import { ScheduleView } from './plans/ScheduleView'
 import { POLICY_READ_ONLY_REASON } from './policy/drafts'
 import { PolicySection } from './policy/PolicySection'
+import { RosterSection } from './roster/RosterSection'
+import { VersionSection } from './version/VersionSection'
 import './system.css'
 
 const SYSTEM_SECTIONS = [
@@ -31,6 +34,8 @@ const SYSTEM_SECTIONS = [
   { id: 'policy', label: '策略' },
   { id: 'announcement', label: '公告' },
   { id: 'channels', label: '渠道' },
+  { id: 'roster', label: '名册' },
+  { id: 'version', label: '版本' },
 ] as const
 
 type SystemSectionId = (typeof SYSTEM_SECTIONS)[number]['id']
@@ -172,7 +177,7 @@ export function SystemView({ day, onDayChange }: SystemViewProps) {
             系统<span className="accent">设置</span>
           </>
         }
-        subtitle="全站运行策略、公告、渠道测试与签到计划控制台。"
+        subtitle="全站运行策略、公告、渠道测试、签到计划、配置名册与版本自检控制台。"
       />
 
       <nav className="sys-anchors" aria-label="系统设置分区">
@@ -200,6 +205,8 @@ export function SystemView({ day, onDayChange }: SystemViewProps) {
         <PolicySection canWrite={canWrite} readOnlyReason={readOnlyReason} />
         <AnnouncementSection canWrite={canWrite} readOnlyReason={readOnlyReason} />
         <ChannelsSection canWrite={canWrite} readOnlyReason={readOnlyReason} />
+        <RosterSection />
+        <VersionSection />
       </div>
     </>
   )

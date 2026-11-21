@@ -9,14 +9,20 @@ import type {
   SettingsReport,
 } from '../../src/lib/api/adminSettings'
 import type { Announcement } from '../../src/lib/api/announcement'
+import type { HealthStatus } from '../../src/lib/api/health'
 import type { SchedulePlan, ScheduleWindow, TimePref } from '../../src/lib/api/schedule'
 import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 
 /**
- * 时间片页与时间偏好卡的假 API。
+ * 时间片页、系统设置全部分区与时间偏好卡的假 API。
  *
- * 一份路由处理 `/api/auth/me`、`/api/schedule/**` 与 `/api/me/time-pref`。
- * 响应体只用登记过的合成值：学校与任务都带「合成」前缀，账号 ID 是 `acc-000N`。
+ * 一份路由处理 `/api/auth/me`、`/api/schedule/**`、`/api/me/time-pref`、
+ * 策略与名册端点（`/api/auth/registration`、`/api/admin/settings`、
+ * `/api/admin/schedule-settings`、`/api/admin/quota-settings`、`/api/admin/auto-approve`、
+ * `/api/announcement`、`/api/admin/announcement`、`/api/admin/mail/test`、
+ * `/api/admin/webhook/test`），另有独立路由处理公开探针 `/healthz`。
+ * 响应体只用登记过的合成值：学校与任务都带「合成」前缀，账号 ID 是 `acc-000N`，
+ * 名册只借用配置名册的真实键名，值全部为合成示例（敏感键永不带原值）。
  * 调用记录供断言「请求带哪个参数」与「确认前发没发请求」。
  *
  * 写操作会改时间偏好状态，故每个测试各持一份副本，不污染共享夹具。
@@ -139,6 +145,96 @@ export const DEFAULT_TIME_PREF: TimePref = {
   estimate_note: '（今日计划，非承诺）',
 }
 
+/**
+ * 系统名册默认夹具：真实键名 × 合成值 × 三态来源齐备。
+ * 敏感键按契约形状只带掩码视图（`value` 恒为 `null`）。
+ */
+export const DEFAULT_SETTINGS: SettingsReport = {
+  groups: [
+    {
+      name: '调度',
+      items: [
+        {
+          key: 'YIBAN_WINDOW_EDGE_FRONT_SEC',
+          group: '调度',
+          source: 'default',
+          value: 60,
+          sensitive: null,
+        },
+        {
+          key: 'YIBAN_WINDOW_EDGE_BACK_SEC',
+          group: '调度',
+          source: 'default',
+          value: 60,
+          sensitive: null,
+        },
+        {
+          key: 'YIBAN_ALLOW_TIME_PREF',
+          group: '调度',
+          source: 'db',
+          value: false,
+          sensitive: null,
+        },
+      ],
+    },
+    {
+      name: '通知',
+      items: [
+        {
+          key: 'YIBAN_MAIL_PASS',
+          group: '通知',
+          source: 'env',
+          value: null,
+          sensitive: { set: true, masked: '****', source: 'env' },
+        },
+        {
+          key: 'YIBAN_WEBHOOK_SECRET',
+          group: '通知',
+          source: 'unknown',
+          value: null,
+          sensitive: { set: false, masked: '', source: 'unknown' },
+        },
+        {
+          key: 'YIBAN_WEBHOOK_ENABLE',
+          group: '通知',
+          source: 'default',
+          value: false,
+          sensitive: null,
+        },
+      ],
+    },
+    {
+      name: '部署',
+      items: [
+        {
+          key: 'YIBAN_HTTP_ADDR',
+          group: '部署',
+          source: 'env',
+          value: ':8080',
+          sensitive: null,
+        },
+        {
+          key: 'YIBAN_DATABASE_URL',
+          group: '部署',
+          source: 'env',
+          value: null,
+          sensitive: { set: true, masked: '****', source: 'env' },
+        },
+        {
+          key: 'YIBAN_AUDIT_ANCHOR_FILE',
+          group: '部署',
+          source: 'default',
+          value: '',
+          sensitive: null,
+        },
+      ],
+    },
+  ],
+}
+
+/** 存活探针默认响应：与契约 `HealthStatus` 同形。 */
+export const DEFAULT_HEALTH: HealthStatus = { status: 'ok' }
+
 export type ScheduleApiCall = {
   method: string
   path: string
@@ -175,6 +271,11 @@ export type MockScheduleOptions = {
   quota?: QuotaReport
   scheduleSettings?: ScheduleSettingsReport
   announcement?: Announcement
+  settings?: SettingsReport
+  settingsError?: Failure
+  onSettingsRead?: () => Failure | undefined
+  health?: HealthStatus
+  onHealth?: () => Failure | undefined
   onPolicyWrite?: (method: string, path: string) => Failure | undefined
   onMailTest?: (body: { current_password?: string }) => Failure | undefined
   onWebhookTest?: () => Failure | undefined
@@ -224,6 +325,8 @@ export async function mockScheduleApi(
     updated_at: '2026-11-18T10:00:00Z',
     ...(options.announcement ?? {}),
   }
+  const settings: SettingsReport = options.settings ?? DEFAULT_SETTINGS
+  const health: HealthStatus = options.health ?? DEFAULT_HEALTH
 
   const json = (route: Route, body: unknown, status = 200) =>
     route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
@@ -512,6 +615,9 @@ export async function mockScheduleApi(
               ? { value: 'front', source: 'default' }
               : { value: patch.sign_dist!, source: 'db' }
         }
+        // 与生产 PUT 同形（handlers.go AdminScheduleSettingsSet）：先写库，再回传
+        // 全量配置名册。前端把整份报告写入共享的 ['admin-settings'] 缓存；
+        // 只回调度组会让名册分区丢掉通知/部署组。
         const report: SettingsReport = {
           groups: [
             {
@@ -540,10 +646,18 @@ export async function mockScheduleApi(
                 },
               ],
             },
+            ...settings.groups.filter((group) => group.name !== '调度'),
           ],
         }
         return json(route, report)
       }
+    }
+
+    if (url.pathname === '/api/admin/settings' && request.method() === 'GET') {
+      if (!(await requireManager(route))) return
+      const injected = options.onSettingsRead?.() ?? options.settingsError
+      if (injected) return failFrom(route, injected)
+      return json(route, settings)
     }
 
     if (url.pathname === '/api/announcement' && request.method() === 'GET') {
@@ -585,6 +699,22 @@ export async function mockScheduleApi(
     }
 
     return fail(route, 404, 'not_found', '未找到资源')
+  })
+
+  // 公开存活探针：独立路由（不带 /api 前缀），失败注入按队列消费。
+  await page.route('**/healthz', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    calls.push({
+      method: request.method(),
+      path: url.pathname,
+      search: url.search,
+      params: {},
+      body: null,
+    })
+    const injected = options.onHealth?.()
+    if (injected) return failFrom(route, injected)
+    return json(route, health)
   })
 
   return { calls }
