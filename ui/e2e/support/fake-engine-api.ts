@@ -16,6 +16,28 @@ function at(offsetMs: number): string {
 
 const MINUTE = 60_000
 
+/**
+ * 每次取用时按**调用时刻**重算的活快照。
+ *
+ * 行为用例共用 `ENGINE_SNAPSHOT` 有个隐性缺陷：它是模块级常量，时刻在 import
+ * 那一刻就定死了。整份行为套件单进程串行（`workers: 1`），巡检用例排在队列
+ * 130+ 位、真正开跑常在两三分钟以后，80 秒的租约早已到期——表格整列「已到期」，
+ * 断言「1 分」稳定失败（CI run 44894613811 / 44896708760 都红在这条）。
+ * 夹具要的是「此刻还剩 1 分多钟」，故改成按需生成。
+ */
+export function liveEngineSnapshot(): EngineSnapshot {
+  return {
+    ...ENGINE_SNAPSHOT,
+    inflight: ENGINE_SNAPSHOT.inflight.map((row, index) => ({
+      ...row,
+      claimed_at: at(index === 0 ? -40_000 : -15_000),
+      lease_expires_at: at(index === 0 ? 80_000 : 105_000),
+    })),
+    last_claim_at: at(-40_000),
+    last_tick_at: at(-2_000),
+  }
+}
+
 /** 登记过的合成快照：两个在飞、两个待重试（同账号两条）、计数非零。 */
 export const ENGINE_SNAPSHOT: EngineSnapshot = {
   inflight: [
