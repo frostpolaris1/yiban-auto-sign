@@ -1,0 +1,185 @@
+/*
+ * settings.css — 账号设置页「通知订阅」矩阵样式层。
+ *
+ * **归属**
+ * `features/settings` 专属样式：仅消费 `tokens.css` 变量，零颜色字面量（满足 token-gate）。
+ * 宽屏呈语义化四列矩阵；容器窄于 560px 时通过 `@container` 自动转为堆叠行块，
+ * 390 视口零横向溢出且触控目标 >= 44px。
+ */
+
+.s-notify-wrap {
+  container-type: inline-size;
+  margin-top: 12px;
+  padding: 2px;
+}
+
+.s-notify-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.s-notify-table thead th {
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--border);
+  color: color-mix(in srgb, var(--t-muted) 65%, var(--t-base));
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.s-notify-table thead th:first-child {
+  padding-inline-start: 0;
+  text-align: left;
+}
+
+.s-notify-table tbody th[scope='row'] {
+  padding: 14px 16px 14px 0;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  font-weight: 400;
+  vertical-align: middle;
+}
+
+.s-notify-table tbody td.s-notify-cell {
+  width: 112px;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: center;
+  vertical-align: middle;
+}
+
+.s-notify-table tbody tr:last-child th[scope='row'],
+.s-notify-table tbody tr:last-child td.s-notify-cell {
+  border-bottom: 0;
+}
+
+.s-notify-table tbody tr {
+  transition: background-color 160ms ease;
+}
+
+.s-notify-table tbody tr:hover th[scope='row'],
+.s-notify-table tbody tr:hover td.s-notify-cell {
+  background: var(--bg-hover);
+}
+
+.s-notify-cat-title {
+  color: var(--t-base);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.s-notify-cat-desc {
+  margin: 2px 0 0;
+  color: color-mix(in srgb, var(--t-muted) 65%, var(--t-base));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.s-notify-row-error {
+  margin: 6px 0 0;
+  /* vendor 的 --danger 直接压在卡面上仅 3.76:1，混入正文色抬到 4.5:1 以上。 */
+  color: color-mix(in srgb, var(--danger) 70%, var(--t-base));
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.s-notify-cell-label {
+  display: none;
+}
+
+.s-notify-switch {
+  justify-content: center;
+  min-inline-size: 44px;
+  min-block-size: 32px;
+  padding: 6px 5px;
+  border-radius: 999px;
+  gap: 0;
+}
+
+.s-notify-switch[aria-disabled='true'] {
+  opacity: 0.65;
+  cursor: progress;
+}
+
+.s-notify-saving {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: color-mix(in srgb, var(--t-muted) 65%, var(--t-base));
+  font-size: 12px;
+}
+
+.s-notify-note {
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+  color: color-mix(in srgb, var(--t-muted) 65%, var(--t-base));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@container (width < 560px) {
+  .s-notify-table,
+  .s-notify-table thead,
+  .s-notify-table tbody,
+  .s-notify-table tr,
+  .s-notify-table th,
+  .s-notify-table td {
+    display: block;
+  }
+
+  .s-notify-table thead {
+    display: none;
+  }
+
+  .s-notify-table tbody tr {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .s-notify-table tbody tr:first-child {
+    padding-top: 4px;
+  }
+
+  .s-notify-table tbody tr:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  .s-notify-table tbody tr:hover th[scope='row'],
+  .s-notify-table tbody tr:hover td.s-notify-cell {
+    background: transparent;
+  }
+
+  .s-notify-table tbody th[scope='row'] {
+    padding: 0 0 8px;
+    border-bottom: 0;
+  }
+
+  .s-notify-table tbody td.s-notify-cell {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: auto;
+    padding: 2px 0;
+    border-bottom: 0;
+    text-align: left;
+  }
+
+  .s-notify-cell-label {
+    display: inline;
+    color: color-mix(in srgb, var(--t-muted) 65%, var(--t-base));
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .s-notify-switch {
+    min-block-size: 44px;
+    justify-content: flex-end;
+    padding-inline-end: 0;
+  }
+}

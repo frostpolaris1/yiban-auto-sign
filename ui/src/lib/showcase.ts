@@ -15,6 +15,7 @@
  */
 
 import type { Account, AccountPage, AccountStatus, AccountSummary } from './api/account'
+import type { NotifyPrefPage } from './api/adminNotify'
 import type { AuditLogItem, AuditLogPage, AuditStatusReport } from './api/audit'
 import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
@@ -753,5 +754,25 @@ export function showcaseQueueDiagnostics(accountId: string): AccountDiagnostics 
       version: 2,
     },
     egress: { identity: 'https://eg-demo-1' },
+  }
+}
+
+/** 账号设置页（展示构建）：合成管理员通知订阅 4×3 默认矩阵，零网络请求。 */
+export function showcaseAdminNotify(): NotifyPrefPage {
+  return {
+    items: [
+      { category: 'credential_invalid', channel: 'in_app', enabled: true },
+      { category: 'credential_invalid', channel: 'email', enabled: false },
+      { category: 'credential_invalid', channel: 'webhook', enabled: true },
+      { category: 'review_pending', channel: 'in_app', enabled: true },
+      { category: 'review_pending', channel: 'email', enabled: true },
+      { category: 'review_pending', channel: 'webhook', enabled: true },
+      { category: 'sign_failed_daily', channel: 'in_app', enabled: false },
+      { category: 'sign_failed_daily', channel: 'email', enabled: true },
+      { category: 'sign_failed_daily', channel: 'webhook', enabled: false },
+      { category: 'capacity_rejected', channel: 'in_app', enabled: true },
+      { category: 'capacity_rejected', channel: 'email', enabled: false },
+      { category: 'capacity_rejected', channel: 'webhook', enabled: false },
+    ],
   }
 }

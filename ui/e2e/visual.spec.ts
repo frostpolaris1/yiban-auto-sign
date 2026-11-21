@@ -164,10 +164,11 @@ async function expectData(page: Page, path: string) {
   } else if (path === '/design') {
     await expect(page.getByRole('heading', { name: /组件画廊/ })).toBeVisible()
   } else if (path === '/settings') {
-    // 会话到位：账号信息卡读到会话夹具，改密卡在表单态。
+    // 会话与矩阵到位：账号信息卡读到会话夹具，改密卡在表单态，通知订阅 4×3 矩阵已渲染。
     const card = page.locator('.card').filter({ hasText: '账号信息' })
     await expect(card).toContainText('operator@example.com')
     await expect(page.getByLabel(/^当前密码/)).toBeVisible()
+    await expect(page.getByRole('switch', { name: '凭据失效 · 站内信' })).toBeVisible()
   } else if (path === '/forgot-password') {
     await expect(page.getByLabel('邮箱')).toBeVisible()
   } else if (path.startsWith('/reset-password')) {

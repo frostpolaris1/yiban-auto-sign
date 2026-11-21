@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto'
 import type { Page, Request, Route } from '@playwright/test'
 import type { Account, AccountSummary, AccountVerifyResult } from '../../src/lib/api/account'
 import type { AuditStatusReport } from '../../src/lib/api/audit'
+import type { components } from '../../src/lib/api/schema'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
+
+export type FakeNotifyPref = components['schemas']['NotifyPref']
 
 /**
  * 账号页的假 API。
@@ -149,6 +152,22 @@ export const DEFAULT_AUDIT_STATUS: AuditStatusReport = {
   checked_at: '2026-10-28T09:00:00+08:00',
 }
 
+/** 管理员通知订阅默认矩阵（4 类 × 3 渠道，与后端 core/notify 默认表一致）。 */
+export const DEFAULT_NOTIFY_PREFS: FakeNotifyPref[] = [
+  { category: 'credential_invalid', channel: 'in_app', enabled: true },
+  { category: 'credential_invalid', channel: 'email', enabled: false },
+  { category: 'credential_invalid', channel: 'webhook', enabled: true },
+  { category: 'review_pending', channel: 'in_app', enabled: true },
+  { category: 'review_pending', channel: 'email', enabled: true },
+  { category: 'review_pending', channel: 'webhook', enabled: true },
+  { category: 'sign_failed_daily', channel: 'in_app', enabled: false },
+  { category: 'sign_failed_daily', channel: 'email', enabled: true },
+  { category: 'sign_failed_daily', channel: 'webhook', enabled: false },
+  { category: 'capacity_rejected', channel: 'in_app', enabled: true },
+  { category: 'capacity_rejected', channel: 'email', enabled: false },
+  { category: 'capacity_rejected', channel: 'webhook', enabled: false },
+]
+
 /** 归属选择器的合成用户。邮箱是保留域 example.com。 */
 export const LOOKUP_USERS = [
   { id: 'user-target', email: 'member.target@example.com', status: 'active' },
@@ -226,6 +245,16 @@ export type MockOptions = {
   summaryError?: { status: number; code: string; message: string }
   /** 归属选择器 lookup 的失败注入。 */
   lookupError?: { status: number; code: string; message: string }
+  /** 通知订阅矩阵初值。缺省取 DEFAULT_NOTIFY_PREFS。 */
+  notifyPrefs?: FakeNotifyPref[]
+  /** GET /api/admin/notify 失败注入；once=true 时只失败第一次。 */
+  notifyGetError?: { status: number; code: string; message: string; once?: boolean }
+  /** PUT /api/admin/notify 失败注入；once=true 时只失败第一次。 */
+  notifySetError?: { status: number; code: string; message: string; once?: boolean }
+  /** PUT /api/admin/notify 断网模拟。 */
+  notifyNetworkError?: boolean
+  /** 挂起 PUT /api/admin/notify 直到调用 api.releaseNotifyPut()，用于确定性测试在途锁定态。 */
+  holdNotifyPut?: boolean
   /** 照片夹具。缺省为一份 user-1 拥有两张图的合成库。 */
   photos?: PhotoFixture
 }
@@ -238,6 +267,8 @@ export type FakeApi = {
    * 下一次 10 秒请求带旧 ETag，假 API 回 200 新体。
    */
   setAccounts: (items: Account[]) => void
+  /** 放行被 holdNotifyPut 挂起的 PUT /api/admin/notify 请求。 */
+  releaseNotifyPut: () => void
 }
 
 function errorBody(code: string, message: string) {
@@ -269,6 +300,15 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
   let mustChangePassword = Boolean(options.mustChangePassword)
   // 每个测试一份副本：写操作会改状态，不能污染共享夹具。
   const allAccounts = (options.accounts ?? ACCOUNTS).map((item) => ({ ...item }))
+  let notifyItems = (options.notifyPrefs ?? DEFAULT_NOTIFY_PREFS).map((item) => ({ ...item }))
+  let notifyGetHits = 0
+  let notifySetHits = 0
+  let notifyGateResolve: (() => void) | null = null
+  let notifyGatePromise = options.holdNotifyPut
+    ? new Promise<void>((resolve) => {
+        notifyGateResolve = resolve
+      })
+    : null
   const pages = Object.fromEntries(
     Object.entries(options.pages ?? {}).map(([cursor, items]) => [
       cursor,
@@ -575,6 +615,57 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return json(route, request, DEFAULT_AUDIT_STATUS)
     }
 
+    // 管理员个人通知订阅矩阵：x-roles 为 master/admin，user 403。
+    if (url.pathname === '/api/admin/notify') {
+      if (sessionRole !== 'master' && sessionRole !== 'admin') {
+        return fail(route, 403, 'forbidden', '仅 master/admin 可配置通知订阅')
+      }
+      if (request.method() === 'GET') {
+        notifyGetHits += 1
+        if (options.notifyGetError && (!options.notifyGetError.once || notifyGetHits === 1)) {
+          const { status, code, message } = options.notifyGetError
+          return fail(route, status, code, message)
+        }
+        return json(route, request, { items: notifyItems.map((item) => ({ ...item })) })
+      }
+      if (request.method() === 'PUT') {
+        if (notifyGatePromise) {
+          await notifyGatePromise
+        }
+        if (options.notifyNetworkError) return route.abort('failed')
+        notifySetHits += 1
+        if (options.notifySetError && (!options.notifySetError.once || notifySetHits === 1)) {
+          const { status, code, message } = options.notifySetError
+          return fail(route, status, code, message)
+        }
+        const payload = (body ?? {}) as { items?: unknown }
+        if (!Array.isArray(payload.items)) {
+          return fail(route, 400, 'validation_failed', 'items is required')
+        }
+        const validPairs = new Map(
+          DEFAULT_NOTIFY_PREFS.map((item) => [`${item.category}:${item.channel}`, item]),
+        )
+        const overrides = new Map<string, boolean>()
+        for (const raw of payload.items) {
+          const item = raw as Partial<FakeNotifyPref>
+          const key = `${item.category ?? ''}:${item.channel ?? ''}`
+          if (!validPairs.has(key) || typeof item.enabled !== 'boolean') {
+            return fail(route, 400, 'validation_failed', 'invalid notification subscription')
+          }
+          if (overrides.has(key)) {
+            return fail(route, 400, 'validation_failed', 'duplicate notification subscription')
+          }
+          overrides.set(key, item.enabled)
+        }
+        notifyItems = DEFAULT_NOTIFY_PREFS.map((item) => {
+          const key = `${item.category}:${item.channel}`
+          return { ...item, enabled: overrides.get(key) ?? item.enabled }
+        })
+        return json(route, request, { items: notifyItems.map((item) => ({ ...item })) })
+      }
+      return fail(route, 405, 'internal_error', '不支持的方法')
+    }
+
     const match = url.pathname.match(
       /^\/api\/accounts\/([^/]+)(?:\/(pause|sign|verify|review|location|device-refresh|restore))?$/,
     )
@@ -723,6 +814,11 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         ...deletedAccounts,
       )
     },
+    releaseNotifyPut() {
+      notifyGateResolve?.()
+      notifyGateResolve = null
+      notifyGatePromise = null
+    },
   }
 }
 
@@ -804,4 +900,12 @@ export function changePasswordCalls(api: FakeApi): ApiCall[] {
   return api.calls.filter(
     (call) => call.method === 'POST' && call.path === '/api/auth/change-password',
   )
+}
+
+export function notifyGetCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/notify')
+}
+
+export function notifySetCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'PUT' && call.path === '/api/admin/notify')
 }
