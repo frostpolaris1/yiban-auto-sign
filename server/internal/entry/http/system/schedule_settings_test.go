@@ -403,3 +403,89 @@ func TestScheduleSettingsPutRejectsInvalidSignDist(t *testing.T) {
 		}
 	}
 }
+
+// TestScheduleSettingsGetDefaultsRolesAndRoundTrip 核对 GET /api/admin/schedule-settings：
+// master/admin 可读、user 403、未装配 501、PUT 写回 8 键后 GET 全数报 source=db、null 清除回 default，
+// 且 DB-only 5 键仍不进 GET /api/admin/settings 名册。
+func TestScheduleSettingsGetDefaultsRolesAndRoundTrip(t *testing.T) {
+	f := newScheduleSettingsFixture(t)
+
+	getSchedule := func(role coreauth.Role) (*httptest.ResponseRecorder, oapi.ScheduleSettingsReport) {
+		t.Helper()
+		c, rec := newContextWithEmail(http.MethodGet, "/api/admin/schedule-settings", "", role, "a@example.com")
+		f.handler.AdminScheduleSettings(c)
+		var out oapi.ScheduleSettingsReport
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("decode schedule report: %v; body=%s", err, rec.Body.String())
+			}
+		}
+		return rec, out
+	}
+
+	for _, role := range []coreauth.Role{coreauth.RoleMaster, coreauth.RoleAdmin} {
+		rec, body := getSchedule(role)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s GET schedule-settings = %d: %s", role, rec.Code, rec.Body.String())
+		}
+		if body.EdgeFrontSec.Value != 60 || body.EdgeFrontSec.Source != oapi.ScheduleSettingSourceDefault ||
+			body.DefaultSignStartMin.Value != 390 || body.DefaultSignEndMin.Value != 470 ||
+			body.SignDist.Value != oapi.Front {
+			t.Fatalf("%s default report = %+v", role, body)
+		}
+	}
+	if rec, _ := getSchedule(coreauth.RoleUser); rec.Code != http.StatusForbidden {
+		t.Fatalf("user GET schedule-settings = %d, want 403", rec.Code)
+	}
+
+	nilHandler := systemhttp.NewHandler(nil, nil, nil)
+	cNil, recNil := newContextWithEmail(http.MethodGet, "/api/admin/schedule-settings", "", coreauth.RoleMaster, "m@example.com")
+	nilHandler.AdminScheduleSettings(cNil)
+	if recNil.Code != http.StatusNotImplemented {
+		t.Fatalf("nil handler GET = %d, want 501", recNil.Code)
+	}
+
+	// 写入全部 8 键后 GET 回显 db 来源；再清除恢复 default。
+	putPayload := `{"edge_front_sec":25,"edge_back_sec":110,"allow_time_pref":true,"sunday_sign":true,"saturday_sign":false,"default_sign_start_min":420,"default_sign_end_min":510,"sign_dist":"uniform"}`
+	if rec := f.putScheduleSettings(t, putPayload, coreauth.RoleMaster); rec.Code != http.StatusOK {
+		t.Fatalf("PUT 8 keys = %d: %s", rec.Code, rec.Body.String())
+	}
+	recAfter, reportAfter := getSchedule(coreauth.RoleAdmin)
+	if recAfter.Code != http.StatusOK {
+		t.Fatalf("GET after PUT = %d", recAfter.Code)
+	}
+	if reportAfter.EdgeFrontSec.Value != 25 || reportAfter.EdgeFrontSec.Source != oapi.ScheduleSettingSourceDb ||
+		reportAfter.EdgeBackSec.Value != 110 || reportAfter.EdgeBackSec.Source != oapi.ScheduleSettingSourceDb ||
+		!reportAfter.AllowTimePref.Value || reportAfter.AllowTimePref.Source != oapi.ScheduleSettingSourceDb ||
+		!reportAfter.SundaySign.Value || reportAfter.SundaySign.Source != oapi.ScheduleSettingSourceDb ||
+		reportAfter.SaturdaySign.Value || reportAfter.SaturdaySign.Source != oapi.ScheduleSettingSourceDb ||
+		reportAfter.DefaultSignStartMin.Value != 420 || reportAfter.DefaultSignStartMin.Source != oapi.ScheduleSettingSourceDb ||
+		reportAfter.DefaultSignEndMin.Value != 510 || reportAfter.DefaultSignEndMin.Source != oapi.ScheduleSettingSourceDb ||
+		reportAfter.SignDist.Value != oapi.Uniform || reportAfter.SignDist.Source != oapi.ScheduleSettingSourceDb {
+		t.Fatalf("after PUT report = %+v", reportAfter)
+	}
+
+	// 名册仍不包含 5 枚 DB-only 机制键。
+	rosterItems := f.getSettings(t)
+	for _, hiddenKey := range []string{
+		"sunday_sign", "saturday_sign", "default_sign_start_min", "default_sign_end_min", "sign_dist",
+		appsettings.KeyScheduleSundaySign, appsettings.KeyScheduleSaturdaySign,
+		appsettings.KeyScheduleDefaultSignStartMin, appsettings.KeyScheduleDefaultSignEndMin,
+		appsettings.KeyScheduleSignDist,
+	} {
+		if _, leaked := rosterItems[hiddenKey]; leaked {
+			t.Fatalf("DB-only key %s leaked into /api/admin/settings roster", hiddenKey)
+		}
+	}
+
+	clearPayload := `{"default_sign_start_min":null,"default_sign_end_min":null,"sign_dist":null}`
+	if rec := f.putScheduleSettings(t, clearPayload, coreauth.RoleMaster); rec.Code != http.StatusOK {
+		t.Fatalf("PUT clear = %d: %s", rec.Code, rec.Body.String())
+	}
+	_, reportCleared := getSchedule(coreauth.RoleMaster)
+	if reportCleared.DefaultSignStartMin.Value != 390 || reportCleared.DefaultSignStartMin.Source != oapi.ScheduleSettingSourceDefault ||
+		reportCleared.DefaultSignEndMin.Value != 470 || reportCleared.DefaultSignEndMin.Source != oapi.ScheduleSettingSourceDefault ||
+		reportCleared.SignDist.Value != oapi.Front || reportCleared.SignDist.Source != oapi.ScheduleSettingSourceDefault {
+		t.Fatalf("after clear report = %+v", reportCleared)
+	}
+}

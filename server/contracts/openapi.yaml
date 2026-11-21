@@ -2272,6 +2272,32 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/admin/schedule-settings:
+    get:
+      tags: [settings]
+      operationId: AdminScheduleSettings
+      summary: Read the effective runtime schedule settings.
+      description: |
+        Master or admin. Returns the effective value and source of the eight
+        schedule keys (edge_front_sec, edge_back_sec, allow_time_pref,
+        sunday_sign, saturday_sign, default_sign_start_min, default_sign_end_min,
+        sign_dist). The three registry-backed keys report db, env or default;
+        the five database-only mechanism keys report db when a valid override
+        row (or complete valid pair for default_sign_*) exists and default
+        otherwise (they never appear in GET /api/admin/settings). Corrupted or
+        out-of-domain rows fall back to env or default with one warning per key;
+        a half-pair on default_sign_* falls back to the built-in 06:30/07:50
+        pair. A storage failure answers 500; it is never reported as default.
+      x-roles: [master, admin]
+      responses:
+        '200':
+          description: Effective schedule settings and their sources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleSettingsReport'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
     put:
       tags: [settings]
       operationId: AdminScheduleSettingsSet
@@ -4194,6 +4220,83 @@ components:
             across the whole window. Lowercase literals only: any other
             value, including case variants, answers 400. Takes effect at
             the next daily plan build.
+    ScheduleSettingSource:
+      type: string
+      enum: [db, env, default]
+      description: |
+        Layer that provided the effective schedule setting: db when a valid
+        override row (or complete pair for default_sign_*) exists, env when
+        the process environment provides a registry-backed key, default
+        otherwise. Database-only schedule keys never yield env.
+    ScheduleEdgeSetting:
+      type: object
+      description: Effective schedule boundary offset in seconds (0 to 300).
+      required: [value, source]
+      properties:
+        value:
+          type: integer
+          minimum: 0
+          maximum: 300
+        source:
+          $ref: '#/components/schemas/ScheduleSettingSource'
+    ScheduleBoolSetting:
+      type: object
+      description: Effective schedule boolean policy flag.
+      required: [value, source]
+      properties:
+        value:
+          type: boolean
+        source:
+          $ref: '#/components/schemas/ScheduleSettingSource'
+    ScheduleMinuteSetting:
+      type: object
+      description: Effective clock minute within a day (0 to 1439).
+      required: [value, source]
+      properties:
+        value:
+          type: integer
+          minimum: 0
+          maximum: 1439
+        source:
+          $ref: '#/components/schemas/ScheduleSettingSource'
+    ScheduleSignDistSetting:
+      type: object
+      description: Effective plan row distribution mode within the window.
+      required: [value, source]
+      properties:
+        value:
+          $ref: '#/components/schemas/ScheduleSignDist'
+        source:
+          $ref: '#/components/schemas/ScheduleSettingSource'
+    ScheduleSettingsReport:
+      type: object
+      description: Effective values and sources of all eight writable schedule keys.
+      required:
+        - edge_front_sec
+        - edge_back_sec
+        - allow_time_pref
+        - sunday_sign
+        - saturday_sign
+        - default_sign_start_min
+        - default_sign_end_min
+        - sign_dist
+      properties:
+        edge_front_sec:
+          $ref: '#/components/schemas/ScheduleEdgeSetting'
+        edge_back_sec:
+          $ref: '#/components/schemas/ScheduleEdgeSetting'
+        allow_time_pref:
+          $ref: '#/components/schemas/ScheduleBoolSetting'
+        sunday_sign:
+          $ref: '#/components/schemas/ScheduleBoolSetting'
+        saturday_sign:
+          $ref: '#/components/schemas/ScheduleBoolSetting'
+        default_sign_start_min:
+          $ref: '#/components/schemas/ScheduleMinuteSetting'
+        default_sign_end_min:
+          $ref: '#/components/schemas/ScheduleMinuteSetting'
+        sign_dist:
+          $ref: '#/components/schemas/ScheduleSignDistSetting'
     QuotaSetting:
       type: object
       description: |

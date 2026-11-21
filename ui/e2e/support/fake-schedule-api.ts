@@ -1,4 +1,14 @@
 import type { Page, Route } from '@playwright/test'
+import type {
+  AdminQuotaSettingsUpdate,
+  AdminScheduleSettingsUpdate,
+  AutoApproveStatus,
+  QuotaReport,
+  RegistrationStatus,
+  ScheduleSettingsReport,
+  SettingsReport,
+} from '../../src/lib/api/adminSettings'
+import type { Announcement } from '../../src/lib/api/announcement'
 import type { SchedulePlan, ScheduleWindow, TimePref } from '../../src/lib/api/schedule'
 import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 
@@ -137,7 +147,13 @@ export type ScheduleApiCall = {
   body: unknown
 }
 
-type Failure = { status: number; code: string; message: string }
+type Failure = {
+  status: number
+  code: string
+  message: string
+  details?: Record<string, unknown>
+  retryAfterSec?: number
+}
 
 export type MockScheduleOptions = {
   role: Role | null
@@ -154,16 +170,18 @@ export type MockScheduleOptions = {
   timePref?: TimePref
   timePrefGetError?: Failure
   timePrefPutError?: Failure
+  registration?: RegistrationStatus
+  autoApprove?: AutoApproveStatus
+  quota?: QuotaReport
+  scheduleSettings?: ScheduleSettingsReport
+  announcement?: Announcement
+  onPolicyWrite?: (method: string, path: string) => Failure | undefined
+  onMailTest?: (body: { current_password?: string }) => Failure | undefined
+  onWebhookTest?: () => Failure | undefined
 }
 
 export type FakeScheduleApi = {
   calls: ScheduleApiCall[]
-}
-
-function errorBody(code: string, message: string) {
-  return JSON.stringify({
-    error: { code, message, details: { source: 'fake-schedule-api' }, trace_id: 'trace-test' },
-  })
 }
 
 export async function mockScheduleApi(
@@ -178,12 +196,75 @@ export async function mockScheduleApi(
     'school-gamma:task-weekly': PLAN_GAMMA,
   }
   let timePref: TimePref = { ...(options.timePref ?? DEFAULT_TIME_PREF) }
+  let registration: RegistrationStatus = {
+    enabled: false,
+    terms_version: 1,
+    privacy_version: 1,
+    ...(options.registration ?? {}),
+  }
+  let autoApprove: AutoApproveStatus = { enabled: true, ...(options.autoApprove ?? {}) }
+  let quota: QuotaReport = {
+    max_users: { value: 1, source: 'default' },
+    max_accounts: { value: 1, source: 'default' },
+    ...(options.quota ?? {}),
+  }
+  let scheduleSettings: ScheduleSettingsReport = {
+    edge_front_sec: { value: 60, source: 'default' },
+    edge_back_sec: { value: 60, source: 'default' },
+    allow_time_pref: { value: false, source: 'default' },
+    sunday_sign: { value: false, source: 'default' },
+    saturday_sign: { value: false, source: 'default' },
+    default_sign_start_min: { value: 390, source: 'default' },
+    default_sign_end_min: { value: 470, source: 'default' },
+    sign_dist: { value: 'front', source: 'default' },
+    ...(options.scheduleSettings ?? {}),
+  }
+  let announcement: Announcement = {
+    text: '示例公告：系统每晚自动更新次日签到计划，请在每日 06:00 前确认账号状态。',
+    updated_at: '2026-11-18T10:00:00Z',
+    ...(options.announcement ?? {}),
+  }
 
   const json = (route: Route, body: unknown, status = 200) =>
     route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
 
-  const fail = (route: Route, status: number, code: string, message: string) =>
-    route.fulfill({ status, contentType: 'application/json', body: errorBody(code, message) })
+  const fail = (
+    route: Route,
+    status: number,
+    code: string,
+    message: string,
+    extra?: { details?: Record<string, unknown>; retryAfterSec?: number },
+  ) => {
+    const headers: Record<string, string> = {}
+    if (extra?.retryAfterSec) {
+      headers['Retry-After'] = String(extra.retryAfterSec)
+    }
+    return route.fulfill({
+      status,
+      headers,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        error: {
+          code,
+          message,
+          details: extra?.details ?? { source: 'fake-schedule-api' },
+          trace_id: 'trace-test',
+        },
+      }),
+    })
+  }
+
+  const failFrom = (route: Route, failure: Failure) =>
+    fail(route, failure.status, failure.code, failure.message, {
+      details: failure.details,
+      retryAfterSec: failure.retryAfterSec,
+    })
+
+  const requireMaster = async (route: Route): Promise<boolean> => {
+    if (sessionRole === 'master') return true
+    await fail(route, 403, 'forbidden', 'master role is required')
+    return false
+  }
 
   const requireManager = async (route: Route): Promise<boolean> => {
     if (sessionRole === 'master' || sessionRole === 'admin') return true
@@ -300,6 +381,207 @@ export async function mockScheduleApi(
         timePref = { ...timePref, offset_min: update.offset_min ?? null }
         return json(route, timePref)
       }
+    }
+
+    if (url.pathname === '/api/auth/registration') {
+      if (request.method() === 'GET') {
+        return json(route, registration)
+      }
+      if (request.method() === 'PUT') {
+        if (!(await requireMaster(route))) return
+        const injected = options.onPolicyWrite?.(request.method(), url.pathname)
+        if (injected) return failFrom(route, injected)
+        const patch = (body ?? {}) as { enabled: boolean }
+        registration = { ...registration, enabled: Boolean(patch.enabled) }
+        return json(route, registration)
+      }
+    }
+
+    if (url.pathname === '/api/admin/auto-approve') {
+      if (!(await requireManager(route))) return
+      if (request.method() === 'GET') {
+        return json(route, autoApprove)
+      }
+      if (request.method() === 'PUT') {
+        if (!(await requireMaster(route))) return
+        const injected = options.onPolicyWrite?.(request.method(), url.pathname)
+        if (injected) return failFrom(route, injected)
+        const patch = (body ?? {}) as { enabled: boolean }
+        autoApprove = { enabled: Boolean(patch.enabled) }
+        return json(route, autoApprove)
+      }
+    }
+
+    if (url.pathname === '/api/admin/quota-settings') {
+      if (!(await requireManager(route))) return
+      if (request.method() === 'GET') {
+        return json(route, quota)
+      }
+      if (request.method() === 'PUT') {
+        if (!(await requireMaster(route))) return
+        const injected = options.onPolicyWrite?.(request.method(), url.pathname)
+        if (injected) return failFrom(route, injected)
+        const patch = (body ?? {}) as AdminQuotaSettingsUpdate
+        if (Object.keys(patch).length === 0) {
+          return fail(route, 400, 'validation', 'empty quota patch')
+        }
+        if ('max_users' in patch) {
+          quota = {
+            ...quota,
+            max_users:
+              patch.max_users === null
+                ? { value: 1, source: 'default' }
+                : { value: patch.max_users!, source: 'db' },
+          }
+        }
+        if ('max_accounts' in patch) {
+          quota = {
+            ...quota,
+            max_accounts:
+              patch.max_accounts === null
+                ? { value: 1, source: 'default' }
+                : { value: patch.max_accounts!, source: 'db' },
+          }
+        }
+        return json(route, quota)
+      }
+    }
+
+    if (url.pathname === '/api/admin/schedule-settings') {
+      if (!(await requireManager(route))) return
+      if (request.method() === 'GET') {
+        return json(route, scheduleSettings)
+      }
+      if (request.method() === 'PUT') {
+        if (!(await requireMaster(route))) return
+        const injected = options.onPolicyWrite?.(request.method(), url.pathname)
+        if (injected) return failFrom(route, injected)
+        const patch = (body ?? {}) as AdminScheduleSettingsUpdate
+        if (Object.keys(patch).length === 0) {
+          return fail(route, 400, 'validation', 'empty schedule patch')
+        }
+        if ('edge_front_sec' in patch) {
+          scheduleSettings.edge_front_sec =
+            patch.edge_front_sec === null
+              ? { value: 60, source: 'default' }
+              : { value: patch.edge_front_sec!, source: 'db' }
+        }
+        if ('edge_back_sec' in patch) {
+          scheduleSettings.edge_back_sec =
+            patch.edge_back_sec === null
+              ? { value: 60, source: 'default' }
+              : { value: patch.edge_back_sec!, source: 'db' }
+        }
+        if ('allow_time_pref' in patch) {
+          scheduleSettings.allow_time_pref =
+            patch.allow_time_pref === null
+              ? { value: false, source: 'default' }
+              : { value: patch.allow_time_pref!, source: 'db' }
+        }
+        if ('sunday_sign' in patch) {
+          scheduleSettings.sunday_sign =
+            patch.sunday_sign === null
+              ? { value: false, source: 'default' }
+              : { value: patch.sunday_sign!, source: 'db' }
+        }
+        if ('saturday_sign' in patch) {
+          scheduleSettings.saturday_sign =
+            patch.saturday_sign === null
+              ? { value: false, source: 'default' }
+              : { value: patch.saturday_sign!, source: 'db' }
+        }
+        if ('default_sign_start_min' in patch || 'default_sign_end_min' in patch) {
+          const nextStart = patch.default_sign_start_min
+          const nextEnd = patch.default_sign_end_min
+          if (nextStart === null || nextEnd === null) {
+            scheduleSettings.default_sign_start_min = { value: 390, source: 'default' }
+            scheduleSettings.default_sign_end_min = { value: 470, source: 'default' }
+          } else {
+            const startVal = nextStart ?? scheduleSettings.default_sign_start_min.value
+            const endVal = nextEnd ?? scheduleSettings.default_sign_end_min.value
+            if (startVal >= endVal) {
+              return fail(route, 400, 'validation', 'default_sign_start_min must be before end')
+            }
+            scheduleSettings.default_sign_start_min = { value: startVal, source: 'db' }
+            scheduleSettings.default_sign_end_min = { value: endVal, source: 'db' }
+          }
+        }
+        if ('sign_dist' in patch) {
+          scheduleSettings.sign_dist =
+            patch.sign_dist === null
+              ? { value: 'front', source: 'default' }
+              : { value: patch.sign_dist!, source: 'db' }
+        }
+        const report: SettingsReport = {
+          groups: [
+            {
+              name: '调度',
+              items: [
+                {
+                  key: 'YIBAN_WINDOW_EDGE_FRONT_SEC',
+                  group: '调度',
+                  source: scheduleSettings.edge_front_sec.source,
+                  value: scheduleSettings.edge_front_sec.value,
+                  sensitive: null,
+                },
+                {
+                  key: 'YIBAN_WINDOW_EDGE_BACK_SEC',
+                  group: '调度',
+                  source: scheduleSettings.edge_back_sec.source,
+                  value: scheduleSettings.edge_back_sec.value,
+                  sensitive: null,
+                },
+                {
+                  key: 'YIBAN_ALLOW_TIME_PREF',
+                  group: '调度',
+                  source: scheduleSettings.allow_time_pref.source,
+                  value: scheduleSettings.allow_time_pref.value,
+                  sensitive: null,
+                },
+              ],
+            },
+          ],
+        }
+        return json(route, report)
+      }
+    }
+
+    if (url.pathname === '/api/announcement' && request.method() === 'GET') {
+      return json(route, announcement)
+    }
+
+    if (url.pathname === '/api/admin/announcement' && request.method() === 'PUT') {
+      if (!(await requireMaster(route))) return
+      const injected = options.onPolicyWrite?.(request.method(), url.pathname)
+      if (injected) return failFrom(route, injected)
+      const payload = (body ?? {}) as { text?: string }
+      const text = (payload.text ?? '').trim()
+      if (/[\r\n\u2028\u2029]/.test(text) || Array.from(text).length > 200) {
+        return fail(route, 400, 'validation', 'invalid announcement body')
+      }
+      announcement =
+        text === ''
+          ? { text: '', updated_at: null }
+          : { text, updated_at: '2026-11-19T01:00:00Z' }
+      return json(route, announcement)
+    }
+
+    if (url.pathname === '/api/admin/mail/test' && request.method() === 'POST') {
+      if (!(await requireMaster(route))) return
+      const payload = (body ?? {}) as { current_password?: string }
+      const injected = options.onMailTest?.(payload)
+      if (injected) return failFrom(route, injected)
+      if (!payload.current_password) {
+        return fail(route, 400, 'validation', 'current_password is required')
+      }
+      return json(route, { message: 'test email accepted by the SMTP server' })
+    }
+
+    if (url.pathname === '/api/admin/webhook/test' && request.method() === 'POST') {
+      if (!(await requireMaster(route))) return
+      const injected = options.onWebhookTest?.()
+      if (injected) return failFrom(route, injected)
+      return json(route, { message: 'test webhook accepted by the outlet' })
     }
 
     return fail(route, 404, 'not_found', '未找到资源')

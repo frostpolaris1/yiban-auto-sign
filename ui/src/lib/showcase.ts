@@ -16,6 +16,14 @@
 
 import type { Account, AccountPage, AccountStatus, AccountSummary } from './api/account'
 import type { NotifyPrefPage } from './api/adminNotify'
+import type {
+  AutoApproveStatus,
+  QuotaReport,
+  RegistrationStatus,
+  ScheduleSettingsReport,
+  SettingsReport,
+} from './api/adminSettings'
+import type { Announcement } from './api/announcement'
 import type { AuditLogItem, AuditLogPage, AuditStatusReport } from './api/audit'
 import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
@@ -773,6 +781,115 @@ export function showcaseAdminNotify(): NotifyPrefPage {
       { category: 'capacity_rejected', channel: 'in_app', enabled: true },
       { category: 'capacity_rejected', channel: 'email', enabled: false },
       { category: 'capacity_rejected', channel: 'webhook', enabled: false },
+    ],
+  }
+}
+
+/** 系统页（展示构建）：注册开关合成夹具。 */
+export function showcaseRegistrationStatus(): RegistrationStatus {
+  return {
+    enabled: false,
+    terms_version: 1,
+    privacy_version: 1,
+  }
+}
+
+/** 系统页（展示构建）：新号自动审核开关合成夹具。 */
+export function showcaseAutoApprove(): AutoApproveStatus {
+  return { enabled: true }
+}
+
+/** 系统页（展示构建）：全局配额合成夹具（synthetic 演示数值，不连后端）。 */
+export function showcaseQuotaSettings(): QuotaReport {
+  return {
+    max_users: { value: 20, source: 'db' },
+    max_accounts: { value: 20, source: 'db' },
+  }
+}
+
+/** 系统页（展示构建）：全部 8 项运行调度策略合成夹具。 */
+export function showcaseScheduleSettings(): ScheduleSettingsReport {
+  return {
+    edge_front_sec: { value: 60, source: 'default' },
+    edge_back_sec: { value: 60, source: 'default' },
+    allow_time_pref: { value: true, source: 'db' },
+    sunday_sign: { value: false, source: 'default' },
+    saturday_sign: { value: true, source: 'db' },
+    default_sign_start_min: { value: 390, source: 'default' },
+    default_sign_end_min: { value: 470, source: 'default' },
+    sign_dist: { value: 'front', source: 'default' },
+  }
+}
+
+/** 系统页（展示构建）：全站公告合成夹具。 */
+export function showcaseAnnouncement(): Announcement {
+  return {
+    text: '示例公告：系统每晚自动更新次日签到计划，请在每日 06:00 前确认账号状态。',
+    updated_at: '2026-11-18T10:00:00Z',
+  }
+}
+
+/** 系统页（展示构建）：配置名册合成夹具（仅含合成示例键，敏感键脱敏）。 */
+export function showcaseAdminSettings(): SettingsReport {
+  return {
+    groups: [
+      {
+        name: '调度',
+        items: [
+          {
+            key: 'YIBAN_WINDOW_EDGE_FRONT_SEC',
+            group: '调度',
+            source: 'default',
+            value: 60,
+            sensitive: null,
+          },
+          {
+            key: 'YIBAN_WINDOW_EDGE_BACK_SEC',
+            group: '调度',
+            source: 'default',
+            value: 60,
+            sensitive: null,
+          },
+          {
+            key: 'YIBAN_ALLOW_TIME_PREF',
+            group: '调度',
+            source: 'db',
+            value: true,
+            sensitive: null,
+          },
+        ],
+      },
+      {
+        name: '发布',
+        items: [
+          {
+            key: 'YIBAN_RESET_MAIL_ENABLE',
+            group: '发布',
+            source: 'default',
+            value: false,
+            sensitive: null,
+          },
+        ],
+      },
+      {
+        name: '通知',
+        items: [
+          {
+            key: 'YIBAN_MAIL_PASS',
+            group: '通知',
+            source: 'unknown',
+            value: null,
+            sensitive: { set: false, masked: '', source: 'unknown' },
+          },
+          {
+            key: 'YIBAN_WEBHOOK_ENABLE',
+            group: '通知',
+            source: 'default',
+            value: false,
+            sensitive: null,
+          },
+        ],
+      },
     ],
   }
 }

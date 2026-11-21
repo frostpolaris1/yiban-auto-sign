@@ -26,14 +26,16 @@ export class ApiError extends Error {
   readonly code: string
   readonly details?: unknown
   readonly traceId?: string
+  readonly retryAfterSec?: number
 
-  constructor(status: number, payload: ApiErrorPayload) {
+  constructor(status: number, payload: ApiErrorPayload, retryAfterSec?: number) {
     super(payload.message)
     this.name = 'ApiError'
     this.status = status
     this.code = payload.code
     this.details = payload.details
     this.traceId = payload.trace_id
+    this.retryAfterSec = retryAfterSec
   }
 }
 
@@ -74,7 +76,14 @@ export function describeApiError(error: unknown): string {
   return String(error)
 }
 
-/** 把失败响应翻成 `ApiError`：先读信封，再交 401 回调。 */
+function parseRetryAfterSeconds(response: Response): number | undefined {
+  const raw = response.headers.get('Retry-After')?.trim()
+  if (!raw || !/^\d+$/.test(raw)) return undefined
+  const seconds = Number.parseInt(raw, 10)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined
+}
+
+/** 把失败响应翻成 `ApiError`：先读信封与 Retry-After，再交 401 回调。 */
 async function raiseApiError(response: Response, path: string): Promise<never> {
   let payload: ApiErrorPayload = {
     code: 'internal_error',
@@ -86,8 +95,9 @@ async function raiseApiError(response: Response, path: string): Promise<never> {
   } catch {
     /* 响应体不是 JSON 时保留兜底错误，状态码仍要传给调用方。 */
   }
+  const retryAfterSec = parseRetryAfterSeconds(response)
   if (response.status === 401) unauthorizedHandler?.(path)
-  throw new ApiError(response.status, payload)
+  throw new ApiError(response.status, payload, retryAfterSec)
 }
 
 /** 条件请求缓存的上限。列表每页一个键，超出按插入序删最旧。 */

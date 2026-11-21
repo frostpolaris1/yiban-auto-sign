@@ -208,9 +208,26 @@ test('invariant 8: the system plans preview opens read-only and blocks both writ
     await button.click({ force: true })
   }
   await expect(dialog.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+
+  // /system 04c：策略 / 公告 / 渠道全数展示合成数据且写操作全部置灰，零写请求。
+  await expect(page.locator('#policy')).toContainText('全站活跃用户上限')
+  await expect(page.locator('#announcement')).toContainText('示例公告')
+  for (const sectionButton of [
+    page.locator('#policy-registration-card').getByRole('button', { name: '保存设置' }),
+    page.locator('#policy-auto-approve-card').getByRole('button', { name: '保存设置' }),
+    page.locator('#policy-quota-card').getByRole('button', { name: '保存配额' }),
+    page.locator('#policy-schedule-card').getByRole('button', { name: '保存调度策略' }),
+    page.locator('#announcement').getByRole('button', { name: '发布公告' }),
+    page.locator('#channels').getByRole('button', { name: '测试邮件' }),
+    page.locator('#channels').getByRole('button', { name: '测试 Webhook' }),
+  ]) {
+    await expect(sectionButton).toBeDisabled()
+    await expect(sectionButton).toHaveAttribute('title', READ_ONLY_REASON)
+    await sectionButton.click({ force: true })
+  }
 
   // 展示构建侧栏保留「设计系统」入口，可展开并跳至 /design。
-  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
   const group = page.locator('.d-sidebar').getByRole('button', { name: '设计系统' })
   await expect(group).toHaveAttribute('aria-expanded', 'false')
   await group.click()
