@@ -48,7 +48,8 @@ export function useMe(): UseQueryResult<SessionUser> {
       return fetchMe()
     },
     retry: false,
-    staleTime: SHOWCASE ? Infinity : undefined,
+    // 不传 staleTime: undefined，避免覆盖全局 defaultOptions.queries.staleTime (30s)。
+    ...(SHOWCASE ? { staleTime: Infinity } : {}),
   })
 }
 

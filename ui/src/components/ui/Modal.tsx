@@ -39,6 +39,8 @@ type ModalProps = {
   scrollBody?: boolean
   /** 退场过渡期标记：用于触发关闭动画后再卸载。 */
   closing?: boolean
+  /** 宽档（640）：承载向导等富表单；缺省 480 保持既有弹窗逐像素不变。 */
+  wide?: boolean
   className?: string
 }
 
@@ -59,6 +61,7 @@ export function Modal({
   layer,
   scrollBody,
   closing,
+  wide,
   className,
 }: ModalProps) {
   // 叠层时两份弹窗同时在场。固定 id 会重复，故每个实例各取一个。
@@ -75,7 +78,12 @@ export function Modal({
           style={{ zIndex: contentZ - 10 }}
         />
         <Dialog.Content
-          className={cx('modal-demo app-modal', scrollBody && 'app-modal-scroll', className)}
+          className={cx(
+            'modal-demo app-modal',
+            scrollBody && 'app-modal-scroll',
+            wide && 'app-modal--wide',
+            className,
+          )}
           data-closing={closing ? 'true' : undefined}
           style={{ zIndex: contentZ }}
           aria-describedby={description ? descriptionId : undefined}

@@ -18,8 +18,10 @@ import {
   Outlet,
   redirect,
   useNavigate,
+  useRouterState,
 } from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
+import { UserAppShell } from '@/components/user-app/UserAppShell'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { AuditPage } from '@/pages/AuditPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -34,6 +36,13 @@ import { SchoolsPage } from '@/pages/SchoolsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { SystemPage } from '@/pages/SystemPage'
 import { UsersPage } from '@/pages/UsersPage'
+import { UserAccountNewPage } from '@/pages/user-app/UserAccountNewPage'
+import { UserAccountPage } from '@/pages/user-app/UserAccountPage'
+import { UserHistoryPage } from '@/pages/user-app/UserHistoryPage'
+import { UserHomePage } from '@/pages/user-app/UserHomePage'
+import { UserPasswordPage } from '@/pages/user-app/UserPasswordPage'
+import { UserSettingsPage } from '@/pages/user-app/UserSettingsPage'
+import { UserTimePrefPage } from '@/pages/user-app/UserTimePrefPage'
 import { parseRunSearchRecord, runSearchRecord } from '@/features/logs/urlState'
 import { parseUserSearchRecord, userSearchRecord } from '@/features/user/urlState'
 import { parseDay } from '@/lib/format'
@@ -52,6 +61,75 @@ const shellRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: '_shell',
   component: AppShell,
+})
+
+/**
+ * 用户端独立无路径布局：URL 前缀 `/app`，不复用 Adminator 壳。
+ * 三个一级页：主页 / 历史 / 设置；账号详情是二级页。
+ */
+const userAppRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: '_userApp',
+  component: UserAppShell,
+})
+
+const userHomeRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app',
+  component: UserHomePage,
+})
+
+const userHistoryRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/history',
+  validateSearch: (search: Record<string, unknown>): { day?: string } => {
+    const day = parseDay(search.day)
+    return day ? { day } : {}
+  },
+  component: UserHistoryRouteComponent,
+})
+
+function UserHistoryRouteComponent() {
+  const { day } = userHistoryRoute.useSearch()
+  const navigate = useNavigate()
+  return (
+    <UserHistoryPage
+      day={day}
+      onDayChange={(next) => {
+        void navigate({ to: '/app/history', search: { day: next }, replace: true })
+      }}
+    />
+  )
+}
+
+const userSettingsRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/settings',
+  component: UserSettingsPage,
+})
+
+const userAccountRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/account',
+  component: UserAccountPage,
+})
+
+const userAccountNewRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/account/new',
+  component: UserAccountNewPage,
+})
+
+const userTimePrefRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/settings/time-pref',
+  component: UserTimePrefPage,
+})
+
+const userPasswordRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/settings/password',
+  component: UserPasswordPage,
 })
 
 const dashboardRoute = createRoute({
@@ -226,24 +304,50 @@ const scheduleRoute = createRoute({
 })
 
 /**
- * 登录路由的自定义 search：`?redirect=`。
- * 校验即净化：站外地址在解析时丢弃，后续读者拿不到它。
+ * 认证双签常驻布局。
+ * 登录/注册是同页两签，切换走双向交叉横滑——LoginPage 必须跨切换常驻，
+ * 不能随路由重挂载。/login 与 /register 只做路径匹配标记，模式由 pathname 推导。
  */
-const loginRoute = createRoute({
+const authModeRoute = createRoute({
   getParentRoute: () => rootRoute,
+  id: '_authMode',
+  component: AuthModeLayout,
+})
+
+function AuthModeLayout() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const search = useRouterState({ select: (s) => s.location.search }) as { redirect?: string }
+  return (
+    <>
+      <LoginPage
+        mode={pathname === '/register' ? 'register' : 'login'}
+        redirect={sanitizeRedirect(search.redirect) ?? undefined}
+      />
+      <Outlet />
+    </>
+  )
+}
+
+const loginRoute = createRoute({
+  getParentRoute: () => authModeRoute,
   path: '/login',
   validateSearch: (search: Record<string, unknown>): { redirect?: string } => {
     const redirect = sanitizeRedirect(search.redirect)
     return redirect ? { redirect } : {}
   },
-  component: LoginRouteComponent,
+  component: () => null,
 })
 
-/** 把类型化的 search 传给页面。页面不直接依赖路由定义。 */
-function LoginRouteComponent() {
-  const { redirect } = loginRoute.useSearch()
-  return <LoginPage redirect={redirect} />
-}
+/** 注册是登录页的第二签；`/register` 只做深链别名。 */
+const registerRoute = createRoute({
+  getParentRoute: () => authModeRoute,
+  path: '/register',
+  validateSearch: (search: Record<string, unknown>): { redirect?: string } => {
+    const redirect = sanitizeRedirect(search.redirect)
+    return redirect ? { redirect } : {}
+  },
+  component: () => null,
+})
 
 /**
  * 忘记密码路由。公开页，不套壳。
@@ -289,7 +393,16 @@ const routeTree = rootRoute.addChildren([
     systemRoute,
     scheduleRoute,
   ]),
-  loginRoute,
+  userAppRoute.addChildren([
+    userHomeRoute,
+    userHistoryRoute,
+    userSettingsRoute,
+    userAccountRoute,
+    userAccountNewRoute,
+    userTimePrefRoute,
+    userPasswordRoute,
+  ]),
+  authModeRoute.addChildren([loginRoute, registerRoute]),
   forgotPasswordRoute,
   resetPasswordRoute,
 ])

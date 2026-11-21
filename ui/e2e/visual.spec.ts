@@ -12,6 +12,7 @@ import {
 import { mockQueueApi } from './support/fake-queue-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 import { mockUsersApi } from './support/fake-users-api'
+import { mockUserAppApi } from './support/fake-user-app-api'
 import { visibleText } from './support/visible-text'
 
 /**
@@ -41,6 +42,7 @@ const ROUTES = [
   { path: '/schools', name: 'schools' },
   { path: '/users', name: 'users' },
   { path: '/login', name: 'login' },
+  { path: '/register', name: 'register' },
   { path: '/forgot-password', name: 'forgot-password' },
   { path: `/reset-password?token=${RESET_TOKEN}`, name: 'reset-password' },
 ] as const
@@ -67,7 +69,12 @@ async function mockSessionFor(
   path: string,
   role: 'master' | 'admin' | 'user' = 'master',
 ) {
-  if (path === '/login' || path.startsWith('/forgot-password') || path.startsWith('/reset-password')) {
+  if (
+    path === '/login' ||
+    path === '/register' ||
+    path.startsWith('/forgot-password') ||
+    path.startsWith('/reset-password')
+  ) {
     await mockAccountsApi(page, { role: null })
     return
   }
@@ -114,8 +121,18 @@ async function openWithTheme(
   path: string,
   theme: (typeof THEMES)[number],
   role: 'master' | 'admin' | 'user' = 'master',
+  stopSky = false,
 ) {
   await mockSessionFor(page, path, role)
+  const authPage =
+    path === '/login' ||
+    path === '/register' ||
+    path.startsWith('/forgot-password') ||
+    path.startsWith('/reset-password')
+  if (authPage || stopSky) {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.clock.setFixedTime(new Date('2026-11-11T12:00:00+08:00'))
+  }
   await page.addInitScript((value) => {
     try {
       localStorage.setItem('dash26-theme', value)
@@ -180,6 +197,9 @@ async function expectData(page: Page, path: string) {
     await expect(card).toContainText('operator@example.com')
     await expect(page.getByLabel(/^当前密码/)).toBeVisible()
     await expect(page.getByRole('switch', { name: '凭据失效 · 站内信' })).toBeVisible()
+  } else if (path === '/register') {
+    await expect(page.getByRole('heading', { name: '创建账号' })).toBeVisible()
+    await expect(page.locator('.auth-steps li')).toHaveCount(3)
   } else if (path === '/forgot-password') {
     await expect(page.getByLabel('邮箱')).toBeVisible()
   } else if (path.startsWith('/reset-password')) {
@@ -494,11 +514,83 @@ for (const theme of THEMES) {
     // 有会话进账号页，列表请求返回 401：真实用户路径，落到登录页并带过期提示。
     await mockAccountsApi(page, { role: 'master', expireOn: ['/api/accounts'] })
     await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, '/accounts', theme)
+    await openWithTheme(page, '/accounts', theme, 'master', true)
     await expect(page.getByText('会话已过期，请重新登录')).toBeVisible()
     await expect(page).toHaveScreenshot(`session-expired-${theme}-1440.png`)
   })
 }
+
+const USER_VIEWPORTS = [
+  { name: '390', width: 390, height: 844 },
+  { name: '768', width: 768, height: 1024 },
+  { name: '1024', width: 1024, height: 900 },
+  { name: '1440', width: 1440, height: 900 },
+] as const
+
+const USER_APP_VIEWS = [
+  { path: '/app', name: 'home' },
+  { path: '/app/history?day=2026-11-10', name: 'history' },
+  { path: '/app/settings', name: 'settings' },
+  { path: '/app/account', name: 'account' },
+  { path: '/app/account/new', name: 'account-new' },
+] as const
+
+test.describe('user app', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2026-11-11T08:00:00+08:00'))
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await mockUserAppApi(page, { role: 'user' })
+  })
+
+  for (const theme of THEMES) {
+    for (const view of USER_APP_VIEWS) {
+      const viewports =
+        view.name === 'home'
+          ? USER_VIEWPORTS
+          : USER_VIEWPORTS.filter((item) => item.name === '390' || item.name === '1440')
+      for (const viewport of viewports) {
+        test(`user app ${view.name} ${viewport.name} ${theme}`, async ({ page }) => {
+          await page.setViewportSize({ width: viewport.width, height: viewport.height })
+          await page.addInitScript((value) => {
+            try {
+              localStorage.setItem('dash26-theme', value)
+            } catch {
+              /* localStorage 可能被禁用。 */
+            }
+          }, theme)
+          await page.goto(view.path)
+          await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+          await page.evaluate(() => document.fonts.ready)
+          const landed =
+            view.name === 'account-new'
+              ? page.getByRole('dialog').getByRole('heading')
+              : page.getByRole('heading', { level: 1 })
+          await expect(landed).toBeVisible()
+          await expect(page).toHaveScreenshot(
+            `user-app-${view.name}-${viewport.name}-${theme}.png`,
+            { fullPage: true },
+          )
+        })
+      }
+    }
+  }
+})
+
+test('user app has no horizontal overflow at four widths', async ({ page }) => {
+  for (const viewport of USER_VIEWPORTS) {
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
+    await page.clock.setFixedTime(new Date('2026-11-11T08:00:00+08:00'))
+    await mockUserAppApi(page, { role: 'user' })
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await page.goto('/app')
+    await expect(page.locator('.uapp-hero-title')).toBeVisible()
+    const overflow = await page.evaluate(() => ({
+      scroll: document.documentElement.scrollWidth,
+      inner: window.innerWidth,
+    }))
+    expect(overflow.scroll, viewport.name).toBe(overflow.inner)
+  }
+})
 
 test('no horizontal overflow at either width, in either theme', async ({ page }) => {
   // 看板的 user 视角是另一套布局：`/` 追加 user 一遍；其余路由 master 即可。
