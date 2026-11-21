@@ -8,7 +8,8 @@
 #   3. golangci-lint：标准五件套（errcheck/govet/ineffassign/staticcheck/unused）。
 #   4. govulncheck：Go 依赖与调用面可达的已知漏洞。
 #   5. npm audit：ui 与契约工具（server/contracts/tools）锁文件的高危/严重漏洞
-#      （moderate 不拦）。
+#      （moderate 不拦）。上游无补丁版的 advisory 走 scripts/audit-allowlist.tsv
+#      临时豁免，条目必须带到期日与理由，到期即失效。
 #
 # 口径：
 #   - 缺工具 = 环境错误，exit 2（跳过 ≠ 绿）。
@@ -79,9 +80,9 @@ GO_TC="$(awk '/^toolchain /{print $2}' "$ROOT/server/go.mod" 2>/dev/null || true
 [ -n "$GO_TC" ] || GO_TC=auto
 (cd server && GOTOOLCHAIN="$GO_TC" govulncheck ./...)
 
-echo "== npm audit（high 及以上）=="
-(cd ui && npm audit --audit-level=high)
+echo "== npm audit（high 及以上，带期限白名单）=="
+node scripts/audit-allow.mjs ui
 # 契约工具的锁单独审计：它不在 ui 依赖图里（server/contracts/tools）。
-(cd server/contracts/tools && npm audit --audit-level=high)
+node scripts/audit-allow.mjs server/contracts/tools
 
 echo "tooling-gate: ok"

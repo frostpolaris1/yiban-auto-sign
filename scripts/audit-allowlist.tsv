@@ -1,0 +1,4 @@
+# npm audit 临时白名单：仅放行「上游尚无补丁版」的 advisory，必须带到期日与理由。
+# 格式：GHSA id <TAB> 到期日 YYYY-MM-DD <TAB> 理由与移除条件
+# 到期当日起条目失效、工具链快门转红；上游发版后删行并锁版本。
+GHSA-fc5q-39xc-vjpf	2026-12-02	picomatch <=4.0.7 ReDoS，上游无补丁版；经 vite→tinyglobby→fdir 引入，发版后升级并删本行
