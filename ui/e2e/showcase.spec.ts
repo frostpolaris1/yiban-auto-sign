@@ -416,3 +416,33 @@ test('invariant 14: the showcase settings notify matrix renders fixtures with ze
 
   expect(apiRequests, 'a read-only showcase sends no admin notify request').toEqual([])
 })
+
+test('invariant 15: the showcase inbox renders fixtures with zero requests and disabled writes', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/')
+  const bell = page.locator('.topbar-actions').getByRole('button', { name: /通知/ })
+  await expect(bell).toBeVisible()
+  await expect(bell.locator('.count')).toHaveText('2')
+
+  await bell.click()
+  const drawer = page.getByRole('dialog', { name: '通知收件箱' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer.locator('.app-inbox-item')).toHaveCount(4)
+
+  const markAll = drawer.getByRole('button', { name: '全部已读' })
+  await expect(markAll).toBeDisabled()
+  await expect(markAll).toHaveAttribute('title', READ_ONLY_REASON)
+  expect(await markAll.evaluate((el) => getComputedStyle(el).cursor)).toBe('not-allowed')
+
+  const firstReadBtn = drawer.locator('.app-inbox-item').first().getByRole('button', {
+    name: /标为已读/,
+  })
+  await expect(firstReadBtn).toBeDisabled()
+  await expect(firstReadBtn).toHaveAttribute('title', READ_ONLY_REASON)
+  expect(await firstReadBtn.evaluate((el) => getComputedStyle(el).cursor)).toBe('not-allowed')
+
+  expect(apiRequests, 'the showcase inbox never touches the API').toEqual([])
+})

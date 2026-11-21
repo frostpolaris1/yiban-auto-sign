@@ -1,6 +1,7 @@
 import type { Page, Route } from '@playwright/test'
 import type { AuditLogItem, AuditStatusReport } from '../../src/lib/api/audit'
 import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 
 /**
  * 审计日志页（/audit）的假 API：会话、链巡检与游标台账。
@@ -184,6 +185,8 @@ export async function mockAuditApi(
       params: Object.fromEntries(url.searchParams.entries()),
       body,
     })
+
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/auth/me') {
       if (!sessionRole) return fail(route, 401, 'unauthorized', '会话失效')

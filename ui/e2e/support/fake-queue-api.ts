@@ -3,6 +3,7 @@ import type { Account, AccountSummary } from '../../src/lib/api/account'
 import type { ScheduleWindow } from '../../src/lib/api/schedule'
 import type { AccountDiagnostics, AdminTaskRow } from '../../src/lib/api/task'
 import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 import { RUN_DIAGNOSTICS } from './fake-run-api'
 import { SCHOOLS } from './fake-schools-api'
 
@@ -224,6 +225,8 @@ export async function mockQueueApi(
       }
       return json(route, summary)
     }
+
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/schools' && request.method() === 'GET') {
       if (sessionRole !== 'master' && sessionRole !== 'admin') {

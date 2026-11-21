@@ -1,17 +1,17 @@
 /**
  * **功能**
- * 顶栏：面包屑、抽屉开关、通知、主题切换、账号菜单。
+ * 顶栏：面包屑、抽屉开关、通知入口插槽、主题切换、账号菜单。
  *
  * **归属**
- * `components/shell`：显示层，不改路由状态。
+ * `components/shell`：显示层，不改路由状态，不反向导入 `features`。
  *
  * **口径**
  * 面包屑取自 `nav.ts`。与侧栏共用一张表，故两处不会分叉。
  * 账号菜单读真实会话：邮箱与角色来自 `GET /api/auth/me`。
- * 通知仍是演示数据，本批不接端点。
+ * 通知收件箱由装配层经 `inbox` 插槽注入，遵守单向依赖。
  */
 
-import { Fragment } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { Icon } from '@/components/ui/Icon'
 import { Menu, MenuDivider, MenuItem } from '@/components/ui/Menu'
@@ -27,6 +27,7 @@ type TopbarProps = {
   onOpenDrawer: () => void
   onLogout: () => void
   loggingOut: boolean
+  inbox?: ReactNode
 }
 
 export function Topbar({
@@ -36,6 +37,7 @@ export function Topbar({
   onOpenDrawer,
   onLogout,
   loggingOut,
+  inbox,
 }: TopbarProps) {
   const { theme, toggleTheme } = useTheme()
   const navigate = useNavigate()
@@ -73,51 +75,7 @@ export function Topbar({
           <kbd className="kbd">Ctrl K</kbd>
         </button>
 
-        <Menu
-          trigger={
-            <button type="button" className="icon-btn" aria-label="通知">
-              <Icon name="bell" />
-              <span className="count danger">3</span>
-            </button>
-          }
-        >
-          <div className="dd-head">
-            <Icon name="bell" />
-            通知
-          </div>
-          <div className="dd-list">
-            <div className="dd-item">
-              <div className="dd-avatar a1">SY</div>
-              <div className="dd-body">
-                <div className="dd-row-head">
-                  <strong>系统</strong>
-                  <span className="dd-time">2 分钟前</span>
-                </div>
-                <div className="dd-preview">P1 前端骨架已就绪。</div>
-              </div>
-            </div>
-            <div className="dd-item">
-              <div className="dd-avatar a2">SC</div>
-              <div className="dd-body">
-                <div className="dd-row-head">
-                  <strong>调度</strong>
-                  <span className="dd-time">9 分钟前</span>
-                </div>
-                <div className="dd-preview">窗口发现尚未接入，示例数据。</div>
-              </div>
-            </div>
-            <div className="dd-item">
-              <div className="dd-avatar a3">AU</div>
-              <div className="dd-body">
-                <div className="dd-row-head">
-                  <strong>审计</strong>
-                  <span className="dd-time">26 分钟前</span>
-                </div>
-                <div className="dd-preview">审计链页面在后续批次交付。</div>
-              </div>
-            </div>
-          </div>
-        </Menu>
+        {inbox}
 
         <button
           type="button"

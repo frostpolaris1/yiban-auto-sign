@@ -38,6 +38,7 @@ import type {
   ScheduleWindowList,
 } from './api/schedule'
 import type { PrefStatsReport, SignStatsReport } from './api/stats'
+import type { Notification, NotificationPage, UnreadCount } from './api/notify'
 
 let seq = 0
 
@@ -946,4 +947,71 @@ export function showcaseAdminSettings(): SettingsReport {
 /** 系统页（展示构建）：存活自检合成夹具。 */
 export function showcaseHealthStatus(): HealthStatus {
   return { status: 'ok' }
+}
+
+/** 顶栏收件箱（展示构建）：四类合成通知（2 未读 + 2 已读），零网络请求。 */
+export function showcaseNotifications(): NotificationPage {
+  const minute = 60_000
+  const hour = 60 * minute
+  const now = Date.now()
+  const at = (offsetMs: number): string => new Date(now + offsetMs).toISOString()
+  // 昨天 18:20（按 +08:00 墙钟计算），供展示页呈现「昨天 HH:mm」分支
+  const shanghai = new Date(now + 8 * hour)
+  const yesterday1820 = new Date(
+    Date.UTC(
+      shanghai.getUTCFullYear(),
+      shanghai.getUTCMonth(),
+      shanghai.getUTCDate() - 1,
+      18 - 8,
+      20,
+      0,
+    ),
+  ).toISOString()
+
+  const items: Notification[] = [
+    {
+      id: '00000000-0000-4000-8000-000000000001',
+      category: 'credential_invalid',
+      title: '账号凭据失效',
+      body: '账号 138****8003 在合成学校甲的签到中凭据失效，已移出排期，请更新密码后重新启用。',
+      school_id: 'school-a',
+      created_at: at(-6 * minute),
+      read_at: null,
+    },
+    {
+      id: '00000000-0000-4000-8000-000000000002',
+      category: 'review_pending',
+      title: '账号待审核',
+      body: '账号 138****8001 已提交审核，请及时在待办或账号管理中处理。',
+      school_id: 'school-a',
+      created_at: at(-25 * minute),
+      read_at: null,
+    },
+    {
+      id: '00000000-0000-4000-8000-000000000003',
+      category: 'capacity_rejected',
+      title: '容量不足',
+      body: '计划需求 26、容量 20，缺口 6。瓶颈：workers。建议 YIBAN_WORKERS=4。',
+      school_id: null,
+      created_at: yesterday1820,
+      read_at: at(-3 * hour),
+    },
+    {
+      id: '00000000-0000-4000-8000-000000000004',
+      category: 'sign_failed_daily',
+      title: '每日签到失败摘要',
+      body: '昨日共有 1 个账号签到失败，已归档至运行记录供排查。',
+      school_id: 'school-b',
+      created_at: at(-48 * hour),
+      read_at: at(-40 * hour),
+    },
+  ]
+  return { items, next_cursor: '' }
+}
+
+/** 顶栏未读角标（展示构建）：与 `showcaseNotifications()` 未读行数一致。 */
+export function showcaseUnreadCount(): UnreadCount {
+  return {
+    count: showcaseNotifications().items.filter((item) => item.read_at === null).length,
+  }
 }
