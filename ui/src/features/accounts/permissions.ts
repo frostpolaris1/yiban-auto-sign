@@ -20,7 +20,7 @@ import type { AccountStatus } from '../../lib/api/account'
 import type { Role } from '../../lib/api/auth'
 import { READ_ONLY_REASON, SHOWCASE } from '../../lib/showcase-mode'
 
-export type AccountAction = 'sign' | 'verify' | 'review' | 'schoolFilter' | 'create' | 'restore' | 'deviceRefresh'
+export type AccountAction = 'sign' | 'verify' | 'review' | 'schoolFilter' | 'create' | 'restore' | 'deviceRefresh' | 'batch'
 
 /** 行内写操作的两种暂停方向：暂停与恢复共用一个端点。 */
 export type AccountActionKind = 'pause' | 'resume' | 'sign' | 'verify' | 'review'
@@ -33,6 +33,7 @@ const WRITE_ACTIONS: readonly AccountAction[] = [
   'create',
   'restore',
   'deviceRefresh',
+  'batch',
 ]
 
 const ALLOWED: Record<AccountAction, readonly Role[]> = {
@@ -44,6 +45,8 @@ const ALLOWED: Record<AccountAction, readonly Role[]> = {
   create: ['master', 'admin', 'user'],
   deviceRefresh: ['master', 'admin', 'user'],
   restore: ['master', 'admin'],
+  // 批量动作 x-roles 只到 master/admin；user 不渲染选择列。
+  batch: ['master', 'admin'],
 }
 
 export function can(role: Role | null | undefined, action: AccountAction): boolean {

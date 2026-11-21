@@ -15,25 +15,28 @@
  * 任一筛选变化回到第一页：游标从 URL 移除。
  * 游标栈只在会话内记忆「上一页」；刷新后从 URL 游标重建，只能前进。
  * 写操作成功的反馈走 toast；失败留在原控件旁，可回看。
+ * 批量重置口令的临时口令只显示一次：全成功也保留结果清单，显式「完成」才关。
  * 列表每 10 秒条件轮询一次；模态或抽屉打开时暂停，展示模式不发请求。
  * 展示构建（`VITE_SHOWCASE=1`）取合成夹具，零网络请求。
  */
 
 import { useEffect, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BusyButton } from '@/components/ui/BusyButton'
 import { Card } from '@/components/ui/Card'
 import { DeniedCard } from '@/components/ui/DeniedCard'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { SelectionBar } from '@/components/ui/SelectionBar'
 import { notifySuccess } from '@/components/ui/toast'
 import type { Role } from '@/lib/api/auth'
-import { describeApiError } from '@/lib/api/client'
-import { listUsers, type User } from '@/lib/api/user'
+import { describeApiError, describeReauthError } from '@/lib/api/client'
+import { batchUsers, listUsers, type User, type UserBatchAction, type UserBatchResult } from '@/lib/api/user'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage, type CursorStack } from '@/lib/cursor'
 import { LIST_POLL_INTERVAL_MS } from '@/lib/query'
 import { USER_VIEW_ROLES, roleAllowed } from '@/lib/roles'
 import { SHOWCASE, useMe } from '@/lib/session'
 import { showcaseUsers } from '@/lib/showcase'
+import { UserBatchModal } from './UserBatchModal'
 import { UserDetailDrawer } from './UserDetailDrawer'
 import { UserCreateModal } from './UserCreateModal'
 import { UserFilters } from './UserFilters'
@@ -79,6 +82,11 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
     })
   }, [urlCursor])
 
+  // URL 的任何变化（筛选、分组、已删除、游标）都换一批行：选择不跨页、不跨视图。
+  useEffect(() => {
+    setSelectedIds(new Set<string>())
+  }, [urlState.role, urlState.status, urlState.q, urlState.group, urlState.deleted, urlState.cursor])
+
   // 查询游标直接跟随 URL，不从游标栈取：栈由事件与 effect 更新，晚一拍
   // 会让改筛选的那次请求仍带旧游标，先拿错页再自我纠正（多发一条错页请求）。
   // 栈只负责「上一页」记忆与页码展示。
@@ -108,8 +116,27 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
   const [createOpen, setCreateOpen] = useState(false)
   const [createReturnFocus, setCreateReturnFocus] = useState<HTMLElement | null>(null)
 
+  // 批量选择：只对 master 开放；切分组/筛选/翻页即清空。
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set<string>())
+  const [batch, setBatch] = useState<{ action: UserBatchAction; rows: User[] } | null>(null)
+  const [batchError, setBatchError] = useState<string | null>(null)
+  const [batchResult, setBatchResult] = useState<UserBatchResult | null>(null)
+
+  const toggleRow = (id: string) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleAll = (ids: string[], checked: boolean) => {
+    setSelectedIds(checked ? new Set(ids) : new Set<string>())
+  }
+
   // 模态或抽屉打开时暂停轮询：后台刷新不得改写用户正在操作的行。
-  const modalOpen = detailUser !== null || createOpen
+  const modalOpen = detailUser !== null || createOpen || batch !== null
 
   const usersQuery = useQuery({
     queryKey: [
@@ -140,6 +167,50 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
     refetchIntervalInBackground: false,
   })
 
+  const openBatch = (action: UserBatchAction, rows: User[]) => {
+    batchMutation.reset()
+    setBatchError(null)
+    setBatchResult(null)
+    setBatch({ action, rows })
+  }
+
+  const closeBatch = () => {
+    batchMutation.reset()
+    setBatch(null)
+    setBatchError(null)
+    setBatchResult(null)
+  }
+
+  const batchMutation = useMutation({
+    mutationFn: (input: { action: UserBatchAction; ids: string[]; password: string }) =>
+      batchUsers({
+        action: input.action,
+        ids: input.ids,
+        current_password: input.password,
+      }),
+    onSuccess: (result, input) => {
+      invalidateUsers()
+      setSelectedIds(new Set<string>())
+      const failed = result.items.filter((item) => item.status === 'error')
+      // reset_password 的临时口令只出现这一次：全成功也不自动关，
+      // 由操作者点「完成」显式关闭并清空；其余动作仍以 toast 收口。
+      if (failed.length === 0 && input.action !== 'reset_password') {
+        setBatch(null)
+        setBatchError(null)
+        setBatchResult(null)
+        notifySuccess(`批量操作完成：${result.items.length} 条成功`)
+        return
+      }
+      // 部分失败或批量重置：弹窗保留，结果清单逐项列出。
+      setBatchError(null)
+      setBatchResult(result)
+    },
+    onError: (error) => {
+      setBatchError(describeReauthError(error))
+    },
+  })
+  const batchPending = batchMutation.isPending
+
   const openDetail = (user: User, opener: HTMLElement | null) => {
     setDetailUser(user)
     setDrawerReturnFocus(opener)
@@ -148,6 +219,10 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
   const rows = usersQuery.data?.items ?? []
   const error = usersQuery.isError ? describeApiError(usersQuery.error) : null
   const counts = usersQuery.data?.counts
+  const selectable = allowed && !SHOWCASE
+  const selectedRows = rows.filter((row) => selectedIds.has(row.id))
+  const overBatchLimit = selectedRows.length > 10
+  const allDeleted = selectedRows.length > 0 && selectedRows.every((row) => row.deleted_at !== null)
   // 角色/状态/邮箱是收窄条件；分组与已删除是视图，不是「筛选残留」。
   const narrowed = Boolean(urlState.role || urlState.status || urlState.q)
   const crossGroup = urlState.group ? nextGroupWithMembers(urlState.group, counts) : null
@@ -249,6 +324,63 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
             onQInputChange={setQInput}
             onQCommit={commitQuery}
           />
+          {selectable && selectedRows.length > 0 ? (
+            <SelectionBar count={selectedRows.length} limit={10} onClear={() => setSelectedIds(new Set())}>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={overBatchLimit || batchPending}
+                title={overBatchLimit ? '一次最多 10 条' : undefined}
+                onClick={() => openBatch('disable', selectedRows)}
+              >
+                停用
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={overBatchLimit || batchPending}
+                title={overBatchLimit ? '一次最多 10 条' : undefined}
+                onClick={() => openBatch('enable', selectedRows)}
+              >
+                启用
+              </Button>
+              <span className="app-batch-danger">
+                <Button
+                  variant="outline-danger"
+                  size="sm"
+                  disabled={overBatchLimit || batchPending}
+                  title={overBatchLimit ? '一次最多 10 条' : undefined}
+                  onClick={() => openBatch('reset_password', selectedRows)}
+                >
+                  重置口令
+                </Button>
+                <Button
+                  variant="outline-danger"
+                  size="sm"
+                  disabled={overBatchLimit || batchPending}
+                  title={overBatchLimit ? '一次最多 10 条' : undefined}
+                  onClick={() => openBatch('delete', selectedRows)}
+                >
+                  删除
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={overBatchLimit || batchPending || !allDeleted}
+                  title={
+                    overBatchLimit
+                      ? '一次最多 10 条'
+                      : allDeleted
+                        ? undefined
+                        : '仅已删除用户可恢复'
+                  }
+                  onClick={() => openBatch('restore', selectedRows)}
+                >
+                  恢复
+                </Button>
+              </span>
+            </SelectionBar>
+          ) : null}
           <AsyncState
             status={listStatus}
             error={error ?? undefined}
@@ -266,6 +398,10 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
               pageIndex={stack.index}
               hasPrevious={hasPreviousPage(stack)}
               hasNext={Boolean(usersQuery.data?.next_cursor) && !usersQuery.isFetching}
+              selectable={selectable}
+              selectedIds={selectedIds}
+              onToggleRow={toggleRow}
+              onToggleAll={toggleAll}
               onPrevious={() => {
                 const previous = goPrevious(stack)
                 setStack(previous)
@@ -317,6 +453,26 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
           setCreateOpen(false)
           invalidateUsers()
           notifySuccess(`已创建 ${user.email}`)
+        }}
+      />
+
+      <UserBatchModal
+        open={batch !== null}
+        action={batch?.action ?? null}
+        rows={batch?.rows ?? []}
+        pending={batchPending}
+        error={batchError}
+        result={batchResult}
+        onClose={closeBatch}
+        onConfirm={(password) => {
+          if (!batch) return
+          setBatchError(null)
+          setBatchResult(null)
+          batchMutation.mutate({
+            action: batch.action,
+            ids: batch.rows.map((row) => row.id),
+            password,
+          })
         }}
       />
     </>

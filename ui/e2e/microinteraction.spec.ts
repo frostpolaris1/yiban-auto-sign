@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { deleteCalls, mockAccountsApi } from './support/fake-accounts-api'
+import { deleteCalls, mockAccountsApi, SESSION_PASSWORD } from './support/fake-accounts-api'
 import { accountIdentity, mockDashboardApi } from './support/fake-dashboard-api'
 import {
   SCHEDULE_DAY,
@@ -10,6 +10,11 @@ import {
 } from './support/fake-schedule-api'
 import { createSchoolCalls, mockSchoolsApi } from './support/fake-schools-api'
 import { visibleText } from './support/visible-text'
+
+/** 在带二次口令的弹窗里填操作者本人登录口令。 */
+async function fillReauth(dialog: Locator, password = SESSION_PASSWORD) {
+  await dialog.getByRole('textbox', { name: '你的登录口令' }).fill(password)
+}
 
 /**
  * 微交互批（3bw）的六条不变式。
@@ -190,18 +195,20 @@ test('invariant 1: adding a school admin toasts inside the open modal', async ({
   await page.getByRole('button', { name: '更多操作 合成学校甲' }).click()
   await page.getByRole('menu').getByRole('menuitem', { name: /管理员/ }).click()
   const dialog = page.getByRole('dialog', { name: '学校管理员' })
-  await dialog.getByLabel('用户 ID').fill('user-9')
+  await dialog.getByRole('button', { name: '选择 a***@example.com' }).click()
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '添加管理员' }).click()
 
-  await expect(toast(page).filter({ hasText: '已添加管理员 user-9' })).toBeVisible()
+  await expect(toast(page).filter({ hasText: '已添加管理员 a***@example.com' })).toBeVisible()
   await expect(page.getByText('操作结果')).toHaveCount(0)
 
-  await dialog.getByRole('button', { name: '移除 user-9@example.com' }).click()
-  await page
-    .getByRole('dialog', { name: '移除管理员？' })
-    .getByRole('button', { name: '确认移除' })
-    .click()
-  await expect(toast(page).filter({ hasText: '已移除管理员 user-9@example.com' })).toBeVisible()
+  await dialog.getByRole('button', { name: '移除 admin-candidate@example.com' }).click()
+  const remove = page.getByRole('dialog', { name: '移除管理员？' })
+  await fillReauth(remove)
+  await remove.getByRole('button', { name: '确认移除' }).click()
+  await expect(
+    toast(page).filter({ hasText: '已移除管理员 admin-candidate@example.com' }),
+  ).toBeVisible()
 })
 
 test('invariant 1: a build toasts and a 409 build keeps its error in the confirm', async ({
@@ -371,6 +378,7 @@ test('invariant 4: rows stay clickable and focus returns after a delete', async 
   await page.getByRole('button', { name: '更多操作 135****0001' }).click()
   await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
   const dialog = page.getByRole('dialog', { name: '删除账号？' })
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '确认删除' }).click()
 
   await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
@@ -445,10 +453,9 @@ test.describe('motion enabled', () => {
 
     await page.getByRole('button', { name: '更多操作 135****0001' }).click()
     await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
-    await page
-      .getByRole('dialog', { name: '删除账号？' })
-      .getByRole('button', { name: '确认删除' })
-      .click()
+    const dialog = page.getByRole('dialog', { name: '删除账号？' })
+    await fillReauth(dialog)
+    await dialog.getByRole('button', { name: '确认删除' }).click()
     await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
 
     // 不等退场结束：立即点另一行，抽屉要开。

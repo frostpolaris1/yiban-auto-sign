@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import {
   ADMINS,
   SCHOOLS,
@@ -11,6 +11,14 @@ import {
   mockSchoolsApi,
   patchSchoolCalls,
 } from './support/fake-schools-api'
+import { SESSION_PASSWORD } from './support/fake-accounts-api'
+
+/** 在带二次口令的弹窗里填操作者本人登录口令。 */
+async function fillReauth(dialog: Locator, password = SESSION_PASSWORD) {
+  // 用 textbox 角色而不是 getByLabel：显隐按钮的 aria-label 也含这段文字，
+  // 而必填字段的可访问名会追加 `*`，exact 匹配反而落空。
+  await dialog.getByRole('textbox', { name: '你的登录口令' }).fill(password)
+}
 
 /**
  * 学校页的六条不变式。
@@ -285,7 +293,9 @@ test('invariant 4: the admins modal pulls every cursor page before it lists', as
   await expect(dialog).toContainText('admin-two@example.com')
 })
 
-test('invariant 4: adding an admin needs a user id and refreshes the list', async ({ page }) => {
+test('invariant 4: adding an admin uses the candidate picker, sends the id and refreshes the list', async ({
+  page,
+}) => {
   const api = await mockSchoolsApi(page, { role: 'master' })
   await openSchools(page)
 
@@ -293,22 +303,60 @@ test('invariant 4: adding an admin needs a user id and refreshes the list', asyn
   await menu.getByRole('menuitem', { name: /管理员/ }).click()
   const dialog = page.getByRole('dialog', { name: '学校管理员' })
   await expect(dialog).toBeVisible()
-  await expect(dialog).toContainText('契约无用户选择器')
+  // 空输入给候选：现有 admin/master 用户，按最近登录排序，已绑定者剔除。
+  const candidates = dialog.getByRole('list', { name: '候选管理员' })
+  await expect(candidates).toContainText('a***@example.com')
+  await expect(candidates).toContainText('m***@example.com')
+  await expect(candidates).not.toContainText('admin-one@example.com')
 
   const add = dialog.getByRole('button', { name: '添加管理员' })
-  await expect(add, 'a missing user id keeps add off').toBeDisabled()
-  await dialog.getByLabel('用户 ID').fill('user-9')
+  await expect(add, 'a missing selection keeps add off').toBeDisabled()
+  await dialog.getByRole('button', { name: '选择 a***@example.com' }).click()
+  await expect(dialog).toContainText('已选')
+  // 选中但口令为空：添加仍禁用。
+  await expect(add).toBeDisabled()
+  await fillReauth(dialog)
   await expect(add).toBeEnabled()
 
   const before = adminListCalls(api, 'school-alpha').length
   await add.click()
   await expect.poll(() => adminAddCalls(api, 'school-alpha').length).toBe(1)
-  expect(adminAddCalls(api, 'school-alpha')[0].body).toEqual({ user_id: 'user-9' })
+  expect(adminAddCalls(api, 'school-alpha')[0].body).toEqual({
+    user_id: 'user-9',
+    current_password: SESSION_PASSWORD,
+  })
   await expect.poll(() => adminListCalls(api, 'school-alpha').length).toBeGreaterThan(before)
-  await expect(dialog).toContainText('user-9@example.com')
+  await expect(dialog).toContainText('admin-candidate@example.com')
 })
 
-test('invariant 4: removing an admin waits for a confirmation', async ({ page }) => {
+test('C7: prefix lookup, no-result copy and candidate clearing', async ({ page }) => {
+  await mockSchoolsApi(page, { role: 'master' })
+  await openSchools(page)
+
+  const menu = await openRowMenu(page, '合成学校甲')
+  await menu.getByRole('menuitem', { name: /管理员/ }).click()
+  const dialog = page.getByRole('dialog', { name: '学校管理员' })
+
+  // 输入走 /api/users/lookup：只显示掩码。
+  await dialog.getByLabel('搜索用户邮箱').fill('master-candidate')
+  await expect(dialog.getByRole('button', { name: '选择 m***@example.com' })).toBeVisible()
+  await expect(dialog.getByText('m***@example.com')).toBeVisible()
+
+  // 无命中：给「没有匹配用户」，不冒充候选。
+  await dialog.getByLabel('搜索用户邮箱').fill('ghost')
+  await expect(dialog.getByText('没有匹配用户')).toBeVisible()
+
+  // 选中后可清除。
+  await dialog.getByLabel('搜索用户邮箱').fill('master-candidate')
+  await dialog.getByRole('button', { name: '选择 m***@example.com' }).click()
+  await expect(dialog.getByRole('button', { name: '添加管理员' })).toBeDisabled()
+  await dialog.getByRole('button', { name: '清除', exact: true }).click()
+  await expect(dialog.getByLabel('搜索用户邮箱')).toBeVisible()
+})
+
+test('invariant 4: removing an admin waits for a confirmation and a password', async ({
+  page,
+}) => {
   const api = await mockSchoolsApi(page, { role: 'master' })
   await openSchools(page)
 
@@ -334,10 +382,45 @@ test('invariant 4: removing an admin waits for a confirmation', async ({ page })
 
   const before = adminListCalls(api, 'school-alpha').length
   await remove.click()
+  await fillReauth(confirm)
   await confirm.getByRole('button', { name: '确认移除' }).click()
   await expect.poll(() => adminRemoveCalls(api, 'school-alpha', 'user-2').length).toBe(1)
+  expect(adminRemoveCalls(api, 'school-alpha', 'user-2')[0].body).toEqual({
+    current_password: SESSION_PASSWORD,
+  })
   await expect.poll(() => adminListCalls(api, 'school-alpha').length).toBeGreaterThan(before)
   await expect(dialog).not.toContainText('admin-one@example.com')
+})
+
+test('reauth: binding with a wrong password keeps the modal open', async ({ page }) => {
+  const api = await mockSchoolsApi(page, { role: 'master' })
+  await openSchools(page)
+
+  const menu = await openRowMenu(page, '合成学校甲')
+  await menu.getByRole('menuitem', { name: /管理员/ }).click()
+  const dialog = page.getByRole('dialog', { name: '学校管理员' })
+  await dialog.getByRole('button', { name: '选择 a***@example.com' }).click()
+  await fillReauth(dialog, 'wrong-password')
+  await dialog.getByRole('button', { name: '添加管理员' }).click()
+  await expect(dialog.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect(dialog.getByText('已选')).toBeVisible()
+  expect(adminAddCalls(api, 'school-alpha')).toHaveLength(1)
+})
+
+test('reauth: unbinding with a wrong password keeps the dialog open', async ({ page }) => {
+  const api = await mockSchoolsApi(page, { role: 'master' })
+  await openSchools(page)
+
+  const menu = await openRowMenu(page, '合成学校甲')
+  await menu.getByRole('menuitem', { name: /管理员/ }).click()
+  const dialog = page.getByRole('dialog', { name: '学校管理员' })
+  await dialog.getByRole('button', { name: '移除 admin-one@example.com' }).click()
+  const confirm = page.getByRole('dialog', { name: '移除管理员？' })
+  await fillReauth(confirm, 'wrong-password')
+  await confirm.getByRole('button', { name: '确认移除' }).click()
+  await expect(confirm.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect(confirm).toBeVisible()
+  expect(adminRemoveCalls(api, 'school-alpha', 'user-2')).toHaveLength(1)
 })
 
 test('invariant 5: the cursor stack only walks back to visited pages', async ({ page }) => {

@@ -6,9 +6,12 @@
  * `features/user` 展示层：写操作走 react-query，状态留在容器。
  *
  * **口径**
- * 打开即用列表摘要渲染；每个动作的失败留在原控件旁，可回看。
+ * 打开即用列表摘要渲染；每个动作的失败留在原弹窗里，可回看。
+ * 每个写端点都要求操作者本人本站登录口令：统一走 `ReauthDialog`
+ * （借用用户端 App 的交互骨架，口令不保存、不写日志、不掉进 URL）。
+ * 400 缺口令、403 口令错、429 连续失败用统一文案。
  * 409 是业务结论不是故障：最后一名 master 降级/停用给固定文案，
- * 名下有账号给「先转移或删号」。其余错误走统一错误文本。
+ * 名下还有账号给「先转移或删号」，恢复撞邮箱/容量各有说明。
  * temp_password 是单次可见的秘密：只在本次渲染出现，关闭即弃；
  * 组件卸载与「我已保存」都会清掉它，不再出现在任何状态里。
  * 删除成功后行将消失：容器负责收抽屉并失效列表。
@@ -21,10 +24,10 @@ import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
 import { BusyButton } from '@/components/ui/BusyButton'
 import { Button } from '@/components/ui/Button'
-import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { Drawer } from '@/components/ui/Drawer'
+import { ReauthDialog } from '@/components/ui/ReauthDialog'
 import { notifySuccess } from '@/components/ui/toast'
-import { describeApiError } from '@/lib/api/client'
+import { ApiError, describeReauthError } from '@/lib/api/client'
 import {
   deleteUser,
   resetUserPassword,
@@ -40,6 +43,17 @@ import { isConflict } from './apiErrors'
 
 const LAST_MASTER_TEXT = '这是最后一位管理员，不能降级或停用'
 const OWNED_ACCOUNTS_TEXT = '该用户名下还有账号，先转移或删除账号'
+const RESTORE_TAKEN_TEXT = '该邮箱已被其他用户使用，无法恢复'
+const RESTORE_CAPACITY_TEXT = '活跃用户容量已满，无法恢复'
+
+/** 危险写失败：409 走业务文案，其余按口令错误分类。 */
+function writeErrorText(error: unknown, conflictText: string): string {
+  if (isConflict(error)) return conflictText
+  if (error instanceof ApiError && error.code === 'capacity_exceeded') {
+    return RESTORE_CAPACITY_TEXT
+  }
+  return describeReauthError(error)
+}
 
 type UserDetailDrawerProps = {
   user: User | null
@@ -52,10 +66,11 @@ type UserDetailDrawerProps = {
 }
 
 export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone }: UserDetailDrawerProps) {
-  // 每个 mutation 各持错误位：失败的文案贴着触发它的控件。
+  // 每个 mutation 各持错误位：失败的文案贴着触发它的动作。
   // 组件按用户重挂载（容器给 key），这些状态不跨行残留。
   const [roleDraft, setRoleDraft] = useState<UserRole>(user?.role ?? 'user')
   const [roleError, setRoleError] = useState<string | null>(null)
+  const [roleOpen, setRoleOpen] = useState(false)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [statusOpen, setStatusOpen] = useState(false)
   const [resetError, setResetError] = useState<string | null>(null)
@@ -64,23 +79,30 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [restoreError, setRestoreError] = useState<string | null>(null)
+  const [restoreOpen, setRestoreOpen] = useState(false)
+  // 弹窗关闭后的焦点还原点：最后一个打开弹窗的按钮。
+  const [dialogReturnFocus, setDialogReturnFocus] = useState<HTMLElement | null>(null)
 
   const roleMut = useMutation({
-    mutationFn: (input: { user: User; role: UserRole }) =>
-      updateUser(input.user.id, { role: input.role }),
+    mutationFn: (input: { user: User; role: UserRole; password: string }) =>
+      updateUser(input.user.id, { role: input.role, current_password: input.password }),
     onSuccess: (updated) => {
       setRoleError(null)
+      setRoleOpen(false)
       onSync(updated)
       notifySuccess(`已保存 ${updated.email} 的角色`)
     },
     onError: (error) => {
-      setRoleError(isConflict(error) ? LAST_MASTER_TEXT : describeApiError(error))
+      setRoleError(writeErrorText(error, LAST_MASTER_TEXT))
     },
   })
 
   const statusMut = useMutation({
-    mutationFn: (input: { user: User; disabled: boolean }) =>
-      updateUser(input.user.id, { status: input.disabled ? 'disabled' : 'active' }),
+    mutationFn: (input: { user: User; disabled: boolean; password: string }) =>
+      updateUser(input.user.id, {
+        status: input.disabled ? 'disabled' : 'active',
+        current_password: input.password,
+      }),
     onSuccess: (updated, input) => {
       setStatusError(null)
       setStatusOpen(false)
@@ -88,12 +110,13 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
       notifySuccess(input.disabled ? `已停用 ${updated.email}` : `已启用 ${updated.email}`)
     },
     onError: (error) => {
-      setStatusError(isConflict(error) ? LAST_MASTER_TEXT : describeApiError(error))
+      setStatusError(writeErrorText(error, LAST_MASTER_TEXT))
     },
   })
 
   const resetMut = useMutation({
-    mutationFn: (target: User) => resetUserPassword(target.id),
+    mutationFn: (input: { user: User; password: string }) =>
+      resetUserPassword(input.user.id, input.password),
     onSuccess: (result) => {
       setResetError(null)
       setResetOpen(false)
@@ -101,12 +124,13 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
       setTempPassword(result.temp_password)
     },
     onError: (error) => {
-      setResetError(describeApiError(error))
+      setResetError(describeReauthError(error))
     },
   })
 
   const deleteMut = useMutation({
-    mutationFn: (target: User) => deleteUser(target.id),
+    mutationFn: (input: { user: User; password: string }) =>
+      deleteUser(input.user.id, input.password),
     onSuccess: () => {
       setDeleteError(null)
       setDeleteOpen(false)
@@ -114,25 +138,32 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
       notifySuccess(`已删除 ${user?.email ?? ''}`)
     },
     onError: (error) => {
-      setDeleteError(isConflict(error) ? OWNED_ACCOUNTS_TEXT : describeApiError(error))
+      setDeleteError(writeErrorText(error, OWNED_ACCOUNTS_TEXT))
     },
   })
 
   const restoreMut = useMutation({
-    mutationFn: (target: User) => restoreUser(target.id),
+    mutationFn: (input: { user: User; password: string }) =>
+      restoreUser(input.user.id, input.password),
     onSuccess: (updated) => {
       setRestoreError(null)
+      setRestoreOpen(false)
       onSync(updated)
       notifySuccess(`已恢复 ${updated.email}`)
     },
     onError: (error) => {
-      setRestoreError(isConflict(error) ? '该邮箱已被其他用户使用，无法恢复' : describeApiError(error))
+      setRestoreError(writeErrorText(error, RESTORE_TAKEN_TEXT))
     },
   })
 
   const closeOneTime = () => {
     // 关闭即弃：temp_password 不允许第二次看到。
     setTempPassword(null)
+  }
+
+  const openWith = (opener: HTMLElement, open: () => void) => {
+    setDialogReturnFocus(opener)
+    open()
   }
 
   return (
@@ -203,20 +234,15 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                       variant="primary"
                       busy={restoreMut.isPending}
                       busyLabel="恢复中…"
-                      onClick={() => {
+                      onClick={(event) => {
                         setRestoreError(null)
-                        restoreMut.mutate(user)
+                        openWith(event.currentTarget, () => setRestoreOpen(true))
                       }}
                     >
                       恢复用户
                     </BusyButton>
                   </div>
-                  {/* 恢复失败必须贴着恢复按钮：已删行不渲染下方分支。 */}
-                  {restoreError ? (
-                    <div role="alert">
-                      <Alert tone="danger">{restoreError}</Alert>
-                    </div>
-                  ) : null}
+                  {/* 恢复失败留在二次口令弹窗里；抽屉不重复一份。 */}
                 </>
               ) : (
                 <>
@@ -239,20 +265,15 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                         variant="primary"
                         busy={roleMut.isPending}
                         busyLabel="保存中…"
-                        onClick={() => {
+                        onClick={(event) => {
                           if (!user) return
                           setRoleError(null)
-                          roleMut.mutate({ user, role: roleDraft })
+                          openWith(event.currentTarget, () => setRoleOpen(true))
                         }}
                       >
                         保存
                       </BusyButton>
                     </div>
-                    {roleError ? (
-                      <div role="alert">
-                        <Alert tone="danger">{roleError}</Alert>
-                      </div>
-                    ) : null}
                   </div>
 
                   <div className="app-detail-actions">
@@ -260,9 +281,9 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                       variant="outline-danger"
                       busy={resetMut.isPending}
                       busyLabel="生成中…"
-                      onClick={() => {
+                      onClick={(event) => {
                         setResetError(null)
-                        setResetOpen(true)
+                        openWith(event.currentTarget, () => setResetOpen(true))
                       }}
                     >
                       重置口令
@@ -270,9 +291,9 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                     <BusyButton
                       variant="outline-danger"
                       busy={false}
-                      onClick={() => {
+                      onClick={(event) => {
                         setStatusError(null)
-                        setStatusOpen(true)
+                        openWith(event.currentTarget, () => setStatusOpen(true))
                       }}
                     >
                       {user.status === 'active' ? '停用用户' : '启用用户'}
@@ -281,19 +302,14 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                       variant="outline-danger"
                       busy={deleteMut.isPending}
                       busyLabel="删除中…"
-                      onClick={() => {
+                      onClick={(event) => {
                         setDeleteError(null)
-                        setDeleteOpen(true)
+                        openWith(event.currentTarget, () => setDeleteOpen(true))
                       }}
                     >
                       删除用户
                     </BusyButton>
                   </div>
-                  {resetError ? (
-                    <div role="alert">
-                      <Alert tone="danger">{resetError}</Alert>
-                    </div>
-                  ) : null}
                 </>
               )}
             </div>
@@ -301,67 +317,116 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
         ) : null}
       </Drawer>
 
-      <ConfirmModal
+      <ReauthDialog
+        open={user !== null && roleOpen}
+        title="保存角色变更？"
+        description={
+          user ? `将 ${user.email} 的角色改为「${roleLabel(roleDraft)}」。` : undefined
+        }
+        confirmText="保存"
+        pending={roleMut.isPending}
+        error={roleError}
+        returnFocusTo={dialogReturnFocus}
+        onClose={() => {
+          if (roleMut.isPending) return
+          setRoleError(null)
+          setRoleOpen(false)
+        }}
+        onConfirm={(password) => {
+          if (!user) return
+          setRoleError(null)
+          roleMut.mutate({ user, role: roleDraft, password })
+        }}
+      />
+
+      <ReauthDialog
         open={user !== null && statusOpen}
-        title={user?.status === 'active' ? '停用用户' : '启用用户'}
+        title={user?.status === 'active' ? '停用用户？' : '启用用户？'}
         description={
           user?.status === 'active'
             ? `停用后 ${user?.email ?? ''} 的全部会话立即失效，登录被拒绝。`
             : `启用后 ${user?.email ?? ''} 可以重新登录。`
         }
         confirmText={user?.status === 'active' ? '停用' : '启用'}
-        tone="danger"
+        danger={user?.status === 'active'}
         pending={statusMut.isPending}
         error={statusError}
-        layer={2}
-        returnFocusTo={returnFocusTo}
+        returnFocusTo={dialogReturnFocus}
         onClose={() => {
+          if (statusMut.isPending) return
           setStatusError(null)
           setStatusOpen(false)
         }}
-        onConfirm={() => {
+        onConfirm={(password) => {
           if (!user) return
-          statusMut.mutate({ user, disabled: user.status === 'active' })
+          setStatusError(null)
+          statusMut.mutate({ user, disabled: user.status === 'active', password })
         }}
       />
 
-      <ConfirmModal
+      <ReauthDialog
         open={user !== null && resetOpen}
-        title="重置口令"
-        description={`成功后该用户全部会话失效，并收到一个一次性临时口令。临时口令只显示一次，关闭后不可再查看。`}
+        title="重置口令？"
+        description="成功后该用户全部会话失效，并收到一个一次性临时口令。临时口令只显示一次，关闭后不可再查看。"
         confirmText="生成临时口令"
-        tone="danger"
+        danger
         pending={resetMut.isPending}
         error={resetError}
-        layer={2}
-        returnFocusTo={returnFocusTo}
+        returnFocusTo={dialogReturnFocus}
         onClose={() => {
+          if (resetMut.isPending) return
           setResetError(null)
           setResetOpen(false)
         }}
-        onConfirm={() => {
+        onConfirm={(password) => {
           if (!user) return
-          resetMut.mutate(user)
+          setResetError(null)
+          resetMut.mutate({ user, password })
         }}
       />
 
-      <ConfirmModal
+      <ReauthDialog
         open={user !== null && deleteOpen}
-        title="删除用户"
-        description={`软删后 ${user?.email ?? ''} 的全部会话失效，列表默认不再显示；可在「含已删除」中恢复。名下账号不受影响。`}
+        title="删除用户？"
+        description={
+          user
+            ? `软删后 ${user.email} 的全部会话失效，列表默认不再显示；可在「含已删除」中恢复。名下账号不受影响。`
+            : undefined
+        }
         confirmText="删除"
-        tone="danger"
+        danger
         pending={deleteMut.isPending}
         error={deleteError}
-        layer={2}
-        returnFocusTo={returnFocusTo}
+        returnFocusTo={dialogReturnFocus}
         onClose={() => {
+          if (deleteMut.isPending) return
           setDeleteError(null)
           setDeleteOpen(false)
         }}
-        onConfirm={() => {
+        onConfirm={(password) => {
           if (!user) return
-          deleteMut.mutate(user)
+          setDeleteError(null)
+          deleteMut.mutate({ user, password })
+        }}
+      />
+
+      <ReauthDialog
+        open={user !== null && restoreOpen}
+        title="恢复用户？"
+        description={user ? `恢复 ${user.email}；角色与状态保持删除前的值。` : undefined}
+        confirmText="恢复"
+        pending={restoreMut.isPending}
+        error={restoreError}
+        returnFocusTo={dialogReturnFocus}
+        onClose={() => {
+          if (restoreMut.isPending) return
+          setRestoreError(null)
+          setRestoreOpen(false)
+        }}
+        onConfirm={(password) => {
+          if (!user) return
+          setRestoreError(null)
+          restoreMut.mutate({ user, password })
         }}
       />
     </>

@@ -29,6 +29,10 @@ export type UserTempPassword = Schemas['UserTempPassword']
 export type UserLookupRef = Schemas['UserLookupRef']
 export type UserLookupPage = Schemas['UserLookupPage']
 export type UserCreateBody = Schemas['UserCreate']
+export type UserBatchAction = Schemas['UserBatchAction']
+export type UserBatchRequest = Schemas['UserBatchRequest']
+export type UserBatchItem = Schemas['UserBatchItem']
+export type UserBatchResult = Schemas['UserBatchResult']
 
 /** 查询串视图。字段直接取契约生成的 `UserList` 参数，不另写一份。 */
 export type UserQuery = NonNullable<operations['UserList']['parameters']['query']>
@@ -39,6 +43,7 @@ export type UserGroup = NonNullable<UserQuery['group']>
 export const USER_PATHS = {
   list: '/api/users',
   lookup: '/api/users/lookup',
+  batch: '/api/users/batch',
 } as const
 
 export function buildUserSearch(query: UserQuery = {}): string {
@@ -74,21 +79,40 @@ export function updateUser(id: string, body: UserUpdateBody): Promise<User> {
   })
 }
 
-/** 重置口令。响应里的 temp_password 单次可见。 */
-export function resetUserPassword(id: string): Promise<UserTempPassword> {
+/** 重置口令。请求体带操作者二次口令；响应里的 temp_password 单次可见。 */
+export function resetUserPassword(id: string, currentPassword: string): Promise<UserTempPassword> {
   return apiRequest<UserTempPassword>(`${USER_PATHS.list}/${id}/password-reset`, {
     method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword }),
   })
 }
 
-/** 软删。409 表示名下还有活跃账号。 */
-export function deleteUser(id: string): Promise<void> {
-  return apiRequest<void>(`${USER_PATHS.list}/${id}`, { method: 'DELETE' })
+/** 软删。请求体带二次口令；409 表示名下还有活跃账号。 */
+export function deleteUser(id: string, currentPassword: string): Promise<void> {
+  return apiRequest<void>(`${USER_PATHS.list}/${id}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ current_password: currentPassword }),
+  })
 }
 
 /** 恢复软删用户。409 邮箱被占用；429 活跃用户容量满。 */
-export function restoreUser(id: string): Promise<User> {
-  return apiRequest<User>(`${USER_PATHS.list}/${id}/restore`, { method: 'POST' })
+export function restoreUser(id: string, currentPassword: string): Promise<User> {
+  return apiRequest<User>(`${USER_PATHS.list}/${id}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword }),
+  })
+}
+
+/**
+ * 批量动作：同一动作作用于 1..10 个用户。
+ * 每项独立事务；reset_password 成功项各带一枚一次性临时口令。
+ * 二次口令在请求体里必填：缺值 400、口令错 403、连续失败 429。
+ */
+export function batchUsers(body: UserBatchRequest): Promise<UserBatchResult> {
+  return apiRequest<UserBatchResult>(USER_PATHS.batch, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
 }
 
 export type LookupUsersOptions = {

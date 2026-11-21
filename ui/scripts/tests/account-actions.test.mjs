@@ -5,6 +5,7 @@ import {
   accountUpdateError,
   buildAccountUpdate,
   buildLocationUpdate,
+  draftNeedsReauth,
   locationError,
 } from '../../src/features/accounts/drafts.ts'
 import { canUseMenu, menuDenyReason } from '../../src/features/accounts/permissions.ts'
@@ -37,6 +38,32 @@ test('the password is sent verbatim, never trimmed', () => {
   // 服务端与登录表单都不动空格：trim 会静默改写用户输入的凭据。
   assert.deepEqual(buildAccountUpdate({ password: '  pass word  ' }), { password: '  pass word  ' })
   assert.deepEqual(buildAccountUpdate({ password: 'pw' }), { password: 'pw' })
+})
+
+test('only credential edits require reauthentication', () => {
+  // 与服务端 touchesCredential 同判：phone/password/device_code 三类。
+  assert.equal(draftNeedsReauth({}), false)
+  assert.equal(draftNeedsReauth({ name: '宿舍甲' }), false)
+  assert.equal(draftNeedsReauth({ phone_model: 'Pixel' }), false)
+  assert.equal(draftNeedsReauth({ phone: ' 13800138001 ' }), true)
+  assert.equal(draftNeedsReauth({ password: 'pw' }), true)
+  assert.equal(draftNeedsReauth({ device_code: 'dev-1' }), true)
+  // 清除设备码是空串哨兵，仍算凭据改动。
+  assert.equal(draftNeedsReauth({ clear_device_code: true }), true)
+  // 留空的凭据字段不算。
+  assert.equal(draftNeedsReauth({ phone: '  ', password: '', device_code: '   ' }), false)
+})
+
+test('the operator password rides the PATCH verbatim when provided', () => {
+  assert.deepEqual(buildAccountUpdate({ password: 'pw', current_password: ' me pass ' }), {
+    password: 'pw',
+    current_password: ' me pass ',
+  })
+  assert.deepEqual(buildAccountUpdate({ name: '宿舍乙' }), { name: '宿舍乙' })
+  // 凭据字段被清空后，口令不得搭上非凭据编辑的车。
+  assert.deepEqual(buildAccountUpdate({ name: '宿舍乙', current_password: 'me pass' }), {
+    name: '宿舍乙',
+  })
 })
 
 test('the name is sent only when it differs from the original', () => {

@@ -56,6 +56,11 @@ type AccountsTableProps = {
   onPrevious: () => void
   onNext: () => void
   onRetry: () => void
+  /** 批量选择：仅 master/admin 渲染选择列；其余角色保持 8 列原状。 */
+  selectable: boolean
+  selectedIds: ReadonlySet<string>
+  onToggleRow: (id: string) => void
+  onToggleAll: (ids: string[], checked: boolean) => void
   onOpenDetail: (account: Account, opener: HTMLElement | null) => void
   onAction: (account: Account, kind: AccountActionKind, opener: HTMLElement) => void
   onEdit: (account: Account, opener: HTMLElement | null) => void
@@ -79,6 +84,10 @@ export function AccountsTable({
   onPrevious,
   onNext,
   onRetry,
+  selectable,
+  selectedIds,
+  onToggleRow,
+  onToggleAll,
   onOpenDetail,
   onAction,
   onEdit,
@@ -92,7 +101,10 @@ export function AccountsTable({
     disrespectUserMotionPreference: false,
   })
   // 删除时间列只随「含已删除」出现：占位列会把行菜单挤出窄视口。
-  const colSpan = includeDeleted ? 9 : 8
+  const colSpan = (includeDeleted ? 9 : 8) + (selectable ? 1 : 0)
+  const visibleIds = rows.map((row) => row.id)
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id))
+  const someSelected = visibleIds.some((id) => selectedIds.has(id))
   return (
     <>
       <div className="table-scroll">
@@ -100,6 +112,19 @@ export function AccountsTable({
           <caption className="app-visually-hidden">账号列表</caption>
           <thead>
             <tr>
+              {selectable ? (
+                <th scope="col" className="app-selection-cell">
+                  <input
+                    type="checkbox"
+                    aria-label="全选本页账号"
+                    checked={allSelected}
+                    ref={(element) => {
+                      if (element) element.indeterminate = someSelected && !allSelected
+                    }}
+                    onChange={(event) => onToggleAll(visibleIds, event.target.checked)}
+                  />
+                </th>
+              ) : null}
               <th scope="col">备注名</th>
               <th scope="col">手机号</th>
               <th scope="col">机型</th>
@@ -157,6 +182,17 @@ export function AccountsTable({
                     className={`app-account-row${exact ? ' app-account-row-exact' : ''}`}
                     data-exact-match={exact ? 'true' : undefined}
                   >
+                    {selectable ? (
+                      <td className="app-selection-cell">
+                        <input
+                          type="checkbox"
+                          aria-label={`选择 ${account.phone_masked}`}
+                          checked={selectedIds.has(account.id)}
+                          onChange={() => onToggleRow(account.id)}
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                      </td>
+                    ) : null}
                     <td>
                       <div className="app-name-cell">
                         <span>{account.display_name}</span>
@@ -231,6 +267,17 @@ export function AccountsTable({
                     }
                   }}
                 >
+                  {selectable ? (
+                    <td className="app-selection-cell">
+                      <input
+                        type="checkbox"
+                        aria-label={`选择 ${account.phone_masked}`}
+                        checked={selectedIds.has(account.id)}
+                        onChange={() => onToggleRow(account.id)}
+                        onClick={(event) => event.stopPropagation()}
+                      />
+                    </td>
+                  ) : null}
                   <td>
                     <div className="app-name-cell">
                       <span>{account.display_name}</span>
