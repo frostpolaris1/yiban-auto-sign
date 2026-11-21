@@ -26,9 +26,14 @@ function bellButton(page: Page): Locator {
   return page.locator('.topbar-actions').getByRole('button', { name: /通知/ })
 }
 
-/** 模态抽屉打开期间 Radix 会给背景设 aria-hidden；用物理定位读取角标 DOM。 */
+/**
+ * 模态抽屉打开期间 Radix 会给背景设 aria-hidden；用物理定位读取角标 DOM。
+ *
+ * 选择器按 `aria-label` 锚到铃铛本身：#373 的全局搜索按钮带同一个
+ * `aria-haspopup="dialog"`，只按属性定位会命中两个元素（strict mode 违规）。
+ */
 function bellBadgeDom(page: Page): Locator {
-  return page.locator('.topbar-actions button[aria-haspopup="dialog"] .count')
+  return page.locator('.topbar-actions button[aria-label^="通知"] .count')
 }
 
 function inboxDrawer(page: Page): Locator {
@@ -50,7 +55,7 @@ test('invariant 1: unread badge 3 opens inbox drawer with unread surface, catego
   await bell.click()
   const drawer = inboxDrawer(page)
   await expect(drawer).toBeVisible()
-  await expect(page.locator('.topbar-actions button[aria-haspopup="dialog"]')).toHaveAttribute(
+  await expect(page.locator('.topbar-actions button[aria-label^="通知"]')).toHaveAttribute(
     'aria-expanded',
     'true',
   )

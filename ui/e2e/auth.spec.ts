@@ -20,9 +20,8 @@ import {
  */
 
 async function submitLogin(page: Page, email = SESSION_EMAIL, password = SESSION_PASSWORD) {
-  await page.getByLabel('邮箱').fill(email)
-  // 标签文本带必填星号，getByLabel('密码', { exact: true }) 不命中；
-  // 显隐按钮的 aria-label 也含「密码」。用契约 id 定位。
+  // 登录/注册双签常驻同页，「邮箱」「密码」标签各命中两签；一律用契约 id 定位。
+  await page.locator('#login-email').fill(email)
   await page.locator('#login-password').fill(password)
   await page.getByRole('button', { name: '登录', exact: true }).click()
 }
@@ -117,7 +116,9 @@ test('invariant 4: no long-lived session control exists on the login page', asyn
   await page.goto('/login')
 
   await expect(page.getByRole('heading', { name: '欢迎回来', exact: true })).toBeVisible()
-  await expect(page.locator('.auth-form input[type="checkbox"]')).toHaveCount(0)
+  // 双签常驻：只查登录签（含 #login-email 的那一签），注册签的协议勾选不算会话控件。
+  const loginPane = page.locator('.auth-mode-pane').filter({ has: page.locator('#login-email') })
+  await expect(loginPane.locator('input[type="checkbox"]')).toHaveCount(0)
   await expect(page.getByText(/保持登录|记住我/)).toHaveCount(0)
 })
 
@@ -262,18 +263,23 @@ test('login: the footer and the no-account hint are reachable', async ({ page })
   await mockAccountsApi(page, { role: null })
   await page.goto('/login')
 
-  await expect(page.getByText('还没有账号？请联系管理员开通。')).toBeVisible()
+  await expect(page.getByText('还没有账号？')).toBeVisible()
+  await expect(page.getByRole('link', { name: '创建一个' })).toHaveAttribute(
+    'href',
+    '/register',
+  )
   await expect(page.getByRole('link', { name: 'GitHub' })).toHaveAttribute(
     'href',
     'https://github.com/frostpolaris1/yiban-auto-sign',
   )
+  // 服务端已提供 /terms 与 /privacy 静态页，不再外链仓库 Markdown。
   await expect(page.getByRole('link', { name: '用户协议' })).toHaveAttribute(
     'href',
-    /USER_AGREEMENT\.md$/,
+    '/terms',
   )
   await expect(page.getByRole('link', { name: '隐私政策' })).toHaveAttribute(
     'href',
-    /PRIVACY_POLICY\.md$/,
+    '/privacy',
   )
 })
 
@@ -488,4 +494,227 @@ test('reset password: the keyboard alone completes the flow', async ({ page }) =
 
   await expect(page.getByRole('heading', { name: '密码已重置' })).toBeVisible()
   expect(resetPasswordCalls(api), 'Enter submits the form').toHaveLength(1)
+})
+
+test('register: pre-login meter uses the local user tier, not the session policy', async ({
+  page,
+}) => {
+  // 契约：password-policy 需登录。注册页未登录不得请求它（其 401 会被判会话过期），
+  // 故 meter 吃本地 user 档兜底；即使假 API 提供别的策略也不得生效。
+  await mockAccountsApi(page, {
+    role: null,
+    passwordPolicy: { min_chars: 8, min_classes: 3, max_bytes: 1024 },
+  })
+  await page.goto('/register')
+
+  await expect(page.getByRole('heading', { name: '创建账号' })).toBeVisible()
+  // 空态：只有规则文本（hint），无强度条；提交按钮始终可点，点按会就地给出首错提示。
+  await expect(page.getByText('至少 10 位，且包含大写、小写、数字、符号中的 2 类')).toBeVisible()
+  await expect(page.locator('.app-pw-meter')).toHaveCount(0)
+  const submit = page.getByRole('button', { name: '创建账号', exact: true })
+  await expect(submit).toBeEnabled()
+  await submit.click()
+  await expect(page.locator('#register-email')).toBeFocused()
+  await expect(page.locator('#register-email-error')).toBeVisible()
+  // 输入后文本让位给强度条；长度 chip 吃本地兜底口径；不足十位提交聚焦口令框且阻断请求。
+  await page.locator('#register-email').fill('new@example.com')
+  await page.locator('#register-password').fill('abcdefAB')
+  await expect(page.locator('.app-pw-meter').getByText('至少 10 位', { exact: true })).toBeVisible()
+  await submit.click()
+  await expect(page.locator('#register-password')).toBeFocused()
+  await expect(page).toHaveURL(/\/register$/)
+})
+
+test('register: the local fallback governs the meter when the policy endpoint fails', async ({
+  page,
+}) => {
+  await mockAccountsApi(page, { role: null })
+  await page.route('**/api/auth/password-policy', (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 'internal', message: 'boom' }),
+    }),
+  )
+  await page.goto('/register')
+
+  // 策略读失败不阻断注册：输入后强度条出现，吃本地兜底口径。
+  await page.locator('#register-password').fill('abc')
+  await expect(page.locator('.app-pw-meter').getByText('至少 10 位', { exact: true })).toBeVisible()
+})
+
+test('register: a 401 policy (session-scoped by contract) does not bounce to login', async ({
+  page,
+}) => {
+  // 真后端契约：policy 需登录。公开注册页未登录时它的 401 不是会话过期，
+  // 不得触发全局踢回登录页；未登录不发请求， meter 吃本地兜底。
+  await mockAccountsApi(page, { role: null })
+  await page.route('**/api/auth/password-policy', (route) =>
+    route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 'unauthorized', message: 'unauthorized' }),
+    }),
+  )
+  await page.goto('/register')
+
+  await expect(page.getByRole('heading', { name: '创建账号' })).toBeVisible()
+  await page.locator('#register-password').fill('abc')
+  await expect(page.locator('.app-pw-meter').getByText('至少 10 位', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(/\/register$/)
+})
+
+test('register: a mismatched confirm is flagged while typing', async ({ page }) => {
+  await mockAccountsApi(page, { role: null })
+  await page.goto('/register')
+
+  await page.locator('#register-password').fill('Correct-horse-9!')
+  await page.locator('#register-confirm').fill('Correct-horse-8!')
+  await expect(page.getByText('两次输入的密码不一致')).toBeVisible()
+})
+
+test('register: matching confirm shows a done check; unchecked agreement blocks submit with inline error', async ({
+  page,
+}) => {
+  let registered = 0
+  await mockAccountsApi(page, { role: null })
+  await page.route('**/api/auth/register', (route) => {
+    registered += 1
+    return route.continue()
+  })
+  await page.goto('/register')
+
+  await page.locator('#register-email').fill('new@example.com')
+  await page.locator('#register-password').fill('Correct-horse-9!')
+  await page.locator('#register-confirm').fill('Correct-horse-9!')
+  // 匹配即常驻正向完成态。
+  await expect(page.locator('#register-confirm-success')).toHaveText('已完成')
+  // 协议未勾：点击创建不发请求，就地提示并聚焦勾选框。
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+  expect(registered).toBe(0)
+  await expect(page.locator('#register-agree')).toBeFocused()
+  await page.locator('.app-register-agree .box').click()
+  await expect(page.locator('#register-agree')).toBeChecked()
+  await expect(page.getByRole('button', { name: '创建账号', exact: true })).toBeEnabled()
+})
+
+test('register: success signs in and lands the user on /app', async ({ page }) => {
+  await mockAccountsApi(page, { role: null })
+  await page.goto('/register')
+
+  await page.locator('#register-email').fill('new@example.com')
+  await page.locator('#register-password').fill('Correct-horse-9!')
+  await page.locator('#register-confirm').fill('Correct-horse-9!')
+  await page.locator('.app-register-agree .box').click()
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+
+  await expect(page).toHaveURL(/\/app$/)
+})
+
+test('register: the strength bar and class chips respond live to the password', async ({ page }) => {
+  await mockAccountsApi(page, { role: null })
+  await page.goto('/register')
+
+  // 空口令：强度条不出现（规则由 hint 文本承载）。
+  await expect(page.locator('.app-pw-meter')).toHaveCount(0)
+
+  // 短且单类：弱，只有「小写」chip 点亮。
+  await page.locator('#register-password').fill('abc')
+  await expect(page.locator('.app-pw-meter')).toHaveAttribute('data-score', '1')
+  await expect(page.locator('.pw-word')).toHaveText('弱')
+  await expect(page.locator('.pw-chip.is-ok')).toHaveCount(1)
+
+  // 长度＋四类齐全：很强，长度与四类共五枚 chip 全亮。
+  await page.locator('#register-password').fill('Correct-horse-9!')
+  await expect(page.locator('.app-pw-meter')).toHaveAttribute('data-score', '4')
+  await expect(page.locator('.pw-word')).toHaveText('很强')
+  await expect(page.locator('.pw-chip.is-ok')).toHaveCount(5)
+})
+
+test('register: the aside shows three onboarding steps; login keeps the capability list', async ({
+  page,
+}) => {
+  await mockAccountsApi(page, { role: null })
+  // 两签文案常驻堆叠（淡入淡出），断言圈定活跃文案，隐藏签不计入。
+  const activeCopy = page.locator('.auth-aside-copy[data-active="true"]')
+  await page.goto('/register')
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('开始自动签到')
+  await expect(activeCopy.locator('.auth-steps li')).toHaveCount(3)
+
+  await page.goto('/login')
+  await expect(activeCopy.locator('.auth-steps')).toHaveCount(0)
+  await expect(activeCopy.locator('.auth-points li')).toHaveCount(4)
+})
+
+test('the footer version line opens the server changelog', async ({ page }) => {
+  await mockAccountsApi(page, { role: null })
+  await page.goto('/login')
+
+  await page.getByRole('button', { name: /易班自动签到 · v\d/ }).click()
+  await expect(page.getByRole('dialog')).toContainText('合成条目：登录页改版')
+
+  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+})
+
+test('auth: brand name stays high-contrast over daytime sky and key controls meet 44px hit targets', async ({
+  page,
+}) => {
+  await page.clock.setFixedTime(new Date('2026-11-11T12:00:00+08:00'))
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await mockAccountsApi(page, { role: null })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/login')
+
+  // 白昼左栏品牌名不得在亮云上泛白（亮底配深字）。
+  const brandColor = await page.evaluate(() => {
+    const el = document.querySelector('.auth-brand .name')
+    return el ? getComputedStyle(el).color : null
+  })
+  expect(brandColor).not.toBe('rgb(255, 255, 255)')
+
+  // 主题切换、显隐开关、版本按钮命中区 >= 44px（含 ::after 扩展）。
+  const sizes = await page.evaluate(() => {
+    const measure = (sel: string) => {
+      const el = document.querySelector(sel)
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      const a = getComputedStyle(el, '::after')
+      const hasAfter = a.content !== 'none' && a.content !== ''
+      if (!hasAfter) return { w: r.width, h: r.height }
+      const aw = parseFloat(a.width) || r.width
+      const ah = parseFloat(a.height) || r.height
+      return { w: Math.max(r.width, aw), h: Math.max(r.height, ah) }
+    }
+    return {
+      themeToggle: measure('.app-theme-toggle'),
+      affix: measure('#login-password ~ .affix-btn'),
+      versionBtn: measure('.app-auth-version'),
+    }
+  })
+  expect(sizes.themeToggle?.w).toBeGreaterThanOrEqual(44)
+  expect(sizes.themeToggle?.h).toBeGreaterThanOrEqual(44)
+  expect(sizes.affix?.h).toBeGreaterThanOrEqual(44)
+  expect(sizes.versionBtn?.h).toBeGreaterThanOrEqual(44)
+})
+
+test('auth: tablist supports ArrowRight/ArrowLeft switching with aria-controls tabpanel', async ({
+  page,
+}) => {
+  await mockAccountsApi(page, { role: null })
+  await page.goto('/login')
+
+  const loginTab = page.getByRole('tab', { name: '登录' })
+  const registerTab = page.getByRole('tab', { name: '注册' })
+  await expect(loginTab).toHaveAttribute('aria-controls', 'auth-panel-login')
+  await loginTab.focus()
+  await loginTab.press('ArrowRight')
+  await expect(page).toHaveURL(/\/register$/)
+  await expect(registerTab).toBeFocused()
+  await expect(registerTab).toHaveAttribute('aria-selected', 'true')
+  await expect(page.locator('#auth-panel-register')).toHaveAttribute('role', 'tabpanel')
+
+  await registerTab.press('ArrowLeft')
+  await expect(page).toHaveURL(/\/login$/)
+  await expect(loginTab).toBeFocused()
 })

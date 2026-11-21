@@ -26,6 +26,7 @@ export class ApiError extends Error {
   readonly code: string
   readonly details?: unknown
   readonly traceId?: string
+  /** `Retry-After` 的秒数；只有 429 等响应可能带。 */
   readonly retryAfterSec?: number
 
   constructor(status: number, payload: ApiErrorPayload, retryAfterSec?: number) {
@@ -36,6 +37,11 @@ export class ApiError extends Error {
     this.details = payload.details
     this.traceId = payload.trace_id
     this.retryAfterSec = retryAfterSec
+  }
+
+  /** 同一数值的短名字；注册流等新代码按 `retryAfter` 读。 */
+  get retryAfter(): number | undefined {
+    return this.retryAfterSec
   }
 }
 

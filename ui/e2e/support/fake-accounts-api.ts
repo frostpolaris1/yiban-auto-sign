@@ -195,12 +195,20 @@ export type MockOptions = {
   password?: string
   /** 登录成功后采用的会话角色。初始 role 为 null 时用这个。 */
   loginRole?: Role
+  /** 首枚 login 请求固定 401（模拟软删账号的统一凭据错误），之后恢复正常。 */
+  loginFailFirst?: boolean
+  /** GET /api/auth/registration 覆盖值。缺省开放、双版本 1，与服务端初始态一致。 */
+  registration?: { enabled?: boolean; terms_version?: number; privacy_version?: number }
+  /** GET /api/auth/password-policy 覆盖值。缺省 10/2/1024，与服务端默认策略一致。 */
+  passwordPolicy?: { min_chars: number; min_classes: number; max_bytes: number }
   mustChangePassword?: boolean
   /** 命中这些路径的请求返回 401，并清掉会话。用来模拟会话过期。 */
   expireOn?: string[]
   /** me 端点的人为延迟。用来观察守卫的加载态。 */
   meDelayMs?: number
   accounts?: Account[]
+  /** 软删行；缺省用内置 DELETED_ACCOUNTS。传空数组可模拟「没有任何账号」。 */
+  deletedAccounts?: Account[]
   /** 键是本次请求的 cursor；首屏键是空串。 */
   pages?: Record<string, Account[]>
   nextCursors?: Record<string, string>
@@ -251,6 +259,8 @@ export type MockOptions = {
    * 用来断言「部分失败给结果清单」。
    */
   batchItemError?: { id: string; status: number; code: string; message: string }
+  /** 恢复的人为延迟（毫秒）；用来观察在途 busy 与连点防重。 */
+  restoreDelayMs?: number
   /** 待处理汇总（/api/accounts/summary）的失败注入。缺省按夹具实时计数。 */
   summaryError?: { status: number; code: string; message: string }
   /** 归属选择器 lookup 的失败注入。 */
@@ -306,6 +316,8 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
   const photos = options.photos ?? createPhotoFixture()
   // 会话角色随 login/logout/过期变化，故初始值拷贝一份。
   let sessionRole: Role | null = options.role
+  // 软删自动恢复剧本：置真时首枚 login 固定 401，之后恢复常态。
+  let loginFailUsed = false
   // 改密成功会清掉待改密标记，故这一位也要可变。
   let mustChangePassword = Boolean(options.mustChangePassword)
   // 每个测试一份副本：写操作会改状态，不能污染共享夹具。
@@ -326,7 +338,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     ]),
   )
   // 软删行每份测试一个副本：恢复会改行内标记，不能污染共享夹具。
-  const deletedAccounts = DELETED_ACCOUNTS.map((item) => ({ ...item }))
+  const deletedAccounts = (options.deletedAccounts ?? DELETED_ACCOUNTS).map((item) => ({
+    ...item,
+  }))
   const knownAccounts = [...allAccounts, ...Object.values(pages).flat(), ...deletedAccounts]
   // 改绑判定比原号，不比掩码：掩码相同、中四位不同的两个号是两次改绑。
   // 内置夹具的原号来自 tests/synthetic-fixtures.json 的登记段。
@@ -490,6 +504,10 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
 
     if (url.pathname === '/api/auth/login' && request.method() === 'POST') {
       const credentials = (body ?? {}) as { email?: string; password?: string }
+      if (options.loginFailFirst && !loginFailUsed) {
+        loginFailUsed = true
+        return fail(route, 401, 'invalid_credentials', '邮箱或密码错误')
+      }
       if (
         credentials.email !== (options.email ?? SESSION_EMAIL) ||
         credentials.password !== (options.password ?? SESSION_PASSWORD)
@@ -500,9 +518,57 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return json(route, request, sessionUser(sessionRole))
     }
 
+    // 自助恢复默认按契约回 401（口令不符/无软删行/超 7 天同码）。
+    // 需要成功剧本的调用方（fake-user-app-api）用后注册 route 覆盖。
+    if (url.pathname === '/api/me/restore' && request.method() === 'POST') {
+      return fail(route, 401, 'unauthorized', 'invalid email or password, or the restore window has ended')
+    }
+
     if (url.pathname === '/api/auth/logout' && request.method() === 'POST') {
       sessionRole = null
       return route.fulfill({ status: 204 })
+    }
+
+    // 更新日志：公开读端点，认证页版本行点开。返回合成 Markdown 源。
+    if (url.pathname === '/api/changelog') {
+      return json(route, request, {
+        text: '# CHANGELOG（合成）\n\n## v0.1.0\n- 合成条目：登录页改版',
+      })
+    }
+
+    // 公开注册状态与口令策略：注册页的单一事实源走服务端。
+    if (url.pathname === '/api/auth/registration' && request.method() === 'GET') {
+      const reg = options.registration ?? {}
+      return json(route, request, {
+        enabled: reg.enabled ?? true,
+        terms_version: reg.terms_version ?? 1,
+        privacy_version: reg.privacy_version ?? 1,
+      })
+    }
+
+    if (url.pathname === '/api/auth/password-policy' && request.method() === 'GET') {
+      return json(route, request, options.passwordPolicy ?? { min_chars: 10, min_classes: 2, max_bytes: 1024 })
+    }
+
+    // 注册即登录：201 回 user 会话。校验细节由前端表单用例分别覆盖。
+    if (url.pathname === '/api/auth/register' && request.method() === 'POST') {
+      const regBody = (body ?? {}) as { email?: string }
+      // 注册即登录：与后端和 devmock 同口径，建立 user 会话。
+      // 不置位的话 me 探针仍 401，注册成功后的落地会与缓存重取竞态。
+      sessionRole = 'user'
+      return json(
+        route,
+        request,
+        {
+          id: 'user-new',
+          email: regBody.email ?? 'new@example.com',
+          role: 'user',
+          status: 'active',
+          must_change_password: false,
+          csrf_token: SESSION_CSRF,
+        },
+        201,
+      )
     }
 
     // 忘记密码：契约恒 204，不区分邮箱是否存在。
@@ -904,6 +970,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
 
     // 恢复：只认软删行；未删行与服务端同判 409。二次口令必填。
     if (action === 'restore' && request.method() === 'POST') {
+      if (options.restoreDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.restoreDelayMs))
+      }
       if (reauthRejected(route, body)) return
       if (options.restoreError) {
         const { status, code, message } = options.restoreError

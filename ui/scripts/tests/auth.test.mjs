@@ -282,3 +282,65 @@ test('a probe failure that is not a 401 is reported, not guessed', async () => {
 
   assert.deepEqual(calls, ['/api/auth/change-password', '/api/auth/me'])
 })
+
+import {
+  confirmLiveError,
+  passwordIssue,
+  passwordRuleText,
+  passwordStrength,
+  passwordStrengthLabel,
+  resolvePolicy,
+  utf8Bytes,
+  validateRegister,
+} from '../../src/features/auth/register.ts'
+
+test('registration password rules follow the server policy, with a local fallback', () => {
+  const p = resolvePolicy({ min_chars: 8, min_classes: 3, max_bytes: 64 })
+  assert.equal(passwordRuleText(p), '至少 8 位，且包含大写、小写、数字、符号中的 3 类')
+  assert.equal(passwordIssue('abcdefg', p), '密码至少 8 位')
+  assert.equal(passwordIssue('abcdefAB', p), '密码需包含大写、小写、数字、符号中的 3 类')
+  assert.equal(passwordIssue('abcdefA1', p), null)
+  // 字节上限先于长度：64 字节的门槛按 UTF-8 计。
+  assert.match(passwordIssue('a'.repeat(65), p), /最多 64 字节/)
+
+  const fallback = resolvePolicy(null)
+  assert.deepEqual(fallback, { minChars: 10, minClasses: 2, maxBytes: 1024 })
+
+  assert.equal(utf8Bytes('密码'), 6)
+
+  const status = { enabled: true, terms_version: 1, privacy_version: 1 }
+  const errors = validateRegister(
+    { email: 'a@b.co', password: 'abcdefAB', confirm: 'abcdefAB', agree: true },
+    status,
+    p,
+  )
+  assert.equal(errors.password, '密码需包含大写、小写、数字、符号中的 3 类')
+
+  assert.equal(
+    confirmLiveError({ email: '', password: 'x', confirm: 'y', agree: false }),
+    '两次输入的密码不一致',
+  )
+  assert.equal(confirmLiveError({ email: '', password: 'x', confirm: '', agree: false }), undefined)
+})
+
+test('password strength climbs with length and character classes, gated by policy', () => {
+  const p = resolvePolicy({ min_chars: 10, min_classes: 2, max_bytes: 1024 })
+  // 空口令不点亮任何段。
+  assert.deepEqual(passwordStrength('', p), { score: 0, valid: false })
+  // 太短且类别不足：弱。
+  assert.deepEqual(passwordStrength('abc', p), { score: 1, valid: false })
+  // 长度达标但只有一类：中（尚未可用）。
+  assert.deepEqual(passwordStrength('abcdefghij', p), { score: 2, valid: false })
+  // 长度＋两类达标：可用即强。
+  assert.deepEqual(passwordStrength('abcdefghiJ', p), { score: 3, valid: true })
+  // 可用且四类齐全：很强。
+  assert.deepEqual(passwordStrength('abcdefghiJ1!', p), { score: 4, valid: true })
+  // 字节超限即便长度与类别够，也不算可用。
+  const tiny = resolvePolicy({ min_chars: 2, min_classes: 1, max_bytes: 4 })
+  assert.equal(passwordStrength('abcdef', tiny).valid, false)
+  // 文案档位与空串隐藏。
+  assert.equal(passwordStrengthLabel(0), '')
+  assert.equal(passwordStrengthLabel(1), '弱')
+  assert.equal(passwordStrengthLabel(3), '强')
+  assert.equal(passwordStrengthLabel(4), '很强')
+})

@@ -151,8 +151,9 @@ export function GlobalSearch({ me }: { me: SessionUser }) {
     } else if (row.route === 'users') {
       void navigate({ to: '/users', search: { q: row.query || undefined } })
     } else {
-      // 当 02/04 链合入后此路由此处改为 /logs?tab=events&q=
-      void navigate({ to: '/run', search: { q: row.query || undefined } })
+      // 台账已在管理端 IA 重构中迁到 `/logs?tab=events`（`/run` 与 `/engine` 已 302 过去）。
+      // 分支原本落在 `/run?q=`，重放到新 develop 后必须改指台账页签，否则跳到重定向桩。
+      void navigate({ to: '/logs', search: { tab: 'events', q: row.query || undefined } })
     }
   }
 

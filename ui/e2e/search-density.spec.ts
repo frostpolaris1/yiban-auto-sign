@@ -245,9 +245,9 @@ test.describe('global search', () => {
       .getByRole('option', { name: /晚自习签到/ })
     await expect(taskOption).toBeVisible()
     await page.keyboard.press('Enter')
-    // 当 02/04 链合入后此路由此处改为 /logs?tab=events&q=
-    // 底本不符：本基点台账在 `/run`（`/logs` 仍是重定向桩），故落 /run?q=。
-    await expect(page).toHaveURL(/\/run\?q=%E7%AD%BE%E5%88%B0|\/run\?q=签到/)
+    // 台账已随 #380 迁到 `/logs?tab=events`（`/run` 已 302）。分支原本断言 `/run?q=`，
+    // 重放到新 develop 后改为台账页签；`/run` 的重定向会丢掉页签语义。
+    await expect(page).toHaveURL(/\/logs\?tab=events&q=%E7%AD%BE%E5%88%B0|\/logs\?tab=events&q=签到/)
   })
 
   test('arrow keys cycle options and Enter opens the active one', async ({ page }) => {

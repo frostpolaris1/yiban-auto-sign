@@ -27,6 +27,11 @@ test('describedby points at the error whenever one exists, hint otherwise', () =
   // 空串与 undefined 同判：没有可见文本就是没有描述。
   assert.equal(fieldDescribedBy(id, '', ''), undefined)
   assert.equal(fieldDescribedBy(id, '按学校名筛选', ''), 'q-hint')
+  // 形参序：hint, error, success, keepHint。第 4 位是成功提示，不是 keepHint。
+  assert.equal(fieldDescribedBy(id, '按学校名筛选', undefined, '已保存'), 'q-success')
+  assert.equal(fieldDescribedBy(id, undefined, '关键字不能为空', '已保存'), 'q-error')
   // keepHint=true 时错误与提示并存且依次关联（如公告实时字数计数）。
-  assert.equal(fieldDescribedBy(id, '当前 201/200', '最多 200 字', true), 'q-error q-hint')
+  assert.equal(fieldDescribedBy(id, '当前 201/200', '最多 200 字', undefined, true), 'q-error q-hint')
+  // 只有 keepHint 而没有错误时，提示照旧单独关联。
+  assert.equal(fieldDescribedBy(id, '当前 12/200', undefined, undefined, true), 'q-hint')
 })

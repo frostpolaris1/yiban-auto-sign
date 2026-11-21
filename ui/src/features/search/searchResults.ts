@@ -113,7 +113,8 @@ function mapTasks(items: AdminTaskRow[], term: string): SearchResult[] {
     id: item.id,
     title: `${item.task_name} · ${item.school_name}`,
     subtitle: `${item.account_phone_masked} · ${item.state}`,
-    // 当 02/04 链合入后此路由此处改为 /logs?tab=events&q=
+    // 台账已迁到 `/logs?tab=events`（`/run` 只剩 302）。route 保留 'run' 这个名字
+    // 只是历史包袱，跳转由 GlobalSearch 决定；这里补注释防后来者按字面意思改回去。
     route: 'run' as const,
     query,
   }))
