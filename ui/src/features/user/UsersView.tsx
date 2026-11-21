@@ -35,6 +35,7 @@ import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage, t
 import { LIST_POLL_INTERVAL_MS } from '@/lib/query'
 import { USER_VIEW_ROLES, roleAllowed } from '@/lib/roles'
 import { SHOWCASE, useMe } from '@/lib/session'
+import { READ_ONLY_REASON } from '@/lib/showcase-mode'
 import { showcaseUsers } from '@/lib/showcase'
 import { UserBatchModal } from './UserBatchModal'
 import { UserDetailDrawer } from './UserDetailDrawer'
@@ -278,6 +279,12 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
     <div>暂无用户</div>
   )
 
+  if (!allowed) {
+    return <DeniedCard eyebrow="Users" reason={DENY_REASON} />
+  }
+
+  const createReason = SHOWCASE ? READ_ONLY_REASON : null
+
   return (
     <>
       <PageHeader
@@ -289,9 +296,11 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
         }
         subtitle="按待处理/正式/空用户分组；分组计数不随筛选变化。"
         actions={
-          allowed ? (
+          <div className="app-page-actions">
             <BusyButton
               variant="primary"
+              disabled={createReason !== null}
+              title={createReason ?? undefined}
               onClick={(event) => {
                 setCreateReturnFocus(event.currentTarget)
                 setCreateOpen(true)
@@ -299,136 +308,133 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
             >
               新建用户
             </BusyButton>
-          ) : undefined
+            {createReason ? <span className="app-deny-note">{createReason}</span> : null}
+          </div>
         }
       />
 
-      {!allowed ? (
-        <DeniedCard eyebrow="Users" reason={DENY_REASON} />
-      ) : (
-        <Card eyebrow="Users" title="用户列表" action={<span className="app-caption">游标分页</span>}>
-          <UserGroupTabs
-            group={urlState.group}
-            deleted={urlState.deleted}
-            counts={counts}
-            onGroupChange={(next) => onSearchChange(withGroup(urlState, next))}
-          />
-          <UserFilters
-            values={urlState}
-            qInput={qInput}
-            deletedCount={counts?.deleted}
-            // 筛选写 URL 一律 push：后退＝撤销最近一次筛选。
-            onRoleChange={(next) => onSearchChange(withFilter(urlState, { role: next }))}
-            onStatusChange={(next) => onSearchChange(withFilter(urlState, { status: next }))}
-            onDeletedChange={(next) => onSearchChange(withDeleted(urlState, next))}
-            onQInputChange={setQInput}
-            onQCommit={commitQuery}
-          />
-          {selectable && selectedRows.length > 0 ? (
-            <SelectionBar count={selectedRows.length} limit={10} onClear={() => setSelectedIds(new Set())}>
+      <Card eyebrow="Users" title="用户列表" action={<span className="app-caption">游标分页</span>}>
+        <UserGroupTabs
+          group={urlState.group}
+          deleted={urlState.deleted}
+          counts={counts}
+          onGroupChange={(next) => onSearchChange(withGroup(urlState, next))}
+        />
+        <UserFilters
+          values={urlState}
+          qInput={qInput}
+          deletedCount={counts?.deleted}
+          // 筛选写 URL 一律 push：后退＝撤销最近一次筛选。
+          onRoleChange={(next) => onSearchChange(withFilter(urlState, { role: next }))}
+          onStatusChange={(next) => onSearchChange(withFilter(urlState, { status: next }))}
+          onDeletedChange={(next) => onSearchChange(withDeleted(urlState, next))}
+          onQInputChange={setQInput}
+          onQCommit={commitQuery}
+        />
+        {selectable && selectedRows.length > 0 ? (
+          <SelectionBar count={selectedRows.length} limit={10} onClear={() => setSelectedIds(new Set())}>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={overBatchLimit || batchPending}
+              title={overBatchLimit ? '一次最多 10 条' : undefined}
+              onClick={() => openBatch('disable', selectedRows)}
+            >
+              停用
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={overBatchLimit || batchPending}
+              title={overBatchLimit ? '一次最多 10 条' : undefined}
+              onClick={() => openBatch('enable', selectedRows)}
+            >
+              启用
+            </Button>
+            <span className="app-batch-danger">
               <Button
-                variant="ghost"
+                variant="outline-danger"
                 size="sm"
                 disabled={overBatchLimit || batchPending}
                 title={overBatchLimit ? '一次最多 10 条' : undefined}
-                onClick={() => openBatch('disable', selectedRows)}
+                onClick={() => openBatch('reset_password', selectedRows)}
               >
-                停用
+                重置口令
+              </Button>
+              <Button
+                variant="outline-danger"
+                size="sm"
+                disabled={overBatchLimit || batchPending}
+                title={overBatchLimit ? '一次最多 10 条' : undefined}
+                onClick={() => openBatch('delete', selectedRows)}
+              >
+                删除
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={overBatchLimit || batchPending}
-                title={overBatchLimit ? '一次最多 10 条' : undefined}
-                onClick={() => openBatch('enable', selectedRows)}
+                disabled={overBatchLimit || batchPending || !allDeleted}
+                title={
+                  overBatchLimit
+                    ? '一次最多 10 条'
+                    : allDeleted
+                      ? undefined
+                      : '仅已删除用户可恢复'
+                }
+                onClick={() => openBatch('restore', selectedRows)}
               >
-                启用
+                恢复
               </Button>
-              <span className="app-batch-danger">
-                <Button
-                  variant="outline-danger"
-                  size="sm"
-                  disabled={overBatchLimit || batchPending}
-                  title={overBatchLimit ? '一次最多 10 条' : undefined}
-                  onClick={() => openBatch('reset_password', selectedRows)}
-                >
-                  重置口令
-                </Button>
-                <Button
-                  variant="outline-danger"
-                  size="sm"
-                  disabled={overBatchLimit || batchPending}
-                  title={overBatchLimit ? '一次最多 10 条' : undefined}
-                  onClick={() => openBatch('delete', selectedRows)}
-                >
-                  删除
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={overBatchLimit || batchPending || !allDeleted}
-                  title={
-                    overBatchLimit
-                      ? '一次最多 10 条'
-                      : allDeleted
-                        ? undefined
-                        : '仅已删除用户可恢复'
-                  }
-                  onClick={() => openBatch('restore', selectedRows)}
-                >
-                  恢复
-                </Button>
-              </span>
-            </SelectionBar>
-          ) : null}
-          <AsyncState
-            status={listStatus}
-            error={error ?? undefined}
-            emptyLabel={emptyLabel}
-            onRetry={
-              usersQuery.isError
-                ? () => {
-                    void usersQuery.refetch()
-                  }
-                : undefined
-            }
-          >
-            <UsersTable
-              rows={rows}
-              pageIndex={stack.index}
-              hasPrevious={hasPreviousPage(stack)}
-              hasNext={Boolean(usersQuery.data?.next_cursor) && !usersQuery.isFetching}
-              selectable={selectable}
-              selectedIds={selectedIds}
-              onToggleRow={toggleRow}
-              onToggleAll={toggleAll}
-              onPrevious={() => {
-                const previous = goPrevious(stack)
-                setStack(previous)
-                const prev = currentCursor(previous)
-                onSearchChange(
-                  prev
-                    ? { ...urlState, cursor: prev }
-                    : {
-                        role: urlState.role,
-                        status: urlState.status,
-                        q: urlState.q,
-                        group: urlState.group,
-                        deleted: urlState.deleted,
-                      },
-                )
-              }}
-              onNext={() => {
-                const next = usersQuery.data?.next_cursor
-                if (!next) return
-                setStack((previous) => goNext(previous, next))
-                onSearchChange({ ...urlState, cursor: next })
-              }}
-              onManage={openDetail}
-            />
-          </AsyncState>
-        </Card>
-      )}
+            </span>
+          </SelectionBar>
+        ) : null}
+        <AsyncState
+          status={listStatus}
+          error={error ?? undefined}
+          emptyLabel={emptyLabel}
+          onRetry={
+            usersQuery.isError
+              ? () => {
+                  void usersQuery.refetch()
+                }
+              : undefined
+          }
+        >
+          <UsersTable
+            rows={rows}
+            pageIndex={stack.index}
+            hasPrevious={hasPreviousPage(stack)}
+            hasNext={Boolean(usersQuery.data?.next_cursor) && !usersQuery.isFetching}
+            selectable={selectable}
+            selectedIds={selectedIds}
+            onToggleRow={toggleRow}
+            onToggleAll={toggleAll}
+            onPrevious={() => {
+              const previous = goPrevious(stack)
+              setStack(previous)
+              const prev = currentCursor(previous)
+              onSearchChange(
+                prev
+                  ? { ...urlState, cursor: prev }
+                  : {
+                      role: urlState.role,
+                      status: urlState.status,
+                      q: urlState.q,
+                      group: urlState.group,
+                      deleted: urlState.deleted,
+                    },
+              )
+            }}
+            onNext={() => {
+              const next = usersQuery.data?.next_cursor
+              if (!next) return
+              setStack((previous) => goNext(previous, next))
+              onSearchChange({ ...urlState, cursor: next })
+            }}
+            onManage={openDetail}
+          />
+        </AsyncState>
+      </Card>
 
       <UserDetailDrawer
         key={detailUser?.id ?? 'none'}

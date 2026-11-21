@@ -26,6 +26,7 @@ import type {
 import type { Announcement } from './api/announcement'
 import type { AuditLogItem, AuditLogPage, AuditStatusReport } from './api/audit'
 import type { HealthStatus } from './api/health'
+import type { DiagnosticsReport, SignStatusReport } from './api/me'
 import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
 import type { EngineSnapshot } from './api/engine'
@@ -1013,5 +1014,65 @@ export function showcaseNotifications(): NotificationPage {
 export function showcaseUnreadCount(): UnreadCount {
   return {
     count: showcaseNotifications().items.filter((item) => item.read_at === null).length,
+  }
+}
+
+/** 看板 user 视角（展示构建）：本人今日签到状态合成夹具，零网络请求。 */
+export function showcaseSignStatus(): SignStatusReport {
+  return {
+    updated_at: '2026-10-31T08:40:00+08:00',
+    items: [
+      {
+        account_id: 'acc-0002',
+        display_name: '西区宿舍',
+        phone_masked: '139****9000',
+        account_status: 'active',
+        state: 'success',
+        run_at: '2026-10-31T08:22:00+08:00',
+        stale: false,
+      },
+      {
+        account_id: 'acc-0003',
+        display_name: '图书馆',
+        phone_masked: '135****0001',
+        account_status: 'active',
+        state: 'pending',
+        run_at: null,
+        stale: false,
+      },
+    ],
+  }
+}
+
+/** 看板 user 视角（展示构建）：本人签到诊断建议合成夹具，零网络请求。 */
+export function showcaseDiagnostics(): DiagnosticsReport {
+  return {
+    updated_at: '2026-10-31T08:40:00+08:00',
+    items: [
+      {
+        account_id: 'acc-0002',
+        display_name: '西区宿舍',
+        phone_masked: '139****9000',
+        account_status: 'active',
+        state: 'success',
+        run_at: '2026-10-31T08:22:00+08:00',
+        attempts: 1,
+        result: 'ok',
+        next_retry_at: null,
+        suggestion: 'wait',
+      },
+      {
+        account_id: 'acc-0003',
+        display_name: '图书馆',
+        phone_masked: '135****0001',
+        account_status: 'active',
+        state: 'pending',
+        run_at: null,
+        attempts: 0,
+        result: '',
+        next_retry_at: null,
+        suggestion: 'wait',
+      },
+    ],
   }
 }

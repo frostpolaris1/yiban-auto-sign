@@ -190,6 +190,10 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
   const rows = schoolsQuery.data?.items ?? []
   const error = schoolsQuery.isError ? describeApiError(schoolsQuery.error) : null
 
+  if (!allowed) {
+    return <DeniedCard eyebrow="Schools" reason={denyReason(role, 'view') ?? ''} />
+  }
+
   return (
     <>
       <PageHeader
@@ -215,37 +219,33 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
         }
       />
 
-      {!allowed ? (
-        <DeniedCard eyebrow="Schools" reason={denyReason(role, 'view') ?? ''} />
-      ) : (
-        <Card
-          eyebrow="Schools"
-          title="学校列表"
-          action={<span className="app-caption">游标分页</span>}
-        >
-          <SchoolsTable
-            rows={rows}
-            loading={schoolsQuery.isLoading || schoolsQuery.isFetching}
-            error={error}
-            role={role}
-            pageIndex={stack.index}
-            hasPrevious={hasPreviousPage(stack)}
-            hasNext={Boolean(schoolsQuery.data?.next_cursor) && !schoolsQuery.isFetching}
-            onPrevious={() => setStack(goPrevious)}
-            onNext={() => {
-              const next = schoolsQuery.data?.next_cursor
-              if (!next) return
-              setStack((previous) => goNext(previous, next))
-            }}
-            onRetry={() => {
-              void schoolsQuery.refetch()
-            }}
-            onOpenDetail={openDetail}
-            onEdit={openEdit}
-            onAdmins={openAdmins}
-          />
-        </Card>
-      )}
+      <Card
+        eyebrow="Schools"
+        title="学校列表"
+        action={<span className="app-caption">游标分页</span>}
+      >
+        <SchoolsTable
+          rows={rows}
+          loading={schoolsQuery.isLoading || schoolsQuery.isFetching}
+          error={error}
+          role={role}
+          pageIndex={stack.index}
+          hasPrevious={hasPreviousPage(stack)}
+          hasNext={Boolean(schoolsQuery.data?.next_cursor) && !schoolsQuery.isFetching}
+          onPrevious={() => setStack(goPrevious)}
+          onNext={() => {
+            const next = schoolsQuery.data?.next_cursor
+            if (!next) return
+            setStack((previous) => goNext(previous, next))
+          }}
+          onRetry={() => {
+            void schoolsQuery.refetch()
+          }}
+          onOpenDetail={openDetail}
+          onEdit={openEdit}
+          onAdmins={openAdmins}
+        />
+      </Card>
 
       <SchoolDetailDrawer
         school={detail}

@@ -116,8 +116,7 @@ test('invariant 1: a user has no school entry and no list request', async ({ pag
   expect(listSchoolCalls(api), 'the exit sends no list request either').toHaveLength(0)
 
   await page.goto('/schools')
-  await expect(page.getByRole('button', { name: '新建学校' })).toBeDisabled()
-  await expect(page.getByText('仅 master 可新建学校')).toBeVisible()
+  await expect(page.getByRole('button', { name: '新建学校' })).toHaveCount(0)
 })
 
 test('invariant 1: the denial card offers the previous page when the visit has a source', async ({

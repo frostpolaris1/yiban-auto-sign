@@ -38,6 +38,7 @@ import {
 } from '@/lib/api/user'
 import { formatDateTime } from '@/lib/format'
 import { roleLabel } from '@/lib/identity'
+import { READ_ONLY_REASON, SHOWCASE } from '@/lib/showcase-mode'
 import { USER_ROLE_OPTIONS } from './display'
 import { isConflict } from './apiErrors'
 
@@ -234,6 +235,8 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                       variant="primary"
                       busy={restoreMut.isPending}
                       busyLabel="恢复中…"
+                      disabled={SHOWCASE}
+                      title={SHOWCASE ? READ_ONLY_REASON : undefined}
                       onClick={(event) => {
                         setRestoreError(null)
                         openWith(event.currentTarget, () => setRestoreOpen(true))
@@ -241,6 +244,7 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                     >
                       恢复用户
                     </BusyButton>
+                    {SHOWCASE ? <span className="app-deny-note">{READ_ONLY_REASON}</span> : null}
                   </div>
                   {/* 恢复失败留在二次口令弹窗里；抽屉不重复一份。 */}
                 </>
@@ -253,6 +257,8 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                         id="user-drawer-role"
                         className="select"
                         value={roleDraft}
+                        disabled={SHOWCASE}
+                        title={SHOWCASE ? READ_ONLY_REASON : undefined}
                         onChange={(event) => setRoleDraft(event.target.value as UserRole)}
                       >
                         {USER_ROLE_OPTIONS.map((option) => (
@@ -265,6 +271,8 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                         variant="primary"
                         busy={roleMut.isPending}
                         busyLabel="保存中…"
+                        disabled={SHOWCASE}
+                        title={SHOWCASE ? READ_ONLY_REASON : undefined}
                         onClick={(event) => {
                           if (!user) return
                           setRoleError(null)
@@ -281,6 +289,8 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                       variant="outline-danger"
                       busy={resetMut.isPending}
                       busyLabel="生成中…"
+                      disabled={SHOWCASE}
+                      title={SHOWCASE ? READ_ONLY_REASON : undefined}
                       onClick={(event) => {
                         setResetError(null)
                         openWith(event.currentTarget, () => setResetOpen(true))
@@ -291,6 +301,8 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                     <BusyButton
                       variant="outline-danger"
                       busy={false}
+                      disabled={SHOWCASE}
+                      title={SHOWCASE ? READ_ONLY_REASON : undefined}
                       onClick={(event) => {
                         setStatusError(null)
                         openWith(event.currentTarget, () => setStatusOpen(true))
@@ -302,6 +314,8 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                       variant="outline-danger"
                       busy={deleteMut.isPending}
                       busyLabel="删除中…"
+                      disabled={SHOWCASE}
+                      title={SHOWCASE ? READ_ONLY_REASON : undefined}
                       onClick={(event) => {
                         setDeleteError(null)
                         openWith(event.currentTarget, () => setDeleteOpen(true))
@@ -309,6 +323,7 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                     >
                       删除用户
                     </BusyButton>
+                    {SHOWCASE ? <span className="app-deny-note">{READ_ONLY_REASON}</span> : null}
                   </div>
                 </>
               )}

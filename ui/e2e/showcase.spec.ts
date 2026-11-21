@@ -306,6 +306,24 @@ test('invariant 9: the showcase users page renders fixtures with zero requests',
   await expect(page.getByLabel('邮箱前缀筛选')).toBeEnabled()
   await expect(page.getByRole('button', { name: '下一页' })).toBeDisabled()
 
+  // 展示构建只读：页头新建用户与抽屉内全部写入口均置灰并带只读原因。
+  const createBtn = page.getByRole('button', { name: '新建用户' })
+  await expect(createBtn).toBeDisabled()
+  await expect(createBtn).toHaveAttribute('title', READ_ONLY_REASON)
+  await expect(page.locator('.app-page-actions .app-deny-note')).toHaveText(READ_ONLY_REASON)
+
+  await page.getByRole('button', { name: '管理 admin-one@example.com' }).click()
+  const drawer = page.getByRole('dialog', { name: '管理用户' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer.getByLabel('角色变更')).toBeDisabled()
+  for (const name of ['保存', '重置口令', '停用用户', '删除用户']) {
+    const btn = drawer.getByRole('button', { name })
+    await expect(btn).toBeDisabled()
+    await expect(btn).toHaveAttribute('title', READ_ONLY_REASON)
+  }
+  await expect(drawer.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
+  await drawer.getByRole('button', { name: '关闭', exact: true }).click()
+
   expect(apiRequests, 'the users fixture never touches the API').toEqual([])
 })
 
