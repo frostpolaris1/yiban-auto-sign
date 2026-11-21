@@ -65,7 +65,7 @@ export function LogsView({ urlState, onSearchChange }: LogsViewProps) {
   return (
     <div className="logs-page">
       <PageHeader
-        eyebrow="系统 · 台账"
+        eyebrow="今日 · 台账"
         title={
           <>
             签到 <span className="accent">台账</span>
@@ -77,7 +77,7 @@ export function LogsView({ urlState, onSearchChange }: LogsViewProps) {
       <RunLiveBanner live={live} />
 
       {!allowed ? (
-        <DeniedCard eyebrow="系统 · 台账" reason={DENY_REASON} />
+        <DeniedCard eyebrow="今日 · 台账" reason={DENY_REASON} />
       ) : (
         <Tabs
           label="签到台账视图"

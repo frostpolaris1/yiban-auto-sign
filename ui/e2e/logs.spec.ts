@@ -72,8 +72,13 @@ test('invariant 1: master reaches /logs from the sidebar and switches tabs via d
   await mockLogsApi(page, { role: 'master' })
 
   await page.goto('/')
-  await page.locator('.d-sidebar').getByRole('link', { name: '签到台账', exact: true }).click()
+  await page
+    .locator('.d-sidebar nav[aria-label="今日"]')
+    .getByRole('link', { name: '签到台账', exact: true })
+    .click()
   await expect(page).toHaveURL(/\/logs$/)
+  await expect(page.locator('.crumbs')).toContainText('今日')
+  await expect(page.locator('.crumbs .current')).toHaveText('签到台账')
   await openEventsTab(page)
   await expect(page.getByRole('tab', { name: '签到事件' })).toHaveAttribute('aria-selected', 'true')
 

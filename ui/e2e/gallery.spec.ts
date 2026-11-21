@@ -113,27 +113,29 @@ test('mobile drawer opens from the hamburger and closes on Escape', async ({ pag
   await expect(sidebar, 'a closed drawer leaves the viewport').not.toBeInViewport()
 })
 
-test('navigation moves between shell routes and marks the active item', async ({ page }) => {
+test('navigation moves between shell routes, gates design in prod, and keeps /design direct', async ({
+  page,
+}) => {
   await page.goto('/')
 
   const activeLink = page.locator('.d-sidebar a[aria-current="page"]')
   await expect(activeLink).toContainText('总览')
 
-  const group = page.locator('.d-sidebar').getByRole('button', { name: '设计系统' })
-  await expect(group, 'the group starts collapsed').toHaveAttribute('aria-expanded', 'false')
-  await group.click()
-  await expect(group, 'the group reports the expanded state').toHaveAttribute(
-    'aria-expanded',
-    'true',
-  )
+  // 裁决②：「设计系统」侧栏项仅 SHOWCASE/dev 渲染；生产构建隐藏但 /design 路由保留直达。
+  await expect(page.locator('.d-sidebar').getByRole('button', { name: '设计系统' })).toHaveCount(0)
+  await expect(page.locator('.d-sidebar').getByRole('link', { name: '组件画廊' })).toHaveCount(0)
 
-  await page.locator('.d-sidebar').getByRole('link', { name: '组件画廊' }).click()
-  await expect(page).toHaveURL(/\/design$/)
-  await expect(activeLink).toContainText('组件画廊')
+  await page.locator('.d-sidebar').getByRole('link', { name: '账号设置', exact: true }).click()
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(activeLink).toContainText('账号设置')
 
-  await page.locator('.d-sidebar').getByRole('link', { name: '总览' }).click()
+  await page.locator('.d-sidebar').getByRole('link', { name: '总览', exact: true }).click()
   await expect(page).toHaveURL(/\/$/)
   await expect(activeLink).toContainText('总览')
+
+  await page.goto('/design')
+  await expect(page.getByRole('heading', { level: 1, name: /组件画廊/ })).toBeVisible()
+  await expect(page.locator('.crumbs .current')).toHaveText('组件画廊')
 })
 
 test('gallery: modal traps focus and closes on Escape', async ({ page }) => {

@@ -183,12 +183,13 @@ test('invariant 8: the schools page blocks create and edit while the admins list
   expect(apiRequests, 'a read-only showcase sends no school write').toEqual([])
 })
 
-test('invariant 8: the schedule preview opens read-only and blocks both write buttons', async ({
+test('invariant 8: the system plans preview opens read-only and blocks both write buttons', async ({
   page,
 }) => {
   const apiRequests = trackApiRequests(page)
 
-  await page.goto('/schedule')
+  await page.goto('/system')
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('系统设置')
   await expect(page.getByRole('table', { name: '时间片窗口' })).toBeVisible()
 
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).first().click()
@@ -207,6 +208,15 @@ test('invariant 8: the schedule preview opens read-only and blocks both write bu
     await button.click({ force: true })
   }
   await expect(dialog.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
+
+  // 展示构建侧栏保留「设计系统」入口，可展开并跳至 /design。
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  const group = page.locator('.d-sidebar').getByRole('button', { name: '设计系统' })
+  await expect(group).toHaveAttribute('aria-expanded', 'false')
+  await group.click()
+  await expect(group).toHaveAttribute('aria-expanded', 'true')
+  await page.locator('.d-sidebar').getByRole('link', { name: '组件画廊' }).click()
+  await expect(page).toHaveURL(/\/design$/)
 
   expect(apiRequests, 'a read-only showcase sends no schedule write').toEqual([])
 })

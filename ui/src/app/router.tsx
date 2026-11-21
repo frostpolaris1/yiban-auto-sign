@@ -30,9 +30,9 @@ import { LogsPage } from '@/pages/LogsPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { QueuePage } from '@/pages/QueuePage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
-import { SchedulePage } from '@/pages/SchedulePage'
 import { SchoolsPage } from '@/pages/SchoolsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { SystemPage } from '@/pages/SystemPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { parseRunSearchRecord, runSearchRecord } from '@/features/logs/urlState'
 import { parseUserSearchRecord, userSearchRecord } from '@/features/user/urlState'
@@ -140,10 +140,6 @@ function UsersRouteComponent() {
 }
 
 /**
- * 时间片路由的自定义 search：`?day=YYYY-MM-DD`。
- * 校验即净化：非法日期在解析时丢弃，容器回落到今天。
- */
-/**
  * 待办工作台：master/admin。权限门由 QueueView 内部执行。
  */
 const queueRoute = createRoute({
@@ -184,29 +180,50 @@ const auditRoute = createRoute({
   component: AuditPage,
 })
 
-const scheduleRoute = createRoute({
+/**
+ * 系统设置：master/admin。权限门由 SystemView 内部执行，user 不发业务请求。
+ * `?day=YYYY-MM-DD` 校验即净化：非法日期在解析时丢弃，计划分区回落到今天。
+ */
+const systemRoute = createRoute({
   getParentRoute: () => shellRoute,
-  path: '/schedule',
-  validateSearch: (search: Record<string, unknown>): { day?: string } => {
-    const day = parseDay(search.day)
-    return day ? { day } : {}
-  },
-  component: ScheduleRouteComponent,
+  path: '/system',
+  validateSearch: (search: Record<string, unknown>): { day?: string } => ({
+    day: parseDay(search.day) ?? undefined,
+  }),
+  component: SystemRouteComponent,
 })
 
-/** 把类型化的 search 传给页面，并让页面通过回调写回查询串。 */
-function ScheduleRouteComponent() {
-  const { day } = scheduleRoute.useSearch()
+/** 把类型化的 search 传给系统设置页，并让计划分区通过回调写回查询串。 */
+function SystemRouteComponent() {
+  const { day } = systemRoute.useSearch()
   const navigate = useNavigate()
   return (
-    <SchedulePage
-      day={day}
+    <SystemPage
+      day={parseDay(day) ?? undefined}
       onDayChange={(next) => {
-        void navigate({ to: '/schedule', search: { day: next }, replace: true })
+        void navigate({ to: '/system', search: { day: next }, replace: true })
       }}
     />
   )
 }
+
+/** 旧时间片入口：保底一个版本周期，302 到系统设置·签到计划分区（保留合法 ?day= 并锚定 #plans）。 */
+const scheduleRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/schedule',
+  validateSearch: (search: Record<string, unknown>): { day?: string } => ({
+    day: parseDay(search.day) ?? undefined,
+  }),
+  beforeLoad: ({ search }) => {
+    const day = parseDay(search.day) ?? undefined
+    throw redirect({
+      to: '/system',
+      search: () => (day ? { day } : {}),
+      hash: 'plans',
+      replace: true,
+    })
+  },
+})
 
 /**
  * 登录路由的自定义 search：`?redirect=`。
@@ -269,6 +286,7 @@ const routeTree = rootRoute.addChildren([
     queueRoute,
     logsRoute,
     auditRoute,
+    systemRoute,
     scheduleRoute,
   ]),
   loginRoute,

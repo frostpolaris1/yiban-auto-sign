@@ -14,7 +14,7 @@
 
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DashboardView } from '@/features/dashboard/DashboardView'
-import { TimePrefCard } from '@/features/schedule/TimePrefCard'
+import { TimePrefCard } from '@/features/system/plans/TimePrefCard'
 import { useMe } from '@/lib/session'
 
 export function DashboardPage() {
