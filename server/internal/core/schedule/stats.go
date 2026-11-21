@@ -39,3 +39,17 @@ type SignStats struct {
 	Total    int
 	ByStatus SignStatCounts
 }
+
+// SignFailureBucket 是单种失败结果的计数桶。
+// Result 保留仓储原值（含空串与词表外结果），空串归 unknown 由用例层负责。
+type SignFailureBucket struct {
+	Result string
+	Count  int
+}
+
+// SignFailureFilter 是失败归因聚合的筛选条件。
+type SignFailureFilter struct {
+	Day      string
+	SchoolID string
+	TaskID   string
+}

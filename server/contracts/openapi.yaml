@@ -3605,6 +3605,53 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/sign-stats/failures:
+    get:
+      tags: [schedule]
+      operationId: SignStatsFailures
+      summary: Report per-task-row terminal failure counts by result for one business day.
+      description: |
+        Master and admin only. Master reads all schools; admin reads bound
+        schools only (an admin with no binding sees empty items and total 0).
+        An out-of-scope or missing school_id or task_id answers 404 (matching
+        account diagnostics); when both are in scope and task_id does not belong
+        to school_id, the request answers 400. Counts sign_tasks rows directly
+        rather than deduplicating by account, and includes only terminal
+        failed rows (state = failed) for the effective business day while
+        excluding soft-deleted accounts regardless of account status. Empty
+        result values are normalized to unknown (merged with literal unknown),
+        and values outside the Outcome vocabulary are returned verbatim so
+        vocabulary drift stays visible. An empty day returns an empty items
+        array and total 0.
+      x-roles: [master, admin]
+      parameters:
+        - name: day
+          in: query
+          required: false
+          description: Business day YYYY-MM-DD; defaults to today in the server time zone.
+          schema: { type: string }
+        - name: school_id
+          in: query
+          required: false
+          description: Optional school UUID to narrow the aggregation.
+          schema: { type: string }
+        - name: task_id
+          in: query
+          required: false
+          description: Optional school task UUID to narrow the aggregation.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Failure attribution counts for the effective business day.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignFailuresReport'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/time-prefs/stats:
     get:
       tags: [schedule]
@@ -5713,6 +5760,43 @@ components:
           type: array
           description: Days in the window with no task rows.
           items: { type: string, format: date }
+    SignFailuresScope:
+      type: object
+      properties:
+        school_id:
+          type: string
+          description: Selected school filter when provided.
+        task_id:
+          type: string
+          description: Selected school task filter when provided.
+    SignFailureBucket:
+      type: object
+      required: [result, count]
+      properties:
+        result:
+          type: string
+          description: Failure result token; empty result maps to unknown, out-of-vocabulary values stay verbatim.
+        count:
+          type: integer
+          description: Number of failed task rows with this result.
+    SignFailuresReport:
+      type: object
+      required: [day, scope, items, total]
+      properties:
+        day:
+          type: string
+          format: date
+          description: Effective business day YYYY-MM-DD.
+        scope:
+          $ref: '#/components/schemas/SignFailuresScope'
+        items:
+          type: array
+          description: Failure result buckets ordered by count descending then result ascending.
+          items:
+            $ref: '#/components/schemas/SignFailureBucket'
+        total:
+          type: integer
+          description: Total failed task rows across all buckets.
     PrefStatsSlot:
       type: object
       required: [offset_min, label, count, cap]

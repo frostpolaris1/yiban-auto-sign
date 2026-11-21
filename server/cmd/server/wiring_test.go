@@ -17,6 +17,7 @@ import (
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schooladmin"
+	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
@@ -89,4 +90,7 @@ var (
 	// 0v8 C 摘要端口：同一仓储同时服务失败明细与收件人解析。
 	_ appnotify.DigestSource   = (*pg.NotificationDigestRepo)(nil)
 	_ appnotify.DigestAudience = (*pg.NotificationDigestRepo)(nil)
+	// 任务 07 失败归因与统计端口。
+	_ appstats.Store            = (*pg.StatsRepo)(nil)
+	_ schedulehttp.FailureStats = (*appstats.Service)(nil)
 )
