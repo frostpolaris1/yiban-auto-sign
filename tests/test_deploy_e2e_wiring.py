@@ -266,3 +266,61 @@ class UpdateRollbackE2EWiringTest(unittest.TestCase):
         self.assertIn("不是通过", block, "SKIP 必须写明「不算通过」，不能冒充绿")
         # 真失败（rc≠0/2）必须原样传出，不许被 SKIP 分支吞掉。
         self.assertIn('exit "$rc"', block, "job 没有把真失败的退出码传出去")
+
+#: pg 客户端提取时列出的库名**只能是 DT_NEEDED 名**（`libX.so.N`），
+#: 因为 `tar -ch` 解引用后成员名就是请求名，二进制的 DT_NEEDED 也只认这个名字。
+#: 多列一条 `libX.so.N.M` 会让 tar 在镜像升级 soname 后 Cannot stat 而整步判死。
+_PG_LIBS_LINE = re.compile(r"^[ \t]*PG_LIBS=.*$", re.M)
+_PG_LIB_TOKEN = re.compile(r"^[^\s]+/lib[^/\s]+\.so\.\d+$")
+
+
+def _pg_lib_tokens(text):
+    """取出脚本里 PG_LIBS 各行声明的库名（剥掉引号与续行拼接）。"""
+    chunks = []
+    for line in _PG_LIBS_LINE.findall(text):
+        _, _, rhs = line.partition("=")
+        rhs = rhs.strip().strip('"').strip("'")
+        # 续行写法 \`PG_LIBS="$PG_LIBS lib/..."\`：累积变量本身不是库名
+        rhs = re.sub(r"^\$\{?PG_LIBS\}?\s+", "", rhs)
+        chunks.append(rhs)
+    joined = " ".join(chunks)
+    return [t for t in joined.split() if t]
+
+
+class PgClientExtractionListTest(unittest.TestCase):
+    """H5 提取清单不许把「镜像里的 soname 次版本」当成「PG 主版本」写死。
+
+    2026-11-17T20:19Z postgres:18 镜像重建后 libpq 由 5.18 升到 5.19，
+    旧写法 libpq.so.5.${PG_MAJOR} 遂 Cannot stat，tar 非零退出，
+    update-rollback-e2e 自 2026-11-21T08:30Z 起全红。守卫钉两条：
+      ① 每个库名都是 DT_NEEDED 形（以 .so.N 收尾，不带主版本替换）；
+      ② 清单里不许出现任何 ${...} 展开（库名不接受变量拼接）。
+    """
+
+    def setUp(self):
+        self.script = _read(UPDATE_ROLLBACK)
+
+    def test_libs_are_dt_needed_names(self):
+        tokens = _pg_lib_tokens(self.script)
+        self.assertTrue(tokens, "脚本里没有 PG_LIBS 声明，守卫失去落点")
+        bad = [t for t in tokens if not _PG_LIB_TOKEN.match(t)]
+        self.assertEqual(bad, [], "PG_LIBS 里混进了非 DT_NEEDED 名：%s" % bad)
+
+    def test_libs_never_expand_a_variable(self):
+        tokens = _pg_lib_tokens(self.script)
+        self.assertTrue(tokens, "脚本里没有 PG_LIBS 声明，守卫失去落点")
+        expanded = [t for t in tokens if "$" in t]
+        self.assertEqual(expanded, [],
+                         "库名不许用变量拼接（库的 soname 次版本与 PG 主版本无关）：%s" % expanded)
+
+    def test_guard_catches_the_regression(self):
+        # 活体反例：把历史上那条写回去，两条守卫都必须报出来。
+        broken = self.script.replace(
+            'PG_LIBS="lib/x86_64-linux-gnu/libpq.so.5"',
+            'PG_LIBS="lib/x86_64-linux-gnu/libpq.so.5 lib/x86_64-linux-gnu/libpq.so.5.' + chr(36) + '{PG_MAJOR}"')
+        self.assertNotEqual(broken, self.script, "反例没替换成功，守卫等于没测")
+        tokens = _pg_lib_tokens(broken)
+        self.assertTrue([t for t in tokens if not _PG_LIB_TOKEN.match(t)],
+                        "守卫漏了写死 soname 的反例")
+        self.assertTrue([t for t in tokens if chr(36) in t],
+                        "守卫漏了变量展开的反例")
