@@ -44,6 +44,10 @@ export function buildPhotoSearch(query: PhotoQuery = {}): string {
   return search ? `?${search}` : ''
 }
 
+export function listMyPhotos(query: PhotoQuery = {}): Promise<PhotoPage> {
+  return apiRequest<PhotoPage>(`${PHOTO_PATHS.mine}${buildPhotoSearch(query)}`)
+}
+
 export function listAccountPhotos(
   accountId: string,
   query: PhotoQuery = {},

@@ -233,7 +233,8 @@ test('settings: an unauthenticated visitor lands on login and returns after sign
   await page.goto('/settings')
 
   await expect(page).toHaveURL(/\/login\?redirect=%2Fsettings$/)
-  await page.getByLabel('邮箱').fill(SESSION_EMAIL)
+  // 双签常驻同页，「邮箱」标签命中两签；用契约 id 定位登录邮箱。
+  await page.locator('#login-email').fill(SESSION_EMAIL)
   await page.locator('#login-password').fill(SESSION_PASSWORD)
   await page.getByRole('button', { name: '登录', exact: true }).click()
 

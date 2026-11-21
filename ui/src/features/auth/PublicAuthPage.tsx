@@ -14,6 +14,7 @@
 import type { ReactNode } from 'react'
 import { Navigate } from '@tanstack/react-router'
 import { SessionLoading } from '@/components/ui/SessionLoading'
+import { landingForRole } from '@/lib/landing'
 import { useMe } from '@/lib/session'
 import { AuthLayout } from './AuthLayout'
 
@@ -25,7 +26,7 @@ export function PublicAuthPage({ children }: PublicAuthPageProps) {
   const meQuery = useMe()
 
   if (meQuery.isPending) return <SessionLoading />
-  if (meQuery.data) return <Navigate to="/" replace />
+  if (meQuery.data) return <Navigate to={landingForRole(meQuery.data.role)} replace />
 
   return <AuthLayout>{children}</AuthLayout>
 }

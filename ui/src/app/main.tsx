@@ -25,6 +25,7 @@ import { expireSession } from '@/lib/session'
 import '@/styles/adminator.css'
 import '@/styles/tokens.css'
 import '@/styles/app.css'
+import '@/styles/user-app.css'
 
 setUnauthorizedHandler((path) => {
   if (!isSessionExpiry(path)) return

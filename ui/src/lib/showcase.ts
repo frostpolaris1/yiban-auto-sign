@@ -755,3 +755,8 @@ export function showcaseQueueDiagnostics(accountId: string): AccountDiagnostics 
     egress: { identity: 'https://eg-demo-1' },
   }
 }
+
+/** 注册状态展示夹具：开放，协议版本 1。 */
+export function showcaseRegistrationStatus() {
+  return { enabled: true, terms_version: 1, privacy_version: 1 } as const
+}

@@ -8,6 +8,9 @@
  * **口径**
  * 提交体只含契约 `LoginRequest` 的两个字段。
  * 成功：写入会话缓存 → 导航到 `redirect` 目标或 `/`。
+ * 软删账号登录是统一 401（后端防枚举）：401 后用同邮箱+口令调一次
+ * `POST /api/me/restore`，成功则重发登录——「登录即自动恢复」由前端编排。
+ * restore 失败照旧上抛：文案仍走 `loginErrorMessage`，不泄漏「被删除」状态。
  * 失败：就地显示错误并聚焦错误块，不导航；改任一字段即收起旧错误。
  * **不得添加「保持登录」选项**。会话期限由服务端定。
  * 密码框提供显隐开关；大写锁定时给出可见提示。
@@ -19,10 +22,11 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Icon } from '@/components/ui/Icon'
 import { PasswordInput, TextInput } from '@/components/ui/Input'
-import { login } from '@/lib/api/auth'
-import { sanitizeRedirect } from '@/lib/redirect'
+import { login, restoreMyAccount } from '@/lib/api/auth'
+import { ApiError } from '@/lib/api/client'
+import { resolveLanding } from '@/lib/landing'
 import { clearSessionExpired, ME_QUERY_KEY, SHOWCASE } from '@/lib/session'
-import { buildLoginBody, isLoginPath, loginErrorMessage } from './login'
+import { buildLoginBody, loginErrorMessage } from './login'
 
 type LoginFormProps = {
   /** 守卫写入的回跳地址。已净化，仍再净化一次。 */
@@ -50,7 +54,18 @@ export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: 
         await new Promise((resolve) => setTimeout(resolve, 400))
         return null
       }
-      return login(buildLoginBody({ email, password }))
+      const body = buildLoginBody({ email, password })
+      try {
+        return await login(body)
+      } catch (error) {
+        // 软删宽限内的账号在登录接口是统一 401；自动尝试恢复一次再重发登录。
+        // restore 自带 7 天窗口与同口令校验；任何失败继续上抛，文案不区分原因。
+        if (error instanceof ApiError && error.status === 401) {
+          await restoreMyAccount({ email: body.email, password: body.password })
+          return await login(body)
+        }
+        throw error
+      }
     },
     onSuccess: (me) => {
       clearSessionExpired()
@@ -61,13 +76,10 @@ export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: 
         queryClient.setQueryData(ME_QUERY_KEY, me)
         void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY })
       }
-      // `/login` 的各种拼写（含 URI 编码）不能当回跳目标：命中落 `/`。
-      // 成功路径必然离开本页，提交锁随卸载失效，无需复位。
-      const target = sanitizeRedirect(redirect)
-      void navigate({
-        href: target && !isLoginPath(target) ? target : '/',
-        replace: true,
-      })
+      // 角色决定落地：user → /app；master/admin → /。
+      // 回跳地址只在该角色可去的面内生效；登录/注册页自身不作为目标。
+      const target = me ? resolveLanding(me.role, redirect) : '/'
+      void navigate({ href: target, replace: true })
     },
     onError: () => {
       // 失败可重试：恢复登录页的兜底守卫。
@@ -176,7 +188,13 @@ export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: 
         </button>
       </form>
 
-      <p className="auth-switch-hint">还没有账号？请联系管理员开通。</p>
+      <p className="auth-switch-hint">
+        还没有账号？
+        <Link className="app-inline-link" to="/register">
+          创建一个
+        </Link>
+        ，或联系管理员开通。
+      </p>
 
     </>
   )

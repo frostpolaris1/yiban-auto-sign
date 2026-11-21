@@ -19,9 +19,19 @@ export function fieldErrorId(id: string): string {
   return `${id}-error`
 }
 
-/** 错误优先于提示；空串与 `undefined` 同判为「不可见」。 */
-export function fieldDescribedBy(id: string, hint?: string, error?: string): string | undefined {
+export function fieldSuccessId(id: string): string {
+  return `${id}-success`
+}
+
+/** 错误＞成功＞提示；空串与 `undefined` 同判为「不可见」。 */
+export function fieldDescribedBy(
+  id: string,
+  hint?: string,
+  error?: string,
+  success?: string,
+): string | undefined {
   if (error) return fieldErrorId(id)
+  if (success) return fieldSuccessId(id)
   if (hint) return fieldHintId(id)
   return undefined
 }

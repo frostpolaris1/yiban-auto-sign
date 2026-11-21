@@ -13,7 +13,7 @@
 
 import { useState, type ComponentPropsWithoutRef, type ReactNode } from 'react'
 import { cx } from '@/lib/cx'
-import { fieldDescribedBy, fieldErrorId, fieldHintId } from '@/lib/field-aria'
+import { fieldDescribedBy, fieldErrorId, fieldHintId, fieldSuccessId } from '@/lib/field-aria'
 import { Icon, type IconName } from '@/components/ui/Icon'
 
 type FieldShellProps = {
@@ -21,6 +21,8 @@ type FieldShellProps = {
   label: string
   hint?: string
   error?: string
+  /** 正向完成态（绿✓），错误优先于它，它优先于提示。 */
+  success?: string
   required?: boolean
   /** 标签行右侧的附加操作，例如「忘记密码」。 */
   labelAction?: ReactNode
@@ -28,10 +30,10 @@ type FieldShellProps = {
 }
 
 /**
- * 三个控件共用字段壳。标签、提示、错误的 id 都在这里生成。
- * 错误与提示互斥，故控件只关联当前可见的一条。
+ * 三个控件共用字段壳。标签、提示、成功、错误的 id 都在这里生成。
+ * 错误＞成功＞提示互斥，故控件只关联当前可见的那一条。
  */
-function FieldShell({ id, label, hint, error, required, labelAction, children }: FieldShellProps) {
+function FieldShell({ id, label, hint, error, success, required, labelAction, children }: FieldShellProps) {
   const labelNode = (
     <label className="field-label" htmlFor={id}>
       {label}
@@ -54,9 +56,15 @@ function FieldShell({ id, label, hint, error, required, labelAction, children }:
         labelNode
       )}
       {children}
-      {hint && !error ? (
+      {hint && !error && !success ? (
         <div className="field-help" id={fieldHintId(id)}>
           {hint}
+        </div>
+      ) : null}
+      {success && !error ? (
+        <div className="field-success" id={fieldSuccessId(id)} role="status">
+          <Icon name="check" size={11} />
+          {success}
         </div>
       ) : null}
       {error ? (
@@ -129,6 +137,8 @@ export function TextInput({
 export type PasswordInputProps = CommonFieldProps &
   Omit<ComponentPropsWithoutRef<'input'>, 'id' | 'type'> & {
     labelAction?: ReactNode
+    /** 正向完成态，例如确认密码匹配后的「已完成」。 */
+    success?: string
   }
 
 /**
@@ -140,13 +150,14 @@ export function PasswordInput({
   label,
   hint,
   error,
+  success,
   required,
   className,
   labelAction,
   ...rest
 }: PasswordInputProps) {
   const [visible, setVisible] = useState(false)
-  const describedBy = fieldDescribedBy(id, hint, error)
+  const describedBy = fieldDescribedBy(id, hint, error, success)
   // 同一页可能有两枚密码框：按钮名带上字段标签，读屏不会听到两个「显示密码」。
   const visibilityLabel = `${visible ? '隐藏' : '显示'}${label}`
 
@@ -156,6 +167,7 @@ export function PasswordInput({
       label={label}
       hint={hint}
       error={error}
+      success={success}
       required={required}
       labelAction={labelAction}
     >

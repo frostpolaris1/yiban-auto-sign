@@ -26,14 +26,17 @@ export class ApiError extends Error {
   readonly code: string
   readonly details?: unknown
   readonly traceId?: string
+  /** `Retry-After` 的秒数；只有 429 等响应可能带。 */
+  readonly retryAfter?: number
 
-  constructor(status: number, payload: ApiErrorPayload) {
+  constructor(status: number, payload: ApiErrorPayload, retryAfter?: number) {
     super(payload.message)
     this.name = 'ApiError'
     this.status = status
     this.code = payload.code
     this.details = payload.details
     this.traceId = payload.trace_id
+    this.retryAfter = retryAfter
   }
 }
 
@@ -87,7 +90,12 @@ async function raiseApiError(response: Response, path: string): Promise<never> {
     /* 响应体不是 JSON 时保留兜底错误，状态码仍要传给调用方。 */
   }
   if (response.status === 401) unauthorizedHandler?.(path)
-  throw new ApiError(response.status, payload)
+  const retryAfterRaw = response.headers.get('Retry-After')
+  const retryAfter =
+    retryAfterRaw !== null && /^\d+$/.test(retryAfterRaw)
+      ? Number(retryAfterRaw)
+      : undefined
+  throw new ApiError(response.status, payload, retryAfter)
 }
 
 /** 条件请求缓存的上限。列表每页一个键，超出按插入序删最旧。 */
