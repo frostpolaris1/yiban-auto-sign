@@ -52,6 +52,8 @@ var contractEnums = []contractEnum{
 	{".", "QuotaSettingSource", "../../../app/settings", "QuotaSource", "QuotaSource", 2},
 	// smtp4：SMTP 设置来源词表单源在 app/settings（db/env/default 三值）；契约同集。
 	{".", "MailSettingSource", "../../../app/settings", "MailSource", "MailSource", 3},
+	// 04c：调度设置来源词表单源在 app/settings（db/env/default 三值）；契约同集。
+	{".", "ScheduleSettingSource", "../../../app/settings", "ScheduleSource", "ScheduleSource", 3},
 	{".", "SchoolStatus", "../../../core/school", "Status", "Status", 2},
 	{".", "UserListParamsGroup", "../../../core/user", "Group", "Group", 3},
 	{".", "UserRole", "../../../core/auth", "Role", "Role", 3},

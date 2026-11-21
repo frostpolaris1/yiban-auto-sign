@@ -80,7 +80,26 @@
 }
 
 .q-refresh-btn {
+  position: relative;
   font-weight: 600;
+}
+
+.q-refresh-btn::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+.q-refresh-btn:disabled::after {
+  content: none;
+}
+
+@media (pointer: coarse) {
+  .q-refresh-btn,
+  .q-pager-btn {
+    min-block-size: 44px;
+    height: auto;
+  }
 }
 
 /* ---------- 顶部遥测条（默认字体 + 固定高度 + 细线分隔） ---------- */
@@ -173,6 +192,10 @@
 }
 
 .q-tele-value.is-danger {
+  color: color-mix(in srgb, var(--danger) 75%, var(--t-base));
+}
+
+:root[data-theme="dark"] .q-tele-value.is-danger {
   color: var(--danger);
 }
 
@@ -281,6 +304,10 @@
 .q-count-pill.is-danger {
   background: var(--danger-soft);
   border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+  color: color-mix(in srgb, var(--danger) 75%, var(--t-base));
+}
+
+:root[data-theme="dark"] .q-count-pill.is-danger {
   color: var(--danger);
 }
 
@@ -655,6 +682,10 @@
 .q-reason-label {
   font-size: 12.5px;
   font-weight: 600;
+  color: color-mix(in srgb, var(--danger) 75%, var(--t-base));
+}
+
+:root[data-theme="dark"] .q-reason-label {
   color: var(--danger);
 }
 
@@ -684,8 +715,12 @@
 }
 
 .q-row-reason {
-  color: var(--danger);
+  color: color-mix(in srgb, var(--danger) 75%, var(--t-base));
   overflow-wrap: anywhere;
+}
+
+:root[data-theme="dark"] .q-row-reason {
+  color: var(--danger);
 }
 
 .q-row-actions {
@@ -724,11 +759,15 @@
   border-radius: 8px;
   background: var(--danger-soft);
   border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
-  color: var(--danger);
+  color: color-mix(in srgb, var(--danger) 75%, var(--t-base));
   font-size: 12px;
   opacity: 1;
   translate: 0 0;
   transition: opacity 160ms ease-out, translate 160ms ease-out;
+}
+
+:root[data-theme="dark"] .q-row-error {
+  color: var(--danger);
 }
 
 @starting-style {

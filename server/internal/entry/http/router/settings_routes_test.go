@@ -102,8 +102,21 @@ func (s *stubAutoApprove) SetAutoApprove(_ context.Context, _ corescope.Scope, _
 	return enabled, nil
 }
 
-// stubScheduleSettings 是调度设置写回用例的内存替身（sett2）。
+// stubScheduleSettings 是调度设置读写端口的内存替身（sett2 + 04c 读面）。
 type stubScheduleSettings struct{ sets int }
+
+func (s *stubScheduleSettings) ScheduleSettings(context.Context, corescope.Scope) (appsettings.ScheduleReport, error) {
+	return appsettings.ScheduleReport{
+		EdgeFrontSec:        appsettings.ScheduleIntValue{Value: 60, Source: appsettings.ScheduleSourceDefault},
+		EdgeBackSec:         appsettings.ScheduleIntValue{Value: 60, Source: appsettings.ScheduleSourceDefault},
+		AllowTimePref:       appsettings.ScheduleBoolValue{Value: false, Source: appsettings.ScheduleSourceDefault},
+		SundaySign:          appsettings.ScheduleBoolValue{Value: false, Source: appsettings.ScheduleSourceDefault},
+		SaturdaySign:        appsettings.ScheduleBoolValue{Value: false, Source: appsettings.ScheduleSourceDefault},
+		DefaultSignStartMin: appsettings.ScheduleIntValue{Value: 390, Source: appsettings.ScheduleSourceDefault},
+		DefaultSignEndMin:   appsettings.ScheduleIntValue{Value: 470, Source: appsettings.ScheduleSourceDefault},
+		SignDist:            appsettings.ScheduleSignDistValue{Value: appsettings.SignDistFront, Source: appsettings.ScheduleSourceDefault},
+	}, nil
+}
 
 func (s *stubScheduleSettings) SetSchedule(context.Context, corescope.Scope, appaudit.Actor,
 	[]appsettings.ScheduleChange) error {
@@ -218,7 +231,8 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 
 	// 未登录：读端点都 401；写端点是 POST/PUT，缺 CSRF 先 403。
 	for _, path := range []string{
-		"/api/admin/notify", "/api/admin/settings", "/api/announcement", "/api/audit-logs",
+		"/api/admin/notify", "/api/admin/settings", "/api/admin/schedule-settings",
+		"/api/announcement", "/api/audit-logs",
 		"/api/me/notifications", "/api/me/notifications/unread-count",
 	} {
 		rec := serve(engine, requestWithSession(http.MethodGet, path, "", "", nil))
@@ -270,6 +284,9 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 		{"auto approve write admin", http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, admin, true, http.StatusForbidden},
 		{"auto approve write without csrf", http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, master, false, http.StatusForbidden},
 		{"auto approve write master", http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, master, true, http.StatusOK},
+		{"schedule settings read user", http.MethodGet, "/api/admin/schedule-settings", "", user, false, http.StatusForbidden},
+		{"schedule settings read admin", http.MethodGet, "/api/admin/schedule-settings", "", admin, false, http.StatusOK},
+		{"schedule settings read master", http.MethodGet, "/api/admin/schedule-settings", "", master, false, http.StatusOK},
 		{"schedule settings user", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, user, true, http.StatusForbidden},
 		{"schedule settings admin", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, admin, true, http.StatusForbidden},
 		{"schedule settings without csrf", http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, master, false, http.StatusForbidden},
@@ -344,6 +361,7 @@ func TestSettingsRoutesNilHandlersReturn501(t *testing.T) {
 		{http.MethodGet, "/api/admin/settings", "", false},
 		{http.MethodGet, "/api/admin/auto-approve", "", false},
 		{http.MethodPut, "/api/admin/auto-approve", `{"enabled":true}`, true},
+		{http.MethodGet, "/api/admin/schedule-settings", "", false},
 		{http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, true},
 		{http.MethodGet, "/api/admin/quota-settings", "", false},
 		{http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, true},
@@ -390,6 +408,7 @@ func TestSettingsRoutesSingleSideWiring(t *testing.T) {
 	}
 	systemCases := []settingsEndpoint{
 		{http.MethodGet, "/api/admin/settings", "", false, http.StatusOK},
+		{http.MethodGet, "/api/admin/schedule-settings", "", false, http.StatusOK},
 		{http.MethodPut, "/api/admin/schedule-settings", `{"edge_front_sec":60}`, true, http.StatusOK},
 		{http.MethodGet, "/api/admin/quota-settings", "", false, http.StatusOK},
 		{http.MethodPut, "/api/admin/quota-settings", `{"max_users":5}`, true, http.StatusOK},

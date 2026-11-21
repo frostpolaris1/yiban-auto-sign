@@ -17,6 +17,7 @@ import {
   engineSnapshotCalls,
   lastCapacityCall,
   mockDashboardApi,
+  pauseCalls,
   prefStatsCalls,
   signStatsCalls,
   signStatusCalls,
@@ -749,10 +750,10 @@ test('invariant 9: the health strip links engine chips and the run ledger', asyn
 
   const strip = page.locator('.app-health-strip')
   await strip.getByRole('link', { name: /在飞/ }).click()
-  await expect(page).toHaveURL(/\/engine$/)
+  await expect(page).toHaveURL(/\/logs\?tab=patrol$/)
   await page.goBack()
   await page.locator('.app-health-strip').getByRole('link', { name: '运行台账 →' }).click()
-  await expect(page).toHaveURL(/\/run$/)
+  await expect(page).toHaveURL(/\/logs\?tab=events$/)
 })
 
 test('invariant 9: a user never reads the account summary nor sees the pending account KPI', async ({
@@ -796,4 +797,139 @@ test('invariant 9: the stats read refetches once when the business day rolls ove
   // 仍在同一业务日：60 秒定时器照跑，但不再取数。
   await page.clock.runFor(60_000)
   await expect(signStatsCalls(api).length, 'the same business day does not refetch').toBe(2)
+})
+
+test('invariant 10: failed KPI links to failed events and quick links reach queue/audit/system', async ({
+  page,
+}) => {
+  await mockDashboardApi(page, {
+    role: 'admin',
+    signStats: {
+      days: [
+        { day: '2026-10-27', pending: 0, running: 0, success: 4, failed: 0, skipped: 0 },
+        { day: '2026-10-28', pending: 1, running: 0, success: 3, failed: 2, skipped: 0 },
+      ],
+      total: 6,
+      by_status: { pending: 1, running: 0, success: 3, failed: 2, skipped: 0 },
+      days_missing: [],
+    },
+  })
+  await openDashboard(page)
+
+  const quickNav = page.getByRole('navigation', { name: '管理常用直达' })
+  await expect(quickNav.getByRole('link', { name: '待办处理' })).toHaveAttribute('href', '/queue')
+  await expect(quickNav.getByRole('link', { name: '审计链巡检' })).toHaveAttribute('href', '/audit')
+  await expect(quickNav.getByRole('link', { name: '系统设置' })).toHaveAttribute('href', '/system')
+
+  await kpiCard(page, '今日失败').click()
+  await expect(page).toHaveURL(/\/logs\?.*tab=events.*state=failed|\/logs\?.*state=failed.*tab=events/)
+})
+
+
+test('invariant 11: a master pauses the engine through reauth and the banner offers resume', async ({
+  page,
+}) => {
+  const api = await mockDashboardApi(page, { role: 'master' })
+  await openDashboard(page)
+
+  const strip = page.getByRole('region', { name: '系统健康与审计巡检' })
+  await strip.getByRole('button', { name: '暂停引擎' }).click()
+  const dialog = page.getByRole('dialog', { name: '暂停执行引擎' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('在飞 1 条（本管辖范围）')
+  await expect(dialog).toContainText('待执行 0 条（本管辖范围）')
+  await expect(dialog).toContainText('恢复仅主管理员')
+  await dialog.getByRole('textbox', { name: '你的登录口令' }).fill('p@ssword')
+  await dialog.getByRole('button', { name: '暂停引擎' }).click()
+
+  await expect(dialog).toBeHidden()
+  const pauses = pauseCalls(api)
+  expect(pauses, 'one full-replacement PUT per confirm').toHaveLength(1)
+  expect(pauses[0].body).toEqual({ paused: true, current_password: 'p@ssword' })
+  await expect(strip).toContainText('执行引擎已暂停')
+  await expect(strip).toContainText('本管辖范围：在飞 1 条任务继续完成；待执行 0 条暂停领取')
+  await expect(strip).toContainText('引擎已暂停')
+  await expect(strip.getByRole('button', { name: '恢复引擎' })).toBeEnabled()
+})
+
+test('invariant 11: an admin sees the resume button disabled with the master-only reason and sends nothing', async ({
+  page,
+}) => {
+  const api = await mockDashboardApi(page, {
+    role: 'admin',
+    engineSnapshot: { ...DEFAULT_ENGINE_SNAPSHOT, paused: true },
+  })
+  await openDashboard(page)
+
+  const strip = page.getByRole('region', { name: '系统健康与审计巡检' })
+  await expect(strip).toContainText('执行引擎已暂停')
+  const resume = strip.getByRole('button', { name: '恢复引擎' })
+  await expect(resume).toBeDisabled()
+  await expect(resume).toHaveAttribute('title', '仅主管理员可恢复')
+  await resume.click({ force: true })
+  expect(pauseCalls(api), 'a disabled resume must not reach the server').toHaveLength(0)
+})
+
+
+test('invariant 12: the site announcement rides the dashboard top and dismisses in session', async ({
+  page,
+}) => {
+  await mockDashboardApi(page, {
+    role: 'admin',
+    announcementText: '今晚 22:00 起例行维护，签到计划照常执行。',
+  })
+  await openDashboard(page)
+
+  const banner = page
+    .locator('.app-announcement-banner')
+    .getByText('今晚 22:00 起例行维护，签到计划照常执行。')
+  await expect(banner).toBeVisible()
+  await page
+    .locator('.app-announcement-banner')
+    .getByRole('button', { name: '关闭' })
+    .click()
+  await expect(page.locator('.app-announcement-banner')).toHaveCount(0)
+
+  // 本会话内跨路由保留：点击侧栏去台账再点回总览（客户端路由），横幅不得重现。
+  const sidebar = page.locator('aside[aria-label="主导航"]')
+  await sidebar.getByRole('link', { name: '签到台账' }).click()
+  await expect(page.getByRole('heading', { name: /签到\s*台账/ })).toBeVisible()
+  await sidebar.getByRole('link', { name: '总览' }).click()
+  await expect(page.getByRole('heading', { name: /签到\s*运行/ })).toBeVisible()
+  await expect(page.locator('.app-announcement-banner')).toHaveCount(0)
+
+  // 刷新回初值：整页重载后横幅重新出现（本会话只在客户端路由内记住关闭）。
+  await page.reload()
+  await expect(
+    page.locator('.app-announcement-banner').getByText('今晚 22:00 起例行维护，签到计划照常执行。'),
+  ).toBeVisible()
+})
+
+test('invariant 12: an empty announcement renders no banner', async ({ page }) => {
+  await mockDashboardApi(page, { role: 'admin' })
+  const announcementSettled = page.waitForResponse(
+    (response) => response.url().endsWith('/api/announcement'),
+  )
+  await openDashboard(page)
+  await announcementSettled
+  await expect(page.locator('.app-announcement-banner')).toHaveCount(0)
+})
+
+
+test('invariant 13: the pause button stays disabled until the engine snapshot lands', async ({
+  page,
+}) => {
+  await mockDashboardApi(page, { role: 'master' })
+  await page.route('**/api/admin/engine', async (route) => {
+    // 让快照晚到，观察加载门；fallback 交回假 API，不能 continue 绕过夹具。
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    await route.fallback()
+  })
+  await openDashboard(page)
+
+  const strip = page.getByRole('region', { name: '系统健康与审计巡检' })
+  const pause = strip.getByRole('button', { name: '暂停引擎' })
+  await expect(pause).toBeDisabled()
+  await expect(pause).toHaveAttribute('title', '引擎状态读取中')
+  await expect(pause).toBeEnabled({ timeout: 5000 })
 })

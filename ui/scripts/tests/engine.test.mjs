@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { leaseRemainingText } from '../../src/features/run/engineDisplay.ts'
+import { leaseRemainingText } from '../../src/features/logs/engineDisplay.ts'
 
 /**
- * 执行监控的不变式（UX-5）。
+ * 运行巡检的不变式（UX-5 / B3）。
  *
  * 一、租约剩余是纯函数：负数不外泄，到期即「已到期」；
  *     分秒文本与 390 宽的表格列共存。
@@ -29,11 +29,12 @@ test('lease remaining never leaks a negative value', () => {
 
 test('engine sources never call it a queue', () => {
   // nav.ts 不在禁令内：队列是独立的今日工作流页（/queue，旧线习惯），
-  // 不是把执行监控改叫队列；引擎三件套仍严禁出现「队列」。
+  // 不是把运行巡检改叫队列；台账与巡检四件套仍严禁出现「队列」。
   const sources = [
-    '../../src/features/run/EngineView.tsx',
-    '../../src/features/run/engineDisplay.ts',
-    '../../src/pages/EnginePage.tsx',
+    '../../src/features/logs/LogsView.tsx',
+    '../../src/features/logs/PatrolTab.tsx',
+    '../../src/features/logs/engineDisplay.ts',
+    '../../src/pages/LogsPage.tsx',
   ]
   for (const path of sources) {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8')

@@ -1,9 +1,14 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { ACCOUNTS, mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
+import { mockAuditApi } from './support/fake-audit-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
-import { mockRunApi, installFakeEventSource } from './support/fake-run-api'
-import { mockEngineApi, ENGINE_VISUAL_SNAPSHOT, VISUAL_NOW } from './support/fake-engine-api'
+import {
+  ENGINE_VISUAL_SNAPSHOT,
+  VISUAL_NOW,
+  installFakeEventSource,
+  mockLogsApi,
+} from './support/fake-logs-api'
 import { mockQueueApi } from './support/fake-queue-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 import { mockUsersApi } from './support/fake-users-api'
@@ -12,25 +17,26 @@ import { visibleText } from './support/visible-text'
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：10 条常驻路由（UX-3 起 /run 固定业务日入矩阵；UX-5 起 /engine
- * 入矩阵，页内 Date 冻结在 VISUAL_NOW，快照时刻全部派生自它）与看板的两个视角（user/admin），
- * × 2 套主题 × 2 个宽度 = 48 张；另有抽屉／模态／菜单、
- * 无权限页与溢出判据，文件合计 97 条用例（2026-11-03 win32 实数）。
- * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
- * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
- * 补 1440 与 390 两个宽度。
- * 另有抽屉／模态／菜单态、无权限页与时间偏好卡等按需快照。
- * 溢出判据跑全部常驻路由与时间片页；`/` 另跑 user 视角（另一套布局）。
+ * 矩阵：13 条常驻路由（含 `/logs` 两页签与固定业务日 `/system?day=...`，页内 Date 冻结在
+ * VISUAL_NOW，快照时刻全部派生自它）与看板的两个视角（user/admin），
+ * × 2 套主题 × 2 个宽度 = 60 张；另有抽屉／模态／菜单、
+ * 无权限页与溢出判据，文件合计 105 条用例（2026-11-18 实数）。
+ * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检；
+ * 系统设置按固定业务日入常驻矩阵（缺省日期会随日历漂移）。
+ * 另有抽屉／模态／菜单态、无权限页与时间偏好卡等按需快照（合计 104 张／平台）。
+ * 溢出判据跑全部常驻路由；`/` 另跑 user 视角（另一套布局）。
  * 基线随 spec 入库，目录是 `e2e/visual.spec.ts-snapshots/`。
  * 首次运行 `npm run test:visual:update`。此后每次必须 0 差异。
  */
 
 const ROUTES = [
   { path: '/queue', name: 'queue' },
-  { path: '/run?day=2030-01-01', name: 'run' },
-  { path: '/engine', name: 'engine' },
+  { path: '/audit', name: 'audit' },
+  { path: '/logs?tab=events', name: 'logs-events' },
+  { path: '/logs?tab=patrol', name: 'logs-patrol' },
   { path: '/design', name: 'design' },
   { path: '/settings', name: 'settings' },
+  { path: `/system?day=${SCHEDULE_DAY}`, name: 'system' },
   { path: '/accounts', name: 'accounts' },
   { path: '/schools', name: 'schools' },
   { path: '/users', name: 'users' },
@@ -65,8 +71,8 @@ async function mockSessionFor(
     await mockAccountsApi(page, { role: null })
     return
   }
-  // 时间片页需要窗口、预览与时间偏好端点；路径可能带 `?day=`。
-  if (path.startsWith('/schedule')) {
+  // 系统设置·签到计划分区需要窗口、预览与时间偏好端点；路径可能带 `?day=`。
+  if (path.startsWith('/schedule') || path.startsWith('/system')) {
     await mockScheduleApi(page, { role })
     return
   }
@@ -84,26 +90,22 @@ async function mockSessionFor(
   if (path === '/users') {
     await mockUsersApi(page, { role })
   }
-  // 运行页需要任务与诊断端点；SSE 用假体钉住「实时」态，
-  // 不注入时 EventSource 打到 JSON 路由会随机出断线横幅。
-  if (path.startsWith('/run')) {
-    await installFakeEventSource(page)
-    await mockRunApi(page, { role })
-  }
-  // 执行监控页同样钉「实时」态；页内 Date 冻结在 VISUAL_NOW：
-  // setFixedTime 不碰定时器（React 调度照常），useNow 的 setInterval
-  // 每秒读到的都是同一时刻，租约剩余恒为「1 时 30 分」、
-  // 相对时刻恒落 formatClock 分支，跨分钟、跨日都不漂。
-  if (path.startsWith('/engine')) {
+  // 签到台账（签到事件 + 运行巡检）：SSE 用假体钉住「实时」态，
+  // 页内 Date 冻结在 VISUAL_NOW（2030-01-01），事件页签缺省业务日与巡检页签租约剩余跨日不漂。
+  if (path.startsWith('/logs')) {
     await page.clock.setFixedTime(new Date(VISUAL_NOW))
     await installFakeEventSource(page)
-    await mockEngineApi(page, { role, snapshot: ENGINE_VISUAL_SNAPSHOT })
+    await mockLogsApi(page, { role, snapshot: ENGINE_VISUAL_SNAPSHOT })
   }
   // 待办页的业务日取当前日期：同样冻结在 VISUAL_NOW 避免跨日基线漂移，并钉住 SSE 实时态。
   if (path === '/queue') {
     await page.clock.setFixedTime(new Date(VISUAL_NOW))
     await installFakeEventSource(page)
     await mockQueueApi(page, { role })
+  }
+  // 审计页：固定合成台账与巡检结论，不依赖时钟。
+  if (path === '/audit') {
+    await mockAuditApi(page, { role })
   }
 }
 
@@ -142,14 +144,29 @@ async function expectData(page: Page, path: string) {
     )
   } else if (path.startsWith('/schedule')) {
     await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
-  } else if (path.startsWith('/run')) {
+  } else if (path.startsWith('/system')) {
+    await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
+    await expect(page.locator('#policy-registration-card')).toContainText('允许新用户公开注册')
+    await expect(page.locator('#policy-auto-approve-card')).toContainText('开启新号自动审核')
+    await expect(page.locator('#policy-quota-card')).toContainText('全站活跃用户上限')
+    await expect(page.locator('#policy-schedule-card')).toContainText('前边界缩进')
+    await expect(page.locator('#announcement')).toContainText('示例公告')
+    await expect(page.locator('#channels')).toContainText('测试邮件')
+    // 04d 两分区：数据锚点防骨架/错误态伪基线。
+    await expect(page.locator('#roster')).toContainText('YIBAN_MAIL_PASS')
+    await expect(page.locator('#version')).toContainText('进程在应答')
+  } else if (path === '/logs?tab=events') {
     await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toBeVisible()
   } else if (path === '/queue') {
     await expect(page.locator('[data-queue-group="pending"]')).toContainText('138****8000')
     await expect(page.locator('[data-queue-group="failed"]')).toContainText('138****8003')
     await expect(page.locator('[data-queue-group="unsigned"]')).toContainText('138****8004')
     await expectNumbers(page.locator('[data-queue-summary] .q-tele-value .app-number'), ['3', '1', '1'])
-  } else if (path === '/engine') {
+  } else if (path === '/audit') {
+    // 账本六行与页头完好结论都到位再拍；总数徽标与 fixtures 同源。
+    await expect(page.locator('[data-audit-row]')).toHaveCount(6)
+    await expect(page.locator('[data-audit-verdict]')).toContainText('链完好')
+  } else if (path === '/logs?tab=patrol') {
     // 数据态到位：四指标与两条在飞行渲染完成再拍。
     await expect(page.locator('dl', { hasText: '待执行' })).toContainText('3')
     await expect(page.locator('.engine-lease').first()).toContainText('时')
@@ -158,10 +175,11 @@ async function expectData(page: Page, path: string) {
   } else if (path === '/design') {
     await expect(page.getByRole('heading', { name: /组件画廊/ })).toBeVisible()
   } else if (path === '/settings') {
-    // 会话到位：账号信息卡读到会话夹具，改密卡在表单态。
+    // 会话与矩阵到位：账号信息卡读到会话夹具，改密卡在表单态，通知订阅 4×3 矩阵已渲染。
     const card = page.locator('.card').filter({ hasText: '账号信息' })
     await expect(card).toContainText('operator@example.com')
     await expect(page.getByLabel(/^当前密码/)).toBeVisible()
+    await expect(page.getByRole('switch', { name: '凭据失效 · 站内信' })).toBeVisible()
   } else if (path === '/forgot-password') {
     await expect(page.getByLabel('邮箱')).toBeVisible()
   } else if (path.startsWith('/reset-password')) {
@@ -413,28 +431,9 @@ for (const theme of THEMES) {
 }
 
 for (const theme of THEMES) {
-  test(`visual schedule page ${theme}`, async ({ page }) => {
+  test(`visual system preview ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
-    const table = page.getByRole('table', { name: '时间片窗口' })
-    await expect(table).toBeVisible()
-    await expect(table).toContainText('合成学校甲')
-    await expect(page).toHaveScreenshot(`schedule-${theme}-1440.png`, { fullPage: true })
-  })
-
-  test(`visual schedule narrow ${theme}`, async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
-    // 表格在取数前就以「加载中…」占位存在：等首行数据到位再拍。
-    const table = page.getByRole('table', { name: '时间片窗口' })
-    await expect(table).toBeVisible()
-    await expect(table).toContainText('合成学校甲')
-    await expect(page).toHaveScreenshot(`schedule-${theme}-390.png`, { fullPage: true })
-  })
-
-  test(`visual schedule preview ${theme}`, async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
+    await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme)
     await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
     const dialog = page.getByRole('dialog', { name: '计划预览' })
     await expect(dialog).toBeVisible()
@@ -442,25 +441,25 @@ for (const theme of THEMES) {
     await expect(dialog).toContainText('v0')
     // 三个数字并行滚动：三格都落定再拍，避免高负载下拍到中间帧。
     await expectNumbers(dialog.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
-    await expect(page).toHaveScreenshot(`schedule-preview-${theme}-1440.png`)
+    await expect(page).toHaveScreenshot(`system-preview-${theme}-1440.png`)
   })
 
-  test(`visual schedule override ${theme}`, async ({ page }) => {
+  test(`visual system override ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
+    await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme)
     await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
     await page.getByRole('dialog', { name: '计划预览' }).getByRole('button', { name: '写入覆盖' }).click()
     const dialog = page.getByRole('dialog', { name: '写入窗口覆盖？' })
     await expect(dialog).toBeVisible()
     await expect(dialog.getByLabel('开始时间')).toHaveValue('2026-10-28T08:10')
-    await expect(page).toHaveScreenshot(`schedule-override-${theme}-1440.png`)
+    await expect(page).toHaveScreenshot(`system-override-${theme}-1440.png`)
   })
 
-  test(`visual schedule denied ${theme}`, async ({ page }) => {
+  test(`visual system denied ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme, 'user')
-    await expect(page.getByText('你的角色无权查看时间片管理')).toBeVisible()
-    await expect(page).toHaveScreenshot(`schedule-denied-${theme}-1440.png`, { fullPage: true })
+    await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme, 'user')
+    await expect(page.getByText('你的角色无权查看系统设置')).toBeVisible()
+    await expect(page).toHaveScreenshot(`system-denied-${theme}-1440.png`, { fullPage: true })
   })
 
   test(`visual dashboard time preference card ${theme}`, async ({ page }) => {
@@ -502,11 +501,9 @@ for (const theme of THEMES) {
 }
 
 test('no horizontal overflow at either width, in either theme', async ({ page }) => {
-  // 时间片页不进口径矩阵（缺省日期会漂移），但溢出判据一样要钉：固定业务日补拍。
   // 看板的 user 视角是另一套布局：`/` 追加 user 一遍；其余路由 master 即可。
   const targets = [
     ...ROUTES.map((route) => ({ path: route.path, role: 'master' as const })),
-    { path: `/schedule?day=${SCHEDULE_DAY}`, role: 'master' as const },
     { path: '/', role: 'user' as const },
   ]
   for (const theme of THEMES) {

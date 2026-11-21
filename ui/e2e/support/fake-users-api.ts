@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto'
 import type { Page, Request, Route } from '@playwright/test'
 import type { User, UserCounts } from '../../src/lib/api/user'
-import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import {
+  EMPTY_ACCOUNT_SUMMARY,
+  SESSION_CSRF,
+  SESSION_EMAIL,
+  SESSION_PASSWORD,
+  type Role,
+} from './fake-accounts-api'
 
 /**
  * 用户管理页的假 API。
@@ -134,6 +140,12 @@ export type MockUsersOptions = {
   deleteError?: { status: number; code: string; message: string }
   restoreError?: { status: number; code: string; message: string }
   lookupError?: { status: number; code: string; message: string }
+  /** 二次口令连续失败：任何危险写都回 429。 */
+  reauthThrottled?: boolean
+  /** 批量动作的单条失败注入：命中的 id 只回该错误项。 */
+  batchItemError?: { id: string; status: number; code: string; message: string }
+  /** 写端点的人为延迟（毫秒）；用来观察在途锁关。GET 不受影响。 */
+  writeDelayMs?: number
 }
 
 export type FakeUsersApi = {
@@ -202,6 +214,24 @@ export async function mockUsersApi(
   const fail = (route: Route, status: number, code: string, message: string) =>
     route.fulfill({ status, contentType: 'application/json', body: errorBody(code, message) })
 
+  /** 危险写的二次口令校验：缺值 400、口令错 403、注入节流 429。 */
+  const reauthRejected = (route: Route, body: unknown): boolean => {
+    if (options.reauthThrottled) {
+      void fail(route, 429, 'rate_limited', '尝试过多，请稍后再试')
+      return true
+    }
+    const provided = (body as { current_password?: unknown } | null)?.current_password
+    if (typeof provided !== 'string' || provided === '') {
+      void fail(route, 400, 'validation_failed', 'current_password is required')
+      return true
+    }
+    if (provided !== SESSION_PASSWORD) {
+      void fail(route, 403, 'forbidden', 'current_password is incorrect')
+      return true
+    }
+    return false
+  }
+
   await page.route('**/api/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -222,6 +252,11 @@ export async function mockUsersApi(
       body,
       headers: request.headers(),
     })
+
+    // 写端点延迟：只在显式注入时生效，用来断言「在途锁关」。
+    if (options.writeDelayMs && request.method() !== 'GET') {
+      await new Promise((resolve) => setTimeout(resolve, options.writeDelayMs))
+    }
 
     if (url.pathname === '/api/auth/me') {
       if (!sessionRole) return fail(route, 401, 'unauthorized', '会话失效')
@@ -312,6 +347,7 @@ export async function mockUsersApi(
     }
 
     if (url.pathname === '/api/users' && request.method() === 'POST') {
+      if (reauthRejected(route, body)) return
       if (options.createError) {
         return fail(
           route,
@@ -338,6 +374,53 @@ export async function mockUsersApi(
       return json(route, request, created, 201)
     }
 
+    // 批量动作：二次口令必填；每项独立处理，顺序与请求一致。
+    if (url.pathname === '/api/users/batch' && request.method() === 'POST') {
+      if (reauthRejected(route, body)) return
+      const payload = (body ?? {}) as { action?: string; ids?: string[] }
+      const actions = ['disable', 'enable', 'reset_password', 'delete', 'restore']
+      const ids = payload.ids ?? []
+      if (
+        !actions.includes(payload.action ?? '') ||
+        ids.length < 1 ||
+        ids.length > 10 ||
+        new Set(ids).size !== ids.length
+      ) {
+        return fail(route, 400, 'validation_failed', 'invalid batch request')
+      }
+      const items = ids.map((id) => {
+        if (options.batchItemError?.id === id) {
+          return {
+            id,
+            status: 'error' as const,
+            code: options.batchItemError.code,
+            message: options.batchItemError.message,
+          }
+        }
+        const target = users.find((item) => item.id === id)
+        if (!target) return { id, status: 'error' as const, code: 'not_found' as const }
+        if (payload.action === 'restore') {
+          if (target.deleted_at === null) {
+            return { id, status: 'error' as const, code: 'not_found' as const, message: '用户未删除' }
+          }
+          target.deleted_at = null
+          return { id, status: 'ok' as const }
+        }
+        if (target.deleted_at !== null) {
+          return { id, status: 'error' as const, code: 'not_found' as const, message: '用户已删除' }
+        }
+        if (payload.action === 'disable') target.status = 'disabled'
+        if (payload.action === 'enable') target.status = 'active'
+        if (payload.action === 'delete') target.deleted_at = '2026-10-31T00:00:00Z'
+        if (payload.action === 'reset_password') {
+          target.must_change_password = true
+          return { id, status: 'ok' as const, temp_password: FAKE_TEMP_PASSWORD }
+        }
+        return { id, status: 'ok' as const }
+      })
+      return json(route, request, { items })
+    }
+
     const userMatch = /^\/api\/users\/([^/]+)(\/(password-reset|restore))?$/.exec(url.pathname)
     if (userMatch) {
       const id = userMatch[1]
@@ -347,6 +430,7 @@ export async function mockUsersApi(
         return fail(route, 404, 'not_found', '用户不存在')
       }
       if (request.method() === 'POST' && action === 'restore') {
+        if (reauthRejected(route, body)) return
         if (options.restoreError) {
           return fail(
             route,
@@ -367,6 +451,7 @@ export async function mockUsersApi(
         return fail(route, 404, 'not_found', '用户已删除')
       }
       if (request.method() === 'PATCH') {
+        if (reauthRejected(route, body)) return
         if (options.updateError) {
           return fail(
             route,
@@ -381,6 +466,7 @@ export async function mockUsersApi(
         return json(route, request, target)
       }
       if (request.method() === 'POST' && action === 'password-reset') {
+        if (reauthRejected(route, body)) return
         if (options.resetError) {
           return fail(
             route,
@@ -393,6 +479,7 @@ export async function mockUsersApi(
         return json(route, request, { temp_password: FAKE_TEMP_PASSWORD })
       }
       if (request.method() === 'DELETE') {
+        if (reauthRejected(route, body)) return
         if (options.deleteError) {
           return fail(
             route,
@@ -427,4 +514,8 @@ export function lastUserListCall(api: FakeUsersApi): ApiCall | undefined {
 
 export function callsTo(api: FakeUsersApi, method: string, path: string): ApiCall[] {
   return api.calls.filter((call) => call.method === method && call.path === path)
+}
+
+export function batchUserCalls(api: FakeUsersApi): ApiCall[] {
+  return callsTo(api, 'POST', '/api/users/batch')
 }

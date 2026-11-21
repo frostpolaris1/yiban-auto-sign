@@ -28,3 +28,17 @@ export const ENGINE_PATHS = {
 export function getEngineSnapshot(): Promise<EngineSnapshot> {
   return apiRequest<EngineSnapshot>(ENGINE_PATHS.snapshot)
 }
+
+export type EnginePauseResult = Schemas['EnginePauseStatus']
+
+/**
+ * 全局暂停开关：`PUT /api/admin/engine/pause`。
+ * 方向分权在服务端——暂停 master+admin，恢复仅 master；
+ * 二次口令缺失 400、错误 403、连败 429，均零写入零审计。
+ */
+export function setEnginePause(paused: boolean, currentPassword: string): Promise<EnginePauseResult> {
+  return apiRequest<EnginePauseResult>('/api/admin/engine/pause', {
+    method: 'PUT',
+    body: JSON.stringify({ paused, current_password: currentPassword }),
+  })
+}

@@ -249,7 +249,10 @@ func TestStructureRowsPinned(t *testing.T) {
 	// kqa（2d webhook 渠道）：core 与 adapters 各增 webhook（端口/词表与出口实现）。
 	// R3（审计锚点）：adapters 增 anchor（库外锚点文件读写）。
 	// admin-ia-b1：ui/src/features 增 queue（三组待办工作台）。
-	const want = "79191b4850f825642e5091b5d7e453fe500a6747405dedcae26d461c992668e4"
+	// admin-ia-b2：ui/src/features 增 audit（审计台账）。
+	// admin-ia-b3：ui/src/features 的 run 合并改名为 logs（签到台账）。
+	// admin-ia-04b：ui/src/features 的 schedule 迁入 system/plans（系统设置）。
+	const want = "c781fd7df4c561a764c36ac987fd61368689c112848bd73cebd278520c7b7f98"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}

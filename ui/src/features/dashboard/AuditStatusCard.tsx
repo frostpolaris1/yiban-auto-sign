@@ -18,6 +18,7 @@ import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Icon } from '@/components/ui/Icon'
+import { PauseBanner } from '@/components/ui/PauseBanner'
 import type { AuditStatusReport } from '@/lib/api/audit'
 import type { EngineSnapshot } from '@/lib/api/engine'
 import { formatDateTime } from '@/lib/format'
@@ -30,6 +31,14 @@ import {
 } from './audit-status'
 import { enginePulse } from './display'
 
+/** 暂停开关的动作面：状态、当前角色可否操作与置灰原因。 */
+export type PauseAction = {
+  paused: boolean
+  canToggle: boolean
+  blockedReason?: string
+  onToggle: () => void
+}
+
 type AuditStatusCardProps = {
   report: AuditStatusReport | undefined
   loading: boolean
@@ -39,6 +48,7 @@ type AuditStatusCardProps = {
   engineLoading: boolean
   engineError: string | null
   onRetryEngine: () => void
+  pause?: PauseAction
 }
 
 function AuditSummaryInline({ report }: { report: AuditStatusReport }) {
@@ -83,12 +93,22 @@ export function AuditStatusCard({
   engineLoading,
   engineError,
   onRetryEngine,
+  pause,
 }: AuditStatusCardProps) {
   const pulse = enginePulse(engine)
   const broken = report ? auditBrokenText(report) : null
 
   return (
     <section className="card app-health-strip" aria-label="系统健康与审计巡检">
+      {pause?.paused ? (
+        <PauseBanner
+          inflight={pulse.inflight ?? 0}
+          dueNow={pulse.dueNow ?? 0}
+          canResume={pause.canToggle}
+          resumeBlockedReason={pause.blockedReason}
+          onResume={pause.onToggle}
+        />
+      ) : null}
       <div className="app-health-bar">
         <div className="app-health-zone">
           <span className="app-health-label">
@@ -108,20 +128,46 @@ export function AuditStatusCard({
               <Badge tone={pulse.tone} dot>
                 {engineLoading && engine === undefined ? '读取中…' : pulse.label}
               </Badge>
-              <Link to="/engine" className="app-health-chip app-health-chip-link">
+              <Link
+                to="/logs"
+                search={{ tab: 'patrol' }}
+                className="app-health-chip app-health-chip-link"
+              >
                 在飞 <strong>{pulse.inflight ?? '—'}</strong>
               </Link>
-              <Link to="/engine" className="app-health-chip app-health-chip-link">
+              <Link
+                to="/logs"
+                search={{ tab: 'patrol' }}
+                className="app-health-chip app-health-chip-link"
+              >
                 待执行 <strong>{pulse.dueNow ?? '—'}</strong>
               </Link>
-              <Link to="/engine" className="app-health-chip app-health-chip-link">
+              <Link
+                to="/logs"
+                search={{ tab: 'patrol' }}
+                className="app-health-chip app-health-chip-link"
+              >
                 待重试 <strong>{pulse.retryingText}</strong>
               </Link>
               <span className="app-health-sub">
                 {pulse.lastTickClock ? (
                   <span className="app-health-meta">最近一轮 {pulse.lastTickClock}</span>
                 ) : null}
-                <Link to="/run" className="app-health-link">运行台账 →</Link>
+                <Link to="/logs" search={{ tab: 'events' }} className="app-health-link">
+                  运行台账 →
+                </Link>
+                {pause && !pause.paused ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="app-health-action"
+                    disabled={!pause.canToggle}
+                    title={pause.canToggle ? undefined : pause.blockedReason}
+                    onClick={pause.onToggle}
+                  >
+                    暂停引擎
+                  </Button>
+                ) : null}
               </span>
             </div>
           )}

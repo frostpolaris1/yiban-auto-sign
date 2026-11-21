@@ -343,7 +343,7 @@ test('forgot password: a rejected address keeps the form and marks the email fie
 
   await submitForgot(page, SESSION_EMAIL)
 
-  await expect(page.getByRole('alert')).toContainText('validation_error')
+  await expect(page.getByRole('alert')).toContainText('请求参数不符合要求，请核对后重试')
   await expect(page.getByLabel('邮箱')).toBeFocused()
   await expect(page.getByText('如果该邮箱已注册，我们已发送重置链接。')).toHaveCount(0)
   expect(forgotPasswordCalls(api), 'the request was attempted once').toHaveLength(1)
@@ -434,8 +434,8 @@ test('reset password: a rejected body keeps the form and reports the envelope', 
 
   await submitReset(page, NEW_PASSWORD, NEW_PASSWORD)
 
-  await expect(page.getByRole('alert')).toContainText('validation_error')
-  await expectFocusOnNotice(page, 'validation_error')
+  await expect(page.getByRole('alert')).toContainText('请求参数不符合要求，请核对后重试')
+  await expectFocusOnNotice(page, '请求参数不符合要求，请核对后重试')
   await expect(page.locator('#reset-password')).toBeVisible()
   await expect(page.getByRole('heading', { name: '密码已重置' })).toHaveCount(0)
   expect(resetPasswordCalls(api), 'the request was attempted once').toHaveLength(1)

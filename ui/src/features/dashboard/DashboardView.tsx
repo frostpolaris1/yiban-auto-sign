@@ -23,11 +23,13 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getAccountSummary } from '@/lib/api/account'
-import { describeApiError } from '@/lib/api/client'
+import { describeApiError, describeReauthError } from '@/lib/api/client'
 import { getAuditStatus } from '@/lib/api/audit'
-import { getEngineSnapshot } from '@/lib/api/engine'
+import { getAnnouncement } from '@/lib/api/announcement'
+import { getEngineSnapshot, setEnginePause } from '@/lib/api/engine'
 import { getDiagnostics, getSignStatus } from '@/lib/api/me'
 import type { Role } from '@/lib/api/auth'
 import { getCapacity, listScheduleWindows } from '@/lib/api/schedule'
@@ -36,6 +38,7 @@ import { dayOf } from '@/lib/format'
 import { SHOWCASE } from '@/lib/session'
 import {
   showcaseAccountSummary,
+  showcaseAnnouncement,
   showcaseAuditStatus,
   showcaseCapacity,
   showcaseEngineSnapshot,
@@ -43,6 +46,8 @@ import {
   showcaseSignStats,
   showcaseWindows,
 } from '@/lib/showcase'
+import { Alert } from '@/components/ui/Alert'
+import { ReauthDialog } from '@/components/ui/ReauthDialog'
 import { AuditStatusCard } from './AuditStatusCard'
 import { CapacityCard } from './CapacityCard'
 import { PrefCrowdingCard, SignTrendCard } from './ChartCards'
@@ -58,13 +63,38 @@ import {
   windowCounts,
 } from './display'
 
+/**
+ * 公告关闭标记只活在本页会话的内存里：跨路由保留（组件卸载不丢），
+ * 页面刷新回初值（验收口径「本会话内不再出现、刷新回」）。
+ */
+let announcementDismissedForSession = false
+
 const SIGN_STATUS_KEY = ['me-sign-status'] as const
 const DIAGNOSTICS_KEY = ['me-diagnostics'] as const
 const SIGN_POLL_MS = 30_000
 
+/**
+ * 公告横幅：有正文且本会话未关闭时渲染；关闭状态只活在会话内，不写偏好。
+ * 无公告时零 DOM；不弹窗、不打断阅读。
+ */
+function announcementBannerNode(
+  text: string,
+  dismissed: boolean,
+  onDismiss: (next: boolean) => void,
+) {
+  if (text === '' || dismissed) return null
+  return (
+    <div className="app-announcement-banner">
+      <Alert tone="info" title="全站公告" dismissible onDismiss={() => onDismiss(true)}>
+        {text}
+      </Alert>
+    </div>
+  )
+}
+
 type DashboardViewProps = {
   role: Role
-  /** user 视角的附加卡（时间偏好在 `features/schedule`，由页面传入）。 */
+  /** user 视角的附加卡（时间偏好在 `features/system/plans`，由页面传入）。 */
   extraCards?: ReactNode
 }
 
@@ -167,6 +197,56 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     retry: false,
   })
 
+  // 全站公告横幅：读公开 GET /api/announcement；本会话内可关闭，不写偏好。
+  const announcementQuery = useQuery({
+    queryKey: ['announcement'],
+    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseAnnouncement()) : getAnnouncement()),
+    staleTime: 60_000,
+    retry: false,
+  })
+  const [announcementDismissed, setAnnouncementDismissedState] = useState(
+    announcementDismissedForSession,
+  )
+  const setAnnouncementDismissed = (next: boolean) => {
+    announcementDismissedForSession = next
+    setAnnouncementDismissedState(next)
+  }
+  const announcementText = announcementQuery.data?.text.trim() ?? ''
+
+  // 全局暂停开关：暂停 master+admin 可发，恢复仅 master；二次口令走 ReauthDialog。
+  const queryClient = useQueryClient()
+  const [pauseDialog, setPauseDialog] = useState<'pause' | 'resume' | null>(null)
+  const [pauseError, setPauseError] = useState<string | null>(null)
+  const paused = engineQuery.data?.paused === true
+  const pauseMutation = useMutation({
+    mutationFn: (vars: { paused: boolean; password: string }) =>
+      setEnginePause(vars.paused, vars.password),
+    onSuccess: () => {
+      setPauseDialog(null)
+      setPauseError(null)
+      void queryClient.invalidateQueries({ queryKey: ['dashboard-engine'] })
+      void queryClient.invalidateQueries({ queryKey: ['engine-page'] })
+    },
+    onError: (error) => setPauseError(describeReauthError(error)),
+  })
+  const pauseBlockedReason =
+    engineQuery.data === undefined
+      ? '引擎状态读取中'
+      : SHOWCASE
+        ? '展示模式只读'
+        : paused && role !== 'master'
+          ? '仅主管理员可恢复'
+          : undefined
+  const pauseAction = {
+    paused,
+    canToggle: pauseBlockedReason === undefined,
+    blockedReason: pauseBlockedReason,
+    onToggle: () => {
+      setPauseError(null)
+      setPauseDialog(paused ? 'resume' : 'pause')
+    },
+  }
+
   const prefStatsQuery = useQuery({
     queryKey: ['pref-stats', selected?.schoolId ?? '', selected?.taskId ?? '', day],
     queryFn: () =>
@@ -209,6 +289,7 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
   if (isUser) {
     return (
       <>
+        {announcementBannerNode(announcementText, announcementDismissed, setAnnouncementDismissed)}
         <KpiGrid
           cards={signKpiCards(
             signStatusQuery.data ? signCounts(signStatusQuery.data.items) : null,
@@ -243,6 +324,25 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
   }
   return (
     <>
+      {announcementBannerNode(announcementText, announcementDismissed, setAnnouncementDismissed)}
+      <nav className="app-quick-links" aria-label="管理常用直达">
+        <span className="app-quick-links-label">常用直达：</span>
+        <Link to="/queue" className="app-inline-link">
+          待办处理
+        </Link>
+        <span className="app-quick-links-sep" aria-hidden="true">
+          ·
+        </span>
+        <Link to="/audit" className="app-inline-link">
+          审计链巡检
+        </Link>
+        <span className="app-quick-links-sep" aria-hidden="true">
+          ·
+        </span>
+        <Link to="/system" className="app-inline-link">
+          系统设置
+        </Link>
+      </nav>
       <KpiGrid
         cards={todayKpiCards(stats, accountSummaryQuery.data ?? null)}
       />
@@ -303,7 +403,35 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
         onRetryEngine={() => {
           void engineQuery.refetch()
         }}
+        pause={pauseAction}
       />
+      <ReauthDialog
+        open={pauseDialog !== null}
+        title={pauseDialog === 'resume' ? '恢复执行引擎' : '暂停执行引擎'}
+        description={
+          pauseDialog === 'resume'
+            ? '恢复后待执行任务按序补跑。'
+            : '暂停后执行器不再领取新任务，在飞任务会跑完；恢复仅主管理员，暂停后由健康条横幅恢复。'
+        }
+        confirmText={pauseDialog === 'resume' ? '恢复引擎' : '暂停引擎'}
+        pending={pauseMutation.isPending}
+        error={pauseError}
+        onClose={() => {
+          if (pauseMutation.isPending) return
+          setPauseDialog(null)
+          setPauseError(null)
+        }}
+        onConfirm={(password) =>
+          pauseMutation.mutate({ paused: pauseDialog === 'pause', password })
+        }
+      >
+        <ul className="app-pause-impact">
+          <li>在飞 {engineQuery.data?.inflight.length ?? 0} 条（本管辖范围）继续完成，不会中断。</li>
+          <li>待执行 {engineQuery.data?.due_now ?? 0} 条（本管辖范围）暂停领取，恢复后按序补跑。</li>
+          <li>暂停是全局开关，影响所有管辖范围；恢复仅主管理员。</li>
+          <li>开关写入设置并记一条审计，重启进程不丢失。</li>
+        </ul>
+      </ReauthDialog>
     </>
   )
 }
