@@ -4,6 +4,7 @@ import type { Account, AccountSummary, AccountVerifyResult } from '../../src/lib
 import type { AuditStatusReport } from '../../src/lib/api/audit'
 import type { components } from '../../src/lib/api/schema'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 
 export type FakeNotifyPref = components['schemas']['NotifyPref']
 
@@ -490,6 +491,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
 
     // 照片域先接管：账号抽屉的图片区与图片字节都走这里。
     if (await handlePhotoRoute(route, request, url, photos, () => sessionRole)) return
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     const sessionUser = (role: Role) => ({
       id: 'user-1',

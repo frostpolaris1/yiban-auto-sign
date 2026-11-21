@@ -12,12 +12,12 @@
  * `must_change_password` 为真时内容区顶部常驻提示条，并给出改密出口。
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { SessionLoading } from '@/components/ui/SessionLoading'
-import { logout } from '@/lib/api/auth'
+import { logout, type SessionUser } from '@/lib/api/auth'
 import { describeApiError } from '@/lib/api/client'
 import { clearSessionExpired, SHOWCASE, useMe, useSessionExpired } from '@/lib/session'
 import { crumbsFor, documentTitleFor } from './nav'
@@ -25,12 +25,19 @@ import { Footer } from './Footer'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 
+type AppShellProps = {
+  /** 顶栏通知收件箱插槽：由 `app` 装配层注入，壳层不直接依赖域目录。 */
+  renderInbox?: (me: SessionUser) => ReactNode
+  /** 顶栏全局搜索插槽：同上，装配层注入。 */
+  renderSearch?: (me: SessionUser) => ReactNode
+}
+
 /**
  * vendor 的 `Shell.js` 往占位符里注入 DOM。本仓改为常驻组件。
  * 遮罩是普通元素，可见性由 `body.has-drawer-open` 决定。
  * 改成条件渲染会让 vendor 的过渡失效。
  */
-export function AppShell() {
+export function AppShell({ renderInbox, renderSearch }: AppShellProps = {}) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const meQuery = useMe()
   const expired = useSessionExpired()
@@ -103,6 +110,8 @@ export function AppShell() {
             logoutMutation.mutate()
           }}
           loggingOut={logoutMutation.isPending}
+          inbox={renderInbox ? renderInbox(me) : null}
+          search={renderSearch ? renderSearch(me) : null}
         />
         <main className="content app-content">
           {logoutError ? (

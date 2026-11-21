@@ -10,6 +10,7 @@ import {
   mockLogsApi,
 } from './support/fake-logs-api'
 import { mockQueueApi } from './support/fake-queue-api'
+import { mockNotifyApi, visualNotifications } from './support/fake-notify-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 import { mockUsersApi } from './support/fake-users-api'
 import { mockUserAppApi } from './support/fake-user-app-api'
@@ -212,7 +213,7 @@ async function expectData(page: Page, path: string) {
  *
  * Playwright 的 `animations: 'disabled'` 是在截图那一刻把**已在册**的动画快进到终点；
  * 若弹窗/抽屉的入场动画在那一刻之后才被 React 挂上（`both` 填充），截到的就是中间帧
- * ——学校新建弹窗曾因此拍到 1.3 万像素的半透明叠影（背后列表整行透出来）。
+ * ——学校新建弹窗曾因此拍到 130 万像素的半透明叠影（背后列表整行透出来）。
  * 无限循环的装饰动画（骨架脉冲等）不算未落定。
  */
 async function waitForAnimations(page: Page) {
@@ -538,6 +539,35 @@ for (const theme of THEMES) {
     await openWithTheme(page, '/accounts', theme, 'master', true)
     await expect(page.getByText('会话已过期，请重新登录')).toBeVisible()
     await expect(page).toHaveScreenshot(`session-expired-${theme}-1440.png`)
+  })
+
+  test(`visual inbox drawer ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.clock.setFixedTime(new Date(VISUAL_NOW))
+    await mockNotifyApi(page, {
+      role: 'master',
+      notifications: visualNotifications(VISUAL_NOW),
+    })
+    await openWithTheme(page, '/design', theme)
+    await expectData(page, '/design')
+    const bell = page.locator('.topbar-actions').getByRole('button', { name: /通知/ })
+    await expect(bell.locator('.count')).toHaveText('3')
+    await bell.click()
+    const drawer = page.getByRole('dialog', { name: '通知收件箱' })
+    await expect(drawer).toBeVisible()
+    await expect(drawer.locator('.app-inbox-item')).toHaveCount(4)
+    await expect(drawer).toContainText('5 分钟前')
+    await expect(drawer).toContainText('昨天 18:20')
+    await page.waitForFunction(() =>
+      document
+        .getAnimations()
+        .every(
+          (animation) =>
+            animation.playState !== 'running' ||
+            animation.effect?.getTiming().iterations === Infinity,
+        ),
+    )
+    await expect(page).toHaveScreenshot(`inbox-drawer-${theme}-1440.png`)
   })
 }
 

@@ -25,6 +25,7 @@ import {
   type ApiCall,
   type FakeEventFrame,
 } from './fake-run-api'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 import { SCHOOLS } from './fake-schools-api'
 
 /**
@@ -121,6 +122,8 @@ export async function mockLogsApi(page: Page, options: MockLogsOptions): Promise
     if (url.pathname === '/api/accounts/summary' && request.method() === 'GET') {
       return json(route, EMPTY_ACCOUNT_SUMMARY)
     }
+
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/schools' && request.method() === 'GET') {
       if (sessionRole !== 'master' && sessionRole !== 'admin') {

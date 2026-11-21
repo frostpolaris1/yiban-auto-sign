@@ -487,8 +487,12 @@ test('user-app UX invariants: touch targets >=44px, contrast >=4.5, unclipped st
   await page.goto('/app')
 
   // Skip link exists for keyboard users and moves focus cleanly.
-  await page.keyboard.press('Tab')
-  await expect(page.locator('.uapp-skip')).toBeFocused()
+  // 按压时机要重试：React 挂载前的那次 Tab 会落在随后被卸载的节点上，焦点回落 body，
+  // 而 toBeFocused 只会干等 5 秒、不会重按。重按仍证明「Tab 能到达跳转链接」。
+  await expect(async () => {
+    await page.keyboard.press('Tab')
+    await expect(page.locator('.uapp-skip')).toBeFocused({ timeout: 1_000 })
+  }).toPass({ timeout: 10_000 })
 
   // Announcement dismiss button meets >= 44x44px hit target.
   const closeBox = await page.locator('.uapp-announcement-close').boundingBox()
@@ -504,6 +508,8 @@ test('user-app UX invariants: touch targets >=44px, contrast >=4.5, unclipped st
 
   // Calendar grid at 390 keeps every day cell >= 44px in both axes + selection semantics.
   await page.goto('/app/history?day=2026-11-10')
+  // 日历格由 /api/me/sign-ins 回读后渲染：先等首格出现再量宽，0 宽只说明还没画出来。
+  await expect(page.locator('.uapp-cal-cell').first()).toBeVisible()
   const cellBox = await page.evaluate(() => {
     const cell = document.querySelector('.uapp-cal-cell')
     return cell ? cell.getBoundingClientRect() : null
@@ -514,6 +520,8 @@ test('user-app UX invariants: touch targets >=44px, contrast >=4.5, unclipped st
 
   // Time preference slots >= 44px wide and support ArrowRight keyboard selection.
   await page.goto('/app/settings/time-pref')
+  // 同理：尺子档位由 /api/me/time-pref 回读后渲染，未出画时 width 恒为 0。
+  await expect(page.locator('.uapp-ruler-tick').first()).toBeVisible()
   const tickWidth = await page.evaluate(() => {
     const tick = document.querySelector('.uapp-ruler-tick')
     return tick ? tick.getBoundingClientRect().width : 0

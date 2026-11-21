@@ -416,3 +416,70 @@ test('invariant 14: the showcase settings notify matrix renders fixtures with ze
 
   expect(apiRequests, 'a read-only showcase sends no admin notify request').toEqual([])
 })
+
+test('invariant 15: the showcase inbox renders fixtures with zero requests and disabled writes', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/')
+  const bell = page.locator('.topbar-actions').getByRole('button', { name: /通知/ })
+  await expect(bell).toBeVisible()
+  await expect(bell.locator('.count')).toHaveText('2')
+
+  await bell.click()
+  const drawer = page.getByRole('dialog', { name: '通知收件箱' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer.locator('.app-inbox-item')).toHaveCount(4)
+
+  const markAll = drawer.getByRole('button', { name: '全部已读' })
+  await expect(markAll).toBeDisabled()
+  await expect(markAll).toHaveAttribute('title', READ_ONLY_REASON)
+  expect(await markAll.evaluate((el) => getComputedStyle(el).cursor)).toBe('not-allowed')
+
+  const firstReadBtn = drawer.locator('.app-inbox-item').first().getByRole('button', {
+    name: /标为已读/,
+  })
+  await expect(firstReadBtn).toBeDisabled()
+  await expect(firstReadBtn).toHaveAttribute('title', READ_ONLY_REASON)
+  expect(await firstReadBtn.evaluate((el) => getComputedStyle(el).cursor)).toBe('not-allowed')
+
+  expect(apiRequests, 'the showcase inbox never touches the API').toEqual([])
+})
+
+/**
+ * invariant 13（任务书 06）：全局搜索与密度切换在展示构建里照常装配。
+ * 搜索取合成夹具（showcaseAccounts/showcaseRunPage），零 `/api/` 请求；
+ * 密度偏好走 localStorage，同样不触网。
+ * 搜索本身只读，没有写入口，因此这条不查 disabled，只查请求与结果形状。
+ */
+test('invariant 13: the showcase global search reads fixtures with zero requests and lands on the account row', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/')
+  // 等触发器挂载再按键：壳未就绪时 Ctrl+K 会静默丢失（同 search-density.spec）。
+  await expect(page.locator('.d-topbar .cmd')).toBeVisible()
+  await page.keyboard.press('Control+k')
+  const dialog = page.getByRole('dialog', { name: '全局搜索' })
+  await expect(dialog).toBeVisible()
+
+  await dialog.getByRole('combobox').pressSequentially('138', { delay: 10 })
+  // 夹具里 138****8000 掩码出现两行（active 与 paused_admin），取首条即可。
+  const accountOption = dialog.getByRole('option', { name: /138\*\*\*\*8000/ }).first()
+  await expect(accountOption).toBeVisible()
+
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/accounts/)
+  await expect(page.locator('tr[data-exact-match="true"]')).toContainText('138****8000')
+
+  // 密度切换在展示构建可用且落 localStorage；切换本身不产生任何请求。
+  await page.getByRole('button', { name: /密度/ }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-density', 'compact')
+  expect(
+    await page.evaluate(() => window.localStorage.getItem('dash26-density')),
+  ).toBe('compact')
+
+  expect(apiRequests, 'the showcase search and density never touch the API').toEqual([])
+})

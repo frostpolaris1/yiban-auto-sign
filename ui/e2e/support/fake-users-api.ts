@@ -8,6 +8,7 @@ import {
   SESSION_PASSWORD,
   type Role,
 } from './fake-accounts-api'
+import { handleDefaultNotifyRoute } from './fake-notify-api'
 
 /**
  * 用户管理页的假 API。
@@ -274,6 +275,8 @@ export async function mockUsersApi(
       // 壳在每页为 master/admin 读一次；用户管理页不关心计数。
       return json(route, request, EMPTY_ACCOUNT_SUMMARY)
     }
+
+    if (await handleDefaultNotifyRoute(route, request, url, sessionRole)) return
 
     if (url.pathname === '/api/users/lookup' && request.method() === 'GET') {
       if (sessionRole !== 'master' && sessionRole !== 'admin') {

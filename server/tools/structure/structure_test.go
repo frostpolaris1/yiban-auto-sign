@@ -252,11 +252,10 @@ func TestStructureRowsPinned(t *testing.T) {
 	// admin-ia-b2：ui/src/features 增 audit（审计台账）。
 	// admin-ia-b3：ui/src/features 的 run 合并改名为 logs（签到台账）。
 	// admin-ia-04b：ui/src/features 的 schedule 迁入 system/plans（系统设置）。
+	// admin-inbox：ui/src/features 增 notify（顶栏通知收件箱）。
+	// admin-search-06：ui/src/features 增 search（顶栏全局搜索面板）。
 	// user-app：ui/src/features 增 me（我的区），components/shell 增 UserAppShell。
-	// admin-ia-b2：ui/src/features 增 audit（审计台账）。
-	// admin-ia-b3：ui/src/features 的 run 合并改名为 logs（签到台账）。
-	// admin-ia-04b：ui/src/features 的 schedule 迁入 system/plans（系统设置）。
-	const want = "c18828196eee030a11216a88f56fdf171d6c41b785ea05e8dd012c3137cd916b"
+	const want = "692b68a98b8c5bf02582b725e293f91798bc39be7d02b7eca9ddc042c69ffc5c"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}

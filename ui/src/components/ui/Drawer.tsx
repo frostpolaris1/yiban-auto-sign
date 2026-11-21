@@ -26,6 +26,7 @@ type DrawerProps = {
   returnFocusTo?: HTMLElement | null
   /** 退场过渡期标记：用于触发滑出动画后再卸载。 */
   closing?: boolean
+  closeLabel?: string
   className?: string
 }
 
@@ -38,6 +39,7 @@ export function Drawer({
   footer,
   returnFocusTo,
   closing,
+  closeLabel = '关闭详情',
   className,
 }: DrawerProps) {
   return (
@@ -62,7 +64,7 @@ export function Drawer({
           <div className="app-drawer-head">
             <Dialog.Title className="modal-title">{title}</Dialog.Title>
             <Dialog.Close asChild>
-              <button type="button" className="mail-tool" aria-label="关闭详情">
+              <button type="button" className="mail-tool" aria-label={closeLabel}>
                 <Icon name="close" />
               </button>
             </Dialog.Close>

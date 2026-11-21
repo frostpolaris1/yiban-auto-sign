@@ -1,18 +1,20 @@
 import type { ReactNode } from 'react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from '@/components/ui/Toaster'
+import { DensityProvider } from '@/lib/density'
 import { ThemeProvider } from '@/lib/theme'
 import { queryClient } from '@/lib/query'
 
 /**
  * **功能**
- * 全局 Provider 组合：主题上下文包住查询客户端，并挂全局 toast 宿主。
+ * 全局 Provider 组合：主题与密度上下文包住查询客户端，并挂全局 toast 宿主。
  *
  * **归属**
  * `app` 装配层：只决定顺序，不定义域状态。
  *
  * **口径**
  * 主题必须在外层。内层读主题时上下文已经就绪。
+ * 密度与主题同为外观偏好，同层装配；缺省 `standard` 不写库。
  * toast 宿主读主题、不读数据，故放在查询客户端之外。
  */
 
@@ -20,8 +22,10 @@ import { queryClient } from '@/lib/query'
 export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <ThemeProvider>
-      <Toaster />
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <DensityProvider>
+        <Toaster />
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      </DensityProvider>
     </ThemeProvider>
   )
 }
