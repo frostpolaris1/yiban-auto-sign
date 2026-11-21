@@ -170,6 +170,23 @@ def matches_risk_keywords(message):
             or security.matches_waf_keywords(message))
 
 
+def is_deterministic_auth_failure(message):
+    """确定性认证失败：账号密码本身错误，或已被易班侧锁到"错误尝试过多"（msgCN 原文）。
+
+    **重试改不了它**：同一份口令只会把同一次错误登录再提交一遍，还加速触发易班侧的
+    账号锁定。故它与"窗口外/无点位/网络抖动"不同类——当日再跑多少轮都变不出结果，
+    只有人能改（改密/申诉）。
+
+    读者三处，判据一处（本函数）：
+    - `_retry_budget`：单轮尝试上限压到 1 次（不重试）；
+    - `queue_store.open_count` / `requeue_failed`：这类残行**不算"当日还有系统能做完
+      的事"**、自动轮也不得复活——否则封存判定永远判 10，自动补签轮每天把同一个错口令
+      真实登录一遍（生产 2026-10-04 起实测）；
+    - `state_io.has_undone_accounts_today`：状态文件腿的同一判据（载体不同）。
+    """
+    return any(kw in message for kw in AUTH_FAIL_KEYWORDS)
+
+
 def classify_failure(message):
     """对失败信息分级，返回总尝试上限。
 
@@ -263,7 +280,7 @@ def _retry_budget(message):
       链上，留着复用等于带病续跑——清掉；
     - 会话陈旧：不清缓存重登，重试只是把同一份死缓存的失败原样复演。
     """
-    if any(kw in message for kw in AUTH_FAIL_KEYWORDS):
+    if is_deterministic_auth_failure(message):
         # 清缓存同样成立：登录失败的会话残片没有复用价值
         return AUTH_FAIL_MAX_ATTEMPTS, True
     if any(kw in message for kw in NO_POSITION_FAIL_KEYWORDS):

@@ -262,11 +262,28 @@ class HasUndoneAccountsTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def _pool(self, open_=0):
-        """打桩领取池当日**未了结**计数（`db.task_open_count`，已带 `vshard >= 0` 过滤）：
+        """打桩领取池当日**未了结**计数（`db.task_open_count_settleable`，已带 `vshard >= 0` 过滤）：
         0 表示池里当日无未了结行（回退状态文件）。"""
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "task_open_count", return_value=open_):
+                mock.patch.object(state_io.db, "task_open_count_settleable", return_value=open_):
             yield
+
+    def test_credential_failure_in_state_file_also_settles(self):
+        """状态文件腿与队列腿同一判据：同一件事的两个载体，不许只改一边。"""
+        self._write_state({PHONE: {"status": yiban_status.STATUS_FAILED,
+                                   "message": "登录失败: 账号或密码错误"}})
+        with self._pool(open_=0):
+            self.assertFalse(
+                state_io.has_undone_accounts_today(state_dir=self.tmp, day=self.DAY),
+                "队列判了结、状态文件判未了结，闸门照旧判 10")
+
+    def test_other_failed_message_still_blocks_settlement(self):
+        """反向控制：非凭据错的 failed（网络抖动等）仍算未了结，重试有意义。"""
+        self._write_state({PHONE: {"status": yiban_status.STATUS_FAILED,
+                                   "message": "签到失败: 网络超时"}})
+        with self._pool(open_=0):
+            self.assertTrue(
+                state_io.has_undone_accounts_today(state_dir=self.tmp, day=self.DAY))
 
     def _undone(self):
         return state_io.has_undone_accounts_today(state_dir=self.tmp, day=self.DAY)
@@ -304,7 +321,7 @@ class HasUndoneAccountsTest(unittest.TestCase):
         """
         self._write_state({PHONE: {"status": yiban_status.STATUS_SUCCESS}})
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "task_open_count",
+                mock.patch.object(state_io.db, "task_open_count_settleable",
                                   side_effect=RuntimeError("库抖动")), \
                 self.assertLogs("yiban", level="WARNING") as cm:
             self.assertTrue(self._undone())
@@ -356,14 +373,14 @@ class LazyVshardRowTest(unittest.TestCase):
                 db._conn.close()
             db._conn = None
 
-    def _add_task(self, phone, vshard, state):
+    def _add_task(self, phone, vshard, state, result=""):
         conn = db.get_conn()
         conn.execute(
             "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
             "state, attempts, lease_until, result, epoch, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (phone, self.DAY, vshard, "", f"{self.DAY} 06:00:00", 5, state, 0, "",
-             "", 0, f"{self.DAY} 05:50:00"))
+             result, 0, f"{self.DAY} 05:50:00"))
         conn.commit()
 
     def _write_clean_state(self):
@@ -392,6 +409,18 @@ class LazyVshardRowTest(unittest.TestCase):
         self.assertEqual(queue_store.open_count(self.DAY), 1)
         self.assertTrue(
             state_io.has_undone_accounts_today(state_dir=self.tmp, day=self.DAY))
+
+    def test_credential_failure_row_does_not_block_settlement(self):
+        """凭据错残行不挡封存：当日再跑多少轮都是同一次错误登录，系统做不完它。"""
+        self._add_task(self.VSHARD_ROW, vshard=0, state="failed",
+                       result=yiban_status.RESULT_FINAL_PREFIX + "登录失败: 账号或密码错误")
+        self._write_clean_state()
+        self.assertEqual(queue_store.open_count(self.DAY), 1, "宽口径照旧计入（对账用）")
+        self.assertEqual(queue_store.open_count_settleable(self.DAY), 0)
+        self.assertFalse(
+            state_io.has_undone_accounts_today(state_dir=self.tmp, day=self.DAY),
+            "凭据错残行算进闸门 = 该日永不封存（生产 44 次判 10 的根因）")
+
 
 
 if __name__ == "__main__":

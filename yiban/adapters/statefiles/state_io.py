@@ -78,6 +78,7 @@ from yiban.adapters.statefiles import cred_state
 from yiban.core import clock
 from yiban.core import status as yiban_status
 from yiban.core.masking import sanitize_text as _sanitize_text
+from yiban.engine import attempts as attempts_mod
 from yiban.engine import cli_support, config_check, schedule
 from yiban.infra import private_json
 
@@ -665,6 +666,27 @@ def full_run_done_today(state_dir=None, day=None):
     return isinstance(data, dict) and bool(data.get("completed"))
 
 
+def _entry_is_undone_settleable(entry):
+    """状态文件里这一条是否构成"系统今天还能做完"的未了结（`has_undone_accounts_today` 的腿）。
+
+    队列腿与状态文件腿必须同一判据，否则两处口径互相打架：队列判"了结"、状态文件判
+    "未了结"，封存闸门照旧判 10。故 `failed` 且原因是凭据错（
+    `attempts.is_deterministic_auth_failure`）的条目一并排除——它与队列里那条
+    `final:登录失败: 账号或密码错误` 是同一件事的两个载体（`_apply_sign_state` 把两侧
+    写成同一对 status/message）。
+    """
+    if not isinstance(entry, dict):
+        return False
+    status = str(entry.get("status", "")).strip()
+    if status not in UNDONE_STATUSES:
+        return False
+    if status == yiban_status.STATUS_FAILED:
+        message = str(entry.get("message") or "")
+        if attempts_mod.is_deterministic_auth_failure(message):
+            return False
+    return True
+
+
 def has_undone_accounts_today(state_dir=None, day=None):
     """当日是否存在未了结账号；无记录/文件缺失/损坏按"未了结"处理（fail-safe 侧）。
 
@@ -676,13 +698,20 @@ def has_undone_accounts_today(state_dir=None, day=None):
     仍要过一遍状态文件；池里没有行（无库/池未启用/当日还没人领过）时状态文件是唯一
     事实源，行为不变。台账单池化后读的是**任务队列**（唯一生产台账），不是旧领取池。
 
-    **队列侧必须走 `db.task_open_count`（带 `vshard >= 0` 过滤），不能用
+    **队列侧必须走 `db.task_open_count_settleable`（带 `vshard >= 0` 过滤），不能用
     `day_counts(day)["open"]`**：本函数没有分片上下文（宿主 run.sh / 容器调度器只给
     状态目录与业务日），不能调 `pending_count(day, vshards)`；而 `day_counts` 不过滤
     分片，历史平移/补账写入的 `vshard=-1`/`failed` 行永不被领取却属未了结态，把它算进来
     该日就**永远不了结**、补签轮反复空跑（与 `queue_store.open_count` 的核心口径一致）。
 
-    **库读不通按"未了结"处理并出声（ba-p01-01）**：`db.task_open_count` 读不通回 `None`
+    **但"未了结"要问的是"系统今天还能不能自己把它做完"，故用窄口径**：`failed` 里
+    凭据错（口令错/被锁到"错误尝试过多"）的行，当日再跑多少轮都是同一次错误登录——重试
+    改不了它，只有人能改。把它们算进闸门，闸门就永远不开：生产 2026-10-04 起 44 次收尾
+    判定全部判 10、封存标记 0 个，且自动补签轮每天把同一个错口令再真实登录一遍（风控面）。
+    `open_count`（宽口径）仍是展示/对账的事实源，两者判据同源于
+    `yiban.engine.attempts.is_deterministic_auth_failure`。
+
+    **库读不通按"未了结"处理并出声（ba-p01-01）**：`db.task_open_count_settleable` 读不通回 `None`
     哨兵，读取抛异常同理。两者都说明"数不出未了结行"不等于"没有未了结行"。此时只回退
     状态文件，会让"状态文件干净 + 库读不通"判成了结。补签轮于是不跑 = 漏签。
     故这两条路径一律答"仍有未了结"，并各记一条 WARNING（不抛，补签轮照常起）。
@@ -691,7 +720,7 @@ def has_undone_accounts_today(state_dir=None, day=None):
     today = day or clock.now().strftime("%Y-%m-%d")
     try:
         if db.is_initialized():
-            open_rows = db.task_open_count(today)
+            open_rows = db.task_open_count_settleable(today)
             if open_rows is None:
                 logger.warning("任务队列读不通，数不出未了结行，按未了结处理: day=%s", today)
                 return True
@@ -709,8 +738,7 @@ def has_undone_accounts_today(state_dir=None, day=None):
     if not isinstance(data, dict) or not data:
         return True
     return any(
-        isinstance(v, dict) and str(v.get("status", "")).strip() in UNDONE_STATUSES
-        for v in data.values()
+        _entry_is_undone_settleable(v) for v in data.values()
     )
 
 

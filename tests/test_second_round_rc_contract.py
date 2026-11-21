@@ -226,7 +226,7 @@ class UndoneFactsUnionTest(unittest.TestCase):
                     '{"13800000001": {"status": "pending"}, '
                     '"13800000002": {"status": "success"}}')
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "task_open_count", return_value=0):
+                mock.patch.object(state_io.db, "task_open_count_settleable", return_value=0):
             self.assertTrue(state_io.has_undone_accounts_today(self.tmp, day),
                             "池里只领过 1 个且已了结，但另一账号从未被领取（状态仍 pending）"
                             "——不得判成「无未了结」")
@@ -236,7 +236,7 @@ class UndoneFactsUnionTest(unittest.TestCase):
         self._write(f"sched-run-{day}.json", '{"completed": true}')
         self._write(f"sign-state-{day}.json", '{"13800000001": {"status": "success"}}')
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "task_open_count", return_value=1):
+                mock.patch.object(state_io.db, "task_open_count_settleable", return_value=1):
             self.assertTrue(state_io.has_undone_accounts_today(self.tmp, day))
 
     def test_both_sources_clean(self):
@@ -244,7 +244,7 @@ class UndoneFactsUnionTest(unittest.TestCase):
         self._write(f"sched-run-{day}.json", '{"completed": true}')
         self._write(f"sign-state-{day}.json", '{"13800000001": {"status": "success"}}')
         with mock.patch.object(state_io.db, "is_initialized", return_value=True), \
-                mock.patch.object(state_io.db, "task_open_count", return_value=0):
+                mock.patch.object(state_io.db, "task_open_count_settleable", return_value=0):
             self.assertFalse(state_io.has_undone_accounts_today(self.tmp, day))
 
 

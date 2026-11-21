@@ -133,6 +133,34 @@ STATES = (STATE_PENDING, STATE_CLAIMED, STATE_DONE, STATE_FAILED, STATE_SKIPPED,
 SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES  # = {done, skipped}：`skipped` 承接暂停/取消类结论（paused / user_cancelled / global_paused，v18 平移映射见 `yiban.adapters.persistence.migrations._JSON_TERMINAL_TO_TASK_STATE`）；旧表 `sign_claims` 没有 `skipped` 这一档、同批结论当时落 `failed`（未了结、可再领），跨表比对"当日是否了结"不得直接对齐
 #: 未了结态（当日仍可能被重排、被接手，或正被某个执行体持有）。
 OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)  # 成员取自 `yiban.core.status.TASKS_OPEN_STATES`；顺序沿用本表 `STATES`——成员无先后语义，但顺序稳定便于比对与调试
+def _result_body(result: str) -> str:
+    """失败原因的正文——剥掉档位前缀（`retry:` / `final:` / 无前缀三种形态）。
+
+    只剥一次且只剥开头：正文里再出现同样字样属于服务端文案，不许被当成第二个前缀。
+    """
+    for prefix in (yiban_status.RESULT_FINAL_PREFIX, yiban_status.RESULT_RETRY_PREFIX):
+        if result.startswith(prefix):
+            return result[len(prefix):]
+    return result
+
+
+def _is_deterministic_auth_fail_row(result: str) -> bool:
+    """该 `failed` 行的原因是「凭据错」终态吗（系统当日再也做不成的事）？
+
+    判据本身**只有一份**，在 `yiban.engine.attempts.is_deterministic_auth_failure`。
+    这里延迟导入：那个模块顶层 import 本包的 `db`，本模块顶层导入它会成环（与 `db`
+    延迟导入 `state_io` 同一处置）。
+
+    为什么这件事要进存储层：凭据错的行若算作"当日还有系统能做完的事"，封存判定就永远
+    判 10（`open_count` 恒 > 0），自动补签轮每天把同一个错口令再真实登录一遍——重试
+    改不了它，只会加速易班侧的账号锁定（生产 2026-10-04 起实测：44 次"判定 10"、
+    封存标记 0 个）。
+    """
+    from yiban.engine import attempts as attempts_mod
+
+    return attempts_mod.is_deterministic_auth_failure(_result_body(result))
+
+
 #: 可被 `requeue_task` 重排回 `pending` 的状态：所有**未了结**态（`OPEN_STATES`）。
 #: 终态（`done` / `skipped`）绝不许复活——复活会被 `claim_batch` 重新领取，等于同一
 #: 账号当日再登录一次，"当日是否了结"的闸门也会凭空又出现待办。`pending` 行重排只是
@@ -342,7 +370,8 @@ def requeue_task(phone: str, day: str, run_at: str, priority_delta: int = 1, res
 
 
 def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
-                   run_at: str | None = None, phones: Iterable[str] | None = None) -> int | None:
+                   run_at: str | None = None, phones: Iterable[str] | None = None,
+                   skip_deterministic_auth: bool = False) -> int | None:
     """当日回炉：把本业务日 `failed` 行逐行经 `requeue_task` 翻回 `pending`，返回翻回数。
 
     **为什么必须有**：`claim_batch` 只取 `pending`，v3 执行体弃权（give-up 档）留下的
@@ -380,6 +409,13 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
     `phones` 是本轮回炉的**账号允许集**（`None` = 不限，既有调用点语义不变）：手动
     `--only` 轮只回炉"本轮传进来的那几个账号"的 failed 行，不得把当日别人的
     `final:` 档行一并复活——那会让别人的账号在本轮被误接手（见 `claim_batch` 同参数）。
+
+    `skip_deterministic_auth=True`：**自动补签轮专用**的额外剔除——凭据错的 `final:` 行
+    （`_is_deterministic_auth_fail_row`）不回炉。理由：回炉它等于把同一个错口令再真实
+    登录一遍，重试改不了它、只会加速易班侧锁定；封存闸门（`open_count_settleable`）也已
+    不把它算作"系统还能做完的事"，两边必须同一判据，否则闸门判"了结"、轮次又把它复活，
+    两处口径互相打架。**手动 `--only` 不传这个旗标**：用户主动点的那一下照做
+    （与 `reclaim_tasks` 的"显式路径不设限"同一纪律）。
     """
     shard_set = tuple(shards or ())
     if not shard_set:
@@ -415,6 +451,9 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
         # 在每次回炉/重领/回收时递增（`requeue_task` / `reclaim_tasks` /
         # `reap_abandoned`），故用它可以数"这行今天已经被尝试过几次"。
         if not include_final and int(r["attempts"] or 0) >= MAX_DAY_REQUEUES:
+            continue
+        # 自动补签轮不复活凭据错残行：重试改不了错口令，只会再提交一次同样的错误登录
+        if skip_deterministic_auth and _is_deterministic_auth_fail_row(result):
             continue
         if requeue_task(r["phone"], day, stamp, result="", epoch=r["epoch"]):
             flipped += 1
@@ -787,6 +826,42 @@ def open_count(day: str) -> int | None:
         logger.warning("读取当日未了结任务计数失败（读不通，不等于已了结）: %s", e)
         return None
     return int(row[0]) if row else 0
+
+
+def open_count_settleable(day: str) -> int | None:
+    """当日**系统还能做完**的未了结行数——封存闸门的窄口径（`open_count` 的孪生）。
+
+    与 `open_count` 的唯一差别：`state='failed'` 且原因是**凭据错**（
+    `_is_deterministic_auth_fail_row`：口令错/被锁到"错误尝试过多"）的行**不计数**。
+    它们仍属 `OPEN_STATES`（重排回 `pending` 在机械上合法），但当日再跑多少轮都变不出
+    结果——只有人能改（改密/申诉）。把它们算进闸门，闸门就**永远不会开**：生产 2026-10-04
+    起 44 次收尾判定全部判 10、封存标记 0 个，且自动补签轮每天把同一个错口令再真实登录
+    一遍（风控面，见 `yiban.engine.attempts.is_deterministic_auth_failure`）。
+
+    **为什么不改 `open_count` 自身**：那个名字是展示与对账的宽口径（`day_counts(day)["open"]`
+    与 `db.task_open_count` 的既有语义，`tests/test_queue_failclosed.py` 钉着"门面别名就是
+    它本人"、`tests/test_status_sets.py` 钉着 `vshard>=0` 的 `pending` 必须算未了结）。
+    闸门需要的是另一件事——"还有什么系统能自己跑完"——故另立一个名字，判据仍只有一份。
+
+    `pending`/`claimed`/`stolen` 一律计数（那是"还没轮到/正在跑/被人接手"，系统能推进）；
+    `retry:` 档的 `failed` 同样计数（回炉能兑现）。**库异常 → `None`（哨兵）+ warning**，
+    与 `open_count` 同义：宁可按未了结处理并出声，也不许把"读不出来"当成"已经了结"。
+    """
+    placeholders = ",".join("?" for _ in OPEN_STATES)
+    sql = ("SELECT state, result FROM sign_tasks WHERE day=? AND vshard >= 0 "
+           f"AND state IN ({placeholders})")
+    try:
+        conn, lock = _queue_conn()
+        with lock:
+            rows = conn.execute(sql, (day, *OPEN_STATES)).fetchall()
+    except Exception as e:
+        logger.warning("读取当日可了结未了结计数失败（读不通，不等于已了结）: %s", e)
+        return None
+    return sum(
+        1 for r in rows
+        if not (r["state"] == STATE_FAILED
+                and _is_deterministic_auth_fail_row(str(r["result"] or "")))
+    )
 
 
 def day_counts(day: str) -> dict[str, int] | None:

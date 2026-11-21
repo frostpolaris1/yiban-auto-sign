@@ -618,9 +618,9 @@ def _finish(ctx, phone, epoch, result, state_message, state):
 
     两个调用点都落终态 `skipped`——它们都是**管理侧或配置侧的当日结论**，与
     `migrations._JSON_TERMINAL_TO_TASK_STATE`（paused/user_cancelled → skipped）同口径。
-    落 `failed` 会让补签闸门的队列腿（`db.task_open_count`）判"未了结"，补签轮再真实
-    登录一次（工单 48b9）；落 `done` 会让逐日对账报不一致（工单 vqmb）。`skipped` 不带
-    档位前缀——它不经过回炉口。
+    落 `failed` 会让补签闸门的队列腿（`db.task_open_count_settleable`）判"未了结"，补签
+    轮再真实登录一次（工单 48b9）；落 `done` 会让逐日对账报不一致（工单 vqmb）。`skipped`
+    不带档位前缀——它不经过回炉口。
 
     进度打点按状态取节点：账密暂停落 `pause`，其余非成功终态落 `fail`。本函数是
     **所有零请求收尾的唯一出口**，故打点挂在这里而不是两个调用点各写一遍。
@@ -764,8 +764,8 @@ async def _attempt(ctx, item):
         # 熔断判定排在取额度之后、发请求之前：这里必须把行了结成终态而不是丢着不管，
         # 否则该行永远 pending、本轮收不干（同上一处 acc is None 的处置理由）。
         # 落 `skipped` 而**不是** `failed`：账密暂停是管理侧当日结论，队列侧的
-        # "未了结"判据（`db.task_open_count`）只看 OPEN_STATES，落 failed 会让补签轮
-        # 再真实登录一次（工单 48b9 / vqmb；与 JSON 终态映射同口径）。
+        # "未了结"判据（`db.task_open_count_settleable`）只看 OPEN_STATES 减凭据错档，
+        # 落 failed 会让补签轮再真实登录一次（工单 48b9 / vqmb；与 JSON 终态映射同口径）。
         _finish(ctx, phone, epoch, (False, "账密异常已暂停，请修改密码", True, STATUS_PAUSED),
                 "账密异常已暂停（连续失败），请修改密码", queue_store.STATE_SKIPPED)
         logger.info("%s [%s] ⏸️ 账密异常已暂停，请修改密码", ctx.log_tag, _mask_phone(phone))
@@ -822,8 +822,8 @@ async def _attempt(ctx, item):
         ctx.results[phone] = (False, message, True, status)
         # 暂停/取消/补签中都是**管理侧或平台侧已定的当日结论**：队列按终态 `skipped`
         # 收尾（与 `migrations._JSON_TERMINAL_TO_TASK_STATE` 同口径）。落 `failed` 会让
-        # 补签闸门的队列腿（`db.task_open_count`）判"未了结"，补签轮于是把该账号再
-        # 真实登录一次（工单 48b9 / vqmb）。窗口外仍落 `failed`——那是"还该再试"。
+        # 补签闸门的队列腿（`db.task_open_count_settleable`）判"未了结"，补签轮于是把该
+        # 账号再真实登录一次（工单 48b9 / vqmb）。窗口外仍落 `failed`——那是"还该再试"。
         state = (queue_store.STATE_SKIPPED
                  if status in (yiban_status.STATUS_SUPPLEMENTING, STATUS_USER_CANCELLED)
                  else queue_store.STATE_FAILED)
@@ -1516,8 +1516,13 @@ def run_executor_v3(accounts, *, day=None, dry_run=False, delegated=None,
         # 复活。放在预扫之前。
         # 回炉回 `None` = 读不通：不当作"没有要回炉的行"，把记号交给派发协调循环计入同一条
         # 有界闸门（`QUEUE_UNREADABLE_MAX_ROUNDS`），不许就地丢掉（ba-p01-01）。
+        # 自动补签轮（requeue_final 且非手动 --only/reclaim）不复活凭据错残行：那只是把
+        # 同一个错口令再真实登录一遍，且封存闸门（open_count_settleable）也已不把它算作
+        # "系统还能做完的事"。手动 --only 由用户主动触发，照做（不传该旗标）。
         if queue_store.requeue_failed(day, ctx.shards, include_final=bool(requeue_final),
-                                      phones=ctx.allowed_phones) is None:
+                                      phones=ctx.allowed_phones,
+                                      skip_deterministic_auth=bool(requeue_final)
+                                      and not reclaim) is None:
             ctx.queue_unreadable = True
         _prescan(ctx, accounts)
         ctx.limiter.restore_from_store(ctx.egress, now=_mono())

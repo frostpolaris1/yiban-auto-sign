@@ -222,7 +222,7 @@ class NoEarlyExitAfterSettleTest(_NoiseHarness):
         tmp, day = self._settled_state_dir()
         # 库侧显式打桩成「本部署没配库」：判据只读状态文件，前置才是确定的
         with mock.patch.object(state_io.db, "is_initialized", lambda: False), \
-                mock.patch.object(state_io.db, "task_open_count", lambda d: 0):
+                mock.patch.object(state_io.db, "task_open_count_settleable", lambda d: 0):
             self.assertFalse(state_io.has_undone_accounts_today(state_dir=tmp, day=day),
                              "前置：这份状态文件必须被判成当日已了结（settled）")
         _rc, _sleeps, scans, _records = self._logs(
