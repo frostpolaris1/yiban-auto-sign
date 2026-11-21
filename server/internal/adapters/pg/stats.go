@@ -151,6 +151,79 @@ func (r *StatsRepo) OffsetCounts(ctx context.Context, schoolID, taskID, day stri
 	return out, nil
 }
 
+// SchoolExists 报告指定院校是否存在。
+func (r *StatsRepo) SchoolExists(ctx context.Context, schoolID string) (bool, error) {
+	var exists bool
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM schools WHERE id = $1::uuid)`, schoolID).Scan(&exists)
+	if err != nil {
+		return false, mapError(err)
+	}
+	return exists, nil
+}
+
+// TaskSchoolID 返回学校任务所属的院校 ID；不存在返回 errs.ErrNotFound。
+func (r *StatsRepo) TaskSchoolID(ctx context.Context, taskID string) (string, error) {
+	var schoolID string
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT school_id::text FROM school_tasks WHERE id = $1::uuid`, taskID).Scan(&schoolID)
+	if err != nil {
+		return "", mapError(err)
+	}
+	return schoolID, nil
+}
+
+// FailureCounts 按作用域统计某业务日终态失败的任务行分布。
+//
+// 口径：
+//   - 按 sign_tasks 任务行计数（不做账号去重）；
+//   - 只计 day = $1::date 且 state = 'failed' 的行；
+//   - 排除已软删账号（deleted_at IS NULL），账号当前状态不限制；
+//   - 聚合 SQL 显式携带 scopePredicate（master 全量、admin 限绑定校，空绑定返空集）；
+//   - result 原值保留（含空串与词表外结果），空串归 unknown 由用例层处理。
+func (r *StatsRepo) FailureCounts(ctx context.Context, scope corescope.Scope, filter coreschedule.SignFailureFilter) ([]coreschedule.SignFailureBucket, error) {
+	if scope.Kind() != corescope.KindMaster && scope.Kind() != corescope.KindAdmin {
+		return nil, validationError("failure stats are scoped to master and admin")
+	}
+	args := []any{filter.Day, string(corestatus.TaskFailed)}
+	scopeSQL, scopeArgs, err := scopePredicate(scope, len(args)+1, "st.")
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, scopeArgs...)
+	where := `
+		  FROM sign_tasks t
+		  JOIN school_tasks st ON st.id = t.school_task_id
+		  JOIN accounts a ON a.id = t.account_id
+		 WHERE t.day = $1::date
+		   AND t.state = $2::sign_task_state
+		   AND a.deleted_at IS NULL` + scopeSQL
+	if filter.SchoolID != "" {
+		args = append(args, filter.SchoolID)
+		where += fmt.Sprintf(" AND st.school_id = $%d::uuid", len(args))
+	}
+	if filter.TaskID != "" {
+		args = append(args, filter.TaskID)
+		where += fmt.Sprintf(" AND t.school_task_id = $%d::uuid", len(args))
+	}
+	rows, err := r.db.q(ctx).Query(ctx,
+		`SELECT t.result, count(*)::int`+where+` GROUP BY t.result`, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	var out []coreschedule.SignFailureBucket
+	for rows.Next() {
+		var item coreschedule.SignFailureBucket
+		if err := rows.Scan(&item.Result, &item.Count); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, item)
+	}
+	return out, mapError(rows.Err())
+}
+
 // addStateCount 把一行状态计数写进日桶。
 // 未知状态是枚举漂移，必须显性失败，不能静默丢计数。
 func addStateCount(row *coreschedule.SignStatDay, state string, accounts int) error {
