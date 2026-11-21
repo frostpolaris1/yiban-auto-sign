@@ -682,7 +682,8 @@
 
 @media (pointer: coarse) {
   .a-clear,
-  .a-pager-btn {
+  .a-pager-btn,
+  .a-detail-btn {
     min-block-size: 44px;
     height: auto;
   }

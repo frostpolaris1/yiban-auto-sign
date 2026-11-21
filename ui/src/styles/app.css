@@ -170,6 +170,13 @@
   outline-offset: 2px;
 }
 
+/* 零特异性兜底：未单独声明焦点环的原生控件也要看得见键盘焦点。
+   用 :where() 压到 0,0,1，任何自带 outline 的组件规则仍能覆盖它。 */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .cmd:disabled {
   cursor: default;
 }
@@ -2566,9 +2573,24 @@ html {
   .d-sidebar .nav-submenu a,
   .app-page-actions .btn,
   .run-pager .btn,
-  .app-card-tabs button {
+  .app-card-tabs button,
+  .pager-btn,
+  .alert .close,
+  .btn--sm:not(.app-inbox-read-btn) {
     min-block-size: 44px;
     height: auto;
+  }
+
+  /* 表格复选框本体 16×16 在触控下偏小，按行高放大到 44 的可点区。
+     只在粗指针生效：桌面渲染与基线像素完全不变。 */
+  .app-selection-cell {
+    width: 44px;
+    min-width: 44px;
+  }
+
+  .app-selection-cell input[type='checkbox'] {
+    width: 20px;
+    height: 20px;
   }
 }
 

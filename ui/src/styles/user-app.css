@@ -227,6 +227,15 @@
   text-decoration: none;
 }
 
+/* 提示条内联链接行高只有 ~18px，触控下按 44px 命中区外扩。 */
+@media (pointer: coarse) {
+  .uapp-notice a {
+    display: inline-flex;
+    align-items: center;
+    min-block-size: 44px;
+  }
+}
+
 /* ---------- 底栏 ---------- */
 .uapp-bottom {
   position: fixed;
@@ -1012,6 +1021,13 @@
   box-shadow: 0 0 0 3px var(--primary-ring);
 }
 
+/* 上面 .uapp-input 的 outline:none（0,1,0）会压过全局 :where() 兜底（0,0,1），
+   键盘用户看不到焦点环，这里补回同等口径。 */
+.uapp-input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .uapp-input--error {
   border-color: var(--danger);
 }
@@ -1793,6 +1809,13 @@ button.uapp-row:hover:not(:disabled) {
 .uapp-cal-cell.is-today {
   outline: 1.5px solid var(--primary);
   outline-offset: -1.5px;
+}
+
+/* 今日格自带的 outline（0,2,0）压过全局兜底（0,0,1）。焦点态要能区分
+   「今天」和「键盘停在今天」两件事，所以焦点环改成外扩 2px。 */
+.uapp-cal-cell.is-today:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .uapp-cal-cell:disabled,
@@ -2628,6 +2651,9 @@ a.uapp-row:hover {
   content: '';
   position: absolute;
   inset: -10px -2px;
+}
+.uapp-switch:disabled::after {
+  content: none;
 }
 
 /* 移动单列：偏好在前，破坏性行不占首屏顶部（桌面 grid-areas 不受影响）。 */

@@ -96,7 +96,8 @@
 
 @media (pointer: coarse) {
   .q-refresh-btn,
-  .q-pager-btn {
+  .q-pager-btn,
+  .q-preset-chip {
     min-block-size: 44px;
     height: auto;
   }
