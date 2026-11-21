@@ -439,6 +439,15 @@ bash scripts/backup.sh
 **不要**用 `queue_store.open_count(day)`（带 `vshard >= 0` 过滤）当分子、配 `day_counts`
 的 `total` 当分母——两个总体不同，相除得到的数字没有意义。
 
+**补签闸门另有一个窄口径**：`has_undone_accounts_today` 读的是
+`queue_store.open_count_settleable(day)` 而不是 `open_count(day)`——两者的唯一差别是
+`failed` 里**凭据错**（口令错 / 被锁到"错误尝试过多"，判据
+`yiban.engine.attempts.is_deterministic_auth_failure`）的行不计入。理由：闸门要回答的是
+"系统今天还能不能自己把这事做完"，而错口令重试改不了，只有人能改。若把它算作未了结，
+闸门就**永远不开**（生产 2026-10-04 起 44 次收尾判定全部判 10、封存标记 0 个），且自动
+补签轮会每天把同一个错口令再真实登录一遍（风控面，见 `requeue_failed` 的
+`skip_deterministic_auth`）。展示与对账仍用宽口径 `open_count` / `day_counts["open"]`。
+
 **阈值状态（如实登记）**：Δ1／N1／σ **未定档**（2026-10-21 复核仍无观测窗口数据）。
 故本节的"触发条件"是**可人工判定的保守口径**，不是数字闸门。定档前提是积累 ≥14 个正常
 运行日；定档后只改本表，不改代码（没有代码在读这些阈值）。

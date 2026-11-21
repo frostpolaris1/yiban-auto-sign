@@ -106,7 +106,8 @@ TEXT = {
 # `supplementing`（补签中）**刻意不在本集合**：它结果未定、平台正在处理，我们再跑一轮
 # 既改不了结果、又多一次真实登录（与 paused / user_cancelled 同一条取舍）。
 # **两条腿必须同口径**：补签闸门另有一条读**任务队列**的腿
-# （`state_io.has_undone_accounts_today` → `db.task_open_count`）。执行体对
+# （`state_io.has_undone_accounts_today` → `db.task_open_count_settleable`，窄口径：再减掉
+# `failed` 里凭据错那批——错口令重试改不了，只有人能改）。执行体对
 # supplementing / user_cancelled / paused 一律落终态 `skipped`（不在
 # `TASKS_OPEN_STATES`、也不在 `REQUEUEABLE_STATES`），故队列腿同样判"已了结"
 # （工单 48b9 / vqmb：旧实现落 failed，补签轮据此重领一次）。

@@ -538,6 +538,51 @@ class RequeueFailedStoreTest(unittest.TestCase):
                                side_effect=AssertionError("不该取连接")):
             self.assertEqual(queue_store.requeue_failed(DAY, ()), 0)
 
+    # ---- 窄口径：凭据错残行既不算"系统还能做完"，也不许自动补签轮复活 ----
+    AUTH_FAIL_RESULT = "登录失败: 账号或密码错误"
+
+    def test_settleable_count_excludes_deterministic_auth_failures(self):
+        """封存闸门用窄口径：凭据错残行不计，重试档与待领行照计。
+
+        宽口径 `open_count` 一个都不许少——它是展示与对账的事实源，两个口径同源不同用。
+        """
+        auth_p, locked_p, retry_p, pending_p = (_phone(i) for i in range(1, 5))
+        self._add(auth_p,
+                  result=yiban_status.RESULT_FINAL_PREFIX + self.AUTH_FAIL_RESULT)
+        self._add(locked_p, result=yiban_status.RESULT_FINAL_PREFIX + "错误尝试过多")
+        self._add(retry_p, result=yiban_status.RESULT_RETRY_PREFIX + "skipped_window")
+        self._add(pending_p, state="pending")
+        self.assertEqual(queue_store.open_count(DAY), 4, "宽口径：认可状态全部计入")
+        self.assertEqual(queue_store.open_count_settleable(DAY), 2,
+                         "凭据错只有人能改，算进闸门则闸门永不开")
+
+    def test_settleable_count_keeps_prefixless_failed_row(self):
+        """反向控制：无前缀的历史 failed 行不按凭据错漏判（它可能只是网络抖动）。"""
+        self._add(_phone(1), result="网络抖动")
+        self.assertEqual(queue_store.open_count_settleable(DAY), 1)
+
+    def test_settleable_count_is_fail_closed_on_unreadable(self):
+        """读不通回 None 哨兵而不是 0——"数不出来"不等于"已经了结"。"""
+        with mock.patch.object(queue_store, "_queue_conn",
+                               side_effect=RuntimeError("库不可用")):
+            self.assertIsNone(queue_store.open_count_settleable(DAY))
+
+    def test_auto_second_round_skips_deterministic_auth_rows(self):
+        """自动补签轮不复活凭据错残行：复活只是把同一个错口令再真实登录一遍（风控面）。"""
+        auth_p, retry_p = _phone(1), _phone(2)
+        self._add(auth_p,
+                  result=yiban_status.RESULT_FINAL_PREFIX + self.AUTH_FAIL_RESULT)
+        self._add(retry_p, result=yiban_status.RESULT_RETRY_PREFIX + "skipped_window")
+        flipped = queue_store.requeue_failed(
+            DAY, (0,), include_final=True, skip_deterministic_auth=True,
+            run_at=f"{DAY} 07:00:00.000")
+        self.assertEqual(flipped, 1, "retry: 档照旧回炉，凭据错档留下")
+        self.assertEqual(self._row(retry_p)["state"], "pending")
+        self.assertEqual(self._row(auth_p)["state"], "failed")
+        self.assertEqual(self._row(auth_p)["result"],
+                         yiban_status.RESULT_FINAL_PREFIX + self.AUTH_FAIL_RESULT,
+                         "跳过不等于改写：原因原样留给人看")
+
 
 # ---------------------------------------------------------------------------
 # ⑤ 会话接线：轮首回炉（自动档/显式档）+ 会话内周期 + claim_all 扫尾

@@ -774,8 +774,10 @@ def main(argv=None):
     # 告警与退出码 1。它与 no_position 的区别在"未了结"：补签中不进 UNDONE_STATUSES。
     # **但这条只挡住读状态文件的闸门**：队列里它是 `failed`（`TASKS_OPEN_STATES` 之一），
     # 而宿主/容器的补签闸门先读队列（`state_io.has_undone_accounts_today` →
-    # `db.task_open_count`）⇒ 补签轮仍会起，且 `_second_run` 让 `requeue_final=True`
-    # 把 `final:` 档一并回炉，该账号当日仍多一次真实登录。
+    # `db.task_open_count_settleable`）⇒ 补签轮仍会起，且 `_second_run` 让
+    # `requeue_final=True` 把 `final:` 档一并回炉，该账号当日仍多一次真实登录。
+    # （凭据错的 `final:` 行不在此列：封存闸门不数它、自动补签轮也不回炉它——见
+    # `attempts.is_deterministic_auth_failure` 与 `requeue_failed(skip_deterministic_auth)`。）
     # **不是回归**：旧文本判据下 State=5 的结局取决于 `Position` 是否为空——为空落
     # `no_position`（也重跑一次，重跑次数与现在相同），非空则旧路径没有 State 判据挡它、
     # 会继续往下走并发起一次真实提交（平台是否受理该提交未采集，无定论）。
