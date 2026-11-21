@@ -69,10 +69,39 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   unauthorizedHandler = handler
 }
 
-/** 错误信封的统一展示文本：`code · message`。非 ApiError 退回自身消息。 */
+const HAS_CJK_RE = /[\u4e00-\u9fff]/
+
+function fallbackChineseByStatus(error: ApiError): string {
+  if (error.status === 400) return '请求参数不符合要求，请核对后重试'
+  if (error.status === 401) return '登录已过期，请重新登录后再试'
+  if (error.status === 403) return '权限不足，无法执行此操作'
+  if (error.status === 404) return '目标记录不存在或已删除'
+  if (error.status === 409) return '操作与当前状态冲突，请刷新后重试'
+  if (error.status === 413) return '提交内容超出大小限制，请精简后重试'
+  if (error.status === 429) {
+    return error.retryAfterSec
+      ? `请求过于频繁，请在 ${error.retryAfterSec} 秒后重试`
+      : '请求过于频繁，请稍后重试'
+  }
+  if (error.status >= 500) return '服务暂不可用，请稍后重试'
+  return '请求失败，请稍后重试'
+}
+
+/**
+ * 错误信封的用户展示文本：不暴露内部 `code ·` 前缀。
+ * 若服务端消息已含可读中文则直接返回；纯英文或机器错误按 HTTP 状态收口为中文兜底。
+ */
 export function describeApiError(error: unknown): string {
-  if (error instanceof ApiError) return `${error.code} · ${error.message}`
-  if (error instanceof Error) return error.message
+  if (error instanceof ApiError) {
+    const trimmed = error.message.trim()
+    if (trimmed !== '' && HAS_CJK_RE.test(trimmed)) return trimmed
+    return fallbackChineseByStatus(error)
+  }
+  if (error instanceof Error) {
+    const trimmed = error.message.trim()
+    if (trimmed !== '' && HAS_CJK_RE.test(trimmed)) return trimmed
+    return '请求异常，请稍后重试'
+  }
   return String(error)
 }
 

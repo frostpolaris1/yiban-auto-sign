@@ -83,7 +83,20 @@ export function PolicyScheduleCard({ canWrite, readOnlyReason }: PolicyCardAcces
     },
   })
 
-  const effectiveDraft = draft ?? (query.data ? createSchedulePolicyDraft(query.data) : null)
+  const initialDraft = query.data ? createSchedulePolicyDraft(query.data) : null
+  const effectiveDraft = draft ?? initialDraft
+  const isDirty = Boolean(
+    initialDraft &&
+      effectiveDraft &&
+      (effectiveDraft.edgeFrontSec !== initialDraft.edgeFrontSec ||
+        effectiveDraft.edgeBackSec !== initialDraft.edgeBackSec ||
+        effectiveDraft.allowTimePref !== initialDraft.allowTimePref ||
+        effectiveDraft.saturdaySign !== initialDraft.saturdaySign ||
+        effectiveDraft.sundaySign !== initialDraft.sundaySign ||
+        effectiveDraft.defaultSignStartClock !== initialDraft.defaultSignStartClock ||
+        effectiveDraft.defaultSignEndClock !== initialDraft.defaultSignEndClock ||
+        effectiveDraft.signDist !== initialDraft.signDist),
+  )
   const rawErrors = effectiveDraft ? validateSchedulePolicyDraft(effectiveDraft) : {}
   const shownErrors = {
     edgeFrontSec: submitted || touched.edgeFrontSec ? rawErrors.edgeFrontSec : undefined,
@@ -383,6 +396,11 @@ export function PolicyScheduleCard({ canWrite, readOnlyReason }: PolicyCardAcces
               >
                 恢复调度默认
               </Button>
+              {canWrite && isDirty && !mutation.isPending ? (
+                <span className="sys-dirty-note" role="status">
+                  有未保存变更
+                </span>
+              ) : null}
               {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
             </div>
           </form>

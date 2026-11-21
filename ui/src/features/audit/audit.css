@@ -680,6 +680,14 @@
   }
 }
 
+@media (pointer: coarse) {
+  .a-clear,
+  .a-pager-btn {
+    min-block-size: 44px;
+    height: auto;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .a-card {
     animation: none;

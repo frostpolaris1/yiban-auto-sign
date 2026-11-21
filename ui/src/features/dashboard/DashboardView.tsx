@@ -23,6 +23,7 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { getAccountSummary } from '@/lib/api/account'
 import { describeApiError } from '@/lib/api/client'
@@ -243,6 +244,24 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
   }
   return (
     <>
+      <nav className="app-quick-links" aria-label="管理常用直达">
+        <span className="app-quick-links-label">常用直达：</span>
+        <Link to="/queue" className="app-inline-link">
+          待办处理
+        </Link>
+        <span className="app-quick-links-sep" aria-hidden="true">
+          ·
+        </span>
+        <Link to="/audit" className="app-inline-link">
+          审计链巡检
+        </Link>
+        <span className="app-quick-links-sep" aria-hidden="true">
+          ·
+        </span>
+        <Link to="/system" className="app-inline-link">
+          系统设置
+        </Link>
+      </nav>
       <KpiGrid
         cards={todayKpiCards(stats, accountSummaryQuery.data ?? null)}
       />

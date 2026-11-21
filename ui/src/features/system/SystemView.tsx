@@ -68,12 +68,29 @@ export function SystemView({ day, onDayChange }: SystemViewProps) {
   const [observedAnchor, setObservedAnchor] = useState<SystemSectionId | null>(null)
   const activeAnchor: SystemSectionId = observedAnchor ?? targeted ?? 'plans'
   const lockUntilRef = useRef(0)
+  const lockTimerRef = useRef<number | null>(null)
+  const resolveActiveRef = useRef<() => void>(() => {})
   const sectionsContainerRef = useRef<HTMLDivElement>(null)
+
+  const lockAnchorSync = (durationMs: number) => {
+    lockUntilRef.current = Date.now() + durationMs
+    if (lockTimerRef.current !== null) window.clearTimeout(lockTimerRef.current)
+    lockTimerRef.current = window.setTimeout(() => {
+      lockTimerRef.current = null
+      resolveActiveRef.current()
+    }, durationMs + 16)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (lockTimerRef.current !== null) window.clearTimeout(lockTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     if (!allowed || !targeted) return
     setObservedAnchor(targeted)
-    lockUntilRef.current = Date.now() + 900
+    lockAnchorSync(900)
     const scrollToTarget = (focusSection: boolean) => {
       const element = document.getElementById(targeted)
       if (!element) return
@@ -96,7 +113,7 @@ export function SystemView({ day, onDayChange }: SystemViewProps) {
     }
     const observer = new ResizeObserver(() => {
       if (!active) return
-      lockUntilRef.current = Date.now() + 300
+      lockAnchorSync(300)
       scrollToTarget(false)
     })
     observer.observe(container)
@@ -123,6 +140,7 @@ export function SystemView({ day, onDayChange }: SystemViewProps) {
       const firstVisible = SYSTEM_SECTIONS.find((section) => visible.has(section.id))
       if (firstVisible) setObservedAnchor(firstVisible.id)
     }
+    resolveActiveRef.current = resolveActive
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -142,9 +160,12 @@ export function SystemView({ day, onDayChange }: SystemViewProps) {
     }
     const handleScroll = () => resolveActive()
     window.addEventListener('scroll', handleScroll, { passive: true })
+    window.addEventListener('scrollend', handleScroll, { passive: true })
     return () => {
+      resolveActiveRef.current = () => {}
       observer.disconnect()
       window.removeEventListener('scroll', handleScroll)
+      window.removeEventListener('scrollend', handleScroll)
     }
   }, [allowed])
 
@@ -190,7 +211,7 @@ export function SystemView({ day, onDayChange }: SystemViewProps) {
               className={cx('sys-anchor', isCurrent && 'is-active')}
               aria-current={isCurrent ? 'location' : undefined}
               onClick={() => {
-                lockUntilRef.current = Date.now() + 900
+                lockAnchorSync(900)
                 setObservedAnchor(section.id)
               }}
             >

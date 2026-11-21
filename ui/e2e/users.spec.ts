@@ -245,7 +245,8 @@ test('invariant 5: a failed list shows the envelope and can retry', async ({ pag
     listError: { status: 500, code: 'internal_error', message: '用户服务不可用' },
   })
   await page.goto('/users')
-  await expect(page.getByText('internal_error · 用户服务不可用')).toBeVisible()
+  await expect(page.getByText('用户服务不可用')).toBeVisible()
+  await expect(page.getByText('internal_error')).toHaveCount(0)
 
   const before = listUserCalls(api).length
   await page.getByRole('button', { name: '重试' }).click()

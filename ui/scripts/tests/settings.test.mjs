@@ -103,20 +103,20 @@ test('a reused password conflict becomes a field error on the new field', () => 
   assert.deepEqual(fieldError, { field: 'next', message: '新密码不能与当前密码相同' })
 })
 
-test('every other failure has no field target and keeps the envelope', () => {
+test('every other failure has no field target and maps raw errors to Chinese copy', () => {
   const validation = new ApiError(400, {
     code: 'validation_failed',
     message: 'new_password is required',
   })
   assert.equal(changePasswordFieldError(validation), null)
-  assert.equal(changePasswordErrorMessage(validation), 'validation_failed · new_password is required')
+  assert.equal(changePasswordErrorMessage(validation), '请求参数不符合要求，请核对后重试')
 
   const oversized = new ApiError(413, {
     code: 'validation_failed',
     message: 'request body too large',
   })
   assert.equal(changePasswordFieldError(oversized), null)
-  assert.equal(changePasswordErrorMessage(oversized), 'validation_failed · request body too large')
+  assert.equal(changePasswordErrorMessage(oversized), '提交内容超出大小限制，请精简后重试')
 })
 
 test('a transport failure becomes one fixed network message', () => {
@@ -197,8 +197,8 @@ test('notify update body flips only the target cell without mutating input', () 
 
 test('notify error formatting distinguishes API envelopes from network failures', () => {
   const apiErr = new ApiError(400, { code: 'validation_failed', message: 'bad pair' })
-  assert.equal(notifySaveErrorMessage(apiErr), 'validation_failed · bad pair')
-  assert.equal(notifyReadErrorMessage(apiErr), 'validation_failed · bad pair')
+  assert.equal(notifySaveErrorMessage(apiErr), '请求参数不符合要求，请核对后重试')
+  assert.equal(notifyReadErrorMessage(apiErr), '请求参数不符合要求，请核对后重试')
   assert.equal(notifySaveErrorMessage(new TypeError('Failed to fetch')), NOTIFY_NETWORK_ERROR)
   assert.equal(NOTIFY_NETWORK_ERROR, '网络异常，请稍后重试')
 })

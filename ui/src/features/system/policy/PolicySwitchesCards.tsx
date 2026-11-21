@@ -90,6 +90,7 @@ function PolicyToggleCard({
   })
 
   const checked = draft ?? query.data ?? false
+  const isDirty = query.data !== undefined && draft !== null && draft !== query.data
   const asyncStatus = query.isPending ? 'loading' : query.isError ? 'error' : 'data'
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -137,6 +138,11 @@ function PolicyToggleCard({
             >
               保存设置
             </BusyButton>
+            {canWrite && isDirty && !mutation.isPending ? (
+              <span className="sys-dirty-note" role="status">
+                有未保存变更
+              </span>
+            ) : null}
             {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
           </div>
         </form>
@@ -164,7 +170,7 @@ export function PolicyRegistrationCard({ canWrite, readOnlyReason }: PolicyCardA
       saveEnabled={async (enabled) => (await updateRegistrationStatus({ enabled })).enabled}
       switchId="policy-registration-enabled"
       switchLabel="允许新用户公开注册"
-      hint="变更后立即对全站登录与注册入口生效。"
+      hint="保存后立即对全站登录与注册入口生效。"
       successText={(enabled) => (enabled ? '已开放公开注册' : '已关闭公开注册')}
       canWrite={canWrite}
       readOnlyReason={readOnlyReason}

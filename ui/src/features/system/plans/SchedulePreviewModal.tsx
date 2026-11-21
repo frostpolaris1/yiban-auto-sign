@@ -63,7 +63,9 @@ export function SchedulePreviewModal({
       title="计划预览"
       scrollBody
       description={
-        target ? `${target.school_name} · ${target.task_name} · ${day}（只读预览，不写库）` : undefined
+        target
+          ? `${target.school_name} · ${target.task_name} · ${day}（当前仅预览，点击下方按钮才会写入）`
+          : undefined
       }
       returnFocusTo={returnFocusTo}
       footer={

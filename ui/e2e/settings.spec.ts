@@ -174,9 +174,9 @@ test('settings: a validation envelope is shown as the envelope', async ({ page }
 
   await submitChange(page, SESSION_PASSWORD, NEW_PASSWORD)
 
-  const alert = page.getByRole('alert').filter({ hasText: 'validation_failed' })
+  const alert = page.getByRole('alert').filter({ hasText: '请求参数不符合要求' })
   await expect(alert).toBeVisible()
-  await expect(alert).toContainText('new_password is required')
+  await expect(alert).not.toContainText('validation_failed')
   expect(changePasswordCalls(api), 'the request was attempted once').toHaveLength(1)
 })
 
@@ -427,9 +427,8 @@ test('settings: a failed notification save keeps the switch in place and reports
     .toBe(1)
   await expect(toggle).toHaveAttribute('aria-checked', 'false')
   const row = page.locator('tr').filter({ hasText: '凭据失效' })
-  await expect(row.getByRole('alert')).toContainText(
-    'validation_failed · invalid notification subscription',
-  )
+  await expect(row.getByRole('alert')).toContainText('请求参数不符合要求，请核对后重试')
+  await expect(row.getByRole('alert')).not.toContainText('validation_failed')
   await expect(toast(page)).toHaveCount(0)
 })
 
@@ -458,7 +457,8 @@ test('settings: initial notification load error offers retry and recovers', asyn
   await openSettings(page)
 
   const card = page.locator('.card').filter({ hasText: '通知订阅' })
-  await expect(card.getByRole('alert')).toContainText('db down')
+  await expect(card.getByRole('alert')).toContainText('服务暂不可用，请稍后重试')
+  await expect(card.getByRole('alert')).not.toContainText('internal_error')
   await card.getByRole('button', { name: '重试' }).click()
 
   await expect(card.getByRole('switch', { name: '凭据失效 · 站内信' })).toHaveAttribute(

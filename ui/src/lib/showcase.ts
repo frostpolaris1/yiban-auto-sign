@@ -561,8 +561,11 @@ export function showcaseAuditLogs(
 /**
  * 运行页（单页）。五条覆盖五个任务状态与两所学校，含未认领行。
  * 手机号只有掩码形态；学校与任务是合成词；时刻是合成业务日。
+ * 支持按 `state`、`school_id`、`q` 过滤，使展示态筛选交互与真实后端口径一致。
  */
-export function showcaseRunPage(): TaskPage {
+export function showcaseRunPage(
+  query: { state?: string; school_id?: string; q?: string } = {},
+): TaskPage {
   const base = '2026-10-31'
   const at = (hour: number, minute: number) => `${base}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+08:00`
   const rows: AdminTaskRow[] = [
@@ -637,7 +640,16 @@ export function showcaseRunPage(): TaskPage {
       updated_at: at(9, 11),
     },
   ]
-  return { items: rows, next_cursor: '' }
+  const keyword = (query.q ?? '').trim().toLowerCase()
+  const filtered = rows.filter((row) => {
+    if (query.state && row.state !== query.state) return false
+    if (query.school_id && row.school_id !== query.school_id) return false
+    if (!keyword) return true
+    return [row.school_name, row.task_name, row.account_phone_masked, row.result].some((field) =>
+      field.toLowerCase().includes(keyword),
+    )
+  })
+  return { items: filtered, next_cursor: '' }
 }
 
 /**

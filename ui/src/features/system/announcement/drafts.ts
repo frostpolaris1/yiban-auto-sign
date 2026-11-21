@@ -22,6 +22,11 @@ export function countAnnouncementChars(raw: string): number {
   return Array.from(raw.trim()).length
 }
 
+/** 检测输入是否含物理换行/行分隔符，供编辑态即时反馈与提交态校验同源使用。 */
+export function hasAnnouncementLineBreak(raw: string): boolean {
+  return LINE_BREAK_RE.test(raw)
+}
+
 export type AnnouncementValidationResult =
   | { valid: true; text: string }
   | { valid: false; error: string }

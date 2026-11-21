@@ -48,6 +48,34 @@
   transform: translate(-50%, -50%);
 }
 
+/* F-06：移动端 390 下弹窗全屏，对齐 Drawer 的移动端全屏先例。 */
+@media (max-width: 640px) {
+  .app-modal {
+    inset: 0;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    transform: none;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .app-modal .modal-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .app-modal .modal-head,
+  .app-modal .modal-foot {
+    flex-shrink: 0;
+  }
+}
+
 .app-modal:focus {
   outline: none;
 }
@@ -535,7 +563,6 @@
   background: var(--overlay);
   -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
-  animation: app-fade-in 160ms ease-out;
 }
 
 .app-drawer {
@@ -550,7 +577,6 @@
   background: var(--bg-card);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
-  animation: app-drawer-in 180ms ease-out;
 }
 
 .app-drawer:focus {
@@ -1393,6 +1419,49 @@
   font-size: 13px;
 }
 
+/* 08 批 3：全局骨架屏（替代纯文字「加载中…」），减动效时静置。 */
+.app-async-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.app-skeleton-line {
+  display: block;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--bg-muted);
+}
+
+.app-skeleton-line--sm {
+  width: 38%;
+}
+
+.app-skeleton-line--md {
+  width: 64%;
+}
+
+.app-skeleton-line--lg {
+  width: 88%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .app-skeleton-line {
+    animation: app-skeleton-pulse 1.5s ease-in-out infinite;
+  }
+}
+
+@keyframes app-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 .app-async-error {
   display: flex;
   flex-direction: column;
@@ -1817,7 +1886,10 @@ a.kpi-card {
   color: var(--t-base);
 }
 .app-capacity-meter-status.t-success {
-  color: color-mix(in srgb, var(--success) 65%, var(--t-base));
+  color: color-mix(in srgb, var(--success) 60%, var(--t-base));
+}
+:root[data-theme="dark"] .app-capacity-meter-status.t-success {
+  color: var(--success);
 }
 .app-capacity-meter-status.t-warning {
   color: color-mix(in srgb, var(--warning) 60%, var(--t-base));
@@ -1929,13 +2001,224 @@ a.kpi-card {
   background: var(--primary);
 }
 
+/* ---------- 08 批 1：顶栏不透明、全站对比度派生与实色语义按钮 ----------
+ * 全部走 DESIGN-CONTRACT §1 派生路径（color-mix + 既有令牌），零新增令牌、零颜色字面量。
+ * - F-01：.d-topbar 提到 94% 不透明，消除滚动内容与面包屑叠印；html 补 scroll-padding-top 防焦点遮挡。
+ * - F-04：表头/占位/面包屑分隔/搜索触发/弱字统一 88% --t-muted + 12% --t-base（浅 ≥4.91 / 深 ≥7.52）。
+ * - 危险描边/必填星号/字段错字浅色用 75% --danger + 25% --t-base（5.44:1）；角标浅 5.44 / 深 6.81。
+ * - 浅色实色语义按钮白字对比不足（画廊/删除弹窗），底色按 sRGB 混入 --t-base 压深过 AA（≥4.86）；
+ *   暗色实色语义按钮改反色字 var(--t-inverse)（≥6.81）。
+ */
+html {
+  scroll-padding-top: 76px;
+}
+
+.d-topbar {
+  background: var(--bg-body);
+}
+
+.data-table thead th,
+.table thead th,
+.input::placeholder,
+.textarea::placeholder,
+.crumbs .sep,
+.tab:not(.is-active),
+.cmd {
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+}
+
+:root[data-theme="light"] .btn--outline-danger,
+:root[data-theme="light"] .btn--soft-danger,
+:root[data-theme="light"] .field-label .req,
+:root[data-theme="light"] .field-error {
+  color: color-mix(in srgb, var(--danger) 75%, var(--t-base));
+}
+
+:root[data-theme="light"] .btn--outline-danger {
+  border-color: color-mix(in srgb, var(--danger) 75%, var(--t-base));
+}
+
+:root[data-theme="light"] .icon-btn .count.danger {
+  background: color-mix(in srgb, var(--danger) 75%, var(--t-base));
+  color: var(--t-inverse);
+}
+
+:root[data-theme="dark"] .icon-btn .count.danger {
+  background: var(--danger);
+  color: var(--t-inverse);
+}
+
+:root[data-theme="light"] .btn--danger {
+  background: color-mix(in srgb, var(--danger) 75%, var(--t-base));
+  color: var(--t-inverse);
+}
+:root[data-theme="light"] .btn--danger:hover {
+  background: color-mix(in srgb, var(--danger) 65%, var(--t-base));
+}
+
+:root[data-theme="light"] .btn--success {
+  background: color-mix(in srgb, var(--success) 58%, var(--t-base));
+  color: var(--t-inverse);
+}
+:root[data-theme="light"] .btn--success:hover {
+  background: color-mix(in srgb, var(--success) 50%, var(--t-base));
+}
+
+:root[data-theme="light"] .btn--warning {
+  background: color-mix(in srgb, var(--warning) 52%, var(--t-base));
+  color: var(--t-inverse);
+}
+:root[data-theme="light"] .btn--warning:hover {
+  background: color-mix(in srgb, var(--warning) 45%, var(--t-base));
+}
+
+:root[data-theme="light"] .btn--info {
+  background: color-mix(in srgb, var(--info) 60%, var(--t-base));
+  color: var(--t-inverse);
+}
+:root[data-theme="light"] .btn--info:hover {
+  background: color-mix(in srgb, var(--info) 52%, var(--t-base));
+}
+
+:root[data-theme="dark"] .btn--danger,
+:root[data-theme="dark"] .btn--success,
+:root[data-theme="dark"] .btn--warning,
+:root[data-theme="dark"] .btn--info {
+  color: var(--t-inverse);
+}
+
+/* 总览首屏一句话快捷直达（C2-#16 C1 缺口）：纯行内链接条，不加卡。 */
+.app-quick-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: -6px 0 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+}
+
+.app-quick-links-label {
+  font-weight: 500;
+}
+
+.app-quick-links-sep {
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+}
+
+.app-quick-links .app-inline-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.app-quick-links .app-inline-link::after {
+  content: "";
+  position: absolute;
+  inset: -13px -4px;
+}
+
+.app-quick-links .app-inline-link:hover {
+  text-decoration: underline;
+}
+
+/* ---------- 08 批 2：全站触达 ≥44px 热区扩充（F-05） ----------
+ * 桌面端用 ::after 透明扩区保持视觉紧凑，不改组件外观与表行 48px 高度；
+ * 禁用态取消扩区避免假命中；粗指针（touch）与移动抽屉抬高实体高度避免相邻热区互叠。
+ */
+.d-topbar .topbar-actions {
+  gap: 8px;
+}
+
+.d-topbar .hamburger,
+.d-topbar .avatar {
+  position: relative;
+}
+
+.d-topbar .icon-btn::after,
+.d-topbar .hamburger::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+
+.d-topbar .avatar::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+}
+
+.app-row-actions .btn,
+.app-account-actions .btn,
+.run-task-row .btn,
+.run-table .btn,
+.run-pager .btn,
+.app-page-actions .btn {
+  position: relative;
+}
+
+.app-row-actions .btn::after,
+.app-account-actions .btn::after,
+.run-task-row .btn::after,
+.run-table .btn::after,
+.run-pager .btn::after,
+.app-page-actions .btn::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+.app-row-actions .btn:disabled::after,
+.app-account-actions .btn:disabled::after,
+.run-task-row .btn:disabled::after,
+.run-table .btn:disabled::after,
+.run-pager .btn:disabled::after,
+.app-page-actions .btn:disabled::after {
+  content: none;
+}
+
+.app-card-tabs button {
+  position: relative;
+}
+
+.app-card-tabs button::after {
+  content: "";
+  position: absolute;
+  inset: -10px 0;
+}
+
+@media (max-width: 720px) {
+  .d-topbar .topbar-actions {
+    gap: 8px;
+  }
+
+  .d-sidebar .nav-link,
+  .d-sidebar .nav-submenu a {
+    min-height: 44px;
+    height: auto;
+  }
+}
+
+@media (pointer: coarse) {
+  .d-sidebar .nav-link,
+  .d-sidebar .nav-submenu a,
+  .app-page-actions .btn,
+  .run-pager .btn,
+  .app-card-tabs button {
+    min-block-size: 44px;
+    height: auto;
+  }
+}
+
 @media (max-width: 720px) {
   .kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 .app-card-tabs { display: inline-flex; gap: 4px; }
-.app-card-tabs button { border: 1px solid var(--border); background: var(--bg-muted); color: var(--t-muted); border-radius: 999px; padding: 2px 12px; font-size: 12px; cursor: pointer; }
+.app-card-tabs button { border: 1px solid var(--border); background: var(--bg-muted); color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base)); border-radius: 999px; padding: 2px 12px; font-size: 12px; cursor: pointer; }
 .app-card-tabs button.on { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); font-weight: 700; }
 .app-chart-box--scroll { overflow-x: auto; }
 .app-health-chip-link { color: inherit; text-decoration: none; }
@@ -2069,12 +2352,44 @@ a.kpi-card {
   }
 }
 
-/* 趋势/分布页签切换：轻量淡入上移，减动效时直切。 */
+/* 趋势/分布页签切换与通用页签/弹层克制动效：只动 opacity 与 transform，
+ * 仅在 prefers-reduced-motion: no-preference 下启用，减动效默认静置无闪烁。 */
 .app-chart-swap {
   position: relative;
   height: 100%;
-  animation: app-chart-swap 0.18s ease;
 }
+
+@media (prefers-reduced-motion: no-preference) {
+  .app-chart-swap,
+  .tab-panel.is-active {
+    animation: app-chart-swap 180ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+
+  .app-drawer-backdrop,
+  .app-modal-backdrop {
+    animation: app-fade-in 160ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+
+  .app-drawer {
+    animation: app-drawer-in 220ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+
+  .app-modal {
+    animation: app-modal-in 160ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+
+  .dd-menu[data-state="open"] {
+    transform-origin: var(--radix-dropdown-menu-content-transform-origin, top right);
+    animation: app-menu-in 150ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+}
+
+@media (max-width: 640px) and (prefers-reduced-motion: no-preference) {
+  .app-modal {
+    animation: app-fade-in 160ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+}
+
 @keyframes app-chart-swap {
   from {
     opacity: 0;
@@ -2085,9 +2400,32 @@ a.kpi-card {
     transform: none;
   }
 }
+
+@keyframes app-modal-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes app-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app-select-content,
-  .app-chart-swap {
+  .tab-panel.is-active {
     animation: none;
   }
 }
@@ -2124,7 +2462,7 @@ a.kpi-card {
   letter-spacing: -0.02em;
 }
 .d-sidebar .brand-tag {
-  color: var(--t-muted);
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
   font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 9px;
   font-weight: 500;
@@ -2139,7 +2477,7 @@ a.kpi-card {
   align-items: center;
   gap: 8px;
   padding: 12px 6px 7px;
-  color: var(--t-muted);
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
   font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 9.5px;
   font-weight: 500;
@@ -2158,7 +2496,6 @@ a.kpi-card {
   margin-left: auto;
   font-size: 8px;
   letter-spacing: 0.04em;
-  opacity: 0.72;
 }
 .d-sidebar .nav-link {
   position: relative;
@@ -2172,7 +2509,7 @@ a.kpi-card {
   padding: 0 10px;
   border: 1px solid transparent;
   border-radius: 10px;
-  color: var(--t-muted);
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
   font-size: 12.8px;
   font-weight: 500;
   line-height: 1;
@@ -2292,7 +2629,7 @@ a.kpi-card {
   font-weight: 600;
 }
 .d-sidebar .workspace-role {
-  color: var(--t-muted);
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
   font-size: 10px;
 }
 @media (min-width: 721px) and (max-width: 1100px) {

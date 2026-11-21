@@ -103,7 +103,7 @@
 
 .sys-section-head .sys-section-desc {
   margin: 0;
-  color: var(--t-muted);
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
   font-size: 13px;
 }
 
@@ -279,6 +279,12 @@
   content: none;
 }
 
+@media (pointer: coarse) {
+  .sys-card-actions .btn {
+    min-block-size: 44px;
+  }
+}
+
 /* 策略卡开关行：轨道视觉不变，行触控高度抬到 44（同队列页表单档）。 */
 .sys-switch-field .app-switch {
   min-block-size: 44px;
@@ -288,6 +294,16 @@
   margin: 0;
   font-size: 12.5px;
   color: var(--t-muted);
+}
+
+.sys-dirty-note {
+  font-size: 12px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--warning) 55%, var(--t-base));
+}
+
+:root[data-theme="dark"] .sys-dirty-note {
+  color: var(--warning);
 }
 
 .sys-announcement-preview {

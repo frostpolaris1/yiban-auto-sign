@@ -461,7 +461,8 @@ test('a failed list shows the envelope and can retry', async ({ page }) => {
     listError: { status: 502, code: 'upstream_unavailable', message: '学校服务不可用' },
   })
   await page.goto('/schools')
-  await expect(page.getByText('upstream_unavailable · 学校服务不可用')).toBeVisible()
+  await expect(page.getByText('学校服务不可用')).toBeVisible()
+  await expect(page.getByText('upstream_unavailable')).toHaveCount(0)
 
   const before = listSchoolCalls(api).length
   await page.getByRole('button', { name: '重试' }).click()

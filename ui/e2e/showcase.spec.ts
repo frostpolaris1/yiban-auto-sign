@@ -386,6 +386,12 @@ test('invariant 13: the showcase logs page renders both tabs with zero requests'
   await expect(page.getByRole('heading', { level: 1, name: /签到\s*台账/ })).toBeVisible()
   await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toContainText('138****8001')
 
+  // 演示夹具同样遵循 state 筛选参数，仅展示匹配状态行。
+  await page.goto('/logs?tab=events&state=failed')
+  const lane = page.getByRole('region', { name: '泳道 合成学校甲' })
+  await expect(lane).toContainText('138****8003')
+  await expect(lane).not.toContainText('138****8001')
+
   await page.getByRole('tab', { name: '运行巡检' }).click()
   await expect(page.getByRole('heading', { name: '在飞清单' })).toBeVisible()
   await expect(page.locator('dl', { hasText: '待执行' })).toContainText('3')
