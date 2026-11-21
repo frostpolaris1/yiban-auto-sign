@@ -208,6 +208,25 @@ async function expectData(page: Page, path: string) {
   }
 }
 
+/** 等页面级动画全部落定。
+ *
+ * Playwright 的 `animations: 'disabled'` 是在截图那一刻把**已在册**的动画快进到终点；
+ * 若弹窗/抽屉的入场动画在那一刻之后才被 React 挂上（`both` 填充），截到的就是中间帧
+ * ——学校新建弹窗曾因此拍到 1.3 万像素的半透明叠影（背后列表整行透出来）。
+ * 无限循环的装饰动画（骨架脉冲等）不算未落定。
+ */
+async function waitForAnimations(page: Page) {
+  await page.waitForFunction(() =>
+    document
+      .getAnimations()
+      .every(
+        (animation) =>
+          animation.playState !== 'running' ||
+          animation.effect?.getTiming().iterations === Infinity,
+      ),
+  )
+}
+
 /** 等一组滚动数字全部落定：逐个断言可见终值，避免拍到中间帧。 */
 async function expectNumbers(scope: Locator, expected: readonly string[]) {
   // 个数也要钉：新增一格而没写期望值时，这里会红而不是静默跳过。
@@ -411,6 +430,8 @@ for (const theme of THEMES) {
     await openWithTheme(page, '/schools', theme)
     await page.getByRole('button', { name: '新建学校' }).click()
     await expect(page.getByRole('dialog', { name: '新建学校？' })).toBeVisible()
+    // 入场动画（app-modal-in 160ms，scale 0.97→1 + 淡入）未落定时截图会拍到叠影。
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`schools-create-${theme}-1440.png`)
   })
 
