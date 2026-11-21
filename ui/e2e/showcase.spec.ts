@@ -24,6 +24,8 @@ import { visibleText } from './support/visible-text'
  *
  * invariant 10：账号抽屉的照片区在展示构建里显示合成占位，零 `/api/` 请求。
  * 照片区在正式构建只对 user/admin 渲染；展示会话是 master，故靠展示分支放行。
+ *
+ * invariant 12：审计日志页取合成台账与巡检结论，筛选项与详情抽屉照常可读，零 `/api/` 请求。
  */
 
 /** 界面上的只读原因。断言用户可见文本，不导入实现常量。 */
@@ -56,7 +58,8 @@ test('invariant 7: the showcase dashboard renders fixtures with zero requests', 
   await expect.poll(() => visibleText(total.locator('.kpi-value'))).toBe('3个')
 
   const card = page.locator('.card').filter({ hasText: '容量体检' })
-  await expect(page.getByLabel('任务')).toHaveValue('school-a:task-daily')
+  // 容量卡改用 Radix Select：触发器是按钮，断言可见文案而非原生 value。
+  await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日点名')
   await expect
     .poll(() => visibleText(card.locator('.app-metric').filter({ hasText: '容量' })))
     .toBe('容量24')
@@ -180,12 +183,19 @@ test('invariant 8: the schools page blocks create and edit while the admins list
   expect(apiRequests, 'a read-only showcase sends no school write').toEqual([])
 })
 
-test('invariant 8: the schedule preview opens read-only and blocks both write buttons', async ({
+test('invariant 8: the system plans preview opens read-only and blocks both write buttons', async ({
   page,
 }) => {
   const apiRequests = trackApiRequests(page)
+  // 04d 自检探针不带 /api 前缀：展示构建同样必须零网络。
+  const probeRequests: string[] = []
+  page.on('request', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname === '/healthz') probeRequests.push(url.pathname)
+  })
 
-  await page.goto('/schedule')
+  await page.goto('/system')
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('系统设置')
   await expect(page.getByRole('table', { name: '时间片窗口' })).toBeVisible()
 
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).first().click()
@@ -204,8 +214,40 @@ test('invariant 8: the schedule preview opens read-only and blocks both write bu
     await button.click({ force: true })
   }
   await expect(dialog.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+
+  // /system 04c：策略 / 公告 / 渠道全数展示合成数据且写操作全部置灰，零写请求。
+  await expect(page.locator('#policy')).toContainText('全站活跃用户上限')
+  await expect(page.locator('#announcement')).toContainText('示例公告')
+  // /system 04d：名册与版本两分区取合成夹具——敏感键只显掩码，自检零网络。
+  await expect(page.locator('#roster')).toContainText('YIBAN_MAIL_PASS')
+  await expect(page.locator('#roster')).toContainText('****')
+  await expect(page.locator('#roster')).toContainText('已设置')
+  await expect(page.locator('#version')).toContainText('进程在应答')
+  for (const sectionButton of [
+    page.locator('#policy-registration-card').getByRole('button', { name: '保存设置' }),
+    page.locator('#policy-auto-approve-card').getByRole('button', { name: '保存设置' }),
+    page.locator('#policy-quota-card').getByRole('button', { name: '保存配额' }),
+    page.locator('#policy-schedule-card').getByRole('button', { name: '保存调度策略' }),
+    page.locator('#announcement').getByRole('button', { name: '发布公告' }),
+    page.locator('#channels').getByRole('button', { name: '测试邮件' }),
+    page.locator('#channels').getByRole('button', { name: '测试 Webhook' }),
+  ]) {
+    await expect(sectionButton).toBeDisabled()
+    await expect(sectionButton).toHaveAttribute('title', READ_ONLY_REASON)
+    await sectionButton.click({ force: true })
+  }
+
+  // 展示构建侧栏保留「设计系统」入口，可展开并跳至 /design。
+  const group = page.locator('.d-sidebar').getByRole('button', { name: '设计系统' })
+  await expect(group).toHaveAttribute('aria-expanded', 'false')
+  await group.click()
+  await expect(group).toHaveAttribute('aria-expanded', 'true')
+  await page.locator('.d-sidebar').getByRole('link', { name: '组件画廊' }).click()
+  await expect(page).toHaveURL(/\/design$/)
 
   expect(apiRequests, 'a read-only showcase sends no schedule write').toEqual([])
+  expect(probeRequests, 'a read-only showcase never probes /healthz').toEqual([])
 })
 
 test('invariant 8: the settings page shows the read-only reason and sends no password change', async ({
@@ -281,4 +323,96 @@ test('invariant 10: the showcase drawer shows synthetic photos with zero request
   await expect(drawer.getByRole('button', { name: '上传照片' })).toHaveCount(0)
 
   expect(apiRequests, 'the photo fixture never touches the API').toEqual([])
+})
+
+test('invariant 11: the showcase queue page renders fixtures with zero requests and disabled writes', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/queue')
+  await expect(page.getByRole('heading', { level: 1, name: /今日\s*待办/ })).toBeVisible()
+  await expect(page.locator('[data-queue-group="pending"]')).toContainText('138****8000')
+  await expect(page.locator('[data-queue-group="failed"]')).toContainText('138****8003')
+  await expect(page.locator('[data-queue-group="unsigned"]')).toContainText('138****8004')
+
+  const approveBtn = page.getByRole('button', { name: '通过 138****8000' })
+  await expect(approveBtn).toBeDisabled()
+  await expect(approveBtn).toHaveAttribute('title', READ_ONLY_REASON)
+  // 只读必须看得出来：禁用态要有视觉与指针差异，不能只看 disabled 属性
+  expect(await approveBtn.evaluate((el) => getComputedStyle(el).cursor)).toBe('not-allowed')
+
+  const retryBtn = page.getByRole('button', { name: '重试 138****8003' })
+  await expect(retryBtn).toBeDisabled()
+  await expect(retryBtn).toHaveAttribute('title', READ_ONLY_REASON)
+  expect(await retryBtn.evaluate((el) => getComputedStyle(el).cursor)).toBe('not-allowed')
+
+  // 详情抽屉在展示模式下仍可读合成诊断
+  await page.getByRole('button', { name: '详情 138****8003' }).click()
+  const drawer = page.getByRole('dialog', { name: '诊断 · 138****8003' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer).toContainText('credential_invalid')
+
+  expect(apiRequests, 'the showcase queue page never touches the API').toEqual([])
+})
+
+test('invariant 12: the showcase audit page renders fixtures with zero requests', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/audit')
+  await expect(page.getByRole('heading', { level: 1, name: /审计\s*日志/ })).toBeVisible()
+  await expect(page.locator('[data-audit-row]')).toHaveCount(8)
+  await expect(page.locator('[data-audit-verdict]')).toContainText('链完好')
+  await expect(page.getByText('auth.login', { exact: true })).toBeVisible()
+
+  // 只读台账：筛选与详情仍可用，且都不发网络请求。
+  await expect(page.getByLabel('动作筛选')).toBeEnabled()
+  await page.getByRole('button', { name: '查看详情 #1042' }).click()
+  const drawer = page.getByRole('dialog', { name: '审计详情' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer).toContainText('"result":"ok"')
+
+  expect(apiRequests, 'the audit fixture never touches the API').toEqual([])
+})
+
+test('invariant 13: the showcase logs page renders both tabs with zero requests', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/logs?tab=events')
+  await expect(page.getByRole('heading', { level: 1, name: /签到\s*台账/ })).toBeVisible()
+  await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toContainText('138****8001')
+
+  // 演示夹具同样遵循 state 筛选参数，仅展示匹配状态行。
+  await page.goto('/logs?tab=events&state=failed')
+  const lane = page.getByRole('region', { name: '泳道 合成学校甲' })
+  await expect(lane).toContainText('138****8003')
+  await expect(lane).not.toContainText('138****8001')
+
+  await page.getByRole('tab', { name: '运行巡检' }).click()
+  await expect(page.getByRole('heading', { name: '在飞清单' })).toBeVisible()
+  await expect(page.locator('dl', { hasText: '待执行' })).toContainText('3')
+
+  expect(apiRequests, 'the logs fixture never touches the API').toEqual([])
+})
+
+test('invariant 14: the showcase settings notify matrix renders fixtures with zero requests', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/settings')
+  const card = page.locator('.card').filter({ hasText: '通知订阅' })
+  await expect(card).toBeVisible()
+  await expect(card).toContainText(READ_ONLY_REASON)
+
+  const toggle = card.getByRole('switch', { name: '凭据失效 · 站内信' })
+  await expect(toggle).toBeDisabled()
+  await expect(toggle).toHaveAttribute('title', READ_ONLY_REASON)
+  await toggle.click({ force: true })
+
+  expect(apiRequests, 'a read-only showcase sends no admin notify request').toEqual([])
 })

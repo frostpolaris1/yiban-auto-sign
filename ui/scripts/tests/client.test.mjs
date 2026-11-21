@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ApiError, apiRequest } from '../../src/lib/api/client.ts'
+import { ApiError, apiRequest, describeApiError, describeReauthError } from '../../src/lib/api/client.ts'
 
 /**
  * Fetch-level checks for apiRequest.
@@ -408,4 +408,72 @@ test('a 304 hit refreshes the cache order so polling keys survive eviction', asy
     null,
     'the key that was actually oldest is evicted',
   )
+})
+
+test('describeApiError strips internal code prefixes and maps raw English errors to Chinese', () => {
+  assert.equal(
+    describeApiError(new ApiError(500, { code: 'internal_error', message: '统计读取失败' })),
+    '统计读取失败',
+  )
+  assert.equal(
+    describeApiError(new ApiError(500, { code: 'internal_error', message: 'db down' })),
+    '服务暂不可用，请稍后重试',
+  )
+  assert.equal(
+    describeApiError(new ApiError(400, { code: 'validation_failed', message: 'bad pair' })),
+    '请求参数不符合要求，请核对后重试',
+  )
+  assert.equal(
+    describeApiError(new ApiError(413, { code: 'validation_failed', message: 'request body too large' })),
+    '提交内容超出大小限制，请精简后重试',
+  )
+  assert.equal(
+    describeApiError(new ApiError(429, { code: 'rate_limited', message: 'too fast' }, 30)),
+    '请求过于频繁，请在 30 秒后重试',
+  )
+})
+
+test('ApiError captures numeric Retry-After seconds from 429 responses', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({ error: { code: 'rate_limited', message: 'cooldown active' } }),
+      {
+        status: 429,
+        headers: { 'Content-Type': 'application/json', 'Retry-After': '42' },
+      },
+    )
+  try {
+    await assert.rejects(
+      () => apiRequest('/api/admin/mail/test', { method: 'POST', body: '{"current_password":"x"}' }),
+      (error) => {
+        assert.ok(error instanceof ApiError)
+        assert.equal(error.status, 429)
+        assert.equal(error.code, 'rate_limited')
+        assert.equal(error.retryAfterSec, 42)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+/**
+ * 二次口令的失败文案：400/403 与「口令连续失败」的 429 各有一条固定文案；
+ * 业务容量拒绝的 429 不得冒用口令文案。
+ */
+test('describeReauthError maps password failures and leaves business 429 alone', () => {
+  const error = (status, code, message = 'detail') => new ApiError(status, { code, message })
+
+  assert.equal(describeReauthError(error(400, 'validation_failed')), '缺少本站登录口令，或填写内容不合法。')
+  assert.equal(describeReauthError(error(403, 'forbidden')), '口令不正确，或当前状态不允许这个操作。')
+  assert.equal(describeReauthError(error(429, 'rate_limited')), '尝试过多，请稍后再试。')
+  // 业务 429 走服务端中文消息原样透出，不得被口令文案或英文兜底吞掉。
+  assert.equal(
+    describeReauthError(error(429, 'capacity_exceeded', '容量不足，无法排入当前窗口')),
+    '容量不足，无法排入当前窗口',
+  )
+  // 非 ApiError 走中文兜底，不再直出原始错误正文。
+  assert.equal(describeReauthError(new Error('offline')), '请求异常，请稍后重试')
 })

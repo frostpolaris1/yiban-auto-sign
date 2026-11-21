@@ -1,18 +1,18 @@
 /**
  * **功能**
- * 看板三张图的纯逻辑：数据 → Chart.js 配置与摘要文案。
+ * 看板双图的纯逻辑：数据 → Chart.js 配置与摘要文案。
  *
  * **归属**
  * `features/dashboard` 展示层：无 React、无网络；canvas 生命周期在 ChartCanvas。
  *
  * **口径**
- * 只画契约给的字段：日桶互斥、by_status 桶间可重叠，摘要不许把桶相加当总数。
+ * 只画契约给的字段：日桶互斥，不重复绘制与趋势同源的环形分布图。
  * 空数据返回 null，由卡片给空态文案，不画空坐标轴。
  * 颜色只从调用方给的主题调色板取，不在本文件写色值。
  * 趋势只画三天主序列；待签/进行中只在窗口内出现过时才进图例。
  */
 
-import type { ChartConfiguration } from 'chart.js'
+import type { ChartConfiguration, Plugin } from 'chart.js'
 import type { PrefStatsReport, SignStatsReport } from '@/lib/api/stats'
 
 export type ChartPalette = {
@@ -122,7 +122,7 @@ export function trendConfig(
   }
 }
 
-/** 分布图：按状态去重的账号数。全零时返回 null。 */
+/** 自选拥挤度：柱=人数，线=每片容量。无槽时返回 null。 */
 export function distributionConfig(
   report: SignStatsReport | undefined,
   palette: ChartPalette,
@@ -166,7 +166,31 @@ export function distributionConfig(
   }
 }
 
-/** 自选拥挤度：柱=人数，线=每片容量。无槽时返回 null。 */
+/** 容量阈值线：横贯绘图区左右边缘，不受分类轴半格内缩影响。 */
+function prefCapacityLine(report: PrefStatsReport, palette: ChartPalette): Plugin {
+  const cap = report.slots[0]?.cap ?? 0
+  return {
+    id: 'prefCapacityLine',
+    afterDraw(chart) {
+      if (cap <= 0) return
+      const scale = chart.scales.y
+      if (!scale) return
+      const y = scale.getPixelForValue(cap)
+      if (!Number.isFinite(y)) return
+      const { ctx, chartArea } = chart
+      ctx.save()
+      ctx.setLineDash([6, 4])
+      ctx.lineWidth = 2
+      ctx.strokeStyle = palette.warning
+      ctx.beginPath()
+      ctx.moveTo(chartArea.left, y)
+      ctx.lineTo(chartArea.right, y)
+      ctx.stroke()
+      ctx.restore()
+    },
+  }
+}
+
 export function prefConfig(
   report: PrefStatsReport | undefined,
   palette: ChartPalette,
@@ -183,19 +207,9 @@ export function prefConfig(
           backgroundColor: palette.primary,
           order: 2,
         },
-        {
-          type: 'line',
-          label: '每片容量',
-          data: report.slots.map((slot) => slot.cap),
-          borderColor: palette.warning,
-          backgroundColor: palette.warning,
-          borderDash: [6, 4],
-          pointRadius: 0,
-          borderWidth: 2,
-          order: 1,
-        },
       ],
     },
+    plugins: [prefCapacityLine(report, palette)],
     options: {
       ...BASE_OPTIONS,
       plugins: {

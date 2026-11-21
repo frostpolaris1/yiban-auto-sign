@@ -19,14 +19,17 @@ export const SCHOOL_VIEW_ROLES: readonly Role[] = ['master', 'admin']
 /** `/api/schedule/*` 与 `/api/capacity` 的 `x-roles`：时间片是管理页。 */
 export const SCHEDULE_VIEW_ROLES: readonly Role[] = ['master', 'admin']
 
+/** `/system` 系统设置页准入角色：master/admin 进页，user 落拒绝卡。 */
+export const SYSTEM_VIEW_ROLES: readonly Role[] = ['master', 'admin']
+
 /** `GET /api/users` 的 `x-roles`：用户管理只归 master。 */
 export const USER_VIEW_ROLES: readonly Role[] = ['master']
 
 /** `GET /api/admin/tasks` 的 `x-roles`：运行页是管理页（UX-3）。 */
 export const RUN_VIEW_ROLES: readonly Role[] = ['master', 'admin']
 
-/** `GET /api/admin/engine` 的 `x-roles`：执行监控是管理页（UX-5）。 */
-export const ENGINE_VIEW_ROLES: readonly Role[] = ['master', 'admin']
+/** `/api/admin/notify` 的 `x-roles`：账号设置仅开放管理角色（user 由 App 承接）。 */
+export const SETTINGS_VIEW_ROLES: readonly Role[] = ['master', 'admin']
 
 /** 角色为 null（会话未识别）时一律拒绝。 */
 export function roleAllowed(role: Role | null | undefined, allowed: readonly Role[]): boolean {

@@ -10,7 +10,16 @@
  * 只存 `light` 或 `dark`。**凭据永不写入此处**。
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
+import { flushSync } from 'react-dom'
 
 export type Theme = 'light' | 'dark'
 
@@ -55,10 +64,45 @@ function persistTheme(theme: Theme): void {
   }
 }
 
+export type ToggleOrigin = { x: number; y: number }
+
+/** 点击位置换算成圆形揭幕的原点：键盘触发落在按钮中心。 */
+export function originFromEvent(event: {
+  currentTarget: Element
+  clientX: number
+  clientY: number
+  detail: number
+}): ToggleOrigin {
+  const rect = event.currentTarget.getBoundingClientRect()
+  if (event.detail === 0) {
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+  }
+  return { x: event.clientX, y: event.clientY }
+}
+
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (callback: () => void) => { ready: Promise<void>; finished: Promise<void> }
+}
+
+/** 圆要罩住最远的视口角。 */
+function unfoldRadius(origin: ToggleOrigin): number {
+  const w = window.innerWidth
+  const h = window.innerHeight
+  return Math.ceil(Math.hypot(Math.max(origin.x, w - origin.x), Math.max(origin.y, h - origin.y)))
+}
+
+function prefersReducedMotion(): boolean {
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  } catch {
+    return false
+  }
+}
+
 type ThemeContextValue = {
   theme: Theme
   setTheme: (theme: Theme) => void
-  toggleTheme: () => void
+  toggleTheme: (origin?: ToggleOrigin, clipTarget?: string) => void
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
@@ -75,13 +119,47 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     persistTheme(next)
   }, [])
 
-  const toggleTheme = useCallback(() => {
-    setThemeState((previous) => {
-      const next: Theme = previous === 'dark' ? 'light' : 'dark'
+  const toggleTheme = useCallback((origin?: ToggleOrigin, clipTarget?: string) => {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark'
+    // 回调内先同步落 data-theme，再 flush 提交 React 状态：
+    // 晚一步新快照就拍不到新主题。
+    const update = () => {
+      document.documentElement.setAttribute('data-theme', next)
       persistTheme(next)
-      return next
-    })
-  }, [])
+      flushSync(() => setThemeState(next))
+    }
+    const start = (document as ViewTransitionDocument).startViewTransition
+    if (!origin || typeof start !== 'function' || prefersReducedMotion()) {
+      update()
+      return
+    }
+    const transition = start.call(document, update)
+    const r = unfoldRadius(origin)
+    const clip = [
+      `circle(0px at ${origin.x}px ${origin.y}px)`,
+      `circle(${r}px at ${origin.x}px ${origin.y}px)`,
+    ]
+    const pseudo = clipTarget ?? '::view-transition-new(root)'
+    transition.ready
+      .then(() => {
+        document.documentElement.animate(
+          { clipPath: clip },
+          {
+            duration: 520,
+            easing: 'cubic-bezier(0.4, 0.14, 0.3, 1)',
+            fill: 'both',
+            pseudoElement: pseudo,
+          },
+        )
+        document.documentElement.animate(
+          { opacity: [0, 1] },
+          { duration: 120, easing: 'ease-out', fill: 'both', pseudoElement: pseudo },
+        )
+      })
+      .catch(() => {
+        /* 快照竞态失败保持直切结果，不重试动画。 */
+      })
+  }, [theme])
 
   const value = useMemo(() => ({ theme, setTheme, toggleTheme }), [theme, setTheme, toggleTheme])
 

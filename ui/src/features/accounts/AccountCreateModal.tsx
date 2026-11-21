@@ -10,7 +10,7 @@
  *
  * **口径**
  * 双形状按会话角色分（8v8）：user 两页——第 1 页学校、手机号、易班口令；
- * 第 2 页设备码只读（自动刷新一次）＋可选机型，「跳过」不阻断完成。
+ * 第 2 页设备信息按需读取（二次口令）＋可选机型，「跳过」不阻断完成。
  * master/admin 单页：多一个「绑定用户（选填）」邮箱字段，300ms 防抖查
  * lookup：命中带 id 提交，未注册给内联提示（不静默建号），留空＝自有。
  * 普通用户界面零邮箱字段：本组件按角色分支，user 分支不渲染任何邮箱输入。
@@ -29,6 +29,7 @@ import { BusyButton } from '@/components/ui/BusyButton'
 import { Button } from '@/components/ui/Button'
 import { FilterField } from '@/components/ui/FilterField'
 import { Modal } from '@/components/ui/Modal'
+import { ReauthDialog } from '@/components/ui/ReauthDialog'
 import {
   createAccount,
   refreshDevice,
@@ -37,7 +38,7 @@ import {
   type AccountCreateBody,
   type AccountDevice,
 } from '@/lib/api/account'
-import { describeApiError } from '@/lib/api/client'
+import { describeApiError, describeReauthError } from '@/lib/api/client'
 import { listAllSchools } from '@/lib/api/school'
 import { lookupUsers } from '@/lib/api/user'
 import type { Role } from '@/lib/api/auth'
@@ -304,7 +305,7 @@ function SchoolSelect({
   )
 }
 
-/** 第 2 页：自动读一次设备，成功只读展示；失败不阻断；机型可选。 */
+/** 第 2 页：按需读取设备信息，成功只读展示；失败不阻断；机型可选。 */
 function WizardStepTwo({
   open,
   account,
@@ -321,15 +322,22 @@ function WizardStepTwo({
   onClose: () => void
 }) {
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [deviceOpen, setDeviceOpen] = useState(false)
+  const [deviceReturnFocus, setDeviceReturnFocus] = useState<HTMLElement | null>(null)
 
   const device = useMutation({
-    mutationFn: () => refreshDevice(account.id),
+    mutationFn: (password: string) => refreshDevice(account.id, password),
+    onSuccess: () => setDeviceOpen(false),
   })
+
+  // 关闭即弃：口令与错误都不跨次复用。
   useEffect(() => {
-    if (open && !device.isPending && !device.data && !device.isError) {
-      device.mutate()
+    if (!open) {
+      device.reset()
+      setDeviceOpen(false)
+      setDeviceReturnFocus(null)
     }
-    // 只在进入第 2 页时自动读一次；重试由按钮触发。
+    // 只随弹窗开合变化；reset 是稳定回调，不进依赖。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
@@ -373,12 +381,27 @@ function WizardStepTwo({
       }
     >
       {device.isPending ? <p className="app-muted">正在从易班平台读取设备信息…</p> : null}
-      {device.isError ? (
-        <Alert tone="warning" title="设备信息读取失败">
-          {describeApiError(device.error)} 可稍后在账号详情中补录。
-        </Alert>
-      ) : null}
       {device.data ? <AccountDeviceView device={device.data as AccountDevice} /> : null}
+      {!device.isPending && !device.data ? (
+        <p className="app-muted">
+          设备信息需要你的登录口令二次确认后读取；也可跳过，稍后在账号详情补录。
+        </p>
+      ) : null}
+      <div className="app-detail-actions">
+        <BusyButton
+          variant="ghost"
+          size="sm"
+          busy={device.isPending}
+          busyLabel="读取中…"
+          onClick={(event) => {
+            device.reset()
+            setDeviceReturnFocus(event.currentTarget)
+            setDeviceOpen(true)
+          }}
+        >
+          读取设备信息
+        </BusyButton>
+      </div>
 
       <FilterField
         id="account-create-phone-model"
@@ -400,6 +423,23 @@ function WizardStepTwo({
           </Alert>
         </div>
       ) : null}
+
+      <ReauthDialog
+        open={deviceOpen}
+        title="读取设备信息？"
+        description="用已存凭据向易班平台读回设备登记字段；平台失败不会写入任何数据。"
+        confirmText="读取"
+        pending={device.isPending}
+        error={device.isError ? describeReauthError(device.error) : null}
+        returnFocusTo={deviceReturnFocus}
+        layer={2}
+        onClose={() => {
+          if (device.isPending) return
+          device.reset()
+          setDeviceOpen(false)
+        }}
+        onConfirm={(password) => device.mutate(password)}
+      />
     </Modal>
   )
 }

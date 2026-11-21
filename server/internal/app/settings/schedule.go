@@ -26,6 +26,7 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
@@ -49,6 +50,73 @@ const (
 	ScheduleOpClear = OpClear
 )
 
+// ScheduleSource 是调度设置生效值的来源词表（sett2 + 3b + 3c）。
+// 名册三键（edge/allow_time_pref）可取 db/env/default；五枚 DB-only 键只取 db/default。
+type ScheduleSource string
+
+const (
+	// ScheduleSourceDB 表示有效覆盖行（或完整默认窗口对）提供该键。
+	ScheduleSourceDB ScheduleSource = "db"
+	// ScheduleSourceEnv 表示进程环境提供该键（仅限名册三键）。
+	ScheduleSourceEnv ScheduleSource = "env"
+	// ScheduleSourceDefault 表示缺行或坏行，读内置缺省或配置名册缺省。
+	ScheduleSourceDefault ScheduleSource = "default"
+)
+
+const (
+	defaultEdgeFrontSec = 60
+	defaultEdgeBackSec  = 60
+)
+
+// ScheduleEnvInt 是整型名册调度键的进程 env/registry 兜底快照。
+type ScheduleEnvInt struct {
+	Value  int
+	Source ScheduleSource
+}
+
+// ScheduleEnvBool 是布尔名册调度键的进程 env/registry 兜底快照。
+type ScheduleEnvBool struct {
+	Value  bool
+	Source ScheduleSource
+}
+
+// ScheduleEnv 保存名册 3 枚可写调度键的进程兜底视图，由 assembly 从 Config+Env 构造注入。
+type ScheduleEnv struct {
+	EdgeFrontSec  ScheduleEnvInt
+	EdgeBackSec   ScheduleEnvInt
+	AllowTimePref ScheduleEnvBool
+}
+
+// ScheduleIntValue 是生效整数调度设置及其来源。
+type ScheduleIntValue struct {
+	Value  int
+	Source ScheduleSource
+}
+
+// ScheduleBoolValue 是生效布尔调度设置及其来源。
+type ScheduleBoolValue struct {
+	Value  bool
+	Source ScheduleSource
+}
+
+// ScheduleSignDistValue 是生效分布档设置及其来源。
+type ScheduleSignDistValue struct {
+	Value  SignDist
+	Source ScheduleSource
+}
+
+// ScheduleReport 汇总全部 8 枚可写调度键的生效值与来源（GET /api/admin/schedule-settings）。
+type ScheduleReport struct {
+	EdgeFrontSec        ScheduleIntValue
+	EdgeBackSec         ScheduleIntValue
+	AllowTimePref       ScheduleBoolValue
+	SundaySign          ScheduleBoolValue
+	SaturdaySign        ScheduleBoolValue
+	DefaultSignStartMin ScheduleIntValue
+	DefaultSignEndMin   ScheduleIntValue
+	SignDist            ScheduleSignDistValue
+}
+
 // ScheduleChange 是一个调度设置键的写意图。
 // Op=set 时 Value 是 int（edge/窗口键）、bool（布尔键）或
 // SignDist（批 3c 分布档）；Op=clear 时 Value 必须为 nil。
@@ -56,6 +124,104 @@ type ScheduleChange struct {
 	Key   string
 	Op    ScheduleOp
 	Value any
+}
+
+// ScheduleSettings 返回全部 8 枚可写调度键的生效值与来源。master 与 admin 可读。
+// DB 覆盖行无效（坏行/越域/半对）时复用 Resolver 的单源回退与 Warn 语义；存储故障上抛 500。
+func (s *Service) ScheduleSettings(ctx context.Context, scope corescope.Scope) (ScheduleReport, error) {
+	if err := app.RequireScope(scope); err != nil {
+		return ScheduleReport{}, err
+	}
+	if kind := scope.Kind(); kind != corescope.KindMaster && kind != corescope.KindAdmin {
+		return ScheduleReport{}, coreerrs.New(coreerrs.CodeForbidden, "master or admin role is required")
+	}
+	if s.deps.Resolver == nil {
+		return ScheduleReport{}, coreerrs.New(coreerrs.CodeInternal, "schedule settings resolver is not configured")
+	}
+
+	edgeFront, err := s.scheduleIntSetting(ctx, KeyScheduleEdgeFrontSec,
+		normalizedIntFallback(s.deps.ScheduleEnv.EdgeFrontSec, defaultEdgeFrontSec))
+	if err != nil {
+		return ScheduleReport{}, err
+	}
+	edgeBack, err := s.scheduleIntSetting(ctx, KeyScheduleEdgeBackSec,
+		normalizedIntFallback(s.deps.ScheduleEnv.EdgeBackSec, defaultEdgeBackSec))
+	if err != nil {
+		return ScheduleReport{}, err
+	}
+	allowPref, err := s.scheduleBoolWithEnvSetting(ctx, KeyScheduleAllowTimePref,
+		normalizedBoolFallback(s.deps.ScheduleEnv.AllowTimePref, false))
+	if err != nil {
+		return ScheduleReport{}, err
+	}
+	sundayVal, sundaySrc, err := s.deps.Resolver.BoolSetting(ctx, KeyScheduleSundaySign, false)
+	if err != nil {
+		return ScheduleReport{}, err
+	}
+	saturdayVal, saturdaySrc, err := s.deps.Resolver.BoolSetting(ctx, KeyScheduleSaturdaySign, false)
+	if err != nil {
+		return ScheduleReport{}, err
+	}
+	winStart, winEnd, winSrc, err := s.deps.Resolver.SignWindowSetting(ctx,
+		coreschedule.DefaultSignWindowStartMinute, coreschedule.DefaultSignWindowEndMinute)
+	if err != nil {
+		return ScheduleReport{}, err
+	}
+	signDist, distSrc, err := s.deps.Resolver.SignDistSetting(ctx, SignDistFront)
+	if err != nil {
+		return ScheduleReport{}, err
+	}
+
+	return ScheduleReport{
+		EdgeFrontSec:        edgeFront,
+		EdgeBackSec:         edgeBack,
+		AllowTimePref:       allowPref,
+		SundaySign:          ScheduleBoolValue{Value: sundayVal, Source: sundaySrc},
+		SaturdaySign:        ScheduleBoolValue{Value: saturdayVal, Source: saturdaySrc},
+		DefaultSignStartMin: ScheduleIntValue{Value: winStart, Source: winSrc},
+		DefaultSignEndMin:   ScheduleIntValue{Value: winEnd, Source: winSrc},
+		SignDist:            ScheduleSignDistValue{Value: signDist, Source: distSrc},
+	}, nil
+}
+
+func (s *Service) scheduleIntSetting(ctx context.Context, key string, fallback ScheduleEnvInt) (ScheduleIntValue, error) {
+	found, raw, err := s.deps.Resolver.Lookup(ctx, key)
+	if err != nil {
+		return ScheduleIntValue{}, err
+	}
+	if found {
+		if value, ok := raw.(int); ok {
+			return ScheduleIntValue{Value: value, Source: ScheduleSourceDB}, nil
+		}
+	}
+	return ScheduleIntValue(fallback), nil
+}
+
+func (s *Service) scheduleBoolWithEnvSetting(ctx context.Context, key string, fallback ScheduleEnvBool) (ScheduleBoolValue, error) {
+	found, raw, err := s.deps.Resolver.Lookup(ctx, key)
+	if err != nil {
+		return ScheduleBoolValue{}, err
+	}
+	if found {
+		if value, ok := raw.(bool); ok {
+			return ScheduleBoolValue{Value: value, Source: ScheduleSourceDB}, nil
+		}
+	}
+	return ScheduleBoolValue(fallback), nil
+}
+
+func normalizedIntFallback(in ScheduleEnvInt, def int) ScheduleEnvInt {
+	if in.Source == "" {
+		return ScheduleEnvInt{Value: def, Source: ScheduleSourceDefault}
+	}
+	return in
+}
+
+func normalizedBoolFallback(in ScheduleEnvBool, def bool) ScheduleEnvBool {
+	if in.Source == "" {
+		return ScheduleEnvBool{Value: def, Source: ScheduleSourceDefault}
+	}
+	return in
 }
 
 // SetSchedule 部分补丁写回调度设置。**只有 master 可以调用**。

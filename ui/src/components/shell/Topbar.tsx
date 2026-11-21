@@ -18,7 +18,7 @@ import { Menu, MenuDivider, MenuItem } from '@/components/ui/Menu'
 import type { SessionUser } from '@/lib/api/auth'
 import { initialsFor, roleLabel } from '@/lib/identity'
 import { SHOWCASE } from '@/lib/session'
-import { useTheme } from '@/lib/theme'
+import { originFromEvent, useTheme } from '@/lib/theme'
 
 type TopbarProps = {
   me: SessionUser
@@ -124,7 +124,7 @@ export function Topbar({
           className="icon-btn"
           id="themeToggle"
           aria-label="切换明暗主题"
-          onClick={toggleTheme}
+          onClick={(event) => toggleTheme(originFromEvent(event))}
         >
           <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
         </button>

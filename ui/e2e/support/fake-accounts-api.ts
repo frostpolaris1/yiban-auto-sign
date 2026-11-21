@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto'
 import type { Page, Request, Route } from '@playwright/test'
 import type { Account, AccountSummary, AccountVerifyResult } from '../../src/lib/api/account'
 import type { AuditStatusReport } from '../../src/lib/api/audit'
+import type { components } from '../../src/lib/api/schema'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
+
+export type FakeNotifyPref = components['schemas']['NotifyPref']
 
 /**
  * 账号页的假 API。
@@ -149,6 +152,22 @@ export const DEFAULT_AUDIT_STATUS: AuditStatusReport = {
   checked_at: '2026-10-28T09:00:00+08:00',
 }
 
+/** 管理员通知订阅默认矩阵（4 类 × 3 渠道，与后端 core/notify 默认表一致）。 */
+export const DEFAULT_NOTIFY_PREFS: FakeNotifyPref[] = [
+  { category: 'credential_invalid', channel: 'in_app', enabled: true },
+  { category: 'credential_invalid', channel: 'email', enabled: false },
+  { category: 'credential_invalid', channel: 'webhook', enabled: true },
+  { category: 'review_pending', channel: 'in_app', enabled: true },
+  { category: 'review_pending', channel: 'email', enabled: true },
+  { category: 'review_pending', channel: 'webhook', enabled: true },
+  { category: 'sign_failed_daily', channel: 'in_app', enabled: false },
+  { category: 'sign_failed_daily', channel: 'email', enabled: true },
+  { category: 'sign_failed_daily', channel: 'webhook', enabled: false },
+  { category: 'capacity_rejected', channel: 'in_app', enabled: true },
+  { category: 'capacity_rejected', channel: 'email', enabled: false },
+  { category: 'capacity_rejected', channel: 'webhook', enabled: false },
+]
+
 /** 归属选择器的合成用户。邮箱是保留域 example.com。 */
 export const LOOKUP_USERS = [
   { id: 'user-target', email: 'member.target@example.com', status: 'active' },
@@ -222,10 +241,29 @@ export type MockOptions = {
   deviceRefreshError?: { status: number; code: string; message: string }
   /** 恢复的失败注入。缺省清掉软删标记。 */
   restoreError?: { status: number; code: string; message: string }
+  /** 二次口令连续失败：任何危险写都回 429。 */
+  reauthThrottled?: boolean
+  /** 写端点的人为延迟（毫秒）；用来观察在途锁关。GET 不受影响。 */
+  writeDelayMs?: number
+  /**
+   * 批量动作的单条失败注入：命中的 id 只回该错误项，其余照常处理。
+   * 用来断言「部分失败给结果清单」。
+   */
+  batchItemError?: { id: string; status: number; code: string; message: string }
   /** 待处理汇总（/api/accounts/summary）的失败注入。缺省按夹具实时计数。 */
   summaryError?: { status: number; code: string; message: string }
   /** 归属选择器 lookup 的失败注入。 */
   lookupError?: { status: number; code: string; message: string }
+  /** 通知订阅矩阵初值。缺省取 DEFAULT_NOTIFY_PREFS。 */
+  notifyPrefs?: FakeNotifyPref[]
+  /** GET /api/admin/notify 失败注入；once=true 时只失败第一次。 */
+  notifyGetError?: { status: number; code: string; message: string; once?: boolean }
+  /** PUT /api/admin/notify 失败注入；once=true 时只失败第一次。 */
+  notifySetError?: { status: number; code: string; message: string; once?: boolean }
+  /** PUT /api/admin/notify 断网模拟。 */
+  notifyNetworkError?: boolean
+  /** 挂起 PUT /api/admin/notify 直到调用 api.releaseNotifyPut()，用于确定性测试在途锁定态。 */
+  holdNotifyPut?: boolean
   /** 照片夹具。缺省为一份 user-1 拥有两张图的合成库。 */
   photos?: PhotoFixture
 }
@@ -238,6 +276,8 @@ export type FakeApi = {
    * 下一次 10 秒请求带旧 ETag，假 API 回 200 新体。
    */
   setAccounts: (items: Account[]) => void
+  /** 放行被 holdNotifyPut 挂起的 PUT /api/admin/notify 请求。 */
+  releaseNotifyPut: () => void
 }
 
 function errorBody(code: string, message: string) {
@@ -269,6 +309,15 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
   let mustChangePassword = Boolean(options.mustChangePassword)
   // 每个测试一份副本：写操作会改状态，不能污染共享夹具。
   const allAccounts = (options.accounts ?? ACCOUNTS).map((item) => ({ ...item }))
+  let notifyItems = (options.notifyPrefs ?? DEFAULT_NOTIFY_PREFS).map((item) => ({ ...item }))
+  let notifyGetHits = 0
+  let notifySetHits = 0
+  let notifyGateResolve: (() => void) | null = null
+  let notifyGatePromise = options.holdNotifyPut
+    ? new Promise<void>((resolve) => {
+        notifyGateResolve = resolve
+      })
+    : null
   const pages = Object.fromEntries(
     Object.entries(options.pages ?? {}).map(([cursor, items]) => [
       cursor,
@@ -368,6 +417,27 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
   const fail = (route: Route, status: number, code: string, message: string) =>
     route.fulfill({ status, contentType: 'application/json', body: errorBody(code, message) })
 
+  /**
+   * 危险写的二次口令校验。缺值 400、口令错 403、注入的节流 429。
+   * 返回 true 表示已写响应，调用方直接返回。
+   */
+  const reauthRejected = (route: Route, body: unknown): boolean => {
+    if (options.reauthThrottled) {
+      void fail(route, 429, 'rate_limited', '尝试过多，请稍后再试')
+      return true
+    }
+    const provided = (body as { current_password?: unknown } | null)?.current_password
+    if (typeof provided !== 'string' || provided === '') {
+      void fail(route, 400, 'validation_failed', 'current_password is required')
+      return true
+    }
+    if (provided !== (options.password ?? SESSION_PASSWORD)) {
+      void fail(route, 403, 'forbidden', 'current_password is incorrect')
+      return true
+    }
+    return false
+  }
+
   await page.route('**/api/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -388,6 +458,11 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       body,
       headers: request.headers(),
     })
+
+    // 写端点延迟：只在显式注入时生效，用来断言「在途锁关」。
+    if (options.writeDelayMs && request.method() !== 'GET') {
+      await new Promise((resolve) => setTimeout(resolve, options.writeDelayMs))
+    }
 
     // 会话过期：业务端点先失效一次，后续请求按未登录处理。
     if (
@@ -575,6 +650,124 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return json(route, request, DEFAULT_AUDIT_STATUS)
     }
 
+    // 管理员个人通知订阅矩阵：x-roles 为 master/admin，user 403。
+    if (url.pathname === '/api/admin/notify') {
+      if (sessionRole !== 'master' && sessionRole !== 'admin') {
+        return fail(route, 403, 'forbidden', '仅 master/admin 可配置通知订阅')
+      }
+      if (request.method() === 'GET') {
+        notifyGetHits += 1
+        if (options.notifyGetError && (!options.notifyGetError.once || notifyGetHits === 1)) {
+          const { status, code, message } = options.notifyGetError
+          return fail(route, status, code, message)
+        }
+        return json(route, request, { items: notifyItems.map((item) => ({ ...item })) })
+      }
+      if (request.method() === 'PUT') {
+        if (notifyGatePromise) {
+          await notifyGatePromise
+        }
+        if (options.notifyNetworkError) return route.abort('failed')
+        notifySetHits += 1
+        if (options.notifySetError && (!options.notifySetError.once || notifySetHits === 1)) {
+          const { status, code, message } = options.notifySetError
+          return fail(route, status, code, message)
+        }
+        const payload = (body ?? {}) as { items?: unknown }
+        if (!Array.isArray(payload.items)) {
+          return fail(route, 400, 'validation_failed', 'items is required')
+        }
+        const validPairs = new Map(
+          DEFAULT_NOTIFY_PREFS.map((item) => [`${item.category}:${item.channel}`, item]),
+        )
+        const overrides = new Map<string, boolean>()
+        for (const raw of payload.items) {
+          const item = raw as Partial<FakeNotifyPref>
+          const key = `${item.category ?? ''}:${item.channel ?? ''}`
+          if (!validPairs.has(key) || typeof item.enabled !== 'boolean') {
+            return fail(route, 400, 'validation_failed', 'invalid notification subscription')
+          }
+          if (overrides.has(key)) {
+            return fail(route, 400, 'validation_failed', 'duplicate notification subscription')
+          }
+          overrides.set(key, item.enabled)
+        }
+        notifyItems = DEFAULT_NOTIFY_PREFS.map((item) => {
+          const key = `${item.category}:${item.channel}`
+          return { ...item, enabled: overrides.get(key) ?? item.enabled }
+        })
+        return json(route, request, { items: notifyItems.map((item) => ({ ...item })) })
+      }
+      return fail(route, 405, 'internal_error', '不支持的方法')
+    }
+
+    // 批量动作：二次口令必填；每项独立处理，顺序与请求一致。
+    if (url.pathname === '/api/accounts/batch' && request.method() === 'POST') {
+      if (reauthRejected(route, body)) return
+      const payload = (body ?? {}) as { action?: string; ids?: string[]; reason?: string }
+      const actions = ['review_approve', 'review_reject', 'pause', 'resume', 'delete', 'restore']
+      const ids = payload.ids ?? []
+      if (
+        !actions.includes(payload.action ?? '') ||
+        ids.length < 1 ||
+        ids.length > 10 ||
+        new Set(ids).size !== ids.length
+      ) {
+        return fail(route, 400, 'validation_failed', 'invalid batch request')
+      }
+      if (payload.action === 'review_reject' && (payload.reason ?? '').trim() === '') {
+        return fail(route, 400, 'validation_failed', 'reason is required')
+      }
+      const softDelete = (target: Account) => {
+        for (let i = allAccounts.length - 1; i >= 0; i -= 1) {
+          if (allAccounts[i].id === target.id) allAccounts.splice(i, 1)
+        }
+        for (const key of Object.keys(pages)) {
+          pages[key] = pages[key].filter((item) => item.id !== target.id)
+        }
+        target.deleted_at = '2026-10-31T00:00:00Z'
+        if (!deletedAccounts.some((item) => item.id === target.id)) {
+          deletedAccounts.push(target)
+        }
+      }
+      const items = ids.map((id) => {
+        if (options.batchItemError?.id === id) {
+          return {
+            id,
+            status: 'error' as const,
+            code: options.batchItemError.code as components['schemas']['ErrorCode'],
+            message: options.batchItemError.message,
+          }
+        }
+        const target = knownAccounts.find((item) => item.id === id)
+        if (!target) return { id, status: 'error' as const, code: 'not_found' as const, message: '账号不存在' }
+        if (payload.action === 'restore') {
+          if (!target.deleted_at) {
+            return { id, status: 'error' as const, code: 'conflict' as const, message: '账号未删除' }
+          }
+          target.deleted_at = null
+          const at = deletedAccounts.findIndex((item) => item.id === target.id)
+          if (at >= 0) deletedAccounts.splice(at, 1)
+          if (!allAccounts.some((item) => item.id === target.id)) allAccounts.push(target)
+          return { id, status: 'ok' as const }
+        }
+        if (target.deleted_at) {
+          return { id, status: 'error' as const, code: 'not_found' as const, message: '账号不存在' }
+        }
+        if (payload.action === 'review_approve' || payload.action === 'review_reject') {
+          target.status = payload.action === 'review_reject' ? 'rejected' : 'active'
+          if (payload.action === 'review_reject') target.reject_reason = payload.reason ?? ''
+          target.reviewed_at = '2026-10-31T00:00:00Z'
+          target.reviewed_by = 'user-1'
+        }
+        if (payload.action === 'pause') target.status = 'paused_admin'
+        if (payload.action === 'resume') target.status = 'active'
+        if (payload.action === 'delete') softDelete(target)
+        return { id, status: 'ok' as const }
+      })
+      return json(route, request, { items })
+    }
+
     const match = url.pathname.match(
       /^\/api\/accounts\/([^/]+)(?:\/(pause|sign|verify|review|location|device-refresh|restore))?$/,
     )
@@ -591,6 +784,19 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
 
     if (!action && request.method() === 'PATCH') {
       const updates = (body ?? {}) as Record<string, unknown>
+      // 与服务端同判：凭据面（phone/password/device_code）要求二次口令。
+      const touchesCredential =
+        typeof updates.phone === 'string' ||
+        typeof updates.password === 'string' ||
+        typeof updates.device_code === 'string'
+      if (touchesCredential && reauthRejected(route, body)) return
+      // 乐观锁：显式传了 expected_updated_at 且与当前行不同 ⇒ 409。
+      if (
+        typeof updates.expected_updated_at === 'string' &&
+        updates.expected_updated_at !== found.updated_at
+      ) {
+        return fail(route, 409, 'conflict', '这条记录已被他人修改')
+      }
       if (typeof updates.name === 'string') {
         found.name = updates.name.trim()
       }
@@ -628,6 +834,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return json(route, request, found)
     }
     if (!action && request.method() === 'DELETE') {
+      if (reauthRejected(route, body)) return
       const owned = allAccounts.findIndex((item) => item.id === found.id)
       if (owned >= 0) allAccounts.splice(owned, 1)
       for (const key of Object.keys(pages)) {
@@ -683,8 +890,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return json(route, request, found)
     }
 
-    // 设备刷新：无请求体。回读值缺省即 DEVICE_READ；错误由用例注入。
+    // 设备刷新：请求体只带二次口令。回读值缺省即 DEVICE_READ；错误由用例注入。
     if (action === 'device-refresh' && request.method() === 'POST') {
+      if (reauthRejected(route, body)) return
       if (options.deviceRefreshError) {
         const { status, code, message } = options.deviceRefreshError
         return fail(route, status, code, message)
@@ -692,8 +900,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return json(route, request, DEVICE_READ)
     }
 
-    // 恢复：只认软删行；未删行与服务端同判 409。
+    // 恢复：只认软删行；未删行与服务端同判 409。二次口令必填。
     if (action === 'restore' && request.method() === 'POST') {
+      if (reauthRejected(route, body)) return
       if (options.restoreError) {
         const { status, code, message } = options.restoreError
         return fail(route, status, code, message)
@@ -722,6 +931,11 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         ...Object.values(pages).flat(),
         ...deletedAccounts,
       )
+    },
+    releaseNotifyPut() {
+      notifyGateResolve?.()
+      notifyGateResolve = null
+      notifyGatePromise = null
     },
   }
 }
@@ -790,6 +1004,10 @@ export function restoreCalls(api: FakeApi, id: string): ApiCall[] {
   )
 }
 
+export function batchCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'POST' && call.path === '/api/accounts/batch')
+}
+
 export function lookupCalls(api: FakeApi): ApiCall[] {
   return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/users/lookup')
 }
@@ -804,4 +1022,12 @@ export function changePasswordCalls(api: FakeApi): ApiCall[] {
   return api.calls.filter(
     (call) => call.method === 'POST' && call.path === '/api/auth/change-password',
   )
+}
+
+export function notifyGetCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/admin/notify')
+}
+
+export function notifySetCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'PUT' && call.path === '/api/admin/notify')
 }

@@ -63,6 +63,8 @@ export const accountUpdateSchema = z.object({
   device_code: z.string().optional(),
   phone_model: z.string().optional(),
   clear_device_code: z.boolean().optional(),
+  // 二次口令：只在改动凭据面时由组件要求；不参与草稿形状校验。
+  current_password: z.string().optional(),
 })
 
 /** 建号表单的值形状（RHF 泛型用）。 */

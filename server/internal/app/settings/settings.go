@@ -267,6 +267,9 @@ type Deps struct {
 	// Resolver 是覆盖链解析器（registry 域的单点持有者）。
 	// 为 nil 时同 Schedule：写回 500 失败关闭；名册覆盖读数用它装配（WithOverrides）。
 	Resolver *Resolver
+	// ScheduleEnv 是名册 3 枚调度键的进程 env/registry 兜底视图（GET 调度读面使用）。
+	// 零值字段退回内置默认（edge=60, allow_time_pref=false, source=default）。
+	ScheduleEnv ScheduleEnv
 	// Cipher 加密 mail.pass 落库（复用 account cipher 的同一把钥）。
 	// 为 nil 时 mail 写面 500 失败关闭：口令不得以明文落库。
 	Cipher SecretCipher

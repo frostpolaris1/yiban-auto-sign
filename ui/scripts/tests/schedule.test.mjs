@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { NAV_LEAVES, visibleNav } from '../../src/components/shell/nav.ts'
+import {
+  NAV_LEAVES,
+  crumbsFor,
+  documentTitleFor,
+  visibleNav,
+} from '../../src/components/shell/nav.ts'
 import { ApiError } from '../../src/lib/api/client.ts'
 import {
   schedulePreviewSearch,
@@ -9,13 +14,13 @@ import {
   scheduleWindowsSearch,
 } from '../../src/lib/api/schedule.ts'
 import { dayOf, formatClock, isoToShanghaiInput, parseDay, shanghaiInputToRfc3339 } from '../../src/lib/format.ts'
-import { SCHEDULE_VIEW_ROLES } from '../../src/lib/roles.ts'
+import { SCHEDULE_VIEW_ROLES, SETTINGS_VIEW_ROLES, SYSTEM_VIEW_ROLES } from '../../src/lib/roles.ts'
 import {
   enabledLabel,
   enabledTone,
   SOURCE_LABELS,
   sourceLabel,
-} from '../../src/features/schedule/display.ts'
+} from '../../src/features/system/plans/display.ts'
 import {
   OVERRIDE_REASON_MAX,
   TIME_PREF_MAX,
@@ -30,7 +35,7 @@ import {
   timePrefLabel,
   timePrefOffsetError,
   timePrefOptions,
-} from '../../src/features/schedule/drafts.ts'
+} from '../../src/features/system/plans/drafts.ts'
 
 /**
  * 时间片域纯逻辑的不变式。
@@ -220,7 +225,7 @@ test('error text maps the pinned HTTP failures to plain words', () => {
   )
   assert.equal(
     timePrefErrorText(new ApiError(500, { code: 'internal_error', message: '坏了' })),
-    'internal_error · 坏了',
+    '坏了',
   )
   assert.equal(
     scheduleErrorText(new ApiError(409, { code: 'conflict', message: 'task disabled' })),
@@ -251,27 +256,68 @@ test('schedule labels come from the contract enums', () => {
   assert.equal(enabledTone(false), 'warning')
 })
 
-function leaves(role) {
-  return visibleNav(role).flatMap((section) =>
+function leaves(role, options) {
+  return visibleNav(role, options).flatMap((section) =>
     section.items.flatMap((item) => ('children' in item ? item.children : [item])),
   )
 }
 
-test('the schedule entry is visible to managers only', () => {
+test('the system entry replaces schedule and hides admin settings from users', () => {
   assert.deepEqual([...SCHEDULE_VIEW_ROLES], ['master', 'admin'])
+  assert.deepEqual([...SYSTEM_VIEW_ROLES], ['master', 'admin'])
+  assert.deepEqual([...SETTINGS_VIEW_ROLES], ['master', 'admin'])
+
+  assert.equal(NAV_LEAVES.some((item) => item.to === '/schedule'), false)
+
   for (const role of ['master', 'admin']) {
     assert(
-      leaves(role).some((leaf) => leaf.to === '/schedule'),
-      `${role} sees the schedule entry`,
+      leaves(role).some((leaf) => leaf.to === '/system'),
+      `${role} sees the system entry`,
+    )
+    assert(
+      leaves(role).some((leaf) => leaf.to === '/settings'),
+      `${role} sees the account settings entry`,
     )
   }
   assert(
-    !leaves('user').some((leaf) => leaf.to === '/schedule'),
-    'user has no schedule entry',
+    !leaves('user').some((leaf) => leaf.to === '/system'),
+    'user has no system entry',
+  )
+  assert(
+    !leaves('user').some((leaf) => leaf.to === '/settings'),
+    'user has no account settings entry',
   )
 
-  const leaf = NAV_LEAVES.find((item) => item.to === '/schedule')
-  assert(leaf, 'the route has a nav leaf')
-  assert.deepEqual([...(leaf.roles ?? [])], ['master', 'admin'])
-  assert.deepEqual(leaf.crumbs, ['工作区', '时间片'])
+  const systemLeaf = NAV_LEAVES.find((item) => item.to === '/system')
+  assert(systemLeaf, 'the /system route has a nav leaf')
+  assert.equal(systemLeaf.text, '系统设置')
+  assert.deepEqual([...(systemLeaf.roles ?? [])], ['master', 'admin'])
+  assert.deepEqual(systemLeaf.crumbs, ['系统', '系统设置'])
+
+  const settingsLeaf = NAV_LEAVES.find((item) => item.to === '/settings')
+  assert(settingsLeaf, 'the /settings route has a nav leaf')
+  assert.equal(settingsLeaf.text, '账号设置')
+  assert.deepEqual([...(settingsLeaf.roles ?? [])], ['master', 'admin'])
+  assert.deepEqual(settingsLeaf.crumbs, ['系统', '账号设置'])
+
+  const todaySection = visibleNav('master').find((section) => section.label === '今日')
+  assert(todaySection, '今日 section exists')
+  assert(
+    todaySection.items.some((item) => !('children' in item) && item.to === '/logs'),
+    '签到台账 sits in 今日 section',
+  )
+  assert.deepEqual(crumbsFor('/logs'), ['今日', '签到台账'])
+
+  assert.equal(
+    leaves('master', { includeDesign: false }).some((leaf) => leaf.to === '/design'),
+    false,
+    'design group is hidden in production nav',
+  )
+  assert.equal(
+    leaves('master', { includeDesign: true }).some((leaf) => leaf.to === '/design'),
+    true,
+    'design group is shown in dev/showcase nav',
+  )
+  assert.deepEqual(crumbsFor('/design'), ['系统', '设计系统', '组件画廊'])
+  assert.equal(documentTitleFor('/design'), '组件画廊 · 易班自动签到')
 })

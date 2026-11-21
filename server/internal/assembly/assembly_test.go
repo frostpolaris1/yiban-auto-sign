@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
+	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 )
@@ -373,4 +374,33 @@ func countScope(entries []config.RegistryEntry) (int, int, error) {
 		}
 	}
 	return server, cli, nil
+}
+
+// TestScheduleEnvFromConfig 钉住名册 3 枚可写调度键的 env vs default 来源识别口径。
+func TestScheduleEnvFromConfig(t *testing.T) {
+	cfg := &config.Config{
+		EdgeFront:     30 * time.Second,
+		EdgeBack:      60 * time.Second,
+		AllowTimePref: true,
+	}
+	got := scheduleEnvFromConfig(cfg, configMapSource{
+		"YIBAN_WINDOW_EDGE_FRONT_SEC": "30",
+		"YIBAN_ALLOW_TIME_PREF":       "true",
+	})
+	if got.EdgeFrontSec.Value != 30 || got.EdgeFrontSec.Source != appsettings.ScheduleSourceEnv {
+		t.Fatalf("EdgeFrontSec = %+v, want 30/env", got.EdgeFrontSec)
+	}
+	if got.EdgeBackSec.Value != 60 || got.EdgeBackSec.Source != appsettings.ScheduleSourceDefault {
+		t.Fatalf("EdgeBackSec = %+v, want 60/default", got.EdgeBackSec)
+	}
+	if !got.AllowTimePref.Value || got.AllowTimePref.Source != appsettings.ScheduleSourceEnv {
+		t.Fatalf("AllowTimePref = %+v, want true/env", got.AllowTimePref)
+	}
+}
+
+type configMapSource map[string]string
+
+func (m configMapSource) Lookup(key string) (string, bool) {
+	v, ok := m[key]
+	return v, ok
 }

@@ -539,6 +539,27 @@ func (e QuotaSettingSource) Valid() bool {
 	}
 }
 
+// Defines values for ScheduleSettingSource.
+const (
+	ScheduleSettingSourceDb      ScheduleSettingSource = "db"
+	ScheduleSettingSourceDefault ScheduleSettingSource = "default"
+	ScheduleSettingSourceEnv     ScheduleSettingSource = "env"
+)
+
+// Valid indicates whether the value is a known member of the ScheduleSettingSource enum.
+func (e ScheduleSettingSource) Valid() bool {
+	switch e {
+	case ScheduleSettingSourceDb:
+		return true
+	case ScheduleSettingSourceDefault:
+		return true
+	case ScheduleSettingSourceEnv:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScheduleSignDist.
 const (
 	Front   ScheduleSignDist = "front"
@@ -2205,6 +2226,36 @@ type ResetPasswordRequest struct {
 	Token       string `json:"token"`
 }
 
+// ScheduleBoolSetting Effective schedule boolean policy flag.
+type ScheduleBoolSetting struct {
+	// Source Layer that provided the effective schedule setting: db when a valid
+	// override row (or complete pair for default_sign_*) exists, env when
+	// the process environment provides a registry-backed key, default
+	// otherwise. Database-only schedule keys never yield env.
+	Source ScheduleSettingSource `json:"source"`
+	Value  bool                  `json:"value"`
+}
+
+// ScheduleEdgeSetting Effective schedule boundary offset in seconds (0 to 300).
+type ScheduleEdgeSetting struct {
+	// Source Layer that provided the effective schedule setting: db when a valid
+	// override row (or complete pair for default_sign_*) exists, env when
+	// the process environment provides a registry-backed key, default
+	// otherwise. Database-only schedule keys never yield env.
+	Source ScheduleSettingSource `json:"source"`
+	Value  int                   `json:"value"`
+}
+
+// ScheduleMinuteSetting Effective clock minute within a day (0 to 1439).
+type ScheduleMinuteSetting struct {
+	// Source Layer that provided the effective schedule setting: db when a valid
+	// override row (or complete pair for default_sign_*) exists, env when
+	// the process environment provides a registry-backed key, default
+	// otherwise. Database-only schedule keys never yield env.
+	Source ScheduleSettingSource `json:"source"`
+	Value  int                   `json:"value"`
+}
+
 // ScheduleOverrideRequest defines model for ScheduleOverrideRequest.
 type ScheduleOverrideRequest struct {
 	// Day Business day YYYY-MM-DD.
@@ -2270,8 +2321,53 @@ type ScheduleRow struct {
 	RunAt     time.Time `json:"run_at"`
 }
 
+// ScheduleSettingSource Layer that provided the effective schedule setting: db when a valid
+// override row (or complete pair for default_sign_*) exists, env when
+// the process environment provides a registry-backed key, default
+// otherwise. Database-only schedule keys never yield env.
+type ScheduleSettingSource string
+
+// ScheduleSettingsReport Effective values and sources of all eight writable schedule keys.
+type ScheduleSettingsReport struct {
+	// AllowTimePref Effective schedule boolean policy flag.
+	AllowTimePref ScheduleBoolSetting `json:"allow_time_pref"`
+
+	// DefaultSignEndMin Effective clock minute within a day (0 to 1439).
+	DefaultSignEndMin ScheduleMinuteSetting `json:"default_sign_end_min"`
+
+	// DefaultSignStartMin Effective clock minute within a day (0 to 1439).
+	DefaultSignStartMin ScheduleMinuteSetting `json:"default_sign_start_min"`
+
+	// EdgeBackSec Effective schedule boundary offset in seconds (0 to 300).
+	EdgeBackSec ScheduleEdgeSetting `json:"edge_back_sec"`
+
+	// EdgeFrontSec Effective schedule boundary offset in seconds (0 to 300).
+	EdgeFrontSec ScheduleEdgeSetting `json:"edge_front_sec"`
+
+	// SaturdaySign Effective schedule boolean policy flag.
+	SaturdaySign ScheduleBoolSetting `json:"saturday_sign"`
+
+	// SignDist Effective plan row distribution mode within the window.
+	SignDist ScheduleSignDistSetting `json:"sign_dist"`
+
+	// SundaySign Effective schedule boolean policy flag.
+	SundaySign ScheduleBoolSetting `json:"sunday_sign"`
+}
+
 // ScheduleSignDist Plan row distribution mode; lowercase front or uniform.
 type ScheduleSignDist string
+
+// ScheduleSignDistSetting Effective plan row distribution mode within the window.
+type ScheduleSignDistSetting struct {
+	// Source Layer that provided the effective schedule setting: db when a valid
+	// override row (or complete pair for default_sign_*) exists, env when
+	// the process environment provides a registry-backed key, default
+	// otherwise. Database-only schedule keys never yield env.
+	Source ScheduleSettingSource `json:"source"`
+
+	// Value Plan row distribution mode; lowercase front or uniform.
+	Value ScheduleSignDist `json:"value"`
+}
 
 // ScheduleWindow defines model for ScheduleWindow.
 type ScheduleWindow struct {
@@ -4116,6 +4212,9 @@ type ServerInterface interface {
 	// AdminQuotaSettingsSet Write runtime overrides for the active-user and active-account quotas.
 	// (PUT /api/admin/quota-settings)
 	AdminQuotaSettingsSet(c *gin.Context, params AdminQuotaSettingsSetParams)
+	// AdminScheduleSettings Read the effective runtime schedule settings.
+	// (GET /api/admin/schedule-settings)
+	AdminScheduleSettings(c *gin.Context)
 	// AdminScheduleSettingsSet Write runtime overrides for the schedule settings.
 	// (PUT /api/admin/schedule-settings)
 	AdminScheduleSettingsSet(c *gin.Context, params AdminScheduleSettingsSetParams)
@@ -5715,6 +5814,19 @@ func (siw *ServerInterfaceWrapper) AdminQuotaSettingsSet(c *gin.Context) {
 	}
 
 	siw.Handler.AdminQuotaSettingsSet(c, params)
+}
+
+// AdminScheduleSettings operation middleware
+func (siw *ServerInterfaceWrapper) AdminScheduleSettings(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminScheduleSettings(c)
 }
 
 // AdminScheduleSettingsSet operation middleware
@@ -8438,6 +8550,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifyGet)
 	router.PUT(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifySet)
 	router.GET(options.BaseURL+"/api/admin/settings", wrapper.AdminSettings)
+	router.GET(options.BaseURL+"/api/admin/schedule-settings", wrapper.AdminScheduleSettings)
 	router.PUT(options.BaseURL+"/api/admin/schedule-settings", wrapper.AdminScheduleSettingsSet)
 	router.GET(options.BaseURL+"/api/admin/quota-settings", wrapper.AdminQuotaSettings)
 	router.PUT(options.BaseURL+"/api/admin/quota-settings", wrapper.AdminQuotaSettingsSet)

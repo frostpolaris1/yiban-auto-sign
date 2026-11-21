@@ -1519,7 +1519,20 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Read the effective runtime schedule settings.
+         * @description Master or admin. Returns the effective value and source of the eight
+         *     schedule keys (edge_front_sec, edge_back_sec, allow_time_pref,
+         *     sunday_sign, saturday_sign, default_sign_start_min, default_sign_end_min,
+         *     sign_dist). The three registry-backed keys report db, env or default;
+         *     the five database-only mechanism keys report db when a valid override
+         *     row (or complete valid pair for default_sign_*) exists and default
+         *     otherwise (they never appear in GET /api/admin/settings). Corrupted or
+         *     out-of-domain rows fall back to env or default with one warning per key;
+         *     a half-pair on default_sign_* falls back to the built-in 06:30/07:50
+         *     pair. A storage failure answers 500; it is never reported as default.
+         */
+        get: operations["AdminScheduleSettings"];
         /**
          * Write runtime overrides for the schedule settings.
          * @description Master only. A partial patch of the three writable schedule keys
@@ -2891,6 +2904,45 @@ export interface components {
              *     the next daily plan build.
              */
             sign_dist?: components["schemas"]["ScheduleSignDist"] | null;
+        };
+        /**
+         * @description Layer that provided the effective schedule setting: db when a valid
+         *     override row (or complete pair for default_sign_*) exists, env when
+         *     the process environment provides a registry-backed key, default
+         *     otherwise. Database-only schedule keys never yield env.
+         * @enum {string}
+         */
+        ScheduleSettingSource: "db" | "env" | "default";
+        /** @description Effective schedule boundary offset in seconds (0 to 300). */
+        ScheduleEdgeSetting: {
+            value: number;
+            source: components["schemas"]["ScheduleSettingSource"];
+        };
+        /** @description Effective schedule boolean policy flag. */
+        ScheduleBoolSetting: {
+            value: boolean;
+            source: components["schemas"]["ScheduleSettingSource"];
+        };
+        /** @description Effective clock minute within a day (0 to 1439). */
+        ScheduleMinuteSetting: {
+            value: number;
+            source: components["schemas"]["ScheduleSettingSource"];
+        };
+        /** @description Effective plan row distribution mode within the window. */
+        ScheduleSignDistSetting: {
+            value: components["schemas"]["ScheduleSignDist"];
+            source: components["schemas"]["ScheduleSettingSource"];
+        };
+        /** @description Effective values and sources of all eight writable schedule keys. */
+        ScheduleSettingsReport: {
+            edge_front_sec: components["schemas"]["ScheduleEdgeSetting"];
+            edge_back_sec: components["schemas"]["ScheduleEdgeSetting"];
+            allow_time_pref: components["schemas"]["ScheduleBoolSetting"];
+            sunday_sign: components["schemas"]["ScheduleBoolSetting"];
+            saturday_sign: components["schemas"]["ScheduleBoolSetting"];
+            default_sign_start_min: components["schemas"]["ScheduleMinuteSetting"];
+            default_sign_end_min: components["schemas"]["ScheduleMinuteSetting"];
+            sign_dist: components["schemas"]["ScheduleSignDistSetting"];
         };
         /**
          * @description One effective quota value and the layer that provided it. The two
@@ -6660,6 +6712,29 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SettingsReport"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminScheduleSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective schedule settings and their sources. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleSettingsReport"];
                 };
             };
             401: components["responses"]["UnauthorizedError"];

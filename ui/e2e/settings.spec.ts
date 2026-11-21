@@ -1,10 +1,13 @@
 import { test, expect, type Page } from '@playwright/test'
 import {
+  DEFAULT_NOTIFY_PREFS,
   SESSION_CSRF,
   SESSION_EMAIL,
   SESSION_PASSWORD,
   changePasswordCalls,
   mockAccountsApi,
+  notifyGetCalls,
+  notifySetCalls,
   type FakeApi,
 } from './support/fake-accounts-api'
 
@@ -171,9 +174,9 @@ test('settings: a validation envelope is shown as the envelope', async ({ page }
 
   await submitChange(page, SESSION_PASSWORD, NEW_PASSWORD)
 
-  const alert = page.getByRole('alert').filter({ hasText: 'validation_failed' })
+  const alert = page.getByRole('alert').filter({ hasText: '请求参数不符合要求' })
   await expect(alert).toBeVisible()
-  await expect(alert).toContainText('new_password is required')
+  await expect(alert).not.toContainText('validation_failed')
   expect(changePasswordCalls(api), 'the request was attempted once').toHaveLength(1)
 })
 
@@ -275,7 +278,7 @@ test('settings: the profile menu has one account entry and the sidebar lists it'
   await page.goto('/')
 
   const sidebar = page.locator('.d-sidebar')
-  await expect(sidebar.getByRole('link', { name: '账号设置' })).toBeVisible()
+  await expect(sidebar.getByRole('link', { name: '账号设置', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: '账号菜单' }).click()
   const menu = page.getByRole('menu')
@@ -283,4 +286,225 @@ test('settings: the profile menu has one account entry and the sidebar lists it'
   await menu.getByRole('menuitem', { name: '账号设置' }).click()
   await expect(page).toHaveURL(/\/settings$/)
   await expect(page.getByRole('heading', { name: '修改密码' })).toBeVisible()
+})
+
+const NOTIFY_CATEGORY_LABELS: Record<string, string> = {
+  credential_invalid: '凭据失效',
+  review_pending: '账号待审',
+  sign_failed_daily: '每日失败摘要',
+  capacity_rejected: '容量驳回',
+}
+
+const NOTIFY_CHANNEL_LABELS: Record<string, string> = {
+  in_app: '站内信',
+  email: '邮件',
+  webhook: 'Webhook',
+}
+
+for (const role of ['master', 'admin'] as const) {
+  test(`settings: ${role} renders the 4x3 notification matrix from GET`, async ({ page }) => {
+    const api = await mockAccountsApi(page, { role })
+    await openSettings(page)
+
+    const card = page.locator('.card').filter({ hasText: '通知订阅' })
+    await expect(card).toBeVisible()
+    for (const label of Object.values(NOTIFY_CATEGORY_LABELS)) {
+      await expect(card.getByText(label, { exact: true })).toBeVisible()
+    }
+    for (const label of Object.values(NOTIFY_CHANNEL_LABELS)) {
+      await expect(card.getByRole('columnheader', { name: label, exact: true })).toBeVisible()
+    }
+    for (const item of DEFAULT_NOTIFY_PREFS) {
+      const name = `${NOTIFY_CATEGORY_LABELS[item.category]} · ${NOTIFY_CHANNEL_LABELS[item.channel]}`
+      await expect(card.getByRole('switch', { name })).toHaveAttribute(
+        'aria-checked',
+        String(item.enabled),
+      )
+    }
+    expect(notifyGetCalls(api), 'one initial GET for notification prefs').toHaveLength(1)
+  })
+}
+
+test('settings: toggling one notification switch sends one full PUT, toasts, and refetches', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openSettings(page)
+
+  const toggle = page.getByRole('switch', { name: '凭据失效 · 邮件' })
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+
+  await toggle.click()
+
+  await expect(toast(page)).toContainText('通知订阅已保存')
+  await expect(toggle).toHaveAttribute('aria-checked', 'true')
+
+  const puts = notifySetCalls(api)
+  expect(puts, 'exactly one PUT per toggle').toHaveLength(1)
+  expect(puts[0].headers['x-csrf-token']).toBe(SESSION_CSRF)
+  const expectedItems = DEFAULT_NOTIFY_PREFS.map((item) =>
+    item.category === 'credential_invalid' && item.channel === 'email'
+      ? { ...item, enabled: true }
+      : item,
+  )
+  expect(puts[0].body).toEqual({ items: expectedItems })
+  await expect.poll(() => notifyGetCalls(api).length).toBeGreaterThanOrEqual(2)
+})
+
+test('settings: keyboard Space toggles a notification switch, suppresses duplicate Space, and keeps focus', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'admin', holdNotifyPut: true })
+  await openSettings(page)
+
+  const toggle = page.getByRole('switch', { name: '每日失败摘要 · 站内信' })
+  const peerToggle = page.getByRole('switch', { name: '凭据失效 · 站内信' })
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await toggle.focus()
+  await toggle.press('Space')
+
+  // 在途期间保持焦点并锁定全表，连续按空格不得重发 PUT。
+  await expect(toggle).toHaveAttribute('aria-busy', 'true')
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true')
+  await expect(peerToggle).toHaveAttribute('aria-disabled', 'true')
+  await expect(page.getByText('保存中…')).toBeVisible()
+  await expect(toggle).toBeFocused()
+  await toggle.press('Space')
+  expect(notifySetCalls(api)).toHaveLength(1)
+
+  api.releaseNotifyPut()
+
+  await expect(toggle).toHaveAttribute('aria-checked', 'true')
+  await expect(toggle).not.toHaveAttribute('aria-busy', 'true')
+  await expect(toggle).toBeFocused()
+  expect(notifySetCalls(api)).toHaveLength(1)
+})
+
+test('settings: clicking another switch while a save is in-flight is ignored', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master', holdNotifyPut: true })
+  await openSettings(page)
+
+  const toggle = page.getByRole('switch', { name: '每日失败摘要 · 站内信' })
+  const peerToggle = page.getByRole('switch', { name: '凭据失效 · 站内信' })
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await expect(peerToggle).toHaveAttribute('aria-checked', 'true')
+
+  await toggle.click()
+  await expect.poll(() => notifySetCalls(api).length).toBe(1)
+  await expect(peerToggle).toHaveAttribute('aria-disabled', 'true')
+
+  await peerToggle.click({ force: true })
+  expect(notifySetCalls(api)).toHaveLength(1)
+
+  api.releaseNotifyPut()
+
+  await expect(toggle).toHaveAttribute('aria-checked', 'true')
+  await expect(peerToggle).toHaveAttribute('aria-checked', 'true')
+  expect(notifySetCalls(api)).toHaveLength(1)
+})
+
+test('settings: a failed notification save keeps the switch in place and reports inline', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, {
+    role: 'master',
+    notifySetError: {
+      status: 400,
+      code: 'validation_failed',
+      message: 'invalid notification subscription',
+    },
+  })
+  await openSettings(page)
+
+  const toggle = page.getByRole('switch', { name: '凭据失效 · 邮件' })
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await toggle.click()
+
+  await expect
+    .poll(() => notifySetCalls(api).length)
+    .toBe(1)
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+  const row = page.locator('tr').filter({ hasText: '凭据失效' })
+  await expect(row.getByRole('alert')).toContainText('请求参数不符合要求，请核对后重试')
+  await expect(row.getByRole('alert')).not.toContainText('validation_failed')
+  await expect(toast(page)).toHaveCount(0)
+})
+
+test('settings: a notification network failure keeps the switch in place and reports inline', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master', notifyNetworkError: true })
+  await openSettings(page)
+
+  const toggle = page.getByRole('switch', { name: '容量驳回 · Webhook' })
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await toggle.click()
+
+  await expect.poll(() => notifySetCalls(api).length).toBe(1)
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+  const row = page.locator('tr').filter({ hasText: '容量驳回' })
+  await expect(row.getByRole('alert')).toContainText('网络异常，请稍后重试')
+  await expect(toast(page)).toHaveCount(0)
+})
+
+test('settings: initial notification load error offers retry and recovers', async ({ page }) => {
+  await mockAccountsApi(page, {
+    role: 'master',
+    notifyGetError: { status: 500, code: 'internal_error', message: 'db down', once: true },
+  })
+  await openSettings(page)
+
+  const card = page.locator('.card').filter({ hasText: '通知订阅' })
+  await expect(card.getByRole('alert')).toContainText('服务暂不可用，请稍后重试')
+  await expect(card.getByRole('alert')).not.toContainText('internal_error')
+  await card.getByRole('button', { name: '重试' }).click()
+
+  await expect(card.getByRole('switch', { name: '凭据失效 · 站内信' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  )
+})
+
+test('settings: user role has no sidebar entry and lands on the denied card with zero business requests', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'user' })
+  await page.goto('/')
+  await expect(
+    page.locator('.d-sidebar').getByRole('link', { name: '账号设置', exact: true }),
+  ).toHaveCount(0)
+
+  const beforeSettings = api.calls.length
+  await page.goto('/settings')
+
+  await expect(page.getByRole('heading', { name: '无权访问' })).toBeVisible()
+  await expect(page.getByText('你的角色无权访问账号设置')).toBeVisible()
+  await expect(page.getByRole('button', { name: '返回看板' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '修改密码' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: '通知订阅' })).toHaveCount(0)
+
+  const businessCalls = api.calls
+    .slice(beforeSettings)
+    .filter((call) => call.path !== '/api/auth/me')
+  expect(businessCalls, 'user role sends zero business requests on /settings').toEqual([])
+})
+
+test('settings: 390px viewport renders the notification matrix without horizontal overflow', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockAccountsApi(page, { role: 'master' })
+  await openSettings(page)
+
+  await expect(page.getByRole('switch', { name: '容量驳回 · Webhook' })).toBeVisible()
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+  expect(
+    overflow.scrollWidth,
+    `390px overflow: ${overflow.scrollWidth} > ${overflow.clientWidth}`,
+  ).toBeLessThanOrEqual(overflow.clientWidth + 1)
 })

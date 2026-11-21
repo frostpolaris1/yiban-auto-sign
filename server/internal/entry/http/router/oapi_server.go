@@ -722,6 +722,15 @@ func (s *server) AdminSettings(c *gin.Context) {
 	s.system.AdminSettings(c)
 }
 
+// AdminScheduleSettings 委托调度设置读取。未装配时仍是 501。
+func (s *server) AdminScheduleSettings(c *gin.Context) {
+	if s.system == nil {
+		notImplemented(c)
+		return
+	}
+	s.system.AdminScheduleSettings(c)
+}
+
 // AdminScheduleSettingsSet 委托调度设置写回。未装配时仍是 501。
 func (s *server) AdminScheduleSettingsSet(c *gin.Context, params oapi.AdminScheduleSettingsSetParams) {
 	if s.system == nil {

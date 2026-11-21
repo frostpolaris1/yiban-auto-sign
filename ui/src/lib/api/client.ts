@@ -26,14 +26,16 @@ export class ApiError extends Error {
   readonly code: string
   readonly details?: unknown
   readonly traceId?: string
+  readonly retryAfterSec?: number
 
-  constructor(status: number, payload: ApiErrorPayload) {
+  constructor(status: number, payload: ApiErrorPayload, retryAfterSec?: number) {
     super(payload.message)
     this.name = 'ApiError'
     this.status = status
     this.code = payload.code
     this.details = payload.details
     this.traceId = payload.trace_id
+    this.retryAfterSec = retryAfterSec
   }
 }
 
@@ -67,14 +69,71 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   unauthorizedHandler = handler
 }
 
-/** 错误信封的统一展示文本：`code · message`。非 ApiError 退回自身消息。 */
+const HAS_CJK_RE = /[\u4e00-\u9fff]/
+
+function fallbackChineseByStatus(error: ApiError): string {
+  if (error.status === 400) return '请求参数不符合要求，请核对后重试'
+  if (error.status === 401) return '登录已过期，请重新登录后再试'
+  if (error.status === 403) return '权限不足，无法执行此操作'
+  if (error.status === 404) return '目标记录不存在或已删除'
+  if (error.status === 409) return '操作与当前状态冲突，请刷新后重试'
+  if (error.status === 413) return '提交内容超出大小限制，请精简后重试'
+  if (error.status === 429) {
+    return error.retryAfterSec
+      ? `请求过于频繁，请在 ${error.retryAfterSec} 秒后重试`
+      : '请求过于频繁，请稍后重试'
+  }
+  if (error.status >= 500) return '服务暂不可用，请稍后重试'
+  return '请求失败，请稍后重试'
+}
+
+/**
+ * 错误信封的用户展示文本：不暴露内部 `code ·` 前缀。
+ * 若服务端消息已含可读中文则直接返回；纯英文或机器错误按 HTTP 状态收口为中文兜底。
+ */
 export function describeApiError(error: unknown): string {
-  if (error instanceof ApiError) return `${error.code} · ${error.message}`
-  if (error instanceof Error) return error.message
+  if (error instanceof ApiError) {
+    const trimmed = error.message.trim()
+    if (trimmed !== '' && HAS_CJK_RE.test(trimmed)) return trimmed
+    return fallbackChineseByStatus(error)
+  }
+  if (error instanceof Error) {
+    const trimmed = error.message.trim()
+    if (trimmed !== '' && HAS_CJK_RE.test(trimmed)) return trimmed
+    return '请求异常，请稍后重试'
+  }
   return String(error)
 }
 
-/** 把失败响应翻成 `ApiError`：先读信封，再交 401 回调。 */
+/** 409 是业务结论（并发、最后一名 master、名下有账号），不是传输故障。 */
+export function isConflictError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409
+}
+
+/**
+ * 危险写二次口令的失败文案。400 缺口令、403 口令错、429 连续失败
+ * 三条各自可读；其余状态仍回统一信封，便于定位非口令类失败。
+ */
+export function describeReauthError(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 400) return '缺少本站登录口令，或填写内容不合法。'
+    if (error.status === 403) return '口令不正确，或当前状态不允许这个操作。'
+    // 429 有两种来源：二次口令连续失败，或业务容量拒绝。只有前者换成口令文案。
+    if (error.status === 429 && error.code === 'rate_limited') return '尝试过多，请稍后再试。'
+    if (error.status === 502) return '平台暂时不可用，请稍后再试。'
+    if (error.status === 503) return '系统维护中，请稍后再试。'
+  }
+  return describeApiError(error)
+}
+
+function parseRetryAfterSeconds(response: Response): number | undefined {
+  const raw = response.headers.get('Retry-After')?.trim()
+  if (!raw || !/^\d+$/.test(raw)) return undefined
+  const seconds = Number.parseInt(raw, 10)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined
+}
+
+/** 把失败响应翻成 `ApiError`：先读信封与 Retry-After，再交 401 回调。 */
 async function raiseApiError(response: Response, path: string): Promise<never> {
   let payload: ApiErrorPayload = {
     code: 'internal_error',
@@ -86,8 +145,9 @@ async function raiseApiError(response: Response, path: string): Promise<never> {
   } catch {
     /* 响应体不是 JSON 时保留兜底错误，状态码仍要传给调用方。 */
   }
+  const retryAfterSec = parseRetryAfterSeconds(response)
   if (response.status === 401) unauthorizedHandler?.(path)
-  throw new ApiError(response.status, payload)
+  throw new ApiError(response.status, payload, retryAfterSec)
 }
 
 /** 条件请求缓存的上限。列表每页一个键，超出按插入序删最旧。 */

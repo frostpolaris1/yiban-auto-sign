@@ -23,6 +23,8 @@ export type TabItem = {
 type TabsProps = {
   items: TabItem[]
   defaultValue?: string
+  value?: string
+  onValueChange?: (value: string) => void
   label: string
   pills?: boolean
 }
@@ -32,17 +34,32 @@ type TabsProps = {
  * Radix 管焦点漫游与方向键。React 记当前值，保证 `is-active` 准确。
  * 两边各记一份状态时，键盘切换会与高亮不同步。
  */
-export function Tabs({ items, defaultValue, label, pills }: TabsProps) {
-  const [value, setValue] = useState(defaultValue ?? items[0]?.value ?? '')
+export function Tabs({
+  items,
+  defaultValue,
+  value: controlledValue,
+  onValueChange,
+  label,
+  pills,
+}: TabsProps) {
+  const [internalValue, setInternalValue] = useState(defaultValue ?? items[0]?.value ?? '')
+  const activeValue = controlledValue ?? internalValue
+
+  const handleChange = (next: string) => {
+    if (controlledValue === undefined) {
+      setInternalValue(next)
+    }
+    onValueChange?.(next)
+  }
 
   return (
-    <RadixTabs.Root value={value} onValueChange={setValue}>
+    <RadixTabs.Root value={activeValue} onValueChange={handleChange}>
       <RadixTabs.List className={pills ? 'tabs pills' : 'tabs'} aria-label={label}>
         {items.map((item) => (
           <RadixTabs.Trigger
             key={item.value}
             value={item.value}
-            className={cx('tab', value === item.value && 'is-active')}
+            className={cx('tab', activeValue === item.value && 'is-active')}
           >
             {item.label}
           </RadixTabs.Trigger>
@@ -52,7 +69,7 @@ export function Tabs({ items, defaultValue, label, pills }: TabsProps) {
         <RadixTabs.Content
           key={item.value}
           value={item.value}
-          className={cx('tab-panel', value === item.value && 'is-active')}
+          className={cx('tab-panel', activeValue === item.value && 'is-active')}
         >
           {item.content}
         </RadixTabs.Content>

@@ -105,7 +105,7 @@ server/
 ui/src/
 ├── app/            启动、路由、Provider、守卫
 ├── pages/          路由页，一页一文件，文件名以 Page 结尾
-├── features/       按域组织：auth / dashboard / design / user / schools / accounts / schedule / run / settings / photos
+├── features/       按域组织：auth / dashboard / design / user / schools / accounts / system / logs / settings / photos / queue / audit
 ├── components/
 │   ├── shell/      Sidebar / Topbar / Footer / AppShell
 │   └── ui/         无域原语：Button / Input / Card / Table / Modal / Tabs / Switch
@@ -130,17 +130,17 @@ ui/src/
 5. `lib/api` 按域拆文件：`auth.ts`、`school.ts`、`account.ts`。
 6. `features/` 目录按域的性质选形：
    - **资源列表域**用复数：`accounts`、`schools`、`photos`。
-   - **能力/页面域**用单数：`auth`、`dashboard`、`design`、`run`、`schedule`、`settings`、`user`。`user` 是历史命名，保持单数。
+   - **能力/页面域**用单数：`auth`、`dashboard`、`design`、`logs`、`queue`、`audit`、`settings`、`system`、`user`。`user` 是历史命名，保持单数。
    新域先看它是不是资源列表，再选形；同一层内不要同时存在两种写法（`features/` 复数、`lib/api` 单数是分层约定）。
 
-### 4.2 运行页的词对应
+### 4.2 签到台账的词对应
 
-用户看到的「运行」与「执行监控」在后端分几处，读码时按这张表换词：
+用户在「签到台账」（`/logs`）看到的「签到事件」与「运行巡检」两页签在后端分几处，读码时按这张表换词：
 
 | UI | 后端 |
 |---|---|
-| 运行页 `features/run`（任务检索） | `app/schedule`（`NewTaskQuery`）＋`lib/api/task.ts` |
-| 执行监控 `/engine`（快照） | `app/schedule`（`NewEngineQuery`：在飞、待重试与计数）＋`app/worker`（`EngineState`：启动 / 最近 tick / 最近认领）＋`lib/api/engine.ts` |
+| 签到事件页签 `features/logs`（`/logs?tab=events`，任务检索） | `app/schedule`（`NewTaskQuery`）＋`lib/api/task.ts` |
+| 运行巡检页签 `features/logs`（`/logs?tab=patrol`，快照） | `app/schedule`（`NewEngineQuery`：在飞、待重试与计数）＋`app/worker`（`EngineState`：启动 / 最近 tick / 最近认领）＋`lib/api/engine.ts` |
 | 计划 / 时间片 | `app/schedule` ＋ `core/plan`（落点几何） |
 | 容量 | `core/capacity` ＋ `core/window` |
 

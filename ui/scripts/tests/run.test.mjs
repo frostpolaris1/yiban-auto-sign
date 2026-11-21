@@ -11,28 +11,28 @@ import {
   parseRunSearchRecord,
   runSearchRecord,
   withRunFilter,
-} from '../../src/features/run/urlState.ts'
+} from '../../src/features/logs/urlState.ts'
 
 /**
- * 运行页的不变式。
+ * 签到台账（事件页签与 URL 状态）的不变式。
  *
  * 一、任务状态文案只有一份事实：`lib/identity` 的共用词表。
- *     运行页引用它；看板的同组词在单元测试里钉住相等，
+ *     台账引用它；看板的同组词在单元测试里钉住相等，
  *     两处不得各写一份（看板属已上线页面，本批不改）。
  * 二、URL 状态：解析丢弃非法值（校验即净化）、空值不产生键、
- *     换筛选统一丢游标。刷新与分享靠它。
+ *     换筛选统一丢游标，并保留当前页签（events/patrol）。刷新与分享靠它。
  */
 
 test('run page task words are the shared identity words', () => {
-  // 运行页不自带词表：features/run/display.ts 不得出现状态字面量文案。
+  // 台账不自带词表：features/logs/display.ts 不得出现状态字面量文案。
   const source = readFileSync(
-    new URL('../../src/features/run/display.ts', import.meta.url),
+    new URL('../../src/features/logs/display.ts', import.meta.url),
     'utf8',
   )
   for (const word of Object.values(TASK_STATE_LABELS)) {
     assert.ok(
       !source.includes(`'${word}'`),
-      `${word} must not be restated in features/run/display.ts`,
+      `${word} must not be restated in features/logs/display.ts`,
     )
   }
 })
@@ -48,6 +48,7 @@ test('the shared task words match the dashboard vocabulary', () => {
 
 test('parseRunSearchRecord keeps only valid values', () => {
   const state = parseRunSearchRecord({
+    tab: 'patrol',
     day: '2026-10-31',
     state: 'failed',
     school: 'school-a',
@@ -55,6 +56,7 @@ test('parseRunSearchRecord keeps only valid values', () => {
     cursor: 'c1',
   })
   assert.deepEqual(state, {
+    tab: 'patrol',
     day: '2026-10-31',
     state: 'failed',
     school: 'school-a',
@@ -65,6 +67,7 @@ test('parseRunSearchRecord keeps only valid values', () => {
 
 test('parseRunSearchRecord drops malformed values', () => {
   const state = parseRunSearchRecord({
+    tab: 'bogus',
     day: '31/10/2026',
     state: 'done',
     school: '',
@@ -78,8 +81,8 @@ test('parseRunSearchRecord drops malformed values', () => {
 test('runSearchRecord omits empty values so same state reads same URL', () => {
   assert.deepEqual(runSearchRecord({}), {})
   assert.deepEqual(
-    runSearchRecord({ day: '2026-10-31', state: 'failed' }),
-    { day: '2026-10-31', state: 'failed' },
+    runSearchRecord({ tab: 'events', day: '2026-10-31', state: 'failed' }),
+    { tab: 'events', day: '2026-10-31', state: 'failed' },
   )
   assert.deepEqual(
     runSearchRecord({ day: '2026-10-31', q: 'school', cursor: 'c2' }),
@@ -87,18 +90,18 @@ test('runSearchRecord omits empty values so same state reads same URL', () => {
   )
 })
 
-test('withRunFilter resets the cursor on any filter change', () => {
+test('withRunFilter resets the cursor on any filter change and preserves tab', () => {
   const next = withRunFilter(
-    { day: '2026-10-31', state: 'failed', cursor: 'c2' },
+    { tab: 'events', day: '2026-10-31', state: 'failed', cursor: 'c2' },
     { state: undefined },
   )
-  assert.deepEqual(next, { day: '2026-10-31' })
+  assert.deepEqual(next, { tab: 'events', day: '2026-10-31' })
 
   const same = withRunFilter({ day: '2026-10-31' }, { day: '2026-10-31' })
   assert.deepEqual(same, { day: '2026-10-31' })
 })
 
 test('parse and serialize round-trip the same state', () => {
-  const record = { day: '2026-10-31', state: 'pending', q: '甲校', cursor: 'c3' }
+  const record = { tab: 'events', day: '2026-10-31', state: 'pending', q: '甲校', cursor: 'c3' }
   assert.deepEqual(runSearchRecord(parseRunSearchRecord(record)), record)
 })

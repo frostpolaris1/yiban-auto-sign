@@ -29,6 +29,11 @@ type UsersTableProps = {
   hasNext: boolean
   onPrevious: () => void
   onNext: () => void
+  /** 批量选择：只有 master 渲染选择列。 */
+  selectable: boolean
+  selectedIds: ReadonlySet<string>
+  onToggleRow: (id: string) => void
+  onToggleAll: (ids: string[], checked: boolean) => void
   onManage: (user: User, opener: HTMLElement | null) => void
 }
 
@@ -39,8 +44,15 @@ export function UsersTable({
   hasNext,
   onPrevious,
   onNext,
+  selectable,
+  selectedIds,
+  onToggleRow,
+  onToggleAll,
   onManage,
 }: UsersTableProps) {
+  const visibleIds = rows.map((row) => row.id)
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id))
+  const someSelected = visibleIds.some((id) => selectedIds.has(id))
   return (
     <>
       <div className="table-scroll">
@@ -48,6 +60,19 @@ export function UsersTable({
           <caption className="app-visually-hidden">用户列表</caption>
           <thead>
             <tr>
+              {selectable ? (
+                <th scope="col" className="app-selection-cell">
+                  <input
+                    type="checkbox"
+                    aria-label="全选本页用户"
+                    checked={allSelected}
+                    ref={(element) => {
+                      if (element) element.indeterminate = someSelected && !allSelected
+                    }}
+                    onChange={(event) => onToggleAll(visibleIds, event.target.checked)}
+                  />
+                </th>
+              ) : null}
               <th scope="col">邮箱</th>
               <th scope="col">角色</th>
               <th scope="col">状态</th>
@@ -61,6 +86,16 @@ export function UsersTable({
           <tbody>
             {rows.map((user) => (
               <tr key={user.id}>
+                {selectable ? (
+                  <td className="app-selection-cell">
+                    <input
+                      type="checkbox"
+                      aria-label={`选择 ${user.email}`}
+                      checked={selectedIds.has(user.id)}
+                      onChange={() => onToggleRow(user.id)}
+                    />
+                  </td>
+                ) : null}
                 <td className="data-cell-mono">{user.email}</td>
                 <td>{roleLabel(user.role)}</td>
                 <td>

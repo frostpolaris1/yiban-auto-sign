@@ -472,8 +472,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			return nil, err
 		}
 		notifyLib, systemLib, auditLib, settingsSvc, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle,
-			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, settingsResolver, mailResolver, cipher,
-			cfg.AuditAnchorFile)
+			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, settingsResolver,
+			scheduleEnvFromConfig(cfg, config.Env{}), mailResolver, cipher, cfg.AuditAnchorFile)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -999,7 +999,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown,
 	webhook corewebhook.Sender, webhookCooldown appsettings.Cooldown,
 	autoApprove appsettings.AutoApproveStore, settingsRepo *pg.SettingsRepo,
-	settingsResolver *appsettings.Resolver, mailResolver *appsettings.MailResolver,
+	settingsResolver *appsettings.Resolver, scheduleEnv appsettings.ScheduleEnv, mailResolver *appsettings.MailResolver,
 	cipher *appaccount.Cipher, auditAnchorFile string) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
@@ -1024,6 +1024,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		AutoApprove:     autoApprove,
 		Schedule:        settingsRepo,
 		Resolver:        settingsResolver,
+		ScheduleEnv:     scheduleEnv,
 		Cipher:          cipher,
 		MailResolver:    mailResolver,
 		Logger:          logger,
@@ -1390,6 +1391,30 @@ func mailEnvFromConfig(cfg *config.Config, src config.Source) appsettings.MailEn
 		From:    value("YIBAN_MAIL_FROM", cfg.MailFrom),
 		User:    value("YIBAN_MAIL_USER", cfg.MailUser),
 		Pass:    value("YIBAN_MAIL_PASS", cfg.MailPass),
+	}
+}
+
+// scheduleEnvFromConfig 把 config.Load 的定型值转成名册 3 枚可写调度键的 env/default 兜底视图。
+func scheduleEnvFromConfig(cfg *config.Config, src config.Source) appsettings.ScheduleEnv {
+	sourceOf := func(key string) appsettings.ScheduleSource {
+		if raw, ok := src.Lookup(key); ok && raw != "" {
+			return appsettings.ScheduleSourceEnv
+		}
+		return appsettings.ScheduleSourceDefault
+	}
+	return appsettings.ScheduleEnv{
+		EdgeFrontSec: appsettings.ScheduleEnvInt{
+			Value:  int(cfg.EdgeFront / time.Second),
+			Source: sourceOf("YIBAN_WINDOW_EDGE_FRONT_SEC"),
+		},
+		EdgeBackSec: appsettings.ScheduleEnvInt{
+			Value:  int(cfg.EdgeBack / time.Second),
+			Source: sourceOf("YIBAN_WINDOW_EDGE_BACK_SEC"),
+		},
+		AllowTimePref: appsettings.ScheduleEnvBool{
+			Value:  cfg.AllowTimePref,
+			Source: sourceOf("YIBAN_ALLOW_TIME_PREF"),
+		},
 	}
 }
 

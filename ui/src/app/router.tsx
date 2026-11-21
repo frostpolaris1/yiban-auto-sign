@@ -11,22 +11,30 @@
  * 公开认证页（登录、忘记密码、重置密码）挂在根路由下：不套壳。
  */
 
-import { createRootRoute, createRoute, createRouter, Outlet, useNavigate } from '@tanstack/react-router'
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  redirect,
+  useNavigate,
+} from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
 import { AccountsPage } from '@/pages/AccountsPage'
+import { AuditPage } from '@/pages/AuditPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
-import { EnginePage } from '@/pages/EnginePage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { LoginPage } from '@/pages/LoginPage'
+import { LogsPage } from '@/pages/LogsPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
+import { QueuePage } from '@/pages/QueuePage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
-import { RunPage } from '@/pages/RunPage'
-import { SchedulePage } from '@/pages/SchedulePage'
 import { SchoolsPage } from '@/pages/SchoolsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { SystemPage } from '@/pages/SystemPage'
 import { UsersPage } from '@/pages/UsersPage'
-import { parseRunSearchRecord, runSearchRecord } from '@/features/run/urlState'
+import { parseRunSearchRecord, runSearchRecord } from '@/features/logs/urlState'
 import { parseUserSearchRecord, userSearchRecord } from '@/features/user/urlState'
 import { parseDay } from '@/lib/format'
 import { sanitizeRedirect } from '@/lib/redirect'
@@ -64,7 +72,7 @@ const accountsRoute = createRoute({
   component: AccountsPage,
 })
 
-/** 账号设置：账号信息与自助改密。三种角色都能进。 */
+/** 账号设置（个人域）：账号信息、改密与本人通知订阅。master/admin 进页，user 渲染无权限卡片。 */
 const settingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/settings',
@@ -77,34 +85,32 @@ const schoolsRoute = createRoute({
   component: SchoolsPage,
 })
 
-/** 运行页：master/admin。筛选与业务日是 URL 状态：校验即净化。 */
+/** 旧运行页入口：保底一个版本周期，302 到签到台账·签到事件页签并保留合法筛选。 */
 const runRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/run',
   validateSearch: (search: Record<string, unknown>) => parseRunSearchRecord(search),
-  component: RunRouteComponent,
+  beforeLoad: ({ search }) => {
+    throw redirect({
+      to: '/logs',
+      search: runSearchRecord({ ...search, tab: 'events' }),
+      replace: true,
+    })
+  },
 })
 
-/** 执行监控：master/admin。快照无筛选与分页，无查询串。 */
+/** 旧执行监控入口：保底一个版本周期，302 到签到台账·运行巡检页签。 */
 const engineRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/engine',
-  component: EnginePage,
+  beforeLoad: () => {
+    throw redirect({
+      to: '/logs',
+      search: { tab: 'patrol' },
+      replace: true,
+    })
+  },
 })
-
-/** 把类型化的 search 传给页面，并让页面通过回调写回查询串。 */
-function RunRouteComponent() {
-  const search = runRoute.useSearch()
-  const navigate = useNavigate()
-  return (
-    <RunPage
-      search={search}
-      onSearchChange={(next, opts) => {
-        void navigate({ to: '/run', search: runSearchRecord(next), replace: opts?.replace })
-      }}
-    />
-  )
-}
 
 /** 用户管理：只归 master；非 master 直接访问落到无权限卡片。
  * 筛选、含已删除与游标是 URL 状态：校验即净化，非法值在解析时丢弃。
@@ -134,32 +140,90 @@ function UsersRouteComponent() {
 }
 
 /**
- * 时间片路由的自定义 search：`?day=YYYY-MM-DD`。
- * 校验即净化：非法日期在解析时丢弃，容器回落到今天。
+ * 待办工作台：master/admin。权限门由 QueueView 内部执行。
  */
-const scheduleRoute = createRoute({
+const queueRoute = createRoute({
   getParentRoute: () => shellRoute,
-  path: '/schedule',
-  validateSearch: (search: Record<string, unknown>): { day?: string } => {
-    const day = parseDay(search.day)
-    return day ? { day } : {}
-  },
-  component: ScheduleRouteComponent,
+  path: '/queue',
+  component: QueuePage,
 })
 
-/** 把类型化的 search 传给页面，并让页面通过回调写回查询串。 */
-function ScheduleRouteComponent() {
-  const { day } = scheduleRoute.useSearch()
+/**
+ * 签到台账：master/admin。合并签到事件与运行巡检两页签；
+ * 页签、筛选、业务日与游标均为 URL 状态（校验即净化）。
+ */
+const logsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/logs',
+  validateSearch: (search: Record<string, unknown>) => parseRunSearchRecord(search),
+  component: LogsRouteComponent,
+})
+
+/** 把类型化的 search 传给签到台账页，并让页面通过回调写回查询串。 */
+function LogsRouteComponent() {
+  const search = logsRoute.useSearch()
   const navigate = useNavigate()
   return (
-    <SchedulePage
-      day={day}
-      onDayChange={(next) => {
-        void navigate({ to: '/schedule', search: { day: next }, replace: true })
+    <LogsPage
+      search={parseRunSearchRecord(search as Record<string, unknown>)}
+      onSearchChange={(next, opts) => {
+        void navigate({ to: '/logs', search: runSearchRecord(next), replace: opts?.replace })
       }}
     />
   )
 }
+
+/** 审计日志：master/admin。权限门由 AuditView 内部执行，user 不发审计请求。 */
+const auditRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/audit',
+  component: AuditPage,
+})
+
+/**
+ * 系统设置：master/admin。权限门由 SystemView 内部执行，user 不发业务请求。
+ * `?day=YYYY-MM-DD` 校验即净化：非法日期在解析时丢弃，计划分区回落到今天。
+ */
+const systemRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/system',
+  validateSearch: (search: Record<string, unknown>): { day?: string } => ({
+    day: parseDay(search.day) ?? undefined,
+  }),
+  component: SystemRouteComponent,
+})
+
+/** 把类型化的 search 传给系统设置页，并让计划分区通过回调写回查询串。 */
+function SystemRouteComponent() {
+  const { day } = systemRoute.useSearch()
+  const navigate = useNavigate()
+  return (
+    <SystemPage
+      day={parseDay(day) ?? undefined}
+      onDayChange={(next) => {
+        void navigate({ to: '/system', search: { day: next }, replace: true })
+      }}
+    />
+  )
+}
+
+/** 旧时间片入口：保底一个版本周期，302 到系统设置·签到计划分区（保留合法 ?day= 并锚定 #plans）。 */
+const scheduleRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/schedule',
+  validateSearch: (search: Record<string, unknown>): { day?: string } => ({
+    day: parseDay(search.day) ?? undefined,
+  }),
+  beforeLoad: ({ search }) => {
+    const day = parseDay(search.day) ?? undefined
+    throw redirect({
+      to: '/system',
+      search: () => (day ? { day } : {}),
+      hash: 'plans',
+      replace: true,
+    })
+  },
+})
 
 /**
  * 登录路由的自定义 search：`?redirect=`。
@@ -219,6 +283,10 @@ const routeTree = rootRoute.addChildren([
     usersRoute,
     runRoute,
     engineRoute,
+    queueRoute,
+    logsRoute,
+    auditRoute,
+    systemRoute,
     scheduleRoute,
   ]),
   loginRoute,

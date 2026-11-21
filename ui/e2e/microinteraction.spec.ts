@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { deleteCalls, mockAccountsApi } from './support/fake-accounts-api'
+import { deleteCalls, mockAccountsApi, SESSION_PASSWORD } from './support/fake-accounts-api'
 import { accountIdentity, mockDashboardApi } from './support/fake-dashboard-api'
 import {
   SCHEDULE_DAY,
@@ -9,7 +9,13 @@ import {
   timePrefPutCalls,
 } from './support/fake-schedule-api'
 import { createSchoolCalls, mockSchoolsApi } from './support/fake-schools-api'
+import { installFakeEventSource, mockLogsApi } from './support/fake-logs-api'
 import { visibleText } from './support/visible-text'
+
+/** 在带二次口令的弹窗里填操作者本人登录口令。 */
+async function fillReauth(dialog: Locator, password = SESSION_PASSWORD) {
+  await dialog.getByRole('textbox', { name: '你的登录口令' }).fill(password)
+}
 
 /**
  * 微交互批（3bw）的六条不变式。
@@ -99,7 +105,7 @@ test('invariant 1: a failed sign keeps its error in the dialog and sends no toas
   const dialog = page.getByRole('dialog', { name: '立即签到？' })
   await dialog.getByRole('button', { name: '确认签到' }).click()
   await expect(dialog).toContainText('签到窗口已关闭')
-  await expect(dialog).toContainText('window_closed')
+  await expect(dialog).not.toContainText('window_closed')
   await expect(toast(page)).toHaveCount(0)
 })
 
@@ -190,25 +196,27 @@ test('invariant 1: adding a school admin toasts inside the open modal', async ({
   await page.getByRole('button', { name: '更多操作 合成学校甲' }).click()
   await page.getByRole('menu').getByRole('menuitem', { name: /管理员/ }).click()
   const dialog = page.getByRole('dialog', { name: '学校管理员' })
-  await dialog.getByLabel('用户 ID').fill('user-9')
+  await dialog.getByRole('button', { name: '选择 a***@example.com' }).click()
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '添加管理员' }).click()
 
-  await expect(toast(page).filter({ hasText: '已添加管理员 user-9' })).toBeVisible()
+  await expect(toast(page).filter({ hasText: '已添加管理员 a***@example.com' })).toBeVisible()
   await expect(page.getByText('操作结果')).toHaveCount(0)
 
-  await dialog.getByRole('button', { name: '移除 user-9@example.com' }).click()
-  await page
-    .getByRole('dialog', { name: '移除管理员？' })
-    .getByRole('button', { name: '确认移除' })
-    .click()
-  await expect(toast(page).filter({ hasText: '已移除管理员 user-9@example.com' })).toBeVisible()
+  await dialog.getByRole('button', { name: '移除 admin-candidate@example.com' }).click()
+  const remove = page.getByRole('dialog', { name: '移除管理员？' })
+  await fillReauth(remove)
+  await remove.getByRole('button', { name: '确认移除' }).click()
+  await expect(
+    toast(page).filter({ hasText: '已移除管理员 admin-candidate@example.com' }),
+  ).toBeVisible()
 })
 
 test('invariant 1: a build toasts and a 409 build keeps its error in the confirm', async ({
   page,
 }) => {
   const api = await mockScheduleApi(page, { role: 'master' })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const preview = page.getByRole('dialog', { name: '计划预览' })
   await preview.getByRole('button', { name: '落库此计划' }).click()
@@ -226,7 +234,7 @@ test('invariant 1: a 409 build leaves the error in the confirm and sends no toas
     role: 'master',
     planError: { status: 409, code: 'conflict', message: 'task disabled' },
   })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const preview = page.getByRole('dialog', { name: '计划预览' })
   await preview.getByRole('button', { name: '落库此计划' }).click()
@@ -239,7 +247,7 @@ test('invariant 1: a 409 build leaves the error in the confirm and sends no toas
 
 test('invariant 1: an override toasts the rebuilt version', async ({ page }) => {
   const api = await mockScheduleApi(page, { role: 'master' })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const preview = page.getByRole('dialog', { name: '计划预览' })
   await preview.getByRole('button', { name: '写入覆盖' }).click()
@@ -313,13 +321,14 @@ test('invariant 3: dashboard KPI numbers settle on the exact counts', async ({ p
 test('invariant 3: capacity numbers settle on the exact report', async ({ page }) => {
   await mockDashboardApi(page, { role: 'admin' })
   await page.goto('/')
-  await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+  await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
 
   await expect.poll(() => visibleText(metric(page, '容量'))).toBe('容量40')
   await expect.poll(() => visibleText(metric(page, '需求'))).toBe('需求12')
   await expect.poll(() => visibleText(metric(page, '缺口'))).toBe('缺口0')
 
-  await page.getByLabel('任务').selectOption('school-beta:task-night')
+  await page.getByLabel('任务').click()
+  await page.getByRole('option', { name: '合成学校乙 · 夜间签到' }).click()
   await expect.poll(() => visibleText(metric(page, '容量'))).toBe('容量20')
   await expect.poll(() => visibleText(metric(page, '需求'))).toBe('需求26')
   await expect.poll(() => visibleText(metric(page, '缺口'))).toBe('缺口6')
@@ -327,7 +336,7 @@ test('invariant 3: capacity numbers settle on the exact report', async ({ page }
 
 test('invariant 3: preview numbers settle on the exact plan', async ({ page }) => {
   await mockScheduleApi(page, { role: 'master' })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const dialog = page.getByRole('dialog', { name: '计划预览' })
   await expect(dialog.locator('.app-metric')).toHaveCount(3)
@@ -350,7 +359,7 @@ test('invariant 3: number components keep the line box of plain text', async ({ 
   // 行盒高度是布局契约，不是动画细节。44px 与 20px 分别代表 KPI 与指标。
   await mockDashboardApi(page, { role: 'admin' })
   await page.goto('/')
-  await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+  await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
 
   const kpi = await page.locator('.kpi-card .kpi-value').first().boundingBox()
   const metric = await page.locator('.app-metric-value').first().boundingBox()
@@ -359,13 +368,8 @@ test('invariant 3: number components keep the line box of plain text', async ({ 
   expect(Math.round(kpi!.height), 'KPI 行盒').toBe(44)
   expect(Math.round(metric!.height), '指标行盒').toBe(24)
 
-  // 徽章高度由内容撑开：负边距若落进来会把徽章压得比内容还小。
-  const badge = page.locator('.app-metric .badge').first()
-  const badgeBox = await badge.boundingBox()
-  const hostBox = await badge.locator('.app-number').boundingBox()
-  expect(badgeBox, '缺口徽章已渲染').not.toBeNull()
-  expect(hostBox, '徽章内的数字已渲染').not.toBeNull()
-  expect(badgeBox!.height, '徽章容纳其内容').toBeGreaterThan(hostBox!.height)
+  // 缺口已是纯色数字（用户裁决）：容量指标里不再有徽章。
+  await expect(page.locator('.app-metric .badge')).toHaveCount(0)
 })
 
 test('invariant 4: rows stay clickable and focus returns after a delete', async ({ page }) => {
@@ -375,6 +379,7 @@ test('invariant 4: rows stay clickable and focus returns after a delete', async 
   await page.getByRole('button', { name: '更多操作 135****0001' }).click()
   await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
   const dialog = page.getByRole('dialog', { name: '删除账号？' })
+  await fillReauth(dialog)
   await dialog.getByRole('button', { name: '确认删除' }).click()
 
   await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
@@ -419,7 +424,7 @@ test('invariant 4: a newly created school row opens the drawer', async ({ page }
 
 test('invariant 4: schedule rows stay clickable after an override rebuild', async ({ page }) => {
   await mockScheduleApi(page, { role: 'master' })
-  await page.goto(`/schedule?day=${SCHEDULE_DAY}`)
+  await page.goto(`/system?day=${SCHEDULE_DAY}`)
   await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
   const preview = page.getByRole('dialog', { name: '计划预览' })
   await preview.getByRole('button', { name: '写入覆盖' }).click()
@@ -449,10 +454,9 @@ test.describe('motion enabled', () => {
 
     await page.getByRole('button', { name: '更多操作 135****0001' }).click()
     await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
-    await page
-      .getByRole('dialog', { name: '删除账号？' })
-      .getByRole('button', { name: '确认删除' })
-      .click()
+    const dialog = page.getByRole('dialog', { name: '删除账号？' })
+    await fillReauth(dialog)
+    await dialog.getByRole('button', { name: '确认删除' }).click()
     await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
 
     // 不等退场结束：立即点另一行，抽屉要开。
@@ -496,3 +500,47 @@ for (const theme of ['light', 'dark'] as const) {
     )
   })
 }
+
+test('invariant 7: reduced-motion disables tab panel, drawer and modal entrance animations', async ({
+  page,
+}) => {
+  await installFakeEventSource(page)
+  await mockLogsApi(page, { role: 'master' })
+  await page.goto('/logs?tab=events')
+  await expect(page.getByRole('tab', { name: '签到事件' })).toHaveAttribute('aria-selected', 'true')
+
+  const panelAnim = await page
+    .locator('.tab-panel.is-active')
+    .evaluate((el) => getComputedStyle(el).animationName)
+  expect(panelAnim).toBe('none')
+
+  await page.getByRole('button', { name: '诊断' }).first().click()
+  const drawer = page.locator('.app-drawer')
+  await expect(drawer).toBeVisible()
+  const drawerAnim = await drawer.evaluate((el) => getComputedStyle(el).animationName)
+  expect(drawerAnim).toBe('none')
+})
+
+test.describe('motion enabled — tab swap and overlay stability', () => {
+  test.use({ reducedMotion: 'no-preference' })
+
+  test('invariant 7: logs tab swap animates cleanly and settles with zero horizontal layout shift', async ({
+    page,
+  }) => {
+    await installFakeEventSource(page)
+    await mockLogsApi(page, { role: 'master' })
+    await page.goto('/logs?tab=events')
+    await expect(page.getByRole('tab', { name: '签到事件' })).toHaveAttribute('aria-selected', 'true')
+
+    const beforeW = await page.locator('.logs-page').evaluate((el) => el.getBoundingClientRect().width)
+    await page.getByRole('tab', { name: '运行巡检' }).click()
+    await expect(page.getByRole('tab', { name: '运行巡检' })).toHaveAttribute('aria-selected', 'true')
+
+    const activePanel = page.locator('.tab-panel.is-active')
+    await expect
+      .poll(() => activePanel.evaluate((el) => getComputedStyle(el).opacity))
+      .toBe('1')
+    const afterW = await page.locator('.logs-page').evaluate((el) => el.getBoundingClientRect().width)
+    expect(Math.round(afterW)).toBe(Math.round(beforeW))
+  })
+})

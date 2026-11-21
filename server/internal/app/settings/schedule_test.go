@@ -936,3 +936,146 @@ func TestScheduleSettingsSignWindowHalfPairRejected(t *testing.T) {
 		}
 	})
 }
+
+// errScheduleReadStore 模拟存储读故障，验证 ScheduleSettings 原样上抛而不报成缺省。
+type errScheduleReadStore struct{ *keyedWriteStore }
+
+func (s *errScheduleReadStore) IntOverride(context.Context, string) (int, bool, error) {
+	return 0, false, errs.New(errs.CodeInternal, "storage unavailable")
+}
+
+// TestScheduleSettingsReadDefaultsEnvOverridesAndErrors 核对 GET 调度读面 8 键全覆盖：
+// 默认兜底 / env 兜底 / DB 覆盖 / 半对或坏行整对回退 / user 403 / 缺 resolver / 存储故障上抛。
+func TestScheduleSettingsReadDefaultsEnvOverridesAndErrors(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. 零配置：8 键全部报 default 且取内置常值。
+	store := newKeyedWriteStore()
+	svc, _ := newScheduleService(t, store, &fakeAudit{})
+	report, err := svc.ScheduleSettings(ctx, corescope.Admin(nil))
+	if err != nil {
+		t.Fatalf("admin ScheduleSettings defaults: %v", err)
+	}
+	if report.EdgeFrontSec != (appsettings.ScheduleIntValue{Value: 60, Source: appsettings.ScheduleSourceDefault}) ||
+		report.EdgeBackSec != (appsettings.ScheduleIntValue{Value: 60, Source: appsettings.ScheduleSourceDefault}) ||
+		report.AllowTimePref != (appsettings.ScheduleBoolValue{Value: false, Source: appsettings.ScheduleSourceDefault}) ||
+		report.SundaySign != (appsettings.ScheduleBoolValue{Value: false, Source: appsettings.ScheduleSourceDefault}) ||
+		report.SaturdaySign != (appsettings.ScheduleBoolValue{Value: false, Source: appsettings.ScheduleSourceDefault}) ||
+		report.DefaultSignStartMin != (appsettings.ScheduleIntValue{Value: coreschedule.DefaultSignWindowStartMinute, Source: appsettings.ScheduleSourceDefault}) ||
+		report.DefaultSignEndMin != (appsettings.ScheduleIntValue{Value: coreschedule.DefaultSignWindowEndMinute, Source: appsettings.ScheduleSourceDefault}) ||
+		report.SignDist != (appsettings.ScheduleSignDistValue{Value: appsettings.SignDistFront, Source: appsettings.ScheduleSourceDefault}) {
+		t.Fatalf("default report = %+v", report)
+	}
+
+	// 2. 注入 env 兜底 + 全部 8 键 DB 覆盖。
+	resolver, err := appsettings.NewResolver(store, map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	svcEnv, err := appsettings.NewService(appsettings.Deps{
+		Store: &fakeStore{}, Audit: &fakeAudit{}, Tx: &rollbackTx{}, Clock: fixedClock{},
+		Schedule: store, Resolver: resolver,
+		ScheduleEnv: appsettings.ScheduleEnv{
+			EdgeFrontSec:  appsettings.ScheduleEnvInt{Value: 45, Source: appsettings.ScheduleSourceEnv},
+			EdgeBackSec:   appsettings.ScheduleEnvInt{Value: 90, Source: appsettings.ScheduleSourceEnv},
+			AllowTimePref: appsettings.ScheduleEnvBool{Value: true, Source: appsettings.ScheduleSourceEnv},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService env: %v", err)
+	}
+	envReport, err := svcEnv.ScheduleSettings(ctx, corescope.Master())
+	if err != nil {
+		t.Fatalf("master ScheduleSettings env: %v", err)
+	}
+	if envReport.EdgeFrontSec != (appsettings.ScheduleIntValue{Value: 45, Source: appsettings.ScheduleSourceEnv}) ||
+		envReport.EdgeBackSec != (appsettings.ScheduleIntValue{Value: 90, Source: appsettings.ScheduleSourceEnv}) ||
+		envReport.AllowTimePref != (appsettings.ScheduleBoolValue{Value: true, Source: appsettings.ScheduleSourceEnv}) ||
+		envReport.SignDist.Source != appsettings.ScheduleSourceDefault {
+		t.Fatalf("env report = %+v", envReport)
+	}
+
+	// 写入全部 8 键 DB 覆盖后全部报 source=db。
+	if err := svcEnv.SetSchedule(ctx, corescope.Master(), scheduleActor, []appsettings.ScheduleChange{
+		{Key: appsettings.KeyScheduleEdgeFrontSec, Op: appsettings.ScheduleOpSet, Value: 30},
+		{Key: appsettings.KeyScheduleEdgeBackSec, Op: appsettings.ScheduleOpSet, Value: 120},
+		{Key: appsettings.KeyScheduleAllowTimePref, Op: appsettings.ScheduleOpSet, Value: false},
+		{Key: appsettings.KeyScheduleSundaySign, Op: appsettings.ScheduleOpSet, Value: true},
+		{Key: appsettings.KeyScheduleSaturdaySign, Op: appsettings.ScheduleOpSet, Value: true},
+		{Key: appsettings.KeyScheduleDefaultSignStartMin, Op: appsettings.ScheduleOpSet, Value: 420},
+		{Key: appsettings.KeyScheduleDefaultSignEndMin, Op: appsettings.ScheduleOpSet, Value: 510},
+		{Key: appsettings.KeyScheduleSignDist, Op: appsettings.ScheduleOpSet, Value: appsettings.SignDistUniform},
+	}); err != nil {
+		t.Fatalf("SetSchedule all 8: %v", err)
+	}
+	dbReport, err := svcEnv.ScheduleSettings(ctx, corescope.Master())
+	if err != nil {
+		t.Fatalf("master ScheduleSettings db: %v", err)
+	}
+	if dbReport.EdgeFrontSec != (appsettings.ScheduleIntValue{Value: 30, Source: appsettings.ScheduleSourceDB}) ||
+		dbReport.EdgeBackSec != (appsettings.ScheduleIntValue{Value: 120, Source: appsettings.ScheduleSourceDB}) ||
+		dbReport.AllowTimePref != (appsettings.ScheduleBoolValue{Value: false, Source: appsettings.ScheduleSourceDB}) ||
+		dbReport.SundaySign != (appsettings.ScheduleBoolValue{Value: true, Source: appsettings.ScheduleSourceDB}) ||
+		dbReport.SaturdaySign != (appsettings.ScheduleBoolValue{Value: true, Source: appsettings.ScheduleSourceDB}) ||
+		dbReport.DefaultSignStartMin != (appsettings.ScheduleIntValue{Value: 420, Source: appsettings.ScheduleSourceDB}) ||
+		dbReport.DefaultSignEndMin != (appsettings.ScheduleIntValue{Value: 510, Source: appsettings.ScheduleSourceDB}) ||
+		dbReport.SignDist != (appsettings.ScheduleSignDistValue{Value: appsettings.SignDistUniform, Source: appsettings.ScheduleSourceDB}) {
+		t.Fatalf("db report = %+v", dbReport)
+	}
+
+	// 3. 半对默认窗口 + 越域 edge + 坏 sign_dist 整段回退 env/default。
+	corruptStore := newKeyedWriteStore()
+	corruptStore.intRows[appsettings.KeyScheduleEdgeFrontSec] = "999"
+	corruptStore.intRows[appsettings.KeyScheduleDefaultSignStartMin] = "400"
+	corruptStore.strRows[appsettings.KeyScheduleSignDist] = "INVALID"
+	corruptResolver, err := appsettings.NewResolver(corruptStore, map[string]appsettings.SettingDomain{
+		appsettings.KeyScheduleEdgeFrontSec: {Min: 0, Max: 300},
+		appsettings.KeyScheduleEdgeBackSec:  {Min: 0, Max: 300},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewResolver corrupt: %v", err)
+	}
+	svcCorrupt, _ := appsettings.NewService(appsettings.Deps{
+		Store: &fakeStore{}, Audit: &fakeAudit{}, Tx: &rollbackTx{}, Clock: fixedClock{},
+		Schedule: corruptStore, Resolver: corruptResolver,
+		ScheduleEnv: appsettings.ScheduleEnv{
+			EdgeFrontSec: appsettings.ScheduleEnvInt{Value: 45, Source: appsettings.ScheduleSourceEnv},
+		},
+	})
+	corruptReport, err := svcCorrupt.ScheduleSettings(ctx, corescope.Admin(nil))
+	if err != nil {
+		t.Fatalf("corrupt fallback ScheduleSettings: %v", err)
+	}
+	if corruptReport.EdgeFrontSec != (appsettings.ScheduleIntValue{Value: 45, Source: appsettings.ScheduleSourceEnv}) ||
+		corruptReport.DefaultSignStartMin != (appsettings.ScheduleIntValue{Value: coreschedule.DefaultSignWindowStartMinute, Source: appsettings.ScheduleSourceDefault}) ||
+		corruptReport.DefaultSignEndMin != (appsettings.ScheduleIntValue{Value: coreschedule.DefaultSignWindowEndMinute, Source: appsettings.ScheduleSourceDefault}) ||
+		corruptReport.SignDist != (appsettings.ScheduleSignDistValue{Value: appsettings.SignDistFront, Source: appsettings.ScheduleSourceDefault}) {
+		t.Fatalf("corrupt report = %+v", corruptReport)
+	}
+
+	// 4. user 403 / 缺 resolver 500 / 存储故障上抛。
+	if _, err := svcEnv.ScheduleSettings(ctx, corescope.User("u-1")); err == nil ||
+		errs.From(err).Code != errs.CodeForbidden {
+		t.Fatalf("user role err = %v, want forbidden", err)
+	}
+	svcNoRes, _ := appsettings.NewService(appsettings.Deps{
+		Store: &fakeStore{}, Audit: &fakeAudit{}, Tx: &rollbackTx{}, Clock: fixedClock{},
+		Schedule: store,
+	})
+	if _, err := svcNoRes.ScheduleSettings(ctx, corescope.Master()); err == nil ||
+		errs.From(err).Code != errs.CodeInternal {
+		t.Fatalf("missing resolver err = %v, want internal", err)
+	}
+	errResolver, _ := appsettings.NewResolver(&errScheduleReadStore{newKeyedWriteStore()}, nil, nil)
+	svcErr, _ := appsettings.NewService(appsettings.Deps{
+		Store: &fakeStore{}, Audit: &fakeAudit{}, Tx: &rollbackTx{}, Clock: fixedClock{},
+		Schedule: store, Resolver: errResolver,
+	})
+	if _, err := svcErr.ScheduleSettings(ctx, corescope.Master()); err == nil ||
+		errs.From(err).Code != errs.CodeInternal {
+		t.Fatalf("storage failure err = %v, want internal", err)
+	}
+}
