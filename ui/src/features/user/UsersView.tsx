@@ -206,7 +206,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
   return (
     <>
       <PageHeader
-        eyebrow="系统 · 用户"
+        eyebrow="管理 · 用户"
         title={
           <>
             用户 <span className="accent">管理</span>

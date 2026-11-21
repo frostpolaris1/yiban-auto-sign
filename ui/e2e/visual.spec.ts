@@ -4,6 +4,7 @@ import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockRunApi, installFakeEventSource } from './support/fake-run-api'
 import { mockEngineApi, ENGINE_VISUAL_SNAPSHOT, VISUAL_NOW } from './support/fake-engine-api'
+import { mockQueueApi } from './support/fake-queue-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 import { mockUsersApi } from './support/fake-users-api'
 import { visibleText } from './support/visible-text'
@@ -25,6 +26,7 @@ import { visibleText } from './support/visible-text'
  */
 
 const ROUTES = [
+  { path: '/queue', name: 'queue' },
   { path: '/run?day=2030-01-01', name: 'run' },
   { path: '/engine', name: 'engine' },
   { path: '/design', name: 'design' },
@@ -97,6 +99,12 @@ async function mockSessionFor(
     await installFakeEventSource(page)
     await mockEngineApi(page, { role, snapshot: ENGINE_VISUAL_SNAPSHOT })
   }
+  // 待办页的业务日取当前日期：同样冻结在 VISUAL_NOW 避免跨日基线漂移，并钉住 SSE 实时态。
+  if (path === '/queue') {
+    await page.clock.setFixedTime(new Date(VISUAL_NOW))
+    await installFakeEventSource(page)
+    await mockQueueApi(page, { role })
+  }
 }
 
 async function openWithTheme(
@@ -136,6 +144,11 @@ async function expectData(page: Page, path: string) {
     await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
   } else if (path.startsWith('/run')) {
     await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toBeVisible()
+  } else if (path === '/queue') {
+    await expect(page.locator('[data-queue-group="pending"]')).toContainText('138****8000')
+    await expect(page.locator('[data-queue-group="failed"]')).toContainText('138****8003')
+    await expect(page.locator('[data-queue-group="unsigned"]')).toContainText('138****8004')
+    await expectNumbers(page.locator('[data-queue-summary] .q-tele-value .app-number'), ['3', '1', '1'])
   } else if (path === '/engine') {
     // 数据态到位：四指标与两条在飞行渲染完成再拍。
     await expect(page.locator('dl', { hasText: '待执行' })).toContainText('3')
@@ -193,13 +206,15 @@ for (const theme of THEMES) {
           )
           await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4个', '1个', '1个', '1个'])
         } else {
-          await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
-          await expect(page.locator('.app-metric')).toHaveCount(3)
-          await expectNumbers(page.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+          await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
+          // 容量三指标只数容量卡：运行状态卡另有自己的 metric，不再全局计数。
+          const capacity = page.locator('.card').filter({ hasText: '容量体检' })
+          await expect(capacity.locator('.app-metric')).toHaveCount(3)
+          await expectNumbers(capacity.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+          // 四张 KPI：成功/失败/进行中/待处理；总览不再展示成功率卡。
           await expectNumbers(page.locator('.kpi-card .kpi-value'), [
             '3个',
             '0个',
-            '100%',
             '1个',
             '3个',
           ])
@@ -257,6 +272,8 @@ for (const theme of THEMES) {
     // master：位置项置灰带原因，正好钉住禁用原因的可读性。
     await page.getByRole('button', { name: '更多操作 138****8000' }).click()
     await expect(page.getByRole('menu')).toBeVisible()
+    // 与 profile menu 同纪律：等入场动画结束，快照不带中间帧。
+    await page.waitForTimeout(250)
     await expect(page).toHaveScreenshot(`accounts-rowmenu-${theme}-1440.png`)
   })
 
@@ -463,15 +480,10 @@ for (const theme of THEMES) {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/', theme)
     // 背景是看板：滚动数字全部落定再拍，菜单态不能带中间帧。
-    await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
-    await expectNumbers(page.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
-    await expectNumbers(page.locator('.kpi-card .kpi-value'), [
-      '3个',
-      '0个',
-      '100%',
-      '1个',
-      '3个',
-    ])
+    await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
+    const capacity = page.locator('.card').filter({ hasText: '容量体检' })
+    await expectNumbers(capacity.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+    await expectNumbers(page.locator('.kpi-card .kpi-value'), ['3个', '0个', '1个', '3个'])
     await page.getByRole('button', { name: '账号菜单' }).click()
     await expect(page.getByRole('menu')).toBeVisible()
     // 菜单入场动画会改变整页的合成层，进而改变文字抗锯齿；等它结束再拍。

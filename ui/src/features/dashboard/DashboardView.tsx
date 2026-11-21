@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 看板装配：按角色取数，渲染 KPI 与对应卡片。
+ * 看板装配：按角色取数，渲染 KPI、容量体检、拥挤度、30 天趋势与底部健康状态条。
  *
  * **归属**
  * `features/dashboard` 域容器：页面只引用它。
@@ -8,25 +8,26 @@
  * **口径**
  * 角色取数隔离是本容器的第一不变式：
  * user 只读 sign-status 与 diagnostics；master/admin 只读 windows、capacity、
- * audit-status、sign-stats 与 account summary。
+ * audit-status、engine、sign-stats 与 account summary。
  * 未命中的查询一律 `enabled: false`，挂载即零请求。
  * sign-status 每 30 秒轮询；页面隐藏时不轮询（`refetchIntervalInBackground: false`）。
- * audit-status 按需复算全链，不轮询；缓存 60 秒，失败只挂该卡。
+ * audit-status 与 engine 快照在挂载时按需读取，失败只挂对应区段。
  * windows 与时间片页共用缓存键 `['schedule-windows', day]`。
- * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与图表共用一次读取；
+ * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与趋势图共用一次读取；
  * 缓存键带上海业务日，每 60 秒复核、跨日才重取。
- * 第 5 卡「待处理账号」读 `['account-summary']`（与账号页提示条共用缓存键），
- * 与 sign-stats 独立：加载或失败显「—」，账号页写操作会失效该键。
- * 容量默认选第一个可用任务；没有可用任务就不发容量请求。
+ * 首屏顺序＝KPI×4（含待处理账号直达入口）→容量体检+时段拥挤度（并排）→30天趋势→底部健康与审计状态条。
+ * 拥挤度每 15 秒轮询（自选写入无 SSE 事件）；页面隐藏时不轮询。
+ * 容量默认选第一个可用任务；没有可用任务就不发容量与拥挤度请求。
  * 各卡错误态独立，重试只重取该卡的数据。
  * 展示模式用合成夹具，零网络请求。
  */
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { describeApiError } from '@/lib/api/client'
 import { getAccountSummary } from '@/lib/api/account'
+import { describeApiError } from '@/lib/api/client'
 import { getAuditStatus } from '@/lib/api/audit'
+import { getEngineSnapshot } from '@/lib/api/engine'
 import { getDiagnostics, getSignStatus } from '@/lib/api/me'
 import type { Role } from '@/lib/api/auth'
 import { getCapacity, listScheduleWindows } from '@/lib/api/schedule'
@@ -37,19 +38,19 @@ import {
   showcaseAccountSummary,
   showcaseAuditStatus,
   showcaseCapacity,
+  showcaseEngineSnapshot,
   showcasePrefStats,
   showcaseSignStats,
   showcaseWindows,
 } from '@/lib/showcase'
 import { AuditStatusCard } from './AuditStatusCard'
 import { CapacityCard } from './CapacityCard'
-import { PrefCrowdingCard, SignDistributionCard, SignTrendCard } from './ChartCards'
+import { PrefCrowdingCard, SignTrendCard } from './ChartCards'
 import { DiagnosticsCard } from './DiagnosticsCard'
 import { KpiGrid } from './KpiGrid'
 import { SignStatusCard } from './SignStatusCard'
 import {
   capacityOptions,
-  pendingAccountCard,
   signCounts,
   signKpiCards,
   todayKpiCards,
@@ -143,15 +144,7 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     retry: false,
   })
 
-  // 第 5 卡「待处理账号」：独立查询，读数失败只挂本卡（显「—」）。
-  // 账号页的建号/审核/删除/恢复会失效这个键，回到看板即取新计数。
-  const accountSummaryQuery = useQuery({
-    queryKey: ['account-summary'],
-    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseAccountSummary()) : getAccountSummary()),
-    enabled: !isUser,
-    staleTime: 0,
-    retry: false,
-  })
+
 
   // 审计链巡检：按需复算全链，耗时随行数线性增长，故不轮询；
   // 只在挂载、重试或缓存过期后取一次。展示构建读合成结论，零请求。
@@ -161,6 +154,16 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
       SHOWCASE ? Promise.resolve(showcaseAuditStatus()) : getAuditStatus(),
     enabled: !isUser,
     staleTime: 60_000,
+    retry: false,
+  })
+
+  // 引擎运行脉冲：单次快照读取，与顶部健康条绑定；失败只影响本区段。
+  const engineQuery = useQuery({
+    queryKey: ['dashboard-engine'],
+    queryFn: () =>
+      SHOWCASE ? Promise.resolve(showcaseEngineSnapshot()) : getEngineSnapshot(),
+    enabled: !isUser,
+    staleTime: 15_000,
     retry: false,
   })
 
@@ -183,12 +186,25 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     enabled: !isUser && selected !== null,
     staleTime: 0,
     retry: false,
+    // 拥挤度是「实时」诉求：15 秒轮询；页面隐藏时不轮询。
+    // 自选写入没有 SSE 事件，轮询是唯一刷新源；展示模式轮询合成夹具零请求。
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   })
 
   const signStatusItems = signStatusQuery.data?.items ?? []
   const diagnosticsItems = diagnosticsQuery.data?.items ?? []
   // master/admin 的四张 KPI 与图表共用这份 30 天报告；只读末两天作今日终态。
   const stats = todayStats(signStatsQuery.data)
+
+  // 待处理账号：与账号页提示条共用缓存键；读数失败只挂该卡（显「—」）。
+  const accountSummaryQuery = useQuery({
+    queryKey: ['account-summary'],
+    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseAccountSummary()) : getAccountSummary()),
+    enabled: !isUser,
+    staleTime: 0,
+    retry: false,
+  })
 
   if (isUser) {
     return (
@@ -225,11 +241,12 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
       </>
     )
   }
-
   return (
     <>
-      <KpiGrid cards={[...todayKpiCards(stats), pendingAccountCard(accountSummaryQuery.data ?? null)]} />
-      <div className="grid">
+      <KpiGrid
+        cards={todayKpiCards(stats, accountSummaryQuery.data ?? null)}
+      />
+      <div className="grid app-dashboard-workbench">
         <CapacityCard
           options={options}
           selectedValue={selected?.value ?? ''}
@@ -249,14 +266,13 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
             void capacityQuery.refetch()
           }}
         />
-        <AuditStatusCard
-          report={auditStatusQuery.data}
-          loading={auditStatusQuery.isPending}
-          error={
-            auditStatusQuery.isError ? describeApiError(auditStatusQuery.error) : null
-          }
+        <PrefCrowdingCard
+          report={prefStatsQuery.data}
+          taskLabel={selected?.label ?? null}
+          loading={prefStatsQuery.isPending && selected !== null}
+          error={prefStatsQuery.isError ? describeApiError(prefStatsQuery.error) : null}
           onRetry={() => {
-            void auditStatusQuery.refetch()
+            void prefStatsQuery.refetch()
           }}
         />
       </div>
@@ -269,24 +285,25 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
             void signStatsQuery.refetch()
           }}
         />
-        <SignDistributionCard
-          report={signStatsQuery.data}
-          loading={signStatsQuery.isPending}
-          error={signStatsQuery.isError ? describeApiError(signStatsQuery.error) : null}
-          onRetry={() => {
-            void signStatsQuery.refetch()
-          }}
-        />
-        <PrefCrowdingCard
-          report={prefStatsQuery.data}
-          taskLabel={selected?.label ?? null}
-          loading={prefStatsQuery.isPending && selected !== null}
-          error={prefStatsQuery.isError ? describeApiError(prefStatsQuery.error) : null}
-          onRetry={() => {
-            void prefStatsQuery.refetch()
-          }}
-        />
       </div>
+      <AuditStatusCard
+        report={auditStatusQuery.data}
+        loading={auditStatusQuery.isPending}
+        error={
+          auditStatusQuery.isError ? describeApiError(auditStatusQuery.error) : null
+        }
+        onRetry={() => {
+          void auditStatusQuery.refetch()
+        }}
+        engine={engineQuery.data}
+        engineLoading={engineQuery.isPending}
+        engineError={
+          engineQuery.isError ? describeApiError(engineQuery.error) : null
+        }
+        onRetryEngine={() => {
+          void engineQuery.refetch()
+        }}
+      />
     </>
   )
 }

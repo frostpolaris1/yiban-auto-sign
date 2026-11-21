@@ -273,5 +273,5 @@ test('the schedule entry is visible to managers only', () => {
   const leaf = NAV_LEAVES.find((item) => item.to === '/schedule')
   assert(leaf, 'the route has a nav leaf')
   assert.deepEqual([...(leaf.roles ?? [])], ['master', 'admin'])
-  assert.deepEqual(leaf.crumbs, ['工作区', '时间片'])
+  assert.deepEqual(leaf.crumbs, ['系统', '签到计划'])
 })

@@ -49,11 +49,8 @@ async function openEngine(page: Page) {
 test('invariant 1: master reaches the monitor from the navigation', async ({ page }) => {
   await installFakeEventSource(page)
   await mockEngineApi(page, { role: 'master' })
-  await page.goto('/')
-  const link = page.locator('.d-sidebar').getByRole('link', { name: '执行监控', exact: true })
-  await expect(link).toHaveCount(1)
-  await link.click()
-  await expect(page).toHaveURL(/\/engine$/)
+  // 执行监控在 B3 并入签到台账；那之前只保留直达 URL。
+  await page.goto('/engine')
   await openEngine(page)
 })
 
@@ -62,7 +59,7 @@ test('invariant 1: the user role has no entry and no snapshot request', async ({
   const api = await mockEngineApi(page, { role: 'user' })
   await page.goto('/')
   await expect(
-    page.locator('.d-sidebar').getByRole('link', { name: '执行监控', exact: true }),
+    page.locator('.d-sidebar').getByRole('link', { name: '签到台账', exact: true }),
   ).toHaveCount(0)
 
   await page.goto('/engine')

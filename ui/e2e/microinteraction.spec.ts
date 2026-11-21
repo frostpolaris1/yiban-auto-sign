@@ -313,13 +313,14 @@ test('invariant 3: dashboard KPI numbers settle on the exact counts', async ({ p
 test('invariant 3: capacity numbers settle on the exact report', async ({ page }) => {
   await mockDashboardApi(page, { role: 'admin' })
   await page.goto('/')
-  await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+  await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
 
   await expect.poll(() => visibleText(metric(page, '容量'))).toBe('容量40')
   await expect.poll(() => visibleText(metric(page, '需求'))).toBe('需求12')
   await expect.poll(() => visibleText(metric(page, '缺口'))).toBe('缺口0')
 
-  await page.getByLabel('任务').selectOption('school-beta:task-night')
+  await page.getByLabel('任务').click()
+  await page.getByRole('option', { name: '合成学校乙 · 夜间签到' }).click()
   await expect.poll(() => visibleText(metric(page, '容量'))).toBe('容量20')
   await expect.poll(() => visibleText(metric(page, '需求'))).toBe('需求26')
   await expect.poll(() => visibleText(metric(page, '缺口'))).toBe('缺口6')
@@ -350,7 +351,7 @@ test('invariant 3: number components keep the line box of plain text', async ({ 
   // 行盒高度是布局契约，不是动画细节。44px 与 20px 分别代表 KPI 与指标。
   await mockDashboardApi(page, { role: 'admin' })
   await page.goto('/')
-  await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+  await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
 
   const kpi = await page.locator('.kpi-card .kpi-value').first().boundingBox()
   const metric = await page.locator('.app-metric-value').first().boundingBox()
@@ -359,13 +360,8 @@ test('invariant 3: number components keep the line box of plain text', async ({ 
   expect(Math.round(kpi!.height), 'KPI 行盒').toBe(44)
   expect(Math.round(metric!.height), '指标行盒').toBe(24)
 
-  // 徽章高度由内容撑开：负边距若落进来会把徽章压得比内容还小。
-  const badge = page.locator('.app-metric .badge').first()
-  const badgeBox = await badge.boundingBox()
-  const hostBox = await badge.locator('.app-number').boundingBox()
-  expect(badgeBox, '缺口徽章已渲染').not.toBeNull()
-  expect(hostBox, '徽章内的数字已渲染').not.toBeNull()
-  expect(badgeBox!.height, '徽章容纳其内容').toBeGreaterThan(hostBox!.height)
+  // 缺口已是纯色数字（用户裁决）：容量指标里不再有徽章。
+  await expect(page.locator('.app-metric .badge')).toHaveCount(0)
 })
 
 test('invariant 4: rows stay clickable and focus returns after a delete', async ({ page }) => {

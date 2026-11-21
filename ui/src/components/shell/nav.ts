@@ -16,7 +16,6 @@
 import type { IconName } from '@/components/ui/Icon'
 import type { Role } from '@/lib/api/auth'
 import {
-  ENGINE_VIEW_ROLES,
   RUN_VIEW_ROLES,
   SCHOOL_VIEW_ROLES,
   SCHEDULE_VIEW_ROLES,
@@ -46,6 +45,10 @@ export type NavLeaf = {
   crumbs: string[]
   /** 缺省＝全体可见。给出时只对这些角色渲染。 */
   roles?: readonly Role[]
+  /** 入口合并期：这些路径也点亮本项（如 /queue 临时落到 /run）。 */
+  alsoActive?: readonly string[]
+  /** 页面未上线：渲染为不可点条目，title 说明原因。 */
+  pendingNote?: string
 }
 
 export type NavGroup = {
@@ -68,21 +71,42 @@ export function isNavGroup(item: NavItem): item is NavGroup {
 
 export const NAV: NavSection[] = [
   {
-    label: '工作区',
+    label: '今日',
     items: [
       {
         key: 'dashboard',
-        text: '仪表盘',
+        text: '总览',
         to: '/',
         icon: 'dashboard',
-        crumbs: ['工作区', '仪表盘'],
+        crumbs: ['今日', '总览'],
       },
+      {
+        key: 'queue',
+        text: '待办',
+        to: '/queue',
+        icon: 'listTodo',
+        roles: RUN_VIEW_ROLES,
+        crumbs: ['今日', '待办'],
+      },
+    ],
+  },
+  {
+    label: '管理',
+    items: [
       {
         key: 'accounts',
         text: '账号',
         to: '/accounts',
         icon: 'accounts',
-        crumbs: ['工作区', '账号'],
+        crumbs: ['管理', '账号'],
+      },
+      {
+        key: 'users',
+        text: '用户',
+        to: '/users',
+        icon: 'userCog',
+        roles: USER_VIEW_ROLES,
+        crumbs: ['管理', '用户'],
       },
       {
         key: 'schools',
@@ -90,31 +114,7 @@ export const NAV: NavSection[] = [
         to: '/schools',
         icon: 'school',
         roles: SCHOOL_VIEW_ROLES,
-        crumbs: ['工作区', '学校'],
-      },
-      {
-        key: 'schedule',
-        text: '时间片',
-        to: '/schedule',
-        icon: 'calendar',
-        roles: SCHEDULE_VIEW_ROLES,
-        crumbs: ['工作区', '时间片'],
-      },
-      {
-        key: 'run',
-        text: '运行',
-        to: '/run',
-        icon: 'activity',
-        roles: RUN_VIEW_ROLES,
-        crumbs: ['工作区', '运行'],
-      },
-      {
-        key: 'engine',
-        text: '执行监控',
-        to: '/engine',
-        icon: 'gauge',
-        roles: ENGINE_VIEW_ROLES,
-        crumbs: ['工作区', '执行监控'],
+        crumbs: ['管理', '学校'],
       },
     ],
   },
@@ -122,19 +122,37 @@ export const NAV: NavSection[] = [
     label: '系统',
     items: [
       {
-        key: 'settings',
-        text: '账号设置',
-        to: '/settings',
-        icon: 'settings',
-        crumbs: ['系统', '账号设置'],
+        key: 'logs',
+        text: '签到台账',
+        to: '/logs',
+        icon: 'scrollText',
+        roles: RUN_VIEW_ROLES,
+        crumbs: ['系统', '签到台账'],
       },
       {
-        key: 'users',
-        text: '用户管理',
-        to: '/users',
-        icon: 'userCog',
-        roles: USER_VIEW_ROLES,
-        crumbs: ['系统', '用户管理'],
+        key: 'audit',
+        text: '审计日志',
+        to: '/audit',
+        icon: 'shield',
+        roles: RUN_VIEW_ROLES,
+        pendingNote: '审计页将在 B4 上线；审计端点已就绪。',
+        crumbs: ['系统', '审计日志'],
+      },
+      {
+        // 时间片在 B5 并入设置·签到计划；在那之前保留直达入口。
+        key: 'schedule',
+        text: '签到计划',
+        to: '/schedule',
+        icon: 'calendar',
+        roles: SCHEDULE_VIEW_ROLES,
+        crumbs: ['系统', '签到计划'],
+      },
+      {
+        key: 'settings',
+        text: '设置',
+        to: '/settings',
+        icon: 'settings',
+        crumbs: ['系统', '设置'],
       },
       {
         key: 'design',
@@ -154,6 +172,15 @@ export const NAV: NavSection[] = [
     ],
   },
 ]
+
+/**
+ * 不在导航表内的直达路由：仍需要面包屑与标题。
+ * 入口合并期（B2–B4）由它们给旧页一个体面的名字，页面就绪后删除。
+ */
+const LEGACY_ROUTES: Record<string, { crumbs: string[]; title: string }> = {
+  '/run': { crumbs: ['今日', '待办'], title: '待办' },
+  '/engine': { crumbs: ['系统', '签到台账'], title: '签到台账' },
+}
 
 /** 可导航叶子的平铺表。面包屑查找用。 */
 export const NAV_LEAVES: NavLeaf[] = NAV.flatMap((section) =>
@@ -183,10 +210,11 @@ export function visibleNav(role: Role | null | undefined): NavSection[] {
 
 export function crumbsFor(pathname: string): string[] {
   const leaf = NAV_LEAVES.find((item) => item.to === pathname)
-  return leaf?.crumbs ?? ['工作区', '未命名页面']
+  return leaf?.crumbs ?? LEGACY_ROUTES[pathname]?.crumbs ?? ['系统', '未命名页面']
 }
 
 export function documentTitleFor(pathname: string): string {
   const leaf = NAV_LEAVES.find((item) => item.to === pathname)
-  return leaf ? `${leaf.text} · 易班自动签到` : '易班自动签到'
+  const title = leaf?.text ?? LEGACY_ROUTES[pathname]?.title
+  return title ? `${title} · 易班自动签到` : '易班自动签到'
 }

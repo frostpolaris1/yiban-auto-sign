@@ -19,12 +19,14 @@
  */
 
 import type { Tone } from '@/components/ui/Badge'
-import type { IconName } from '@/components/ui/Icon'
 import type { AccountSummary } from '@/lib/api/account'
+import type { IconName } from '@/components/ui/Icon'
+import type { EngineSnapshot } from '@/lib/api/engine'
 import type { SignStatusItem } from '@/lib/api/me'
 import type { DiagnosticsSuggestion } from '@/lib/api/me'
-import type { ScheduleWindow, ScheduleWindowSource } from '@/lib/api/schedule'
+import type { CapacityReport, ScheduleWindow, ScheduleWindowSource } from '@/lib/api/schedule'
 import type { SignStatsReport } from '@/lib/api/stats'
+import { formatClock } from '@/lib/format'
 
 /** 契约文档给出的五个状态词。运行时副本，类型注解保证不漂移。 */
 export const SIGN_STATES = ['pending', 'running', 'success', 'failed', 'skipped'] as const
@@ -182,10 +184,10 @@ export type KpiCard = {
   value: number | null
   unit: string
   note: string
-  /** 成功率卡的环比 pill；其余卡不设。 */
+  /** 成功率环比 pill；其余卡不设。 */
   pill?: RatePill | null
   /** 整卡链接目标。设置时卡片渲染为站内链接，可访问名称来自卡内文本。 */
-  href?: '/accounts'
+  href?: '/accounts' | '/run'
 }
 
 /** `counts` 为 null 时值是 `—`：没有数据就不编数字。 */
@@ -281,8 +283,17 @@ export function todayStats(report: SignStatsReport | null | undefined): TodaySta
   }
 }
 
-/** master/admin 四卡：今日成功、今日失败、今日成功率、进行中+待签。 */
-export function todayKpiCards(stats: TodayStats | null): KpiCard[] {
+/**
+ * master/admin 四卡：今日成功（附成功率与环比）、今日失败、进行中/待签、待处理账号。
+ * 待处理＝pending+rejected（未软删），读数未到或失败显「—」不编 0。
+ */
+export function todayKpiCards(
+  stats: TodayStats | null,
+  summary?: AccountSummary | null,
+): KpiCard[] {
+  const pending = summary?.pending ?? null
+  const rejected = summary?.rejected ?? null
+  const review = pending === null || rejected === null ? null : pending + rejected
   return [
     {
       tone: 'success',
@@ -298,16 +309,13 @@ export function todayKpiCards(stats: TodayStats | null): KpiCard[] {
       label: '今日失败',
       value: stats?.failed ?? null,
       unit: '个',
-      note: '按账号当日终态',
-    },
-    {
-      tone: 'purple',
-      icon: 'gauge',
-      label: '今日成功率',
-      value: stats?.rate ?? null,
-      unit: '%',
-      note: '成功 ÷（成功 + 失败）',
-      pill: stats?.pill ?? null,
+      href: '/run',
+      note:
+        stats === null
+          ? '等待读取'
+          : stats.failed > 0
+            ? '失败原因与重试 →'
+            : '全员正常 · 查看运行 →',
     },
     {
       tone: 'primary',
@@ -315,33 +323,121 @@ export function todayKpiCards(stats: TodayStats | null): KpiCard[] {
       label: '进行中/待签',
       value: stats?.active ?? null,
       unit: '个',
-      note: '等待执行或执行中',
+      href: '/run',
+      note: stats === null ? '等待读取' : '查看实时进度 →',
+    },
+    {
+      tone: 'purple',
+      icon: 'edit',
+      label: '待处理账号',
+      value: review,
+      unit: '个',
+      href: '/accounts',
+      note:
+        pending === null || rejected === null
+          ? '等待读取'
+          : `待审核 ${pending} · 已拒绝 ${rejected} →`,
     },
   ]
-}
-
-/**
- * 第 5 卡「待处理账号」：值＝pending+rejected（未软删），note 拆两数。
- * 汇总未到或读取失败都是 null：显示「—」，不编 0。整卡链接到账号页。
- */
-export function pendingAccountCard(summary: AccountSummary | null): KpiCard {
-  const pending = summary?.pending ?? null
-  const rejected = summary?.rejected ?? null
-  const value = pending === null || rejected === null ? null : pending + rejected
-  return {
-    tone: 'purple',
-    icon: 'edit',
-    label: '待处理账号',
-    value,
-    unit: '个',
-    note:
-      pending === null || rejected === null
-        ? '等待读取'
-        : `待审核 ${pending} · 已拒绝 ${rejected}`,
-    href: '/accounts',
-  }
 }
 
 export const EMPTY_SIGN_TEXT = '今日暂无签到任务'
 export const EMPTY_WINDOW_TEXT = '今日无可用窗口'
 export const STALE_TEXT = '数据已过期'
+
+export type EnginePulse = {
+  state: 'running' | 'paused' | 'unstarted' | 'loading'
+  tone: Tone
+  label: string
+  inflight: number | null
+  dueNow: number | null
+  retryingText: string
+  lastTickClock: string | null
+}
+
+/**
+ * 顶部运行脉冲条：从 `GET /api/admin/engine` 快照派生运行态与四项实时指标。
+ * 快照未到或读取失败返回 `loading` 态，不编造 0。
+ */
+export function enginePulse(snapshot: EngineSnapshot | null | undefined): EnginePulse {
+  if (snapshot === null || snapshot === undefined) {
+    return {
+      state: 'loading',
+      tone: 'info',
+      label: '等待读取',
+      inflight: null,
+      dueNow: null,
+      retryingText: '—',
+      lastTickClock: null,
+    }
+  }
+  const state: EnginePulse['state'] = snapshot.paused
+    ? 'paused'
+    : snapshot.worker_started_at === null
+      ? 'unstarted'
+      : 'running'
+  const tone: Tone =
+    state === 'paused' ? 'warning' : state === 'unstarted' ? 'info' : 'success'
+  const label =
+    state === 'paused' ? '引擎已暂停' : state === 'unstarted' ? '循环未启动' : '引擎运行中'
+  const retryingCount = snapshot.retrying.length
+  return {
+    state,
+    tone,
+    label,
+    inflight: snapshot.inflight.length,
+    dueNow: snapshot.due_now,
+    retryingText: snapshot.retrying_truncated ? `${retryingCount}+` : String(retryingCount),
+    lastTickClock: snapshot.last_tick_at ? formatClock(snapshot.last_tick_at) : null,
+  }
+}
+
+export type CapacityMeter = {
+  percent: number
+  fillWidth: number
+  tone: Tone
+  statusText: string
+}
+
+/**
+ * 容量利用度进度条：由容量、需求与缺口派生负载率与语义色。
+ * 分母 0 时安全退化，不产 NaN/Infinity。
+ */
+export function capacityMeter(
+  report: Pick<CapacityReport, 'capacity' | 'demand' | 'shortfall'>,
+): CapacityMeter {
+  if (report.capacity <= 0) {
+    if (report.shortfall > 0 || report.demand > 0) {
+      return {
+        percent: 100,
+        fillWidth: 100,
+        tone: 'danger',
+        statusText: `超载（缺口 ${report.shortfall}）`,
+      }
+    }
+    return {
+      percent: 0,
+      fillWidth: 0,
+      tone: 'info',
+      statusText: '空载 0%',
+    }
+  }
+  const percent = Math.round((report.demand / report.capacity) * 100)
+  const fillWidth = Math.max(0, Math.min(100, percent))
+  if (report.shortfall > 0) {
+    return {
+      percent,
+      fillWidth: 100,
+      tone: 'danger',
+      statusText: `超载 ${percent}%（缺口 ${report.shortfall}）`,
+    }
+  }
+  const tone: Tone = percent >= 85 ? 'warning' : 'success'
+  const spare = Math.max(0, report.capacity - report.demand)
+  return {
+    percent,
+    fillWidth,
+    tone,
+    statusText: `负载 ${percent}%（余量 ${spare}）`,
+  }
+}

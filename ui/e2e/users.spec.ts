@@ -38,7 +38,7 @@ async function openUsers(page: Page) {
 test('invariant 1: master reaches the user list from the navigation', async ({ page }) => {
   await mockUsersApi(page, { role: 'master' })
   await page.goto('/')
-  const link = page.locator('.d-sidebar').getByRole('link', { name: '用户管理', exact: true })
+  const link = page.locator('.d-sidebar').getByRole('link', { name: '用户', exact: true })
   await expect(link).toHaveCount(1)
   await link.click()
   await expect(page).toHaveURL(/\/users$/)
@@ -80,7 +80,7 @@ for (const role of ['admin', 'user'] as const) {
     const api = await mockUsersApi(page, { role })
     await page.goto('/')
     await expect(
-      page.locator('.d-sidebar').getByRole('link', { name: '用户管理', exact: true }),
+      page.locator('.d-sidebar').getByRole('link', { name: '用户', exact: true }),
     ).toHaveCount(0)
 
     await page.goto('/users')

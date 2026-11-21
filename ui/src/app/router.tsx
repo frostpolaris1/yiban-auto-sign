@@ -11,7 +11,14 @@
  * 公开认证页（登录、忘记密码、重置密码）挂在根路由下：不套壳。
  */
 
-import { createRootRoute, createRoute, createRouter, Outlet, useNavigate } from '@tanstack/react-router'
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  redirect,
+  useNavigate,
+} from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -20,6 +27,7 @@ import { EnginePage } from '@/pages/EnginePage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
+import { QueuePage } from '@/pages/QueuePage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { RunPage } from '@/pages/RunPage'
 import { SchedulePage } from '@/pages/SchedulePage'
@@ -137,6 +145,36 @@ function UsersRouteComponent() {
  * 时间片路由的自定义 search：`?day=YYYY-MM-DD`。
  * 校验即净化：非法日期在解析时丢弃，容器回落到今天。
  */
+/**
+ * 待办工作台：master/admin。权限门由 QueueView 内部执行。
+ */
+const queueRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/queue',
+  component: QueuePage,
+})
+
+/**
+ * 目标目录的占位入口：B3/B4 落地前重定向到现有承载页。
+ * /logs → /run；/audit → /。
+ * 页面就绪时把重定向换成真 page 组件。
+ */
+const logsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/logs',
+  beforeLoad: () => {
+    throw redirect({ to: '/run' })
+  },
+})
+
+const auditRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/audit',
+  beforeLoad: () => {
+    throw redirect({ to: '/' })
+  },
+})
+
 const scheduleRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/schedule',
@@ -219,6 +257,9 @@ const routeTree = rootRoute.addChildren([
     usersRoute,
     runRoute,
     engineRoute,
+    queueRoute,
+    logsRoute,
+    auditRoute,
     scheduleRoute,
   ]),
   loginRoute,

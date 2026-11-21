@@ -55,8 +55,10 @@
 /* ---------- 关闭按钮 ----------
  * vendor 没有 `.mail-tool` 规则。旧图标 0×0，缺口看不出来。
  * 补尺寸、悬停、键盘焦点三组。颜色只取令牌，不引入新色值。
+ * 24px 视觉尺寸不变；::before 外扩出 44px 命中区（初审 2026-11-15）。
  */
 .mail-tool {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -69,6 +71,12 @@
   color: var(--t-muted);
   cursor: pointer;
   transition: background 160ms, color 160ms;
+}
+
+.mail-tool::before {
+  content: "";
+  position: absolute;
+  inset: -10px;
 }
 
 .mail-tool:hover {
@@ -168,7 +176,8 @@
 }
 
 .app-caption {
-  color: var(--t-light);
+  /* 初审 2026-11-15：--t-light 在卡面 2.56:1（浅）/3.60:1（深），抬到 --t-muted。 */
+  color: var(--t-muted);
   font-size: 11.5px;
   line-height: 1.45;
 }
@@ -275,7 +284,9 @@
   gap: 8px;
 }
 
-/* 用户分组切换：一行标签，计数与标签同按钮。 */
+/* 用户分组切换：一行标签，计数与标签同按钮。
+   初审 2026-11-15：0.75 透明度把计数压到 3.6:1（激活白字）/3.4:1（非激活），
+   去掉透明度，计数与标签同色过 AA。 */
 .app-group-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -286,7 +297,6 @@
 .app-group-tab-count {
   margin-left: 6px;
   font-variant-numeric: tabular-nums;
-  opacity: 0.75;
 }
 
 .app-cell-link {
@@ -1159,11 +1169,22 @@
  * 高度是像素值，不让父级内容把图压扁；窄屏同样固定，横向滚动交给页面。 */
 .app-chart-box {
   position: relative;
-  height: 240px;
+  height: 224px;
 }
 
 .app-chart-box--wide {
-  height: 260px;
+  height: 240px;
+}
+
+.app-chart-box--compact {
+  height: 196px;
+}
+
+.app-chart-foot {
+  margin: auto 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12.5px;
 }
 
 .app-chart-canvas {
@@ -1253,7 +1274,9 @@
 }
 
 .app-histogram-slice {
-  color: var(--t-light);
+  /* 初审 2026-11-15：--t-light 在 bg-muted 上浅 3.05 / 深 3.32，都不达 4.5。
+     混 12% --t-base：浅 4.95 / 深 6.94。 */
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
   font-size: 9.5px;
   line-height: 1;
 }
@@ -1296,7 +1319,10 @@
  * 颜色只取令牌；与其余正文同源。
  */
 .app-capacity-meta {
-  margin: 12px 0 0;
+  margin: auto 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12.5px;
 }
 
 /* 缺口建议：只在 shortfall>0 时出现。
@@ -1636,4 +1662,640 @@ a.kpi-card {
   color: var(--t-base);
   font-variant-numeric: tabular-nums;
   text-align: center;
+}
+
+/* ---------- 底部健康状态条与工作台 ----------
+ * 晨间巡检遵循 Vercel/Linear 原则：
+ * 1. 首屏第一层直接进入 4 张 KPI 卡（含待处理账号、失败与待签直达链接）；
+ * 2. 第二层并排展示容量体检与偏好时段拥挤度；
+ * 3. 底部单行状态条承接执行引擎快照与审计链三态巡检，正常时静默沉底、异常时展开行内告警。
+ * 颜色全部取令牌或混色，满足浅深两套主题 WCAG AA 对比度。
+ */
+.app-health-strip {
+  padding: 11px 16px;
+  margin-top: 20px;
+  margin-bottom: 0;
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+.app-health-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  column-gap: 16px;
+  row-gap: 8px;
+}
+.app-health-zone {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+.app-health-zone--grow {
+  flex: 1 1 260px;
+}
+.app-health-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--t-base);
+  white-space: nowrap;
+}
+.app-health-label svg {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+.app-health-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 7px;
+  min-width: 0;
+}
+.app-health-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-muted);
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.app-health-chip strong {
+  color: var(--t-base);
+  font-weight: 600;
+}
+.app-health-meta {
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+  font-variant-numeric: tabular-nums;
+}
+.app-health-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+.app-health-alert {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.app-dashboard-workbench {
+  margin-bottom: 20px;
+}
+.app-capacity-window-chip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+.app-capacity-meter {
+  margin-top: 14px;
+}
+.app-capacity-meter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.app-capacity-meter-status {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--t-base);
+}
+.app-capacity-meter-status.t-success {
+  color: color-mix(in srgb, var(--success) 65%, var(--t-base));
+}
+.app-capacity-meter-status.t-warning {
+  color: color-mix(in srgb, var(--warning) 60%, var(--t-base));
+}
+.app-capacity-meter-status.t-danger {
+  color: color-mix(in srgb, var(--danger) 65%, var(--t-base));
+}
+.app-capacity-meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 220ms ease;
+}
+.app-capacity-meter-fill.t-success {
+  background: var(--success);
+}
+.app-capacity-meter-fill.t-warning {
+  background: var(--warning);
+}
+.app-capacity-meter-fill.t-danger {
+  background: var(--danger);
+}
+.app-capacity-meter-fill.t-info {
+  background: var(--info);
+}
+
+@media (max-width: 900px) {
+  .app-health-sep {
+    display: none;
+  }
+}
+
+/* ---------- 初审 P0 对比度修复（2026-11-15） ----------
+ * 依据 WCAG 1.4.3（正文 ≥4.5:1）/1.4.11（部件 ≥3:1），全部取令牌混色：
+ * - vendor 的 --t-light 灰字族在卡面浅 2.56 / 深 3.60，统一抬到
+ *   「88% --t-muted + 12% --t-base」（卡面浅 5.42 / 深 7.52，页面底色也过）。
+ * - 眉标与页脚元信息落在页面底色上，--t-muted 只有 4.31，向 --t-base 混 12%
+ *   （浅 4.90 / 深 6.94，两主题都过）。
+ * - 软底徽章族文字用语义实色（浅底上 2.07–3.86），保留 55% 实色、混入 45%
+ *   --t-base（各软底 4.71–6.82）；dark 本就 ≥7.9，不动。主色徽章 4.75 已过，不动。
+ * - 暗色实色主按钮白字 2.54（auth 页同题已修，此处补主应用），改反色字。
+ */
+.kpi-compare,
+.nav-label,
+.brand-tag,
+.workspace-role,
+.dd-time,
+.eyebrow,
+.d-footer-meta {
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+}
+
+:root[data-theme="light"] .crumbs,
+:root[data-theme="light"] .hero-sub,
+:root[data-theme="light"] .d-footer,
+:root[data-theme="light"] .app-metric-label,
+:root[data-theme="light"] .app-histogram-count {
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+}
+
+:root[data-theme="light"] .badge.warning,
+:root[data-theme="light"] .tag.t-old,
+:root[data-theme="light"] .run-live-banner,
+:root[data-theme="light"] .engine-truncated,
+:root[data-theme="light"] .app-metric-alert {
+  color: color-mix(in srgb, var(--warning) 55%, var(--t-base));
+}
+
+:root[data-theme="light"] .badge.success,
+:root[data-theme="light"] .tag.t-active,
+:root[data-theme="light"] .kpi-pill.up,
+:root[data-theme="light"] .nav-badge.new {
+  color: color-mix(in srgb, var(--success) 55%, var(--t-base));
+}
+
+:root[data-theme="light"] .badge.info,
+:root[data-theme="light"] .tag.t-info,
+:root[data-theme="light"] .kpi-pill.info {
+  color: color-mix(in srgb, var(--info) 55%, var(--t-base));
+}
+
+:root[data-theme="light"] .badge.danger,
+:root[data-theme="light"] .tag.t-unavail,
+:root[data-theme="light"] .kpi-pill.down,
+:root[data-theme="light"] .nav-badge.hot,
+:root[data-theme="light"] .app-capacity-copy-error {
+  color: color-mix(in srgb, var(--danger) 55%, var(--t-base));
+}
+
+:root[data-theme="light"] .badge.purple,
+:root[data-theme="light"] .tag.t-new,
+:root[data-theme="light"] .kpi-pill.flat {
+  color: color-mix(in srgb, var(--purple) 55%, var(--t-base));
+}
+
+:root[data-theme="light"] .tag.t-used {
+  color: color-mix(in srgb, var(--orange) 55%, var(--t-base));
+}
+
+:root[data-theme="light"] .run-live-banner {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--t-base));
+}
+
+:root[data-theme="dark"] .btn--primary {
+  color: var(--t-inverse);
+}
+
+:root[data-theme="dark"] .btn--primary:hover {
+  background: var(--primary);
+}
+
+@media (max-width: 720px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.app-card-tabs { display: inline-flex; gap: 4px; }
+.app-card-tabs button { border: 1px solid var(--border); background: var(--bg-muted); color: var(--t-muted); border-radius: 999px; padding: 2px 12px; font-size: 12px; cursor: pointer; }
+.app-card-tabs button.on { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); font-weight: 700; }
+.app-chart-box--scroll { overflow-x: auto; }
+.app-health-chip-link { color: inherit; text-decoration: none; }
+.app-health-chip-link:hover strong { color: var(--primary); }
+.app-health-link { font-size: 12.5px; color: var(--primary); text-decoration: none; white-space: nowrap; }
+.app-health-link:hover { text-decoration: underline; }
+
+.app-metric-value.is-danger { color: var(--danger); }
+.app-metric-value.is-success { color: var(--success); }
+
+@media (max-width: 720px) {
+  .kpi-compare {
+    flex-wrap: wrap;
+  }
+  .kpi-compare > span:last-child {
+    flex-basis: 100%;
+  }
+}
+
+/* 圆形揭幕：旧快照垫底、新快照在上，clip 由 lib/theme 的 WAAPI 驱动。 */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 0;
+}
+::view-transition-new(root) {
+  z-index: 1;
+}
+
+/* 健康条窄屏：两组各占一行，标签列对齐，行数齐平。 */
+@media (max-width: 1100px) {
+  .app-health-bar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .app-health-sep {
+    display: none;
+  }
+  .app-health-zone {
+    display: grid;
+    grid-template-columns: 104px 1fr;
+    column-gap: 8px;
+    align-items: start;
+  }
+  .app-health-label {
+    margin: 0;
+    padding-top: 1px;
+  }
+  .app-health-inline {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+}
+
+.app-health-sub { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+@media (max-width: 1100px) {
+  .app-health-sub { flex-basis: 100%; }
+  .app-health-zone--grow { flex: 1 1 auto; }
+}
+
+/* Radix 下拉：触发器复用 .select 视觉，菜单令牌化。 */
+.app-select-trigger {
+  background-image: none;
+  padding-right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 220px;
+  text-align: left;
+  cursor: pointer;
+}
+.app-select-trigger[data-state='open'] {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-ring);
+}
+.app-select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-select-content {
+  z-index: 80;
+  min-width: var(--radix-select-trigger-width);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  animation: app-select-in 0.14s ease;
+}
+.app-select-viewport {
+  max-height: 280px;
+  overflow: auto;
+}
+.app-select-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  color: var(--t-base);
+  font-size: 13.5px;
+  cursor: pointer;
+  outline: none;
+}
+.app-select-item[data-highlighted] {
+  background: var(--bg-hover);
+}
+.app-select-item[data-state='checked'] {
+  color: var(--primary);
+  font-weight: 600;
+}
+.app-select-check {
+  display: inline-flex;
+}
+@keyframes app-select-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 趋势/分布页签切换：轻量淡入上移，减动效时直切。 */
+.app-chart-swap {
+  position: relative;
+  height: 100%;
+  animation: app-chart-swap 0.18s ease;
+}
+@keyframes app-chart-swap {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-select-content,
+  .app-chart-swap {
+    animation: none;
+  }
+}
+
+/* ---------- 静默线侧栏 ----------
+ * 来源：侧边栏实验室「静默线」交接（v1，用户裁决默认方案）。
+ * 只覆盖壳层：宽度沿用 248；激活＝浮卡＋3px 左色条；分组用留白＋延长线；
+ * 计数徽标改主色，侧栏不使用语义红；不引入新色值。
+ */
+.d-sidebar {
+  padding: 18px 14px 14px;
+  border-right: 1px solid var(--border-soft);
+  background: linear-gradient(180deg, var(--bg-sidebar), var(--bg-hover));
+}
+.d-sidebar .brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 6px 14px;
+  min-width: 0;
+}
+.d-sidebar .brand-logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: var(--primary);
+  color: var(--t-inverse);
+  box-shadow: 0 0 0 4px var(--primary-soft);
+}
+.d-sidebar .brand-name {
+  color: var(--t-base);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.d-sidebar .brand-tag {
+  color: var(--t-muted);
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.13em;
+}
+.d-sidebar .nav-section {
+  margin: 0;
+}
+.d-sidebar .nav-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 6px 7px;
+  color: var(--t-muted);
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.d-sidebar .nav-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+.d-sidebar .nav-label-count {
+  margin-left: auto;
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  opacity: 0.72;
+}
+.d-sidebar .nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  height: 37px;
+  margin: 1px 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--t-muted);
+  font-size: 12.8px;
+  font-weight: 500;
+  line-height: 1;
+  transition: background 0.16s, color 0.16s, border-color 0.16s, box-shadow 0.16s;
+}
+.d-sidebar .nav-link > svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+.d-sidebar .nav-link:hover {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+.d-sidebar .nav-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.d-sidebar .nav-link.is-active {
+  border-color: var(--border);
+  background: var(--bg-card);
+  color: var(--t-base);
+  box-shadow: var(--shadow-sm), var(--shadow-card);
+}
+.d-sidebar .nav-link.is-active::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--primary);
+}
+.d-sidebar .nav-link.is-active > svg {
+  color: var(--primary);
+}
+.d-sidebar .nav-link.is-active > span:first-of-type {
+  font-weight: 600;
+}
+.d-sidebar .nav-badge--count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.d-sidebar .nav-link .chev {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  color: var(--t-light);
+}
+.d-sidebar .nav-submenu {
+  margin: 1px 0 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-soft);
+}
+.d-sidebar .nav-submenu a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px 0 16px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--t-muted);
+  font-size: 12.4px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.d-sidebar .nav-submenu a:hover {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+.d-sidebar .nav-submenu a.is-active {
+  border-color: var(--border);
+  background: var(--bg-card);
+  color: var(--t-base);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.d-sidebar .sidebar-footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.d-sidebar .workspace {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px;
+  border-radius: 9px;
+}
+.d-sidebar .workspace:hover {
+  background: var(--bg-hover);
+}
+.d-sidebar .workspace-avatar {
+  width: 30px;
+  height: 30px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+.d-sidebar .workspace-name {
+  color: var(--t-base);
+  font-size: 12px;
+  font-weight: 600;
+}
+.d-sidebar .workspace-role {
+  color: var(--t-muted);
+  font-size: 10px;
+}
+@media (min-width: 721px) and (max-width: 1100px) {
+  .d-sidebar {
+    padding: 12px 8px 10px;
+  }
+  .d-sidebar .brand {
+    justify-content: center;
+    padding: 4px 0 10px;
+  }
+  .d-sidebar .nav-label {
+    display: none;
+  }
+  .d-sidebar .nav-link {
+    justify-content: center;
+    height: 40px;
+    padding: 10px;
+  }
+  .d-sidebar .nav-link.is-active::before {
+    left: -8px;
+  }
+  .d-sidebar .nav-submenu {
+    display: none;
+  }
+}
+@media (max-width: 720px) {
+  .d-sidebar {
+    padding: 18px 14px 14px;
+  }
+  .d-sidebar .brand {
+    justify-content: flex-start;
+    padding: 4px 6px 14px;
+  }
+  .d-sidebar .nav-link {
+    justify-content: flex-start;
+    padding: 0 10px;
+  }
+}
+
+.d-sidebar .nav-link.is-pending {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.d-sidebar .nav-link.is-pending:hover {
+  background: transparent;
+  color: var(--t-muted);
 }

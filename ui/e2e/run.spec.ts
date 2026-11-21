@@ -38,16 +38,13 @@ async function openRun(page: Page) {
   await expect(page.getByRole('heading', { name: /任务时间线/ })).toBeVisible()
 }
 
-test('invariant 1: master reaches the run page from the navigation', async ({ page }) => {
+test('invariant 1: master reaches the run page directly', async ({ page }) => {
   await installFakeEventSource(page)
   const api = await mockRunApi(page, { role: 'master' })
-  await page.goto('/')
-  const link = page.locator('.d-sidebar').getByRole('link', { name: '运行', exact: true })
-  await expect(link).toHaveCount(1)
-  await link.click()
-  await expect(page).toHaveURL(/\/run$/)
+  // /queue 已落地为独立待办页；「待办」不再重定向到 /run，运行页直达访问。
+  await page.goto('/run')
   await openRun(page)
-  // 侧栏进页＝两次列表请求（摘要与时间线），没有多余的取数。
+  // 进页＝两次列表请求（摘要与时间线），没有多余的取数。
   expect(listTaskCalls(api).length).toBeGreaterThanOrEqual(2)
 })
 
@@ -55,7 +52,7 @@ test('invariant 1: the user role has no entry and no task request', async ({ pag
   await installFakeEventSource(page)
   const api = await mockRunApi(page, { role: 'user' })
   await page.goto('/')
-  await expect(page.locator('.d-sidebar').getByRole('link', { name: '运行', exact: true })).toHaveCount(0)
+  await expect(page.locator('.d-sidebar').getByRole('link', { name: '待办', exact: true })).toHaveCount(0)
 
   await page.goto('/run')
   await expect(page.getByText('无权访问')).toBeVisible()
@@ -88,11 +85,7 @@ test('invariant 2: the summary counts and school lanes render', async ({ page })
 test('invariant 1: the admin role reaches the same page', async ({ page }) => {
   await installFakeEventSource(page)
   await mockRunApi(page, { role: 'admin' })
-  await page.goto('/')
-  const link = page.locator('.d-sidebar').getByRole('link', { name: '运行', exact: true })
-  await expect(link).toHaveCount(1)
-  await link.click()
-  await expect(page).toHaveURL(/\/run$/)
+  await page.goto('/run')
   await expect(page.getByRole('heading', { name: /任务时间线/ })).toBeVisible()
 })
 
