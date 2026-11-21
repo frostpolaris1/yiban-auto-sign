@@ -327,6 +327,16 @@
   color: var(--primary);
 }
 
+.q-count-pill.is-info {
+  background: var(--info-soft);
+  border-color: color-mix(in srgb, var(--info) 28%, var(--border));
+  color: color-mix(in srgb, var(--info) 65%, var(--t-base));
+}
+
+:root[data-theme="dark"] .q-count-pill.is-info {
+  color: var(--info);
+}
+
 .q-card-controls {
   display: flex;
   flex: 0 0 auto;
@@ -921,6 +931,24 @@
   opacity: 0;
   transform: translate(-50%, -48%) scale(0.96);
   pointer-events: none;
+}
+
+@media (max-width: 640px) {
+  .q-modal-anim {
+    transform: none;
+  }
+
+  @starting-style {
+    .q-modal-anim {
+      opacity: 0;
+      transform: none;
+    }
+  }
+
+  .q-modal-anim[data-closing="true"] {
+    opacity: 0;
+    transform: none;
+  }
 }
 
 .q-modal-anim .btn:disabled {

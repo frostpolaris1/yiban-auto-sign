@@ -21,6 +21,7 @@ import type { AdminTaskRow } from '@/lib/api/task'
 import { listUsers } from '@/lib/api/user'
 import type { User } from '@/lib/api/user'
 import type { Role } from '@/lib/api/auth'
+import { taskStatusLabel } from '@/lib/identity'
 import { SHOWCASE } from '@/lib/session'
 import { showcaseAccounts, showcaseRunPage, showcaseUsers } from '@/lib/showcase'
 
@@ -112,7 +113,7 @@ function mapTasks(items: AdminTaskRow[], term: string): SearchResult[] {
     kind: 'task' as const,
     id: item.id,
     title: `${item.task_name} · ${item.school_name}`,
-    subtitle: `${item.account_phone_masked} · ${item.state}`,
+    subtitle: `${item.account_phone_masked} · ${taskStatusLabel(item.state)}`,
     // 台账已迁到 `/logs?tab=events`（`/run` 只剩 302）。route 保留 'run' 这个名字
     // 只是历史包袱，跳转由 GlobalSearch 决定；这里补注释防后来者按字面意思改回去。
     route: 'run' as const,

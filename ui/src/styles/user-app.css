@@ -1070,9 +1070,16 @@
   color: var(--t-inverse);
 }
 
+:root[data-theme="light"] .uapp-button--danger {
+  background: color-mix(in srgb, var(--danger) 55%, var(--t-base));
+}
+
 .uapp-button--danger:hover:not(:disabled) {
-  background: var(--danger-dark, var(--danger));
-  filter: brightness(0.95);
+  background: color-mix(in srgb, var(--danger) 75%, var(--t-base));
+}
+
+:root[data-theme="light"] .uapp-button--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 48%, var(--t-base));
 }
 
 .uapp-button:disabled {

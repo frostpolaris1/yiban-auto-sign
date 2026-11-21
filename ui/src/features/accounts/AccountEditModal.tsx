@@ -10,7 +10,7 @@
  * **口径**
  * 空表单不可提交；phone 前端校验 11 位、1 开头；两个 64 上限由控件封顶。
  * 校验实时（mode: onChange），与迁移前的逐渲染判据一致；
- * 校验文案沿用历史位置：统一显示在手机号字段下。
+ * 各字段的校验文案挂在各自输入框下。
  * 备注名是唯一回填字段：与打开时相同则不发，清空即删除备注。
  * school 字段不出现：P1 变更必 409，不做可点必败控件。
  * 设备识别码只对 master/admin 显示：user 的设备码只能由平台回读，
@@ -106,8 +106,10 @@ export function AccountEditModal({
   const needsReauth = draftNeedsReauth(values)
   const reauthMissing = needsReauth && (values.current_password ?? '').trim() === ''
 
-  // 校验入口在 zod（schema.ts）。历史 UX：校验文案统一挂在手机号字段下。
-  const validation = formState.errors.phone?.message ?? formState.errors.name?.message ?? null
+  // 校验入口在 zod（schema.ts）。各字段错误分别挂载到对应输入框。
+  const nameError = formState.errors.name?.message ?? null
+  const phoneError = formState.errors.phone?.message ?? null
+  const validation = phoneError ?? nameError
 
   useEffect(() => {
     if (account) reset({ ...EMPTY_DRAFT, name: account.name })
@@ -175,6 +177,7 @@ export function AccountEditModal({
           label="备注名"
           placeholder="留空＝使用默认名"
           maxLength={50}
+          error={nameError ?? undefined}
           {...register('name')}
         />
         <TextInput
@@ -182,7 +185,7 @@ export function AccountEditModal({
           label="手机号"
           placeholder="留空＝不修改"
           inputMode="numeric"
-          error={validation ?? undefined}
+          error={phoneError ?? undefined}
           {...register('phone')}
         />
         <TextInput

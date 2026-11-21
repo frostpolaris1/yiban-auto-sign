@@ -41,9 +41,11 @@ import {
   showcaseAnnouncement,
   showcaseAuditStatus,
   showcaseCapacity,
+  showcaseDiagnostics,
   showcaseEngineSnapshot,
   showcasePrefStats,
   showcaseSignStats,
+  showcaseSignStatus,
   showcaseWindows,
 } from '@/lib/showcase'
 import { Alert } from '@/components/ui/Alert'
@@ -104,18 +106,18 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
 
   const signStatusQuery = useQuery({
     queryKey: SIGN_STATUS_KEY,
-    queryFn: getSignStatus,
+    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseSignStatus()) : getSignStatus()),
     enabled: isUser,
-    // 轮询取最新状态：每次挂载与每次到期都要重新取数。
+    // 轮询取最新状态：每次挂载与每次到期都要重新取数；展示模式零请求不轮询。
     staleTime: 0,
     retry: false,
-    refetchInterval: SIGN_POLL_MS,
+    refetchInterval: SHOWCASE ? false : SIGN_POLL_MS,
     refetchIntervalInBackground: false,
   })
 
   const diagnosticsQuery = useQuery({
     queryKey: DIAGNOSTICS_KEY,
-    queryFn: getDiagnostics,
+    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseDiagnostics()) : getDiagnostics()),
     enabled: isUser,
     staleTime: 30_000,
     retry: false,
