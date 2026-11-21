@@ -26,14 +26,24 @@ export type LoginRequest = Schemas['LoginRequest']
 export type ForgotPasswordRequest = Schemas['ForgotPasswordRequest']
 export type ResetRequest = Schemas['ResetPasswordRequest']
 export type ChangePasswordRequest = Schemas['ChangePasswordRequest']
+export type RegistrationStatus = Schemas['RegistrationStatus']
+export type RegisterRequest = Schemas['RegisterRequest']
+export type PasswordPolicy = Schemas['PasswordPolicy']
+export type MeDeleteRequest = Schemas['MeDeleteRequest']
+export type MeRestoreRequest = Schemas['MeRestoreRequest']
 
 export const AUTH_PATHS = {
   login: '/api/auth/login',
   logout: '/api/auth/logout',
   me: '/api/auth/me',
+  registration: '/api/auth/registration',
+  register: '/api/auth/register',
+  passwordPolicy: '/api/auth/password-policy',
   forgotPassword: '/api/auth/forgot-password',
   resetPassword: '/api/auth/reset-password',
   changePassword: '/api/auth/change-password',
+  deleteMe: '/api/me/delete',
+  restoreMe: '/api/me/restore',
 } as const
 
 export async function login(body: LoginRequest): Promise<SessionUser> {
@@ -70,6 +80,43 @@ export async function forgotPassword(body: ForgotPasswordRequest): Promise<void>
 /** 用一次性令牌替换口令。成功 204；令牌无效、已用或过期是 401。 */
 export async function resetPassword(body: ResetRequest): Promise<void> {
   await apiRequest<void>(AUTH_PATHS.resetPassword, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+/** 公开注册状态：enabled 为 false 时注册页只说明，不发注册请求。 */
+export function getRegistrationStatus(): Promise<RegistrationStatus> {
+  return apiRequest<RegistrationStatus>(AUTH_PATHS.registration)
+}
+
+/** 注册即登录：成功返回 SessionUser，并写入 CSRF 令牌。 */
+export async function register(body: RegisterRequest): Promise<SessionUser> {
+  const me = await apiRequest<SessionUser>(AUTH_PATHS.register, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  setCsrfToken(me.csrf_token)
+  return me
+}
+
+/** 当前会话角色的口令规则；注册与改密都不硬编码。 */
+export function getPasswordPolicy(): Promise<PasswordPolicy> {
+  return apiRequest<PasswordPolicy>(AUTH_PATHS.passwordPolicy)
+}
+
+/** 注销本站登录账号：目标恒为会话本人；成功即清会话。 */
+export async function deleteMyAccount(body: MeDeleteRequest): Promise<void> {
+  await apiRequest<void>(AUTH_PATHS.deleteMe, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  setCsrfToken(null)
+}
+
+/** 7 天内自助恢复登录账号；成功不建立会话，调用方随后登录。 */
+export function restoreMyAccount(body: MeRestoreRequest): Promise<void> {
+  return apiRequest<void>(AUTH_PATHS.restoreMe, {
     method: 'POST',
     body: JSON.stringify(body),
   })
@@ -120,7 +167,13 @@ export async function changePassword(body: ChangePasswordRequest): Promise<void>
  * 公开认证端点。契约标 `security: []`：它们的 401 与登录态无关。
  * 忘记密码只有 400/413；重置密码的 401 只表示令牌无效、已用或过期。
  */
-const PUBLIC_AUTH_PATHS = new Set<string>([AUTH_PATHS.forgotPassword, AUTH_PATHS.resetPassword])
+const PUBLIC_AUTH_PATHS = new Set<string>([
+  AUTH_PATHS.forgotPassword,
+  AUTH_PATHS.resetPassword,
+  AUTH_PATHS.registration,
+  AUTH_PATHS.register,
+  AUTH_PATHS.restoreMe,
+])
 
 /**
  * 401 不在路径层直接触发会话过期处置的端点。

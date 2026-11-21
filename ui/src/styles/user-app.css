@@ -1,0 +1,2646 @@
+/*
+ * user-app.css — 用户端独立壳、页面与共用件。
+ *
+ * 只消费 tokens.css 的 var(--token)；本文件不出现颜色字面量。
+ * 布局变量是非颜色自定义属性，放 :root；不写进 tokens.css。
+ * 断点：<768 底栏；768–1023 顶栏单列；≥1024 顶栏 + 两栏。
+ */
+
+:root {
+  --uapp-bar-h: 56px;
+  --uapp-bar-h-wide: 64px;
+  --uapp-bottom-h: 60px;
+  --uapp-content-max: 1040px;
+  --uapp-home-max: 984px;
+  --uapp-history-max: 1120px;
+  --uapp-settings-max: 760px;
+  --uapp-form-max: 560px;
+  --uapp-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --uapp-spring: cubic-bezier(0.24, 1.34, 0.38, 1);
+  --uapp-fast: 160ms;
+  --uapp-base: 240ms;
+  --uapp-slow: 320ms;
+  /* 衍生 AA 语义色：严禁字面量，仅 mix 现有 tokens。 */
+  --uapp-ink-sub: color-mix(in srgb, var(--t-muted) 80%, var(--t-base));
+  --uapp-ink-quiet: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+  --uapp-danger-ink: color-mix(in srgb, var(--danger) 74%, var(--t-base));
+  --uapp-success-ink: color-mix(in srgb, var(--success) 56%, var(--t-base));
+}
+
+:root[data-theme="dark"] {
+  --uapp-ink-sub: color-mix(in srgb, var(--t-muted) 92%, var(--t-base));
+  --uapp-ink-quiet: color-mix(in srgb, var(--t-muted) 86%, var(--t-base));
+  --uapp-danger-ink: var(--danger);
+  --uapp-success-ink: var(--success);
+}
+
+.uapp {
+  min-height: 100dvh;
+  background: var(--bg-body);
+  color: var(--t-base);
+}
+
+/* ---------- 顶栏 ---------- */
+.uapp-bar {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 30;
+  height: calc(var(--uapp-bar-h) + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) 20px 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+
+.uapp-brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 44px;
+  min-height: 44px;
+  flex: none;
+  text-decoration: none;
+  color: var(--t-base);
+}
+.uapp-brand::after {
+  content: '';
+  position: absolute;
+  inset: -4px -8px;
+}
+
+.uapp-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: var(--primary);
+  color: var(--t-inverse);
+}
+
+.uapp-brand-text {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.uapp-top-nav {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  margin-left: 24px;
+}
+
+.uapp-top-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 999px;
+  color: var(--uapp-ink-sub);
+  font-size: 13.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background var(--uapp-fast) var(--uapp-ease-out),
+    color var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-top-link:hover {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+
+.uapp-top-link.active {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.uapp-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.uapp-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--t-muted);
+  cursor: pointer;
+}
+
+.uapp-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+
+.uapp-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.uapp-avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  cursor: pointer;
+}
+.uapp-avatar::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+}
+
+/* ---------- 内容 ---------- */
+.uapp-main {
+  padding-top: calc(var(--uapp-bar-h) + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(var(--uapp-bottom-h) + env(safe-area-inset-bottom, 0px) + 28px);
+}
+
+.uapp-content {
+  width: 100%;
+  padding: 20px;
+}
+
+.uapp-page {
+  width: 100%;
+  margin: 0 auto;
+}
+
+.uapp-page--home {
+  max-width: var(--uapp-home-max);
+}
+
+.uapp-page--history {
+  max-width: var(--uapp-history-max);
+}
+
+.uapp-page--settings {
+  max-width: var(--uapp-settings-max);
+}
+
+.uapp-page--form {
+  max-width: var(--uapp-form-max);
+}
+
+.uapp-alert-block {
+  margin-bottom: 16px;
+}
+
+.uapp-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--warning-soft);
+  color: var(--t-base);
+  font-size: 12.5px;
+}
+
+.uapp-notice a {
+  color: var(--primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+/* ---------- 底栏 ---------- */
+.uapp-bottom {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 30;
+  height: calc(var(--uapp-bottom-h) + env(safe-area-inset-bottom, 0px));
+  padding: 0 12px env(safe-area-inset-bottom, 0px);
+  display: flex;
+  align-items: stretch;
+  background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.uapp-tab {
+  flex: 1;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-tab-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  transition: background var(--uapp-base) var(--uapp-spring),
+    color var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-tab.active {
+  color: var(--t-base);
+}
+
+.uapp-tab.active .uapp-tab-icon {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+/* ---------- 首页 ---------- */
+.uapp-greeting {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.8px;
+  line-height: 1.15;
+  color: var(--t-base);
+}
+
+.uapp-date-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--t-base);
+  font-size: 12px;
+}
+
+.uapp-announcement {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 20px;
+  color: var(--t-base);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.uapp-announcement-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--info);
+}
+
+.uapp-announcement-close {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -12px -12px -12px auto;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--uapp-ink-sub);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Hero=纸面凸起的唯一主角（Admin KPI 卡直译）：
+   白面 + shadow-card + border hairline；tone 挂卡根 color，右上 radial 光晕只吃色不染色；
+   正文全部显式中性色，标题取 tone 深一档（color-mix 到 t-base），成功/失败一眼可辨。 */
+.uapp-hero {
+  position: relative;
+  overflow: hidden;
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 28px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.uapp-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto auto;
+  width: 240px;
+  height: 240px;
+  background: radial-gradient(circle at top right, currentColor, transparent 65%);
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+.uapp-hero > * {
+  position: relative;
+}
+
+.uapp-hero--success {
+  color: var(--success);
+}
+.uapp-hero--danger {
+  color: var(--danger);
+}
+.uapp-hero--warning {
+  color: var(--warning);
+}
+.uapp-hero--info {
+  color: var(--primary);
+}
+
+.uapp-hero-identity {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.uapp-hero-photo {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 14px;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.uapp-hero-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 13px;
+}
+
+.uapp-hero-photo--empty {
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  color: var(--uapp-ink-sub);
+}
+
+.uapp-hero-identity-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.uapp-hero-name {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--t-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uapp-hero-meta {
+  margin: 4px 0 0;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uapp-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  color: var(--t-base);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.uapp-status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--t-muted);
+}
+
+.uapp-status--success {
+  background: var(--success-soft);
+}
+.uapp-status--success .uapp-status-dot {
+  background: var(--success);
+}
+.uapp-status--warning {
+  background: var(--warning-soft);
+}
+.uapp-status--warning .uapp-status-dot {
+  background: var(--warning);
+}
+.uapp-status--danger {
+  background: var(--danger-soft);
+}
+.uapp-status--danger .uapp-status-dot {
+  background: var(--danger);
+}
+.uapp-status--info {
+  background: var(--info-soft);
+}
+.uapp-status--info .uapp-status-dot {
+  background: var(--info);
+}
+
+.uapp-hero-time {
+  margin: 28px 0 0;
+  font-size: 56px;
+  font-weight: 600;
+  letter-spacing: -2px;
+  line-height: 1;
+  color: var(--t-base);
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-hero-time--small {
+  font-size: 34px;
+  letter-spacing: -0.8px;
+}
+
+.uapp-hero-title {
+  margin: 8px 0 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: color-mix(in srgb, currentColor 55%, var(--t-base));
+}
+
+.uapp-hero-note {
+  margin: 8px 0 0;
+  color: var(--uapp-ink-sub);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* 窗口轴：band 画整段可签到窗口；空心点=用户选的 5 分钟档；实心点=实际执行。
+   轴范围取整点小时，小时刻度均匀分布。形状与图例文字双载体，不只靠颜色。 */
+.uapp-window {
+  margin-top: 20px;
+}
+
+.uapp-window-head {
+  display: flex;
+  justify-content: space-between;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-window-track {
+  position: relative;
+  height: 4px;
+  margin-top: 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 16%, var(--bg-card));
+}
+
+.uapp-window-band {
+  position: absolute;
+  top: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 45%, var(--bg-card));
+}
+
+.uapp-window-chosen {
+  position: absolute;
+  top: -4px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border: 2px solid var(--primary);
+  border-radius: 999px;
+  background: var(--bg-card);
+}
+
+.uapp-window-dot {
+  position: absolute;
+  top: -4px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border: 2px solid var(--bg-card);
+  border-radius: 999px;
+  background: var(--success);
+}
+
+.uapp-window-dot--danger {
+  background: var(--danger);
+}
+
+.uapp-window-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-window-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+}
+
+.uapp-window-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-window-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.uapp-window-swatch--chosen {
+  border: 1.5px solid var(--primary);
+}
+
+.uapp-window-swatch--actual {
+  background: var(--success);
+}
+
+.uapp-window-swatch--danger {
+  background: var(--danger);
+}
+
+.uapp-hero-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.uapp-hero-link::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.uapp-hero-link--danger {
+  color: var(--uapp-danger-ink);
+}
+
+.uapp-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 18px -20px -20px;
+  padding: 14px 20px;
+  border-top: 1px dashed var(--border);
+}
+
+.uapp-home-main {
+  min-width: 0;
+}
+
+.uapp-home-rail {
+  display: none;
+}
+
+/* 桌面右栏：一块面板、发丝分隔两段（下一次/帮助），不是三张同形卡。 */
+.uapp-rail-card {
+  padding: 4px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 20px;
+  background: var(--bg-card);
+}
+
+.uapp-rail-block {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.uapp-rail-block:last-child {
+  border-bottom: 0;
+}
+
+.uapp-rail-label {
+  margin: 0;
+  color: var(--t-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.uapp-rail-value {
+  margin: 6px 0 0;
+  color: var(--t-base);
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-rail-note {
+  margin: 4px 0 0;
+  color: var(--t-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.uapp-rail-link {
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.uapp-next {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.uapp-next--inline {
+  display: flex;
+}
+
+.uapp-next-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--bg-muted);
+  color: var(--t-muted);
+}
+
+.uapp-next-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.uapp-next-time {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--t-base);
+}
+
+.uapp-next-note {
+  margin-top: 2px;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+}
+
+.uapp-week {
+  margin-top: 20px;
+}
+
+.uapp-week-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-weight: 500;
+}
+.uapp-week-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.uapp-week-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-top: 18px;
+}
+
+/* 7 天带：格子按状态给「形状 + 文字标签」（✓ ✕ － ○ 空），今天用填充高亮，
+   不只靠颜色；每格 role=img + aria-label 给出「星期 · 状态」。 */
+.uapp-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+}
+
+.uapp-day-cell {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--t-muted);
+}
+
+.uapp-day-cell--ok {
+  color: color-mix(in srgb, var(--success) 55%, var(--t-base));
+}
+
+.uapp-day-cell--missed {
+  color: var(--danger);
+}
+
+.uapp-day-cell--pending {
+  color: var(--info);
+}
+
+.uapp-day-pending-dot {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  border-radius: 999px;
+}
+
+.uapp-day-cell--none {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--border-soft);
+}
+
+.uapp-day-cell--today {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  box-shadow: 0 0 0 3px var(--primary-ring);
+}
+
+.uapp-day-cell--today.uapp-day-cell--ok {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--t-inverse);
+}
+
+.uapp-day-label {
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+}
+
+.uapp-week-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 44px;
+  min-height: 28px;
+  margin-top: 0;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.uapp-week-link::after {
+  content: '';
+  position: absolute;
+  inset: -10px -6px;
+}
+
+/* ---------- 卡片与行 ---------- */
+.uapp-card {
+  padding: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 20px;
+  background: var(--bg-card);
+}
+
+.uapp-card--hero {
+  border-color: var(--primary-ring);
+  border-radius: 24px;
+  background: var(--primary-soft);
+}
+
+.uapp-card + .uapp-card {
+  margin-top: 12px;
+}
+
+.uapp-card-title {
+  margin: 0;
+  color: var(--t-base);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.uapp-card-sub {
+  margin: 4px 0 0;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.uapp-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.uapp-card-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.uapp-card-action::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+
+.uapp-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.uapp-row,
+.uapp-kv-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.uapp-row:last-child,
+.uapp-kv-row:last-child {
+  border-bottom: 0;
+}
+
+.uapp-kv-row .uapp-row-icon {
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  color: var(--uapp-ink-sub);
+}
+
+.uapp-row-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--bg-muted);
+  color: var(--uapp-ink-sub);
+}
+
+.uapp-row-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.uapp-row-label {
+  color: var(--t-base);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.uapp-row-sub {
+  margin-top: 2px;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.uapp-row-value {
+  color: var(--t-base);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-row-chevron {
+  color: var(--uapp-ink-quiet);
+  font-size: 15px;
+}
+
+/* ---------- 表单 ---------- */
+.uapp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.uapp-field-label {
+  color: var(--t-base);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.uapp-input {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--bg-muted);
+  color: var(--t-base);
+  font-size: 14px;
+  outline: none;
+}
+
+.uapp-input::placeholder {
+  color: var(--uapp-ink-quiet);
+}
+
+.uapp-input:focus {
+  border-color: var(--primary);
+  background: var(--bg-card);
+  box-shadow: 0 0 0 3px var(--primary-ring);
+}
+
+.uapp-input--error {
+  border-color: var(--danger);
+}
+
+.uapp-field-error {
+  color: var(--uapp-danger-ink);
+  font-size: 12px;
+}
+
+.uapp-field-hint {
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+}
+
+.uapp-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--uapp-fast) var(--uapp-ease-out),
+    background var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-button:active {
+  transform: scale(0.98);
+}
+
+.uapp-button--primary {
+  background: var(--primary);
+  color: var(--t-inverse);
+}
+
+.uapp-button--primary:hover {
+  background: var(--primary-dark);
+}
+
+.uapp-button--secondary {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.uapp-button--ghost {
+  background: transparent;
+  color: var(--t-base);
+}
+
+.uapp-button--danger {
+  background: var(--danger);
+  color: var(--t-inverse);
+}
+
+.uapp-button--danger:hover:not(:disabled) {
+  background: var(--danger-dark, var(--danger));
+  filter: brightness(0.95);
+}
+
+.uapp-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---------- 分段控件 ---------- */
+.uapp-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--bg-muted);
+}
+
+.uapp-seg-item {
+  flex: 1;
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.uapp-seg-item.active {
+  background: var(--bg-card);
+  color: var(--t-base);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------- 底部弹层 ---------- */
+.uapp-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--overlay);
+}
+
+.uapp-sheet {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 51;
+  max-height: 90dvh;
+  padding: 12px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border);
+  border-radius: 24px 24px 0 0;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  overflow-y: auto;
+  animation: uapp-sheet-in var(--uapp-base) var(--uapp-spring);
+}
+
+.uapp-sheet-grabber {
+  width: 36px;
+  height: 4px;
+  margin: 0 auto 16px;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+@keyframes uapp-sheet-in {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* ---------- 骨架 ---------- */
+.uapp-skeleton {
+  border-radius: 12px;
+  background: var(--bg-muted);
+  animation: uapp-skeleton-fade 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes uapp-skeleton-fade {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---------- 响应式 ---------- */
+@media (min-width: 768px) {
+  .uapp-bar {
+    height: calc(var(--uapp-bar-h-wide) + env(safe-area-inset-top, 0px));
+    padding: env(safe-area-inset-top, 0px) 32px 0;
+  }
+
+  .uapp-top-nav {
+    display: flex;
+  }
+
+  .uapp-main {
+    padding-top: calc(var(--uapp-bar-h-wide) + env(safe-area-inset-top, 0px));
+    padding-bottom: 32px;
+  }
+
+  .uapp-content {
+    padding: 28px 32px 32px;
+  }
+
+  .uapp-bottom {
+    display: none;
+  }
+
+  .uapp-page--home {
+    max-width: var(--uapp-home-max);
+  }
+
+  .uapp-page--history {
+    max-width: var(--uapp-history-max);
+  }
+
+  .uapp-page--settings {
+    max-width: var(--uapp-settings-max);
+  }
+
+  .uapp-page--form {
+    max-width: var(--uapp-form-max);
+  }
+}
+
+@media (min-width: 1024px) {
+  .uapp-home-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 680px) 280px;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .uapp-home-rail {
+    display: block;
+    position: sticky;
+    top: calc(var(--uapp-bar-h-wide) + 24px);
+  }
+
+  .uapp-next--inline {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .uapp-top-nav {
+    display: none;
+  }
+
+  .uapp-brand-text {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uapp *,
+  .uapp *::before,
+  .uapp *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .uapp-sheet {
+    animation: none;
+  }
+}
+
+/* ---------- 账号与新建账号 ---------- */
+/* width 用 auto：负 margin 的行（设置网格）里 100% 会比链接行窄 16，
+   箭头跨行错位；块级 flex 的 auto 才与链接行同宽。 */
+button.uapp-row {
+  width: auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.uapp-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.uapp-row-label,
+.uapp-row-sub {
+  display: block;
+}
+
+.uapp-row--danger .uapp-row-label {
+  color: var(--uapp-danger-ink);
+}
+
+.uapp-row--danger .uapp-row-icon {
+  background: var(--danger-soft);
+  color: var(--uapp-danger-ink);
+}
+
+/* 步骤进度：圆点=未做/已做，长条=当前；形状+文字双载体。 */
+.uapp-steps {
+  display: flex;
+  gap: 14px;
+  margin: 16px 0 20px;
+}
+
+.uapp-step {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.uapp-step-bar {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--border);
+  transition: width var(--uapp-base) var(--uapp-spring),
+    background var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-step--done .uapp-step-bar {
+  background: var(--primary);
+}
+
+.uapp-step--active .uapp-step-bar {
+  width: 28px;
+  background: var(--primary);
+}
+
+.uapp-step-label {
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.uapp-step--done .uapp-step-label {
+  color: var(--t-base);
+}
+
+.uapp-step--active .uapp-step-label {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.uapp-step-pane {
+  animation: uapp-rise-in 200ms var(--uapp-ease-out) both;
+}
+
+.uapp-form-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.uapp-form-actions .uapp-button--grow,
+.modal-foot .uapp-button--grow {
+  flex: 1;
+}
+
+.uapp-school-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  margin-top: 10px;
+  overflow-y: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+}
+
+.uapp-school-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--t-base);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-school-option:hover:not(.active) {
+  background: var(--bg-muted);
+}
+
+.uapp-school-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.uapp-school-option .lucide {
+  flex: none;
+  color: var(--primary);
+}
+
+.uapp-school-option:last-child {
+  border-bottom: 0;
+}
+
+.uapp-school-option.active {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.uapp-photo-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 150px;
+  padding: 18px;
+  border: 1.5px dashed var(--border);
+  border-radius: 18px;
+  background: var(--bg-muted);
+  color: var(--t-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.uapp-photo-picker.has-photo {
+  min-height: 56px;
+  border-style: solid;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+/* 定宽缩略图＋auto-fill：张数不足时不拉伸出空洞，节奏恒定。 */
+.uapp-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 120px);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.uapp-photo-tile {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  background: var(--bg-muted);
+}
+
+.uapp-photo-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 12px;
+}
+
+.uapp-photo-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.uapp-photo-delete-pill {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--uapp-danger-ink);
+  font-size: 14px;
+  line-height: 1;
+  box-shadow: var(--shadow-sm);
+}
+
+.uapp-photo-picker.dragover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.uapp-photo-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.uapp-photo-preview img {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.uapp-pending-check {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+/* ---------- 账号页布局与入场 ---------- */
+.uapp-page--form .uapp-greeting {
+  margin-top: 8px;
+  font-size: 26px;
+  letter-spacing: -0.5px;
+}
+
+.uapp-hero-stats {
+  margin: 6px 0 0;
+  color: var(--uapp-ink-quiet);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 日期不在连字符处断行；窄屏只允许整行在「·」后折。 */
+.uapp-date {
+  white-space: nowrap;
+}
+
+.uapp-overview-today {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.uapp-overview .uapp-week {
+  margin-top: 12px;
+}
+
+.uapp-overview-next {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--t-base);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-overview-next .lucide {
+  color: var(--t-muted);
+}
+
+/* 模态内链接触达 ≥44（菲茨），页内小链接保持紧凑。 */
+.app-modal .uapp-hero-link {
+  min-height: 44px;
+}
+
+.uapp-overview-next .uapp-row-sub {
+  margin: 0 0 0 auto;
+  font-weight: 400;
+}
+
+/* 向导模态内紧凑化：模态已是纸面，内部不再重复大留白。 */
+.app-modal .uapp-steps {
+  margin: 4px 0 14px;
+}
+
+.app-modal .uapp-hero {
+  margin-top: 12px;
+  padding: 16px;
+  border-radius: 20px;
+}
+
+.app-modal .uapp-photo-picker {
+  min-height: 120px;
+}
+
+.uapp-wizard-head {
+  margin-top: 16px;
+}
+
+.uapp-wizard-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0 8px;
+  text-align: center;
+}
+
+.uapp-wizard-success .uapp-pending-check {
+  width: 52px;
+  height: 52px;
+}
+
+.uapp-wizard-success p {
+  margin: 0;
+  color: var(--t-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.uapp-card-head-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+button.uapp-row {
+  border-radius: 12px;
+  transition: background var(--uapp-fast) var(--uapp-ease-out);
+}
+
+button.uapp-row:hover:not(:disabled) {
+  background: var(--bg-muted);
+}
+
+.uapp-enter {
+  animation: uapp-rise-in 240ms var(--uapp-ease-out) both;
+}
+
+@keyframes uapp-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.uapp-account-main > *,
+.uapp-account-rail > * {
+  animation: uapp-rise-in 240ms var(--uapp-ease-out) both;
+}
+
+.uapp-account-main > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.uapp-account-main > *:nth-child(3) {
+  animation-delay: 120ms;
+}
+
+.uapp-account-main > *:nth-child(4) {
+  animation-delay: 160ms;
+}
+
+/* 两列顶对齐 + 顶部横跨身份横幅：消除左右严重失衡。 */
+.uapp-account-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 20px;
+}
+.uapp-account-hero {
+  margin-top: 0;
+}
+.uapp-account-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.uapp-account-main > .uapp-card + .uapp-card {
+  margin-top: 0;
+}
+
+.uapp-account-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.uapp-account-rail .uapp-card + .uapp-card {
+  margin-top: 0;
+}
+
+.uapp-account-rail > *:nth-child(1) {
+  animation-delay: 100ms;
+}
+
+.uapp-account-rail > *:nth-child(2) {
+  animation-delay: 160ms;
+}
+
+@media (min-width: 1024px) {
+  .uapp-page--account {
+    max-width: var(--uapp-home-max);
+  }
+
+  .uapp-account-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+  .uapp-account-hero {
+    grid-column: 1 / -1;
+  }
+  .uapp-account-rail {
+    position: sticky;
+    top: calc(var(--uapp-bar-h-wide) + 24px);
+  }
+}
+
+/* ---------- 历史 ---------- */
+.uapp-history-grid {
+  display: block;
+  margin-top: 16px;
+}
+
+.uapp-calendar {
+  padding: 16px 10px;
+}
+
+.uapp-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.uapp-cal-title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.uapp-cal-title strong {
+  color: var(--t-base);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.uapp-cal-title span {
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+}
+
+.uapp-cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-top: 16px;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.uapp-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.uapp-cal-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 2px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--t-base);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.uapp-cal-cell.is-outside {
+  color: var(--uapp-ink-quiet);
+  font-weight: 400;
+}
+
+.uapp-cal-cell.is-selected {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.uapp-cal-cell.is-today {
+  outline: 1.5px solid var(--primary);
+  outline-offset: -1.5px;
+}
+
+.uapp-cal-cell:disabled,
+.uapp-cal-cell[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.uapp-cal-day {
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-cal-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--success);
+}
+
+.uapp-cal-dot--missed {
+  background: transparent;
+  border: 1.5px solid var(--danger);
+}
+
+.uapp-cal-dot--empty {
+  background: var(--border);
+}
+
+.uapp-cal-dot--warning {
+  background: var(--warning);
+}
+
+.uapp-cal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 14px;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+}
+
+.uapp-cal-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.uapp-day-detail {
+  min-height: 220px;
+  margin-top: 12px;
+}
+
+@media (min-width: 1024px) {
+  .uapp-history-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .uapp-day-detail {
+    margin-top: 0;
+  }
+}
+
+/* ---------- 历史 modern（同主页语言） ---------- */
+.uapp-history-head {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding-left: 4px;
+}
+
+.uapp-history-head .uapp-greeting {
+  margin: 0;
+  font-size: 32px;
+}
+
+.uapp-history-grid > * {
+  animation: uapp-rise-in 240ms var(--uapp-ease-out) both;
+}
+
+.uapp-history-grid > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.uapp-cal-stats {
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-cal-cell {
+  min-height: 48px;
+  transition: transform var(--uapp-fast) var(--uapp-ease-out),
+    background var(--uapp-fast) var(--uapp-ease-out),
+    box-shadow var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-cal-cell:hover:not([aria-disabled='true']) {
+  background: var(--bg-muted);
+  transform: translateY(-1px);
+}
+
+.uapp-cal-cell.is-selected {
+  box-shadow: 0 0 0 2px var(--primary-ring);
+}
+
+/* 日详情仪表：大日期数字＋状态签，行沉底。 */
+.uapp-day-detail {
+  display: flex;
+  flex-direction: column;
+}
+
+.uapp-day-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.uapp-day-big {
+  color: var(--t-base);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: -1px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.uapp-day-hero-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.uapp-day-hero-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.uapp-history-today-btn {
+  margin-top: 0;
+}
+
+.uapp-day-detail .uapp-rows {
+  margin-top: 12px;
+}
+
+.uapp-history-grid :focus-visible,
+.uapp-history-head :focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ---------- 设置 modern（同主页语言） ---------- */
+.uapp-settings-head {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+
+.uapp-settings-head .uapp-greeting {
+  margin: 0;
+  font-size: 32px;
+}
+
+.uapp-settings-grid {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.uapp-settings-grid > * {
+  animation: uapp-rise-in 240ms var(--uapp-ease-out) both;
+}
+
+.uapp-settings-grid > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.uapp-settings-grid > *:nth-child(3) {
+  animation-delay: 120ms;
+}
+
+@media (min-width: 768px) {
+  .uapp-calendar {
+    padding: 20px;
+  }
+
+  .uapp-settings-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "pref account";
+    align-items: stretch;
+  }
+
+  .uapp-settings-grid > section {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .uapp-set-note {
+    margin-top: auto;
+  }
+
+  .uapp-set-pref {
+    grid-area: pref;
+  }
+
+  .uapp-set-account {
+    grid-area: account;
+  }
+}
+
+/* 返回链接触达≥44。 */
+.uapp-page > .uapp-hero-link {
+  min-height: 44px;
+  align-items: center;
+}
+
+a.uapp-row {
+  text-decoration: none;
+  transition: background var(--uapp-fast) var(--uapp-ease-out);
+}
+
+a.uapp-row:hover {
+  background: var(--bg-muted);
+}
+
+/* 悬停遮罩圆角内缩，与卡片圆角语言一致，不出现方角满铺块。 */
+.uapp-settings-grid .uapp-row {
+  border-radius: 10px;
+  margin: 0 -8px;
+  padding: 8px;
+}
+
+/* 纯说明降级为脚注，不与可操作行同级抢注意力。 */
+.uapp-set-note {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.uapp-settings-grid :focus-visible,
+.uapp-settings-head :focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ---------- 设置 ---------- */
+.uapp-button {
+  text-decoration: none;
+}
+
+.uapp-switch {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+  transition: background var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-switch.is-on {
+  background: var(--primary);
+}
+
+.uapp-switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  transition: transform var(--uapp-base) var(--uapp-spring);
+}
+
+.uapp-switch.is-on .uapp-switch-knob {
+  transform: translateX(16px);
+}
+
+.uapp-switch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.uapp-retention-options {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.uapp-retention-option {
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--t-base);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.uapp-retention-option.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+/* ---------- 时间偏好 ---------- */
+.uapp-ruler {
+  display: flex;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 10px 14px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  border-radius: 14px;
+  background: var(--bg-muted);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    var(--t-base) 14px,
+    var(--t-base) calc(100% - 14px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    var(--t-base) 14px,
+    var(--t-base) calc(100% - 14px),
+    transparent
+  );
+}
+
+.uapp-ruler-tick {
+  display: flex;
+  flex: 0 0 54px;
+  min-width: 54px;
+  scroll-snap-align: center;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 64px;
+  padding: 6px 4px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--uapp-fast) var(--uapp-ease-out),
+    border-color var(--uapp-fast) var(--uapp-ease-out),
+    color var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-ruler-tick.is-selected {
+  background: var(--bg-card);
+  border-color: color-mix(in srgb, var(--primary) 32%, var(--border));
+  color: var(--primary);
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+
+.uapp-ruler-tick.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.uapp-ruler-bar {
+  width: 2px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.uapp-ruler-tick.is-selected .uapp-ruler-bar {
+  background: var(--primary);
+}
+
+.uapp-ruler-tick.is-tight .uapp-ruler-bar {
+  background: var(--warning);
+}
+
+.uapp-ruler-tick.is-full .uapp-ruler-bar {
+  background: var(--danger);
+}
+
+.uapp-ruler-label {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.uapp-ruler-note {
+  color: var(--uapp-ink-quiet);
+  font-size: 11px;
+}
+
+.uapp-pw-meter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 12px;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+}
+
+.uapp-pw-meter .is-ok {
+  color: var(--uapp-success-ink);
+  font-weight: 600;
+}
+
+/* ---------- 主页首屏 · 每日仪表 ---------- */
+/* 三组：结果大标题（主角）／高频身份／日历。功能面，不堆装饰。 */
+.uapp-home-bento {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.uapp-home-identity .uapp-card,
+.uapp-home-cal .uapp-card {
+  height: 100%;
+}
+
+/* 入场错峰：结果→身份→日历，落定即静态（基线口径）。 */
+.uapp-home-result,
+.uapp-home-identity,
+.uapp-home-cal {
+  animation: uapp-rise-in 240ms var(--uapp-ease-out) both;
+}
+
+.uapp-home-identity {
+  animation-delay: 60ms;
+}
+
+.uapp-home-cal {
+  animation-delay: 120ms;
+}
+
+@media (min-width: 1024px) {
+  .uapp-home-bento {
+    grid-template-columns: minmax(0, 1.72fr) minmax(300px, 1fr);
+    grid-template-areas:
+      "result identity"
+      "cal identity";
+    align-items: stretch;
+  }
+
+  .uapp-home-bento:not(:has(.uapp-home-identity)) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "result";
+  }
+
+  .uapp-home-result {
+    grid-area: result;
+  }
+
+  .uapp-home-identity {
+    grid-area: identity;
+    display: flex;
+  }
+
+  .uapp-home-cal {
+    grid-area: cal;
+  }
+}
+
+/* 页头：小标签日期在上、大问候在下，同一左对齐线。 */
+.uapp-home-head {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding-left: 4px;
+}
+
+.uapp-home-eyebrow {
+  margin: 0;
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.uapp-home-head .uapp-greeting {
+  margin: 0;
+  font-size: 32px;
+}
+
+.uapp-result {
+  padding: 24px;
+}
+
+.uapp-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.uapp-result-eyebrow {
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* 与身份卡同高：撑满行高，脚行沉底，消掉两卡高度差空白。 */
+.uapp-home-result .uapp-hero {
+  margin-top: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.uapp-result-body {
+  display: grid;
+  gap: 24px;
+  margin-top: 16px;
+  margin-bottom: 16px;
+}
+
+@media (min-width: 768px) {
+  .uapp-result-body {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    align-items: start;
+  }
+}
+
+/* 层级：状态大标题主角；时间用等宽数字当仪表读数。 */
+.uapp-result .uapp-hero-title {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  line-height: 1.15;
+}
+
+.uapp-result .uapp-hero-time {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -1px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 结束时间与描述文本中心水平齐平（不用 baseline，避免小字偏上）。 */
+.uapp-result-when {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.uapp-result-when .uapp-hero-note {
+  margin: 0;
+}
+
+/* 仪表统计：连续成功（数字滚动）＋近7天，发丝分隔；置于脚行同基线。 */
+.uapp-result-stats {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+}
+
+.uapp-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.uapp-stat-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  color: var(--t-base);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+
+.uapp-stat-value .app-number {
+  margin-block: 0;
+  line-height: 1;
+}
+
+.uapp-stat-value i {
+  font-style: normal;
+  font-size: 13px;
+  color: var(--uapp-ink-sub);
+}
+
+.uapp-stat-label {
+  color: var(--uapp-ink-sub);
+  font-size: 12px;
+}
+
+.uapp-stat-divider {
+  width: 1px;
+  background: var(--border-soft);
+}
+
+/* 通栏脚行：下一次居左、动作居右，同一基线，吃掉两列底部空洞。 */
+.uapp-result-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.uapp-result-foot .uapp-hero-actions {
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+  align-items: center;
+}
+
+/* 脚行内链接去掉基础上 margin，垂直居中于框。 */
+.uapp-result-foot .uapp-hero-link {
+  margin-top: 0;
+  min-height: 44px;
+  align-items: center;
+}
+
+.uapp-result-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.uapp-result-side .uapp-window {
+  margin-top: 0;
+}
+
+/* 执行中：所选档脉冲，让「正在跑」就地可见。 */
+.uapp-window-chosen.is-running {
+  animation: uapp-chosen-pulse 1.2s var(--uapp-ease-out) infinite;
+}
+
+@keyframes uapp-chosen-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 var(--primary-ring);
+  }
+  50% {
+    box-shadow: 0 0 0 6px var(--primary-ring);
+  }
+}
+
+.uapp-result-next {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 身份卡：高频三字段，行 hover 有反馈，编辑触达≥44。 */
+.uapp-identity {
+  display: flex;
+  flex-direction: column;
+}
+
+.uapp-identity-fields {
+  margin: 12px 0;
+}
+
+.uapp-identity-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px;
+  margin: 0 -8px;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 8px;
+  font-size: 12px;
+  transition: background var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-identity-row:hover {
+  background: var(--bg-muted);
+}
+
+.uapp-identity-row:last-child {
+  border-bottom: 0;
+}
+
+.uapp-identity-label {
+  color: var(--uapp-ink-sub);
+}
+
+.uapp-identity-value {
+  color: var(--t-base);
+  font-weight: 500;
+  text-align: right;
+}
+
+.uapp-identity-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.uapp-identity-edit {
+  margin-top: 0;
+  width: 100%;
+  min-height: 44px;
+}
+
+.uapp-identity-sub-link {
+  margin-top: 0;
+  justify-content: center;
+  width: 100%;
+}
+
+/* 日历：格放大、今日环、hover 抬升；形状+文字双载体不变。 */
+.uapp-home-cal-card .uapp-week {
+  margin-top: 0;
+}
+
+.uapp-home-cal-card .uapp-day-cell {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  transition: transform var(--uapp-fast) var(--uapp-ease-out),
+    box-shadow var(--uapp-fast) var(--uapp-ease-out);
+}
+
+.uapp-home-cal-card .uapp-day:hover .uapp-day-cell {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card);
+}
+
+.uapp-home-cal-card .uapp-day-cell--today {
+  box-shadow: 0 0 0 2px var(--primary-ring);
+}
+
+/* 焦点可见性（vercel web-design-guidelines）：键盘环不被裁。 */
+.uapp-home-bento :focus-visible,
+.uapp-home-head :focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ---------- 设置子表单弹窗化（同主页语言） ---------- */
+/* 读数左、窗口注右；窄屏堆叠。尺与策略计量复用既有件。 */
+.uapp-set-dialog-readout {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.uapp-set-dialog-readout .uapp-hero-time {
+  margin: 2px 0 0;
+}
+
+.uapp-set-dialog-readout-notes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  text-align: right;
+}
+
+.uapp-set-dialog-readout-notes .uapp-hero-note {
+  margin: 0;
+}
+
+.uapp-set-dialog-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.uapp-set-dialog .uapp-ruler {
+  margin-top: 10px;
+}
+
+@media (max-width: 480px) {
+  .uapp-set-dialog-readout {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .uapp-set-dialog-readout-notes {
+    align-items: flex-start;
+    text-align: left;
+  }
+}
+
+/* 失败态规则标红（提交过一次后才标），与 AA 语义色统一。 */
+.uapp-pw-meter .is-bad {
+  color: var(--uapp-danger-ink);
+}
+
+/* 开关使用透明伪元素扩热区到 ≥44px；照片删除按钮本身已是 44×44。 */
+.uapp-switch {
+  position: relative;
+}
+.uapp-switch::after {
+  content: '';
+  position: absolute;
+  inset: -10px -2px;
+}
+
+/* 移动单列：偏好在前，破坏性行不占首屏顶部（桌面 grid-areas 不受影响）。 */
+@media (max-width: 1023px) {
+  .uapp-set-pref {
+    order: -1;
+  }
+}
+
+/* 深色表面顶部 1px 高光描边 + 自然微按压回弹（尊重减弱动效）。 */
+:root[data-theme="dark"] .uapp-card,
+:root[data-theme="dark"] .uapp-hero {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--t-base) 6%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .uapp-button:not(:disabled):active {
+    transform: scale(0.985);
+  }
+  button.uapp-row:not(:disabled):active {
+    transform: scale(0.992);
+  }
+}

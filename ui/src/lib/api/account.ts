@@ -33,6 +33,9 @@ export type AccountBatchAction = Schemas['AccountBatchAction']
 export type AccountBatchRequest = Schemas['AccountBatchRequest']
 export type AccountBatchItem = Schemas['AccountBatchItem']
 export type AccountBatchResult = Schemas['AccountBatchResult']
+export type AccountDetectRequest = Schemas['AccountDetectRequest']
+export type AccountDetectResult = Schemas['AccountDetectResult']
+export type AccountPersonNameResult = Schemas['AccountPersonNameResult']
 
 /** 查询串视图。字段直接取契约生成的 `AccountList` 参数，不另写一份。 */
 export type AccountQuery = NonNullable<operations['AccountList']['parameters']['query']>
@@ -49,6 +52,11 @@ export const ACCOUNT_PATHS = {
   location: (id: string) => `/api/accounts/${encodeURIComponent(id)}/location`,
   deviceRefresh: (id: string) => `/api/accounts/${encodeURIComponent(id)}/device-refresh`,
   restore: (id: string) => `/api/accounts/${encodeURIComponent(id)}/restore`,
+  detect: '/api/accounts/detect',
+  personName: (id: string) =>
+    `/api/accounts/${encodeURIComponent(id)}/person-name`,
+  selfDelete: (id: string) => `/api/me/accounts/${encodeURIComponent(id)}/delete`,
+  selfRestore: (id: string) => `/api/me/accounts/${encodeURIComponent(id)}/restore`,
   batch: '/api/accounts/batch',
 } as const
 
@@ -115,7 +123,11 @@ export function updateAccount(id: string, body: AccountUpdate): Promise<Account>
   })
 }
 
-/** 位置策略没有读端点：成功响应由调用方存会话内缓存。 */
+/** 位置策略读面：user 读本人，admin 读绑定学校；缺省读 auto。 */
+export function getAccountLocation(id: string): Promise<AccountLocation> {
+  return apiRequest<AccountLocation>(ACCOUNT_PATHS.location(id))
+}
+
 export function setAccountLocation(
   id: string,
   body: AccountLocationUpdate,
@@ -126,10 +138,24 @@ export function setAccountLocation(
   })
 }
 
-/** 204 软删除。二次口令随 DELETE 请求体发送。 */
-export function deleteAccount(id: string, currentPassword: string): Promise<void> {
+/**
+ * 204 软删除。契约要求 `current_password`；管理员入口可留空，
+ * 服务端会以 400 拒绝，调用方必须补二次口令后再重试。
+ */
+export function deleteAccount(id: string, currentPassword?: string): Promise<void> {
   return apiRequest<void>(ACCOUNT_PATHS.detail(id), {
     method: 'DELETE',
+    body:
+      currentPassword === undefined
+        ? undefined
+        : JSON.stringify({ current_password: currentPassword }),
+  })
+}
+
+/** 本人软删自己的签到账号；foreign 账号 404，不泄露存在性。 */
+export function selfDeleteAccount(id: string, currentPassword: string): Promise<void> {
+  return apiRequest<void>(ACCOUNT_PATHS.selfDelete(id), {
+    method: 'POST',
     body: JSON.stringify({ current_password: currentPassword }),
   })
 }
@@ -143,21 +169,53 @@ export function createAccount(body: AccountCreateBody): Promise<Account> {
 }
 
 /** 恢复软删账号。只归 master/admin；行保持删除前状态。 */
-export function restoreAccount(id: string, currentPassword: string): Promise<Account> {
+export function restoreAccount(id: string, currentPassword?: string): Promise<Account> {
   return apiRequest<Account>(ACCOUNT_PATHS.restore(id), {
+    method: 'POST',
+    body:
+      currentPassword === undefined
+        ? undefined
+        : JSON.stringify({ current_password: currentPassword }),
+  })
+}
+
+/** 本人恢复自己删掉的签到账号；只认 deleted_by=本人，过期 409。 */
+export function selfRestoreAccount(id: string, currentPassword: string): Promise<Account> {
+  return apiRequest<Account>(ACCOUNT_PATHS.selfRestore(id), {
     method: 'POST',
     body: JSON.stringify({ current_password: currentPassword }),
   })
 }
 
 /**
- * 设备刷新：请求体只带二次口令。响应只给掩码、机型与授权标志；
- * 明文设备码从不出服务端。502 表示平台失败，零写库。
+ * 设备刷新。响应只给掩码、机型与授权标志；明文设备码从不出服务端。
+ * 502 表示平台失败，零写库。契约要求 `current_password`。
  */
-export function refreshDevice(id: string, currentPassword: string): Promise<AccountDevice> {
+export function refreshDevice(id: string, currentPassword?: string): Promise<AccountDevice> {
   return apiRequest<AccountDevice>(ACCOUNT_PATHS.deviceRefresh(id), {
     method: 'POST',
-    body: JSON.stringify({ current_password: currentPassword }),
+    body:
+      currentPassword === undefined
+        ? undefined
+        : JSON.stringify({ current_password: currentPassword }),
+  })
+}
+
+/**
+ * 建号前探测平台身份：一次认证后读回大学/学校投影/机型/设备码存在位。
+ * 不落库、不回显口令；失败 502 中性信封，速率限制按 IP + 手机号。
+ */
+export function detectAccount(body: AccountDetectRequest): Promise<AccountDetectResult> {
+  return apiRequest<AccountDetectResult>(ACCOUNT_PATHS.detect, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+/** 按需读取平台姓名：不落库、不写日志，与 verify/sign 共用一个限流桶。 */
+export function getPersonName(id: string): Promise<AccountPersonNameResult> {
+  return apiRequest<AccountPersonNameResult>(ACCOUNT_PATHS.personName(id), {
+    method: 'POST',
   })
 }
 
