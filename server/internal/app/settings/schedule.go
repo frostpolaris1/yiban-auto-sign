@@ -194,7 +194,7 @@ func (s *Service) scheduleIntSetting(ctx context.Context, key string, fallback S
 			return ScheduleIntValue{Value: value, Source: ScheduleSourceDB}, nil
 		}
 	}
-	return ScheduleIntValue{Value: fallback.Value, Source: fallback.Source}, nil
+	return ScheduleIntValue(fallback), nil
 }
 
 func (s *Service) scheduleBoolWithEnvSetting(ctx context.Context, key string, fallback ScheduleEnvBool) (ScheduleBoolValue, error) {
@@ -207,7 +207,7 @@ func (s *Service) scheduleBoolWithEnvSetting(ctx context.Context, key string, fa
 			return ScheduleBoolValue{Value: value, Source: ScheduleSourceDB}, nil
 		}
 	}
-	return ScheduleBoolValue{Value: fallback.Value, Source: fallback.Source}, nil
+	return ScheduleBoolValue(fallback), nil
 }
 
 func normalizedIntFallback(in ScheduleEnvInt, def int) ScheduleEnvInt {
