@@ -143,7 +143,9 @@ test('invariant 3 & 4: approve removes row & decrements summary; reject opens mo
 
   // 一键通过 138****8000
   await pendingGroup.getByRole('button', { name: '通过 138****8000' }).click()
-  expect(reviewCalls(api)).toHaveLength(1)
+  // 请求由事件处理器发出，draw 之后才落到 fake 的 calls 里；用 poll 等它落地,
+  // 直接同步断言会偶发读到上一条（见下方驳回那段的同一处竞态）。
+  await expect.poll(() => reviewCalls(api).length).toBe(1)
   expect(reviewCalls(api)[0].body).toEqual({ decision: 'approve' })
 
   await expect(page.locator('[data-sonner-toast]').filter({ hasText: '已通过 东区宿舍' })).toBeVisible()
@@ -170,7 +172,9 @@ test('invariant 3 & 4: approve removes row & decrements summary; reject opens mo
   await expect(reasonBox).toHaveValue('所属学校不匹配')
   await expect(confirmReject).toBeEnabled()
   await confirmReject.click()
-  expect(reviewCalls(api).at(-1)?.body).toMatchObject({
+  // 同一竞态：确认驳回的请求与上面「通过」共用 reviewCalls，同步读 at(-1) 会读到
+  // 上一条 approve（CI 上即 427 passed / 1 failed 的那条）。等最后一条变成 reject。
+  await expect.poll(() => reviewCalls(api).at(-1)?.body).toMatchObject({
     decision: 'reject',
     reason: '所属学校不匹配',
   })
