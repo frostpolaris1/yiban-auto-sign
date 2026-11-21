@@ -21,7 +21,7 @@ import {
   useRouterState,
 } from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
-import { UserAppShell } from '@/components/user-app/UserAppShell'
+import { UserAppShell } from '@/components/shell/UserAppShell'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { AuditPage } from '@/pages/AuditPage'
 import { DashboardPage } from '@/pages/DashboardPage'

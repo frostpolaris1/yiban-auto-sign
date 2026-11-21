@@ -141,7 +141,13 @@ test("invariant 5: another owner's library is read-only for an admin", async ({ 
   const other = drawer.getByRole('img', { name: '照片 photo-gamma' })
   await expect(other).toBeVisible()
   // 可见不等于加载成功：admin 的跨属主读在这里必须真取到字节。
-  expect(await other.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+  // 必须轮询等解码落地——可见性在布局完成时就成立，天然比字节到达早，
+  // 同步读 naturalWidth 会稳定地在慢机上读到 0（CI 上就是这个假红）。
+  await expect
+    .poll(async () => other.evaluate((el) => (el as HTMLImageElement).naturalWidth), {
+      message: 'the admin actually receives the other owner photo bytes',
+    })
+    .toBeGreaterThan(0)
   await expect(drawer.getByRole('button', { name: '上传照片' })).toHaveCount(0)
 
   await drawer.getByRole('button', { name: '查看照片 photo-gamma' }).click()
