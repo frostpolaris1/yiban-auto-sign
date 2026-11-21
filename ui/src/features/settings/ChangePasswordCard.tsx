@@ -159,6 +159,7 @@ export function ChangePasswordCard({ className }: ChangePasswordCardProps) {
           placeholder="••••••••"
           autoComplete="new-password"
           required
+          hint="至少 10 位，且包含大小写字母、数字、符号中的至少两类"
           value={next}
           error={errors.next}
           onChange={(event) => setNext(event.target.value)}

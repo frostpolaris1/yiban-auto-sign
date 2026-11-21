@@ -15,11 +15,21 @@
  */
 
 import type { Account, AccountPage, AccountStatus, AccountSummary } from './api/account'
-import type { AuditStatusReport } from './api/audit'
+import type { NotifyPrefPage } from './api/adminNotify'
+import type {
+  AutoApproveStatus,
+  QuotaReport,
+  RegistrationStatus,
+  ScheduleSettingsReport,
+  SettingsReport,
+} from './api/adminSettings'
+import type { Announcement } from './api/announcement'
+import type { AuditLogItem, AuditLogPage, AuditStatusReport } from './api/audit'
+import type { HealthStatus } from './api/health'
 import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
 import type { EngineSnapshot } from './api/engine'
-import type { AdminTaskRow, TaskPage } from './api/task'
+import type { AccountDiagnostics, AdminTaskRow, TaskPage } from './api/task'
 import type { UserPage } from './api/user'
 import type {
   CapacityReport,
@@ -412,10 +422,21 @@ export function showcasePrefStats(query: {
 }
 
 /**
- * 看板审计链巡检的合成结论：完好态。
+ * 看板审计链巡检的合成结论：缺省完好态；`broken` 供展示机切换断链样本。
  * 链头是小写十六进制的重复串，明示合成；时刻固定，展示机不随日历漂移。
  */
-export function showcaseAuditStatus(): AuditStatusReport {
+export function showcaseAuditStatus(broken = false): AuditStatusReport {
+  if (broken) {
+    return {
+      ok: false,
+      empty: false,
+      checked_rows: 86,
+      last_hash: 'cd'.repeat(32),
+      broken_at: 87,
+      checked_at: '2026-10-31T09:05:00+08:00',
+      anchor_status: 'not_checked',
+    }
+  }
   return {
     ok: true,
     empty: false,
@@ -426,11 +447,125 @@ export function showcaseAuditStatus(): AuditStatusReport {
   }
 }
 
+/** 审计台账的合成行：固定时刻与合成标识，详情是脱敏后的 JSON 文本。 */
+const SHOWCASE_AUDIT_ROWS: AuditLogItem[] = [
+  {
+    id: 1042,
+    at: '2026-10-31T09:12:00+08:00',
+    action: 'auth.login',
+    actor: 'm***@example.com',
+    target: 'user-1',
+    detail: '{"ip":"eg-demo-1","result":"ok"}',
+  },
+  {
+    id: 1041,
+    at: '2026-10-31T09:08:00+08:00',
+    action: 'account.review',
+    actor: 'o***@example.com',
+    target: 'acc-0002',
+    detail: '{"decision":"approve","reason":""}',
+  },
+  {
+    id: 1040,
+    at: '2026-10-31T09:05:00+08:00',
+    action: 'task.rearm',
+    actor: 'o***@example.com',
+    target: 'task-demo-1',
+    detail: '{"attempts":2,"result":"transient"}',
+  },
+  {
+    id: 1039,
+    at: '2026-10-31T08:58:00+08:00',
+    action: 'settings.engine_paused',
+    actor: 'm***@example.com',
+    target: 'engine',
+    detail: '{"paused":true}',
+  },
+  {
+    id: 1038,
+    at: '2026-10-31T08:41:00+08:00',
+    action: 'school.default_photo_set',
+    actor: 'm***@example.com',
+    target: 'school-a',
+    detail: '{"photo_id":"photo-demo-gate"}',
+  },
+  {
+    id: 1037,
+    at: '2026-10-31T08:30:00+08:00',
+    action: 'user.role_change',
+    actor: 'm***@example.com',
+    target: 'user-b',
+    detail: '{"from":"user","to":"admin"}',
+  },
+  {
+    id: 1036,
+    at: '2026-10-31T08:12:00+08:00',
+    action: 'account.credential_error',
+    actor: 'system',
+    target: 'acc-0003',
+    detail:
+      '{"code":"credential_invalid","note":"合成详情：用于验证长文换行与抽屉内滚动，不包含任何真实凭据或个人信息。"}',
+  },
+  {
+    id: 1035,
+    at: '2026-10-30T21:40:00+08:00',
+    action: 'auth.logout',
+    actor: 'a***@example.com',
+    target: 'user-9',
+    detail: '{}',
+  },
+]
+
+/**
+ * 审计台账（展示构建）：按契约参数在夹具内筛选与游标切片。
+ * 展示机零网络；动作精确匹配，操作者忽略大小写，时间按 RFC3339 闭区间比较。
+ */
+export function showcaseAuditLogs(
+  query: {
+    action?: string
+    actor?: string
+    from?: string
+    to?: string
+    cursor?: string
+    limit?: number
+  } = {},
+): AuditLogPage {
+  const action = (query.action ?? '').trim()
+  const actor = (query.actor ?? '').trim().toLowerCase()
+  const from = query.from ? Date.parse(query.from) : null
+  const to = query.to ? Date.parse(query.to) : null
+  const filtered = SHOWCASE_AUDIT_ROWS.filter((row) => {
+    if (action !== '' && row.action !== action) return false
+    if (actor !== '' && row.actor.toLowerCase() !== actor) return false
+    const at = Date.parse(row.at)
+    if (from !== null && at < from) return false
+    if (to !== null && at > to) return false
+    return true
+  })
+  const limit = query.limit && query.limit > 0 ? query.limit : 20
+  const cursorIndex = query.cursor?.startsWith('demo-audit-')
+    ? Number(query.cursor.slice('demo-audit-'.length))
+    : 0
+  const start = Number.isFinite(cursorIndex) && cursorIndex > 0 ? cursorIndex : 0
+  const items = filtered.slice(start, start + limit)
+  const nextIndex = start + items.length
+  const nextCursor = nextIndex < filtered.length ? `demo-audit-${nextIndex}` : ''
+  return {
+    items,
+    next_cursor: nextCursor,
+    total: filtered.length,
+    has_more: nextCursor !== '',
+  }
+}
+
 /**
  * 运行页（单页）。五条覆盖五个任务状态与两所学校，含未认领行。
  * 手机号只有掩码形态；学校与任务是合成词；时刻是合成业务日。
+ * 支持按 `state`、`school_id`、`q` 过滤，使展示态筛选交互与真实后端口径一致。
  */
-export function showcaseRunPage(): TaskPage {
+export function showcaseRunPage(
+  query: { state?: string; school_id?: string; q?: string } = {},
+): TaskPage {
   const base = '2026-10-31'
   const at = (hour: number, minute: number) => `${base}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+08:00`
   const rows: AdminTaskRow[] = [
@@ -505,7 +640,16 @@ export function showcaseRunPage(): TaskPage {
       updated_at: at(9, 11),
     },
   ]
-  return { items: rows, next_cursor: '' }
+  const keyword = (query.q ?? '').trim().toLowerCase()
+  const filtered = rows.filter((row) => {
+    if (query.state && row.state !== query.state) return false
+    if (query.school_id && row.school_id !== query.school_id) return false
+    if (!keyword) return true
+    return [row.school_name, row.task_name, row.account_phone_masked, row.result].some((field) =>
+      field.toLowerCase().includes(keyword),
+    )
+  })
+  return { items: filtered, next_cursor: '' }
 }
 
 /**
@@ -568,4 +712,238 @@ export function showcaseEngineSnapshot(): EngineSnapshot {
     last_tick_at: at(-2_000),
     worker_started_at: at(-6 * 60 * minute),
   }
+}
+
+/** 待办页（展示构建）：按状态筛选账号夹具，与侧栏待处理徽标同源。 */
+export function showcaseQueueAccounts(
+  status: 'pending' | 'rejected',
+  filters: { schoolId?: string; q?: string } = {},
+): AccountPage {
+  const keyword = (filters.q ?? '').trim().toLowerCase()
+  return {
+    items: showcaseAccounts().items.filter((item) => {
+      if (item.status !== status) return false
+      if (filters.schoolId && item.school_id !== filters.schoolId) return false
+      if (!keyword) return true
+      return [item.display_name, item.name, item.phone_masked, item.owner_email_masked].some(
+        (field) => field.toLowerCase().includes(keyword),
+      )
+    }),
+    next_cursor: '',
+  }
+}
+
+/** 待办页（展示构建）：按任务态与筛选条件筛当日任务夹具。 */
+export function showcaseQueueTasks(
+  state: 'failed' | 'pending' | 'running',
+  filters: { schoolId?: string; q?: string } = {},
+): TaskPage {
+  const keyword = (filters.q ?? '').trim().toLowerCase()
+  return {
+    items: showcaseRunPage().items.filter((item) => {
+      if (item.state !== state) return false
+      if (filters.schoolId && item.school_id !== filters.schoolId) return false
+      if (!keyword) return true
+      return [item.task_name, item.school_name, item.account_phone_masked].some((field) =>
+        field.toLowerCase().includes(keyword),
+      )
+    }),
+    next_cursor: '',
+  }
+}
+
+/** 待办页诊断抽屉（展示构建）：按对象构造合成诊断快照。 */
+export function showcaseQueueDiagnostics(accountId: string): AccountDiagnostics {
+  const acc = showcaseAccounts().items.find((item) => item.id === accountId)
+  const task = showcaseRunPage().items.find((item) => item.account_id === accountId)
+  const day = today()
+  return {
+    account_id: accountId,
+    display_name: acc?.display_name ?? `账号${(task?.account_phone_masked ?? '0001').slice(-4)}`,
+    phone_masked: acc?.phone_masked ?? task?.account_phone_masked ?? '138****8001',
+    account_status: acc?.status ?? 'active',
+    state: task?.state ?? null,
+    run_at: task?.run_at ?? null,
+    attempts: task?.attempts ?? 0,
+    result: task?.result ?? '',
+    next_retry_at: task?.state === 'failed' ? iso(day, 9 * 60 + 40) : null,
+    suggestion: task?.state === 'failed' ? 'retry_now' : 'wait',
+    window: {
+      start: iso(day, 8 * 60 + 30),
+      end: iso(day, 9 * 60),
+      source: 'cache',
+      version: 2,
+    },
+    egress: { identity: 'https://eg-demo-1' },
+  }
+}
+
+/** 账号设置页（展示构建）：合成管理员通知订阅 4×3 默认矩阵，零网络请求。 */
+export function showcaseAdminNotify(): NotifyPrefPage {
+  return {
+    items: [
+      { category: 'credential_invalid', channel: 'in_app', enabled: true },
+      { category: 'credential_invalid', channel: 'email', enabled: false },
+      { category: 'credential_invalid', channel: 'webhook', enabled: true },
+      { category: 'review_pending', channel: 'in_app', enabled: true },
+      { category: 'review_pending', channel: 'email', enabled: true },
+      { category: 'review_pending', channel: 'webhook', enabled: true },
+      { category: 'sign_failed_daily', channel: 'in_app', enabled: false },
+      { category: 'sign_failed_daily', channel: 'email', enabled: true },
+      { category: 'sign_failed_daily', channel: 'webhook', enabled: false },
+      { category: 'capacity_rejected', channel: 'in_app', enabled: true },
+      { category: 'capacity_rejected', channel: 'email', enabled: false },
+      { category: 'capacity_rejected', channel: 'webhook', enabled: false },
+    ],
+  }
+}
+
+/** 系统页（展示构建）：注册开关合成夹具。 */
+export function showcaseRegistrationStatus(): RegistrationStatus {
+  return {
+    enabled: false,
+    terms_version: 1,
+    privacy_version: 1,
+  }
+}
+
+/** 系统页（展示构建）：新号自动审核开关合成夹具。 */
+export function showcaseAutoApprove(): AutoApproveStatus {
+  return { enabled: true }
+}
+
+/** 系统页（展示构建）：全局配额合成夹具（synthetic 演示数值，不连后端）。 */
+export function showcaseQuotaSettings(): QuotaReport {
+  return {
+    max_users: { value: 20, source: 'db' },
+    max_accounts: { value: 20, source: 'db' },
+  }
+}
+
+/** 系统页（展示构建）：全部 8 项运行调度策略合成夹具。 */
+export function showcaseScheduleSettings(): ScheduleSettingsReport {
+  return {
+    edge_front_sec: { value: 60, source: 'default' },
+    edge_back_sec: { value: 60, source: 'default' },
+    allow_time_pref: { value: true, source: 'db' },
+    sunday_sign: { value: false, source: 'default' },
+    saturday_sign: { value: true, source: 'db' },
+    default_sign_start_min: { value: 390, source: 'default' },
+    default_sign_end_min: { value: 470, source: 'default' },
+    sign_dist: { value: 'front', source: 'default' },
+  }
+}
+
+/** 系统页（展示构建）：全站公告合成夹具。 */
+export function showcaseAnnouncement(): Announcement {
+  return {
+    text: '示例公告：系统每晚自动更新次日签到计划，请在每日 06:00 前确认账号状态。',
+    updated_at: '2026-11-18T10:00:00Z',
+  }
+}
+
+/**
+ * 系统页（展示构建）：配置名册合成夹具（仅含合成示例键，敏感键脱敏）。
+ * 三态来源与敏感两态齐备：env/db/default/unknown × 已设置（固定掩码）/未设置（空掩码）。
+ */
+export function showcaseAdminSettings(): SettingsReport {
+  return {
+    groups: [
+      {
+        name: '调度',
+        items: [
+          {
+            key: 'YIBAN_WINDOW_EDGE_FRONT_SEC',
+            group: '调度',
+            source: 'default',
+            value: 60,
+            sensitive: null,
+          },
+          {
+            key: 'YIBAN_WINDOW_EDGE_BACK_SEC',
+            group: '调度',
+            source: 'default',
+            value: 60,
+            sensitive: null,
+          },
+          {
+            key: 'YIBAN_ALLOW_TIME_PREF',
+            group: '调度',
+            source: 'db',
+            value: true,
+            sensitive: null,
+          },
+        ],
+      },
+      {
+        name: '发布',
+        items: [
+          {
+            key: 'YIBAN_RESET_MAIL_ENABLE',
+            group: '发布',
+            source: 'default',
+            value: false,
+            sensitive: null,
+          },
+        ],
+      },
+      {
+        name: '通知',
+        items: [
+          {
+            key: 'YIBAN_MAIL_PASS',
+            group: '通知',
+            source: 'env',
+            value: null,
+            sensitive: { set: true, masked: '****', source: 'env' },
+          },
+          {
+            key: 'YIBAN_WEBHOOK_SECRET',
+            group: '通知',
+            source: 'unknown',
+            value: null,
+            sensitive: { set: false, masked: '', source: 'unknown' },
+          },
+          {
+            key: 'YIBAN_WEBHOOK_ENABLE',
+            group: '通知',
+            source: 'default',
+            value: false,
+            sensitive: null,
+          },
+        ],
+      },
+      {
+        name: '部署',
+        items: [
+          {
+            key: 'YIBAN_HTTP_ADDR',
+            group: '部署',
+            source: 'env',
+            value: ':8080',
+            sensitive: null,
+          },
+          {
+            key: 'YIBAN_DATABASE_URL',
+            group: '部署',
+            source: 'env',
+            value: null,
+            sensitive: { set: true, masked: '****', source: 'env' },
+          },
+          {
+            key: 'YIBAN_AUDIT_ANCHOR_FILE',
+            group: '部署',
+            source: 'default',
+            value: '',
+            sensitive: null,
+          },
+        ],
+      },
+    ],
+  }
+}
+
+/** 系统页（展示构建）：存活自检合成夹具。 */
+export function showcaseHealthStatus(): HealthStatus {
+  return { status: 'ok' }
 }

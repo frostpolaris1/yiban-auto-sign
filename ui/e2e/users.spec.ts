@@ -1,13 +1,22 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import {
   DELETED_USER,
   FAKE_TEMP_PASSWORD,
   USERS,
+  batchUserCalls,
   callsTo,
   lastUserListCall,
   listUserCalls,
   mockUsersApi,
 } from './support/fake-users-api'
+import { SESSION_PASSWORD } from './support/fake-accounts-api'
+
+/** 在带二次口令的弹窗里填操作者本人登录口令。 */
+async function fillReauth(dialog: Locator, password = SESSION_PASSWORD) {
+  // 用 textbox 角色而不是 getByLabel：显隐按钮的 aria-label 也含这段文字，
+  // 而必填字段的可访问名会追加 `*`，exact 匹配反而落空。
+  await dialog.getByRole('textbox', { name: '你的登录口令' }).fill(password)
+}
 
 /**
  * 用户管理页的不变式。
@@ -38,7 +47,7 @@ async function openUsers(page: Page) {
 test('invariant 1: master reaches the user list from the navigation', async ({ page }) => {
   await mockUsersApi(page, { role: 'master' })
   await page.goto('/')
-  const link = page.locator('.d-sidebar').getByRole('link', { name: '用户管理', exact: true })
+  const link = page.locator('.d-sidebar').getByRole('link', { name: '用户', exact: true })
   await expect(link).toHaveCount(1)
   await link.click()
   await expect(page).toHaveURL(/\/users$/)
@@ -49,30 +58,30 @@ test('invariant 2: each row shows the email, role, status, accounts and password
   await mockUsersApi(page, { role: 'master' })
   await openUsers(page)
 
-  // 列序：邮箱 | 角色 | 状态 | 账号 | 需要改密 | 创建时间 | 上次登录 | 操作。
+  // 列序：选择 | 邮箱 | 角色 | 状态 | 账号 | 需要改密 | 创建时间 | 上次登录 | 操作。
   const master = page.getByRole('row').filter({ hasText: 'master-one@example.com' })
-  await expect(master.getByRole('cell').nth(1)).toHaveText('超级管理员')
-  await expect(master.getByRole('cell').nth(2)).toHaveText('正常')
-  await expect(master.getByRole('cell').nth(3), 'the account count rides its own cell').toHaveText('3')
-  await expect(master.getByRole('cell').nth(4)).toHaveText('不需要')
-  await expect(master.getByRole('cell').nth(5)).toContainText('2026')
+  await expect(master.getByRole('cell').nth(2)).toHaveText('超级管理员')
+  await expect(master.getByRole('cell').nth(3)).toHaveText('正常')
+  await expect(master.getByRole('cell').nth(4), 'the account count rides its own cell').toHaveText('3')
+  await expect(master.getByRole('cell').nth(5)).toHaveText('不需要')
+  await expect(master.getByRole('cell').nth(6)).toContainText('2026')
 
   const admin = page.getByRole('row').filter({ hasText: 'admin-one@example.com' })
-  await expect(admin.getByRole('cell').nth(1)).toHaveText('管理员')
-  await expect(admin.getByRole('cell').nth(3)).toHaveText('1')
-  await expect(admin.getByRole('cell').nth(4), 'a pending reset is visible').toHaveText('需要')
-  await expect(admin.getByRole('cell').nth(6), 'no login yet reads as a dash').toHaveText('—')
+  await expect(admin.getByRole('cell').nth(2)).toHaveText('管理员')
+  await expect(admin.getByRole('cell').nth(4)).toHaveText('1')
+  await expect(admin.getByRole('cell').nth(5), 'a pending reset is visible').toHaveText('需要')
+  await expect(admin.getByRole('cell').nth(7), 'no login yet reads as a dash').toHaveText('—')
 
   const member = page.getByRole('row').filter({ hasText: 'member-one@example.com' })
-  await expect(member.getByRole('cell').nth(1)).toHaveText('用户')
-  await expect(member.getByRole('cell').nth(2)).toHaveText('停用')
-  await expect(member.getByRole('cell').nth(3)).toHaveText('0')
-  await expect(member.getByRole('cell').nth(6)).toContainText('2026')
+  await expect(member.getByRole('cell').nth(2)).toHaveText('用户')
+  await expect(member.getByRole('cell').nth(3)).toHaveText('停用')
+  await expect(member.getByRole('cell').nth(4)).toHaveText('0')
+  await expect(member.getByRole('cell').nth(7)).toContainText('2026')
 
   // 有待审账号的用户：账号列在计数旁给出「待处理 N」徽标。
   const pending = page.getByRole('row').filter({ hasText: 'member-two@example.com' })
-  await expect(pending.getByRole('cell').nth(3), 'the count and badge share the cell').toContainText('2')
-  await expect(pending.getByRole('cell').nth(3)).toContainText('待处理 1')
+  await expect(pending.getByRole('cell').nth(4), 'the count and badge share the cell').toContainText('2')
+  await expect(pending.getByRole('cell').nth(4)).toContainText('待处理 1')
 })
 
 for (const role of ['admin', 'user'] as const) {
@@ -80,7 +89,7 @@ for (const role of ['admin', 'user'] as const) {
     const api = await mockUsersApi(page, { role })
     await page.goto('/')
     await expect(
-      page.locator('.d-sidebar').getByRole('link', { name: '用户管理', exact: true }),
+      page.locator('.d-sidebar').getByRole('link', { name: '用户', exact: true }),
     ).toHaveCount(0)
 
     await page.goto('/users')
@@ -236,7 +245,8 @@ test('invariant 5: a failed list shows the envelope and can retry', async ({ pag
     listError: { status: 500, code: 'internal_error', message: '用户服务不可用' },
   })
   await page.goto('/users')
-  await expect(page.getByText('internal_error · 用户服务不可用')).toBeVisible()
+  await expect(page.getByText('用户服务不可用')).toBeVisible()
+  await expect(page.getByText('internal_error')).toHaveCount(0)
 
   const before = listUserCalls(api).length
   await page.getByRole('button', { name: '重试' }).click()
@@ -381,7 +391,7 @@ test('invariant 5: the deleted view empty state offers the way back', async ({ p
 
 async function openManage(page: Page, email: string) {
   await page.getByRole('row').filter({ hasText: email }).getByRole('button', { name: `管理 ${email}` }).click()
-  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '管理用户', includeHidden: true })).toBeVisible()
 }
 
 test('UX-1: creating a user posts the form, closes the modal and refreshes the list', async ({ page }) => {
@@ -393,12 +403,18 @@ test('UX-1: creating a user posts the form, closes the modal and refreshes the l
   await page.getByRole('dialog').getByLabel('邮箱').fill('new-one@example.com')
   await page.getByRole('dialog').getByLabel('初始口令').fill('first-pass')
   await page.getByRole('dialog').getByLabel('角色').selectOption('admin')
+  await fillReauth(page.getByRole('dialog'))
   const listsBefore = listUserCalls(api).length
   await page.getByRole('button', { name: '创建' }).click()
 
   await expect.poll(() => callsTo(api, 'POST', '/api/users')).toHaveLength(1)
   const sent = callsTo(api, 'POST', '/api/users')[0]
-  expect(sent.body).toEqual({ email: 'new-one@example.com', password: 'first-pass', role: 'admin' })
+  expect(sent.body).toEqual({
+    email: 'new-one@example.com',
+    password: 'first-pass',
+    role: 'admin',
+    current_password: SESSION_PASSWORD,
+  })
   // 弹窗关闭，列表失效重取。
   await expect(page.getByRole('dialog').getByText('新建用户', { exact: true })).toHaveCount(0)
   await expect.poll(() => listUserCalls(api).length).toBeGreaterThan(listsBefore)
@@ -413,12 +429,37 @@ test('UX-1: a duplicate email keeps the modal open with the input intact', async
   await page.getByRole('button', { name: '新建用户' }).click()
   await page.getByRole('dialog').getByLabel('邮箱').fill('master-one@example.com')
   await page.getByLabel('初始口令').fill('first-pass')
+  await fillReauth(page.getByRole('dialog'))
   await page.getByRole('button', { name: '创建' }).click()
 
   await expect(page.getByText('该邮箱已被使用')).toBeVisible()
   await expect(page.getByRole('dialog').getByText('新建用户', { exact: true })).toBeVisible()
   expect(await page.getByRole('dialog').getByLabel('邮箱').inputValue()).toBe('master-one@example.com')
   expect(callsTo(api, 'POST', '/api/users')).toHaveLength(1)
+})
+
+test('UX-1: closing the create modal discards every field, including both passwords', async ({
+  page,
+}) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  await page.getByRole('button', { name: '新建用户' }).click()
+  const dialog = page.getByRole('dialog', { name: '新建用户' })
+  await dialog.getByLabel('邮箱').fill('new-three@example.com')
+  await dialog.getByLabel('初始口令').fill('first-pass')
+  await dialog.getByLabel('角色').selectOption('admin')
+  await fillReauth(dialog, 'operator-pass')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+
+  // 重开：口令不回填，邮箱与角色也不留。
+  await page.getByRole('button', { name: '新建用户' }).click()
+  await expect(dialog.getByLabel('邮箱')).toHaveValue('')
+  await expect(dialog.getByLabel('初始口令')).toHaveValue('')
+  await expect(dialog.getByRole('textbox', { name: '你的登录口令' })).toHaveValue('')
+  await expect(dialog.getByLabel('角色')).toHaveValue('user')
+  expect(callsTo(api, 'POST', '/api/users'), 'a dismissed modal sends nothing').toHaveLength(0)
 })
 
 test('UX-1: filters, the deleted toggle and the cursor survive a reload', async ({ page }) => {
@@ -475,11 +516,17 @@ test('UX-1: the drawer role change sends a PATCH and keeps the drawer open', asy
 
   await page.getByLabel('角色变更').selectOption('master')
   await page.getByRole('button', { name: '保存' }).click()
+  const reauth = page.getByRole('dialog', { name: '保存角色变更？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '保存', exact: true }).click()
 
   await expect.poll(() => callsTo(api, 'PATCH', '/api/users/user-beta')).toHaveLength(1)
-  expect(callsTo(api, 'PATCH', '/api/users/user-beta')[0].body).toEqual({ role: 'master' })
+  expect(callsTo(api, 'PATCH', '/api/users/user-beta')[0].body).toEqual({
+    role: 'master',
+    current_password: SESSION_PASSWORD,
+  })
   // 抽屉仍开着；摘要里的角色已同步。
-  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '管理用户', includeHidden: true })).toBeVisible()
 })
 
 test('UX-1: demoting the last master explains the refusal in the drawer', async ({ page }) => {
@@ -492,6 +539,9 @@ test('UX-1: demoting the last master explains the refusal in the drawer', async 
 
   await page.getByLabel('角色变更').selectOption('user')
   await page.getByRole('button', { name: '保存' }).click()
+  const reauth = page.getByRole('dialog', { name: '保存角色变更？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '保存', exact: true }).click()
   await expect(page.getByText('这是最后一位管理员，不能降级或停用')).toBeVisible()
   expect(callsTo(api, 'PATCH', '/api/users/user-alpha')).toHaveLength(1)
 })
@@ -502,8 +552,10 @@ test('UX-1: the temp password is shown once and discarded on close', async ({ pa
   await openManage(page, 'member-one@example.com')
 
   await page.getByRole('button', { name: '重置口令' }).click()
-  await expect(page.getByText('成功后该用户全部会话失效', { exact: false })).toBeVisible()
-  await page.getByRole('button', { name: '生成临时口令' }).click()
+  const reauth = page.getByRole('dialog', { name: '重置口令？' })
+  await expect(reauth).toContainText('成功后该用户全部会话失效')
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '生成临时口令' }).click()
 
   await expect.poll(() => callsTo(api, 'POST', '/api/users/user-gamma/password-reset')).toHaveLength(1)
   // 一次性视图：口令只出现一次。
@@ -520,8 +572,13 @@ test('UX-1: delete then restore a user through the deleted toggle', async ({ pag
   await openManage(page, 'member-one@example.com')
 
   await page.getByRole('button', { name: '删除用户' }).click()
-  await page.getByRole('button', { name: '删除', exact: true }).click()
+  const reauth = page.getByRole('dialog', { name: '删除用户？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '删除', exact: true }).click()
   await expect.poll(() => callsTo(api, 'DELETE', '/api/users/user-gamma')).toHaveLength(1)
+  expect(callsTo(api, 'DELETE', '/api/users/user-gamma')[0].body).toEqual({
+    current_password: SESSION_PASSWORD,
+  })
   // 行已离开默认列表：抽屉收起。
   await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toHaveCount(0)
   await expect(page.getByText('member-one@example.com')).toHaveCount(0)
@@ -531,6 +588,9 @@ test('UX-1: delete then restore a user through the deleted toggle', async ({ pag
   await expect(page.getByText('member-one@example.com')).toBeVisible()
   await openManage(page, 'member-one@example.com')
   await page.getByRole('button', { name: '恢复用户' }).click()
+  const restore = page.getByRole('dialog', { name: '恢复用户？' })
+  await fillReauth(restore)
+  await restore.getByRole('button', { name: '恢复', exact: true }).click()
 
   await expect.poll(() => callsTo(api, 'POST', '/api/users/user-gamma/restore')).toHaveLength(1)
   // 恢复后抽屉回到常规动作面；列表失效重取。
@@ -550,10 +610,13 @@ test('UX-1: a blocked restore explains itself next to the restore button', async
   await expect(page.getByText(DELETED_USER.email)).toBeVisible()
   await openManage(page, DELETED_USER.email)
   await page.getByRole('button', { name: '恢复用户' }).click()
+  const reauth = page.getByRole('dialog', { name: '恢复用户？' })
+  await fillReauth(reauth)
+  await reauth.getByRole('button', { name: '恢复', exact: true }).click()
 
-  // 409 贴着恢复按钮出现，抽屉不关：操作者可以改完再试。
+  // 409 贴着恢复动作出现，抽屉不关：操作者可以改完再试。
   await expect(page.getByText('该邮箱已被其他用户使用，无法恢复')).toBeVisible()
-  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '管理用户', includeHidden: true })).toBeVisible()
   expect(callsTo(api, 'POST', `/api/users/${DELETED_USER.id}/restore`)).toHaveLength(1)
 })
 
@@ -655,7 +718,7 @@ test('polling: an open detail drawer pauses the list poll', async ({ page }) => 
     .filter({ hasText: 'master-one@example.com' })
     .getByRole('button', { name: '管理 master-one@example.com' })
     .click()
-  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '管理用户', includeHidden: true })).toBeVisible()
 
   await page.clock.runFor(10_000)
   expect(listUserCalls(api).length, 'no list poll while the drawer is open').toBe(base)
@@ -664,4 +727,239 @@ test('polling: an open detail drawer pauses the list poll', async ({ page }) => 
   await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toHaveCount(0)
   await page.clock.runFor(10_000)
   await expect.poll(() => listUserCalls(api).length).toBe(base + 1)
+})
+
+// --- 批量条与二次口令负向 ------------------------------------------------
+
+test('batch: three selected users send exactly one batch request and clear the bar', async ({
+  page,
+}) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  for (const email of ['master-one@example.com', 'admin-one@example.com', 'member-one@example.com']) {
+    await page.getByRole('checkbox', { name: `选择 ${email}` }).check()
+  }
+  await expect(page.getByRole('region', { name: '批量操作' })).toContainText('已选 3 条')
+
+  await page.getByRole('button', { name: '停用', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '批量停用？' })
+  await expect(dialog).toContainText('将作用于已选 3 个用户')
+  await fillReauth(dialog)
+  await dialog.getByRole('button', { name: '确认停用' }).click()
+
+  await expect.poll(() => batchUserCalls(api).length).toBe(1)
+  expect(batchUserCalls(api)[0].body).toEqual({
+    action: 'disable',
+    ids: ['user-alpha', 'user-beta', 'user-gamma'],
+    current_password: SESSION_PASSWORD,
+  })
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('region', { name: '批量操作' })).toHaveCount(0)
+})
+
+test('batch: a partial reset shows the one-time temp password exactly once', async ({ page }) => {
+  const api = await mockUsersApi(page, {
+    role: 'master',
+    batchItemError: {
+      id: 'user-beta',
+      status: 409,
+      code: 'conflict',
+      message: '该用户不能重置口令',
+    },
+  })
+  await openUsers(page)
+
+  await page.getByRole('checkbox', { name: '选择 master-one@example.com' }).check()
+  await page.getByRole('checkbox', { name: '选择 admin-one@example.com' }).check()
+  await page.getByRole('button', { name: '重置口令', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '批量重置口令？' })
+  await fillReauth(dialog)
+  await dialog.getByRole('button', { name: '确认重置口令' }).click()
+
+  await expect.poll(() => batchUserCalls(api).length).toBe(1)
+  const result = page.getByRole('status', { name: '批量结果' })
+  await expect(result).toContainText('1 条成功，1 条失败')
+  await expect(result).toContainText(FAKE_TEMP_PASSWORD)
+  await expect(result).toContainText('关闭后不可再查看')
+  await expect(result).toContainText('conflict · 该用户不能重置口令')
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '完成', exact: true }).click()
+  await expect(page.getByText(FAKE_TEMP_PASSWORD)).toHaveCount(0)
+})
+
+test('batch: an all-success reset keeps every one-time password until done', async ({ page }) => {
+  // 剪贴板用确定性替身：只断言页面把当前行的临时口令交给 writeText。
+  await page.addInitScript(() => {
+    const copied: string[] = []
+    Object.defineProperty(window, '__copiedTempPasswords', { value: copied, configurable: true })
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          copied.push(text)
+        },
+      },
+    })
+  })
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  await page.getByRole('checkbox', { name: '选择 master-one@example.com' }).check()
+  await page.getByRole('checkbox', { name: '选择 admin-one@example.com' }).check()
+  await page.getByRole('button', { name: '重置口令', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '批量重置口令？' })
+  await fillReauth(dialog)
+  await dialog.getByRole('button', { name: '确认重置口令' }).click()
+
+  await expect.poll(() => batchUserCalls(api).length).toBe(1)
+  // 全成功也不自动关：两条临时口令同屏可见，等待操作者逐条保存。
+  const result = page.getByRole('status', { name: '批量结果' })
+  await expect(result).toContainText('2 条成功，0 条失败')
+  await expect(page.getByText(FAKE_TEMP_PASSWORD)).toHaveCount(2)
+  await expect(dialog).toBeVisible()
+
+  await result
+    .getByRole('button', { name: '复制 master-one@example.com 的临时口令' })
+    .click()
+  await expect(page.getByText('已复制临时口令')).toBeVisible()
+  const copied = await page.evaluate(
+    () => (window as unknown as { __copiedTempPasswords: string[] }).__copiedTempPasswords,
+  )
+  expect(copied).toEqual([FAKE_TEMP_PASSWORD])
+
+  // 显式「完成」才关闭并清空。
+  await dialog.getByRole('button', { name: '完成', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByText(FAKE_TEMP_PASSWORD)).toHaveCount(0)
+})
+
+test('reauth: an empty password shows the confirm as disabled', async ({ page }) => {
+  await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  await openManage(page, 'member-one@example.com')
+
+  await page.getByRole('button', { name: '重置口令' }).click()
+  const reauth = page.getByRole('dialog', { name: '重置口令？' })
+  const confirm = reauth.getByRole('button', { name: '生成临时口令' })
+  await expect(confirm).toBeDisabled()
+  // vendor 没有 `.btn:disabled`：0.45 降级覆盖必须咬到确认键。
+  await expect(confirm).toHaveCSS('opacity', '0.45')
+
+  await fillReauth(reauth)
+  await expect(confirm).toBeEnabled()
+  await expect(confirm).toHaveCSS('opacity', '1')
+})
+
+test('reauth: an in-flight batch cannot be dismissed with Escape or the close button', async ({
+  page,
+}) => {
+  const api = await mockUsersApi(page, { role: 'master', writeDelayMs: 1500 })
+  await openUsers(page)
+
+  await page.getByRole('checkbox', { name: '选择 master-one@example.com' }).check()
+  await page.getByRole('button', { name: '停用', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '批量停用？' })
+  await fillReauth(dialog)
+  await dialog.getByRole('button', { name: '确认停用' }).click()
+  await expect(dialog.getByRole('button', { name: '执行中…' })).toBeVisible()
+
+  // 在途：Esc 与 X 都不得丢弃结果。
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(100)
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭弹窗' }).click()
+  await page.waitForTimeout(100)
+  await expect(dialog).toBeVisible()
+
+  // 落定后正常关闭。
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => batchUserCalls(api).length).toBe(1)
+})
+
+test('reauth: create with a wrong password keeps the form and shows the copy', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  await page.getByRole('button', { name: '新建用户' }).click()
+  const dialog = page.getByRole('dialog', { name: '新建用户' })
+  await dialog.getByLabel('邮箱').fill('new-two@example.com')
+  await dialog.getByLabel('初始口令').fill('first-pass')
+  await fillReauth(dialog, 'wrong-password')
+  await dialog.getByRole('button', { name: '创建' }).click()
+
+  await expect(dialog.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect(dialog.getByLabel('邮箱')).toHaveValue('new-two@example.com')
+  await expect.poll(() => callsTo(api, 'POST', '/api/users').length).toBe(1)
+})
+
+test('reauth: role change with a wrong password keeps the dialog open', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  await openManage(page, 'admin-one@example.com')
+
+  await page.getByLabel('角色变更').selectOption('master')
+  await page.getByRole('button', { name: '保存' }).click()
+  const reauth = page.getByRole('dialog', { name: '保存角色变更？' })
+  await fillReauth(reauth, 'wrong-password')
+  await reauth.getByRole('button', { name: '保存', exact: true }).click()
+
+  await expect(reauth.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '管理用户', includeHidden: true })).toBeVisible()
+  await expect.poll(() => callsTo(api, 'PATCH', '/api/users/user-beta').length).toBe(1)
+})
+
+test('reauth: reset with a wrong password keeps the dialog open', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  await openManage(page, 'member-one@example.com')
+
+  await page.getByRole('button', { name: '重置口令' }).click()
+  const reauth = page.getByRole('dialog', { name: '重置口令？' })
+  await fillReauth(reauth, 'wrong-password')
+  await reauth.getByRole('button', { name: '生成临时口令' }).click()
+  await expect(reauth.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect.poll(() => callsTo(api, 'POST', '/api/users/user-gamma/password-reset').length).toBe(1)
+})
+
+test('reauth: delete with a wrong password keeps the dialog open', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  await openManage(page, 'member-one@example.com')
+
+  await page.getByRole('button', { name: '删除用户' }).click()
+  const reauth = page.getByRole('dialog', { name: '删除用户？' })
+  await fillReauth(reauth, 'wrong-password')
+  await reauth.getByRole('button', { name: '删除', exact: true }).click()
+  await expect(reauth.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect.poll(() => callsTo(api, 'DELETE', '/api/users/user-gamma').length).toBe(1)
+})
+
+test('reauth: restore with a wrong password keeps the dialog open', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await page.goto('/users')
+  await page.getByLabel('含已删除').check()
+  await expect(page.getByText(DELETED_USER.email)).toBeVisible()
+  await openManage(page, DELETED_USER.email)
+
+  await page.getByRole('button', { name: '恢复用户' }).click()
+  const reauth = page.getByRole('dialog', { name: '恢复用户？' })
+  await fillReauth(reauth, 'wrong-password')
+  await reauth.getByRole('button', { name: '恢复', exact: true }).click()
+  await expect(reauth.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect.poll(() => callsTo(api, 'POST', `/api/users/${DELETED_USER.id}/restore`).length).toBe(1)
+})
+
+test('reauth: a batch with a wrong password keeps the modal open', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  await page.getByRole('checkbox', { name: '选择 master-one@example.com' }).check()
+  await page.getByRole('button', { name: '停用', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '批量停用？' })
+  await fillReauth(dialog, 'wrong-password')
+  await dialog.getByRole('button', { name: '确认停用' }).click()
+  await expect(dialog.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
+  await expect(dialog).toBeVisible()
+  await expect.poll(() => batchUserCalls(api).length).toBe(1)
 })

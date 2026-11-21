@@ -24,6 +24,9 @@ type DrawerProps = {
   footer?: ReactNode
   /** 打开抽屉的控件。关闭时焦点回到它。 */
   returnFocusTo?: HTMLElement | null
+  /** 退场过渡期标记：用于触发滑出动画后再卸载。 */
+  closing?: boolean
+  className?: string
 }
 
 export function Drawer({
@@ -34,13 +37,19 @@ export function Drawer({
   children,
   footer,
   returnFocusTo,
+  closing,
+  className,
 }: DrawerProps) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="app-drawer-backdrop" />
+        <Dialog.Overlay
+          className="app-drawer-backdrop"
+          data-closing={closing ? 'true' : undefined}
+        />
         <Dialog.Content
-          className="app-drawer"
+          className={className ? `app-drawer ${className}` : 'app-drawer'}
+          data-closing={closing ? 'true' : undefined}
           aria-describedby={description ? 'app-drawer-description' : undefined}
           onCloseAutoFocus={(event) => {
             // 还原点随外部刷新被摘除时不还原（与 Modal 的 guard 同款），

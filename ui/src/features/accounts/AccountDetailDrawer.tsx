@@ -12,7 +12,7 @@
  * 缺省图动作只归 admin。
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
@@ -20,9 +20,10 @@ import { Badge } from '@/components/ui/Badge'
 import { BusyButton } from '@/components/ui/BusyButton'
 import { Button } from '@/components/ui/Button'
 import { Drawer } from '@/components/ui/Drawer'
+import { ReauthDialog } from '@/components/ui/ReauthDialog'
 import { getAccount, refreshDevice, type Account } from '@/lib/api/account'
 import { AccountDeviceView } from './AccountDeviceView'
-import { describeApiError } from '@/lib/api/client'
+import { describeApiError, describeReauthError } from '@/lib/api/client'
 import type { School } from '@/lib/api/school'
 import { formatDateTime } from '@/lib/format'
 import { statusLabel, statusTone } from './display'
@@ -59,15 +60,20 @@ export function AccountDetailDrawer({
   // 设备信息块：读回动作驱动。明文设备码从不出服务端，这里只有掩码。
   // 抽屉常驻不重挂：换账号必须清掉上一个账号的读回值与错误，
   // 否则 B 会显示 A 的掩码/机型/授权。
+  const [deviceOpen, setDeviceOpen] = useState(false)
+  const [deviceReturnFocus, setDeviceReturnFocus] = useState<HTMLElement | null>(null)
   const device = useMutation({
-    mutationFn: () => refreshDevice(data!.id),
+    mutationFn: (password: string) => refreshDevice(data!.id, password),
+    onSuccess: () => setDeviceOpen(false),
   })
   useEffect(() => {
     device.reset()
+    setDeviceOpen(false)
+    setDeviceReturnFocus(null)
     // 只随目标账号变化；reset 是稳定回调，不进依赖。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account?.id])
-  const deviceError = device.isError ? describeApiError(device.error) : null
+  const deviceError = device.isError ? describeReauthError(device.error) : null
 
   return (
     <Drawer
@@ -128,11 +134,6 @@ export function AccountDetailDrawer({
       {data ? (
         <section className="app-detail-block" aria-label="设备信息">
           {device.isPending ? <p className="app-muted">读取中…</p> : null}
-          {deviceError ? (
-            <Alert tone="warning" title="设备信息读取失败">
-              {deviceError} 可稍后重试，已有数据不变。
-            </Alert>
-          ) : null}
           {device.data ? <AccountDeviceView device={device.data} /> : null}
           {!device.isPending && !deviceError && !device.data ? (
             <p className="app-muted">尚未读取设备信息。可从易班平台读回登记字段。</p>
@@ -144,7 +145,11 @@ export function AccountDetailDrawer({
             busyLabel="读取中…"
             disabled={SHOWCASE}
             aria-label="刷新设备"
-            onClick={() => device.mutate()}
+            onClick={(event) => {
+              device.reset()
+              setDeviceReturnFocus(event.currentTarget)
+              setDeviceOpen(true)
+            }}
           >
             刷新设备
           </BusyButton>
@@ -152,6 +157,30 @@ export function AccountDetailDrawer({
       ) : null}
 
       {data && photoSection ? photoSection(data) : null}
+
+      <ReauthDialog
+        open={deviceOpen}
+        title="刷新设备？"
+        description={data ? `账号 ${data.phone_masked} · 从易班平台读回登记字段` : undefined}
+        confirmText="刷新设备"
+        pending={device.isPending}
+        error={deviceError}
+        returnFocusTo={deviceReturnFocus}
+        layer={2}
+        onClose={() => {
+          if (device.isPending) return
+          device.reset()
+          setDeviceOpen(false)
+        }}
+        onConfirm={(password) => {
+          if (!data) return
+          device.mutate(password)
+        }}
+      >
+        <Alert tone="warning" title="读取不写库">
+          用已存凭据向易班平台读取设备登记；平台失败不会改写任何字段。
+        </Alert>
+      </ReauthDialog>
     </Drawer>
   )
 }

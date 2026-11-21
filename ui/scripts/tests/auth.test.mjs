@@ -173,7 +173,7 @@ test('a non-envelope failure becomes one fixed network message', () => {
   assert.equal(passwordErrorMessage(new TypeError('Failed to fetch')), NETWORK_ERROR_MESSAGE)
   assert.equal(
     passwordErrorMessage(new ApiError(400, { code: 'validation_error', message: 'invalid email' })),
-    'validation_error · invalid email',
+    '请求参数不符合要求，请核对后重试',
   )
 })
 

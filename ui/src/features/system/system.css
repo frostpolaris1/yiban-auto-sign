@@ -1,0 +1,528 @@
+/*
+ * system.css — 系统设置页分区与页顶锚链样式层。
+ *
+ * **归属**
+ * `features/system` 专属样式：仅消费 `tokens.css` 变量，零颜色字面量（满足 token-gate）。
+ * 布局为单列分区卡；锚链在窄屏自动折行，触控指针目标高度 >= 44px，
+ * 锚点滚动留足顶栏偏移，不遮挡分区标题。
+ */
+
+.sys-anchors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  scroll-target-group: auto;
+}
+
+.sys-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 36px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-decoration: none;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+/* 锚链 pill 视觉保持 36，::before 补 ±4 ⇒ 触控 44；横向不扩，行间距 8 不互叠。 */
+.sys-anchor::before {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+}
+
+.sys-anchor:hover {
+  background: var(--bg-hover);
+  border-color: var(--t-light);
+  color: var(--t-base);
+}
+
+.sys-anchor.is-active,
+.sys-anchor[aria-current='location'] {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  box-shadow: inset 0 -2px 0 var(--primary);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.sys-anchor:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .sys-anchor {
+    min-block-size: 44px;
+  }
+}
+
+.sys-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.sys-section {
+  scroll-margin-top: 84px;
+}
+
+.sys-section:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.sys-section:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+  border-radius: 12px;
+}
+
+.sys-section-desc {
+  margin: 0 0 16px;
+}
+
+.sys-section-head {
+  margin-bottom: 14px;
+}
+
+.sys-section-title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--t-base);
+}
+
+.sys-section-head .sys-section-desc {
+  margin: 0;
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+  font-size: 13px;
+}
+
+.sys-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.sys-policy-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sys-policy-card .app-form-stack {
+  flex: 1;
+}
+
+.sys-policy-card .sys-card-actions {
+  margin-top: auto;
+}
+
+.sys-policy-card-wide {
+  grid-column: 1 / -1;
+}
+
+.sys-policy-desc {
+  margin: 0;
+  color: var(--t-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.sys-switch-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sys-control-hint {
+  margin: 0;
+  color: var(--t-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sys-field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sys-source-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sys-source-key {
+  color: var(--t-muted);
+  font-size: 12px;
+}
+
+.sys-fieldset {
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-hover);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sys-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--t-base);
+}
+
+.sys-quota-fields,
+.sys-schedule-fields,
+.sys-schedule-switches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.sys-radio-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sys-radio-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-block-size: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  cursor: pointer;
+}
+
+.sys-radio-option input[type='radio'] {
+  margin-top: 3px;
+  flex: none;
+  accent-color: var(--primary);
+}
+
+.sys-radio-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sys-radio-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--t-base);
+}
+
+.sys-radio-detail {
+  font-size: 12px;
+  color: var(--t-muted);
+}
+
+.sys-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.sys-card-actions .app-deny-note {
+  white-space: normal;
+}
+
+/* vendor 没有通用的 `.btn:disabled` 规则：禁用动作必须看得出来。
+   透明度与光标照 app.css 既有补丁的 0.45 档，不引新令牌。 */
+.sys-card-actions .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 触达口径照队列页：动作按钮视觉高度 34，::before 补 ±5 ⇒ 触控 44。
+   禁用态去掉热区扩展，与 queue.css 的 `:disabled::before` 处理一致。 */
+.sys-card-actions .btn {
+  position: relative;
+  min-block-size: 34px;
+}
+
+.sys-card-actions .btn::before {
+  content: "";
+  position: absolute;
+  inset: -5px 0;
+}
+
+.sys-card-actions .btn:disabled::before {
+  content: none;
+}
+
+@media (pointer: coarse) {
+  .sys-card-actions .btn {
+    min-block-size: 44px;
+  }
+}
+
+/* 策略卡开关行：轨道视觉不变，行触控高度抬到 44（同队列页表单档）。 */
+.sys-switch-field .app-switch {
+  min-block-size: 44px;
+}
+
+.sys-status-note {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--t-muted);
+}
+
+.sys-dirty-note {
+  font-size: 12px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--warning) 55%, var(--t-base));
+}
+
+:root[data-theme="dark"] .sys-dirty-note {
+  color: var(--warning);
+}
+
+.sys-announcement-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-muted);
+}
+
+.sys-announcement-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+
+.sys-announcement-current {
+  margin: 0;
+  font-size: 14px;
+  color: var(--t-base);
+  overflow-wrap: anywhere;
+}
+
+.sys-channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sys-channel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.sys-channel-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.sys-channel-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sys-channel-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--t-base);
+}
+
+.sys-channel-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sys-modal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* 名册分区：组→键→值/来源三列网格；键与值允许任意折行，窄屏堆叠为单列。 */
+.sys-roster-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.sys-roster-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sys-roster-group-title {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--t-base);
+}
+
+.sys-roster-group-count {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--t-muted);
+}
+
+.sys-roster-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sys-roster-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-card);
+  min-width: 0;
+}
+
+.sys-roster-key {
+  font-size: 12.5px;
+  color: var(--t-base);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.sys-roster-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--t-muted);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.sys-roster-mask {
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--t-base);
+}
+
+/* 版本与自检分区：标签/值/注三行式；注释列跟随值列。 */
+.sys-version-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sys-version-row {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 4px 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-soft);
+  min-width: 0;
+}
+
+.sys-version-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.sys-version-label {
+  font-size: 12.5px;
+  color: var(--t-muted);
+}
+
+.sys-version-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--t-base);
+  overflow-wrap: anywhere;
+}
+
+.sys-version-note {
+  grid-column: 2;
+  font-size: 12px;
+  color: var(--t-muted);
+  overflow-wrap: anywhere;
+}
+
+.sys-version-check {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .sys-policy-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .sys-quota-fields,
+  .sys-schedule-fields,
+  .sys-schedule-switches,
+  .sys-radio-group {
+    grid-template-columns: 1fr;
+  }
+
+  .sys-roster-item,
+  .sys-version-row {
+    grid-template-columns: 1fr;
+  }
+
+  .sys-version-note,
+  .sys-version-check {
+    grid-column: 1;
+  }
+}

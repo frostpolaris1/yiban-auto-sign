@@ -8,9 +8,10 @@ import {
   SUGGESTION_LABELS,
   SUGGESTION_TONES,
   STATE_LABELS,
+  capacityMeter,
   capacityOptions,
   capacitySourceTone,
-  pendingAccountCard,
+  enginePulse,
   signCounts,
   signKpiCards,
   stateLabel,
@@ -18,7 +19,7 @@ import {
   todayStats,
   windowCounts,
 } from '../../src/features/dashboard/display.ts'
-import { SOURCE_LABELS, sourceTone } from '../../src/features/schedule/display.ts'
+import { SOURCE_LABELS, sourceTone } from '../../src/features/system/plans/display.ts'
 
 /**
  * 看板纯逻辑的不变式。
@@ -222,57 +223,44 @@ test('the business day for the stats key rolls over at Shanghai midnight', () =>
   assert.equal(dayOf(new Date('2026-11-03T16:00:00Z')), '2026-11-04', '+08:00 的 00:00')
 })
 
-test('the manager KPI cards carry today numbers and an em dash without data', () => {
+test('the manager KPI cards order active before pending review and carry rate pill on today success', () => {
   const stats = todayStats(
     statsWithDays([
       { day: '2026-10-27', pending: 0, running: 0, success: 4, failed: 4, skipped: 0 },
       { day: '2026-10-28', pending: 1, running: 1, success: 5, failed: 2, skipped: 0 },
     ]),
   )
-  const cards = todayKpiCards(stats)
+  const cards = todayKpiCards(stats, { pending: 3, rejected: 2 })
   assert.equal(cards.length, 4)
   assert.deepEqual(
     cards.map((card) => card.label),
-    ['今日成功', '今日失败', '今日成功率', '进行中/待签'],
+    ['今日成功', '今日失败', '进行中/待签', '待处理账号'],
   )
   assert.deepEqual(
     cards.map((card) => card.value),
-    [5, 2, 71.4, 2],
+    [5, 2, 2, 5],
   )
-  assert.equal(cards[2].pill, stats.pill)
-  assert.equal(cards[0].pill, undefined, 'only the rate card carries a pill')
+  assert.equal(cards[1].href, '/logs?tab=events&state=failed')
+  assert.equal(cards[1].note, '失败原因与重试 →')
+  assert.equal(cards[2].href, '/logs?tab=events')
+  assert.equal(cards[3].href, '/accounts')
+  assert.equal(cards[3].note, '待审核 3 · 已拒绝 2 →')
 
-  const blank = todayKpiCards(null)
+  const zeroFailed = todayKpiCards({ ...stats, failed: 0 }, { pending: 0, rejected: 0 })
+  assert.equal(zeroFailed[1].href, '/logs?tab=events')
+  assert.equal(zeroFailed[1].note, '全员正常 · 查看运行 →')
+  assert.equal(zeroFailed[3].value, 0)
+
+  const blank = todayKpiCards(null, null)
   assert.deepEqual(
     blank.map((card) => card.value),
     [null, null, null, null],
     'no data means no invented numbers',
   )
-  assert.deepEqual(
-    blank.map((card) => card.pill ?? null),
-    [null, null, null, null],
-  )
+  assert.equal(blank[1].note, '等待读取')
+  assert.equal(blank[3].note, '等待读取')
 })
 
-test('the pending-accounts card sums the summary and never invents a number', () => {
-  const card = pendingAccountCard({ pending: 3, rejected: 2 })
-  assert.equal(card.label, '待处理账号')
-  assert.equal(card.value, 5, 'pending + rejected is the workload')
-  assert.equal(card.note, '待审核 3 · 已拒绝 2')
-  assert.equal(card.href, '/accounts', 'the whole card links to the accounts page')
-
-  // 全零是合法数据：显 0，不是「—」。
-  const zero = pendingAccountCard({ pending: 0, rejected: 0 })
-  assert.equal(zero.value, 0)
-  assert.equal(zero.note, '待审核 0 · 已拒绝 0')
-
-  // 汇总未到或失败都是 null：显「—」，不编 0。
-  for (const missing of [null, undefined]) {
-    const dash = pendingAccountCard(missing)
-    assert.equal(dash.value, null)
-    assert.equal(dash.note, '等待读取')
-  }
-})
 
 test('every contract state has a label and null means no task', () => {
   assert.deepEqual(Object.keys(STATE_LABELS).sort(), [
@@ -341,10 +329,9 @@ test('the capacity card names window sources exactly like the schedule page', ()
   }
 })
 
-// ---------- 看板三图的纯逻辑 ----------
+// ---------- 看板双图的纯逻辑 ----------
 
 import {
-  distributionConfig,
   prefConfig,
   prefSummary,
   trendConfig,
@@ -420,17 +407,70 @@ test('the trend chart keeps three main series and adds in-flight states only whe
   )
 })
 
-test('the distribution chart drops zero buckets and refuses an all-zero window', () => {
-  assert.equal(
-    distributionConfig(
-      { ...statsReport(), by_status: { pending: 0, running: 0, success: 0, failed: 0, skipped: 0 } },
-      CHART_PALETTE,
-    ),
-    null,
-  )
-  const config = distributionConfig(statsReport(), CHART_PALETTE)
-  assert.deepEqual(config.data.labels, ['成功', '失败', '跳过', '待签'])
-  assert.deepEqual(config.data.datasets[0].data, [3, 1, 1, 1])
+test('enginePulse derives running, paused, idle and missing states without inventing counts', () => {
+  assert.deepEqual(enginePulse(null), {
+    state: 'loading',
+    tone: 'info',
+    label: '等待读取',
+    inflight: null,
+    dueNow: null,
+    retryingText: '—',
+    lastTickClock: null,
+  })
+  const base = {
+    inflight: [{ account_id: 'a1' }, { account_id: 'a2' }],
+    due_now: 3,
+    today_success: 10,
+    today_failed: 1,
+    retrying: [{ task_id: 't1' }],
+    retrying_truncated: false,
+    paused: false,
+    last_claim_at: '2026-10-28T08:31:00+08:00',
+    last_tick_at: '2026-10-28T08:32:00+08:00',
+    worker_started_at: '2026-10-28T06:00:00+08:00',
+  }
+  assert.deepEqual(enginePulse(base), {
+    state: 'running',
+    tone: 'success',
+    label: '引擎运行中',
+    inflight: 2,
+    dueNow: 3,
+    retryingText: '1',
+    lastTickClock: '08:32',
+  })
+  assert.equal(enginePulse({ ...base, paused: true }).state, 'paused')
+  assert.equal(enginePulse({ ...base, paused: true }).tone, 'warning')
+  assert.equal(enginePulse({ ...base, paused: true }).label, '引擎已暂停')
+  assert.equal(enginePulse({ ...base, worker_started_at: null }).state, 'unstarted')
+  assert.equal(enginePulse({ ...base, worker_started_at: null }).label, '循环未启动')
+  assert.equal(enginePulse({ ...base, retrying_truncated: true }).retryingText, '1+')
+})
+
+test('capacityMeter computes utilization safely including zero-capacity edge cases', () => {
+  assert.deepEqual(capacityMeter({ capacity: 40, demand: 12, shortfall: 0 }), {
+    percent: 30,
+    fillWidth: 30,
+    tone: 'success',
+    statusText: '负载 30%（余量 28）',
+  })
+  assert.deepEqual(capacityMeter({ capacity: 20, demand: 26, shortfall: 6 }), {
+    percent: 130,
+    fillWidth: 100,
+    tone: 'danger',
+    statusText: '超载 130%（缺口 6）',
+  })
+  assert.deepEqual(capacityMeter({ capacity: 0, demand: 5, shortfall: 5 }), {
+    percent: 100,
+    fillWidth: 100,
+    tone: 'danger',
+    statusText: '超载（缺口 5）',
+  })
+  assert.deepEqual(capacityMeter({ capacity: 0, demand: 0, shortfall: 0 }), {
+    percent: 0,
+    fillWidth: 0,
+    tone: 'info',
+    statusText: '空载 0%',
+  })
 })
 
 test('the preference chart pairs counts with per-slice capacity', () => {
@@ -448,8 +488,10 @@ test('the preference chart pairs counts with per-slice capacity', () => {
   }
   const config = prefConfig(report, CHART_PALETTE)
   assert.deepEqual(config.data.labels, ['08:30', '08:35'])
-  assert.equal(config.data.datasets.length, 2)
-  assert.deepEqual(config.data.datasets[1].data, [5, 5])
+  // 容量阈值改由插件横贯绘图区绘制：数据只留自选人数一条。
+  assert.equal(config.data.datasets.length, 1)
+  assert.deepEqual(config.data.datasets[0].data, [2, 0])
+  assert.equal(config.plugins?.[0]?.id, 'prefCapacityLine')
   assert.deepEqual(prefSummary(report), { users: 2, hottest: { label: '08:30', count: 2 } })
 })
 

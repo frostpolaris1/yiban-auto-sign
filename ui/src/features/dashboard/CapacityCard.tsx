@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 容量体检卡：任务选择器、容量／需求／缺口三个指标，来源与窗口起止。
+ * 容量体检卡：任务选择器、负载进度条、容量／需求／缺口三指标、来源与窗口起止。
  *
  * **归属**
  * `features/dashboard` 展示层：数据与回调由 `DashboardView` 给。
@@ -26,13 +26,14 @@ import { AnimatedNumber } from '@/components/ui/AnimatedNumber'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
-import { SelectInput } from '@/components/ui/Input'
+import { Select } from '@/components/ui/Select'
 import { notifySuccess } from '@/components/ui/toast'
 import type { CapacityReport } from '@/lib/api/schedule'
 import { formatClock } from '@/lib/format'
 import {
   EMPTY_WINDOW_TEXT,
   type CapacityOption,
+  capacityMeter,
   capacitySourceLabel,
   capacitySourceTone,
   type WindowCounts,
@@ -123,12 +124,20 @@ export function CapacityCard({
   onRetryWindows,
   onRetryCapacity,
 }: CapacityCardProps) {
+  const meter = report ? capacityMeter(report) : null
+
   return (
     <Card
-      className="col-12"
+      className="col-6"
       eyebrow="Capacity"
       title="容量体检"
-      action={<span className="app-caption">缺省读当日窗口缓存</span>}
+      action={
+        counts !== null ? (
+          <span className="app-caption">
+            可用窗口 {counts.usable} / {counts.total}
+          </span>
+        ) : null
+      }
     >
       {windowsError !== null ? (
         <div className="app-alert-block">
@@ -146,14 +155,25 @@ export function CapacityCard({
       ) : (
         <>
           <div className="app-schedule-toolbar">
-            <SelectInput
+            <Select
               id="capacity-task"
               label="任务"
               options={options.map((option) => ({ value: option.value, label: option.label }))}
               value={selectedValue}
               disabled={capacityLoading}
-              onChange={(event) => onSelect(event.target.value)}
+              onChange={onSelect}
             />
+            {report ? (
+              <div className="app-capacity-window-chip">
+                <Badge tone={capacitySourceTone(report.source)}>
+                  {capacitySourceLabel(report.source)}
+                </Badge>
+                <span className="app-caption">
+                  窗口 {formatClock(report.window_start)}–{formatClock(report.window_end)} · 业务日{' '}
+                  {report.day}
+                </span>
+              </div>
+            ) : null}
           </div>
 
           {capacityError !== null ? (
@@ -184,26 +204,39 @@ export function CapacityCard({
                 </div>
                 <div className="app-metric">
                   <div className="app-metric-label">缺口</div>
-                  <div className="app-metric-value">
-                    <Badge tone={report.shortfall > 0 ? 'danger' : 'success'}>
-                      <AnimatedNumber value={report.shortfall} />
-                    </Badge>
+                  <div
+                    className={
+                      report.shortfall > 0
+                        ? 'app-metric-value is-danger'
+                        : 'app-metric-value is-success'
+                    }
+                  >
+                    <AnimatedNumber value={report.shortfall} />
                   </div>
                 </div>
               </div>
+
+              {meter ? (
+                <div className="app-capacity-meter" aria-label="容量负载比">
+                  <div className="app-capacity-meter-head">
+                    <span className="app-caption">需求 / 容量水位</span>
+                    <span className={`app-capacity-meter-status t-${meter.tone}`}>
+                      {meter.statusText}
+                    </span>
+                  </div>
+                  <div className="progress">
+                    <div
+                      className={`app-capacity-meter-fill t-${meter.tone}`}
+                      style={{ width: `${meter.fillWidth}%` }}
+                    />
+                  </div>
+                </div>
+              ) : null}
 
               <CapacityHint
                 key={`${report.task_id}:${report.suggested_workers ?? 0}:${report.shortfall}`}
                 report={report}
               />
-
-              <p className="app-muted app-capacity-meta">
-                <Badge tone={capacitySourceTone(report.source)}>
-                  {capacitySourceLabel(report.source)}
-                </Badge>{' '}
-                窗口 {formatClock(report.window_start)}–{formatClock(report.window_end)} · 业务日{' '}
-                {report.day}
-              </p>
             </>
           )}
         </>

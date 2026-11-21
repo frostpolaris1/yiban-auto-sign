@@ -13,6 +13,16 @@ import {
   changePasswordFieldError,
   validateChangePassword,
 } from '../../src/features/settings/change-password.ts'
+import {
+  NOTIFY_NETWORK_ERROR,
+  NOTIFY_SAVED_TOAST,
+  buildNotifyMatrix,
+  buildNotifyUpdateBody,
+  notifyCategoryMeta,
+  notifyChannelLabel,
+  notifyReadErrorMessage,
+  notifySaveErrorMessage,
+} from '../../src/features/settings/notify-prefs.ts'
 
 /**
  * 账号设置页的纯逻辑不变式。
@@ -93,20 +103,20 @@ test('a reused password conflict becomes a field error on the new field', () => 
   assert.deepEqual(fieldError, { field: 'next', message: '新密码不能与当前密码相同' })
 })
 
-test('every other failure has no field target and keeps the envelope', () => {
+test('every other failure has no field target and maps raw errors to Chinese copy', () => {
   const validation = new ApiError(400, {
     code: 'validation_failed',
     message: 'new_password is required',
   })
   assert.equal(changePasswordFieldError(validation), null)
-  assert.equal(changePasswordErrorMessage(validation), 'validation_failed · new_password is required')
+  assert.equal(changePasswordErrorMessage(validation), '请求参数不符合要求，请核对后重试')
 
   const oversized = new ApiError(413, {
     code: 'validation_failed',
     message: 'request body too large',
   })
   assert.equal(changePasswordFieldError(oversized), null)
-  assert.equal(changePasswordErrorMessage(oversized), 'validation_failed · request body too large')
+  assert.equal(changePasswordErrorMessage(oversized), '提交内容超出大小限制，请精简后重试')
 })
 
 test('a transport failure becomes one fixed network message', () => {
@@ -132,4 +142,63 @@ test('a change-password 401 is not classified as a session expiry by path alone'
   assert.equal(isSessionExpiry('/api/auth/login'), false)
   assert.equal(isSessionExpiry('/api/auth/me'), false)
   assert.equal(isSessionExpiry('/api/accounts'), true)
+})
+
+test('notify matrix preserves contract category and channel order from GET items', () => {
+  const sample = [
+    { category: 'credential_invalid', channel: 'in_app', enabled: true },
+    { category: 'credential_invalid', channel: 'email', enabled: false },
+    { category: 'credential_invalid', channel: 'webhook', enabled: true },
+    { category: 'review_pending', channel: 'in_app', enabled: true },
+    { category: 'review_pending', channel: 'email', enabled: true },
+    { category: 'review_pending', channel: 'webhook', enabled: false },
+  ]
+  const matrix = buildNotifyMatrix(sample)
+  assert.deepEqual(
+    matrix.channels.map((ch) => ch.id),
+    ['in_app', 'email', 'webhook'],
+  )
+  assert.deepEqual(
+    matrix.rows.map((row) => row.category),
+    ['credential_invalid', 'review_pending'],
+  )
+  assert.equal(matrix.rows[0].label, '凭据失效')
+  assert.equal(matrix.rows[0].cells.email, false)
+  assert.equal(matrix.rows[1].cells.webhook, false)
+  assert.deepEqual(buildNotifyMatrix([]), { channels: [], rows: [] })
+})
+
+test('notify metadata falls back to raw ids for unknown contract categories or channels', () => {
+  assert.equal(notifyChannelLabel('in_app'), '站内信')
+  assert.equal(notifyChannelLabel('email'), '邮件')
+  assert.equal(notifyChannelLabel('webhook'), 'Webhook')
+  assert.equal(notifyChannelLabel('sms_future'), 'sms_future')
+  assert.deepEqual(notifyCategoryMeta('future_event'), { label: 'future_event', description: '' })
+})
+
+test('notify update body flips only the target cell without mutating input', () => {
+  const original = [
+    { category: 'credential_invalid', channel: 'in_app', enabled: true },
+    { category: 'credential_invalid', channel: 'email', enabled: false },
+    { category: 'credential_invalid', channel: 'webhook', enabled: true },
+  ]
+  const snapshot = original.map((item) => ({ ...item }))
+  const body = buildNotifyUpdateBody(original, 'credential_invalid', 'email', true)
+  assert.deepEqual(original, snapshot)
+  assert.deepEqual(body, {
+    items: [
+      { category: 'credential_invalid', channel: 'in_app', enabled: true },
+      { category: 'credential_invalid', channel: 'email', enabled: true },
+      { category: 'credential_invalid', channel: 'webhook', enabled: true },
+    ],
+  })
+  assert.equal(NOTIFY_SAVED_TOAST, '通知订阅已保存')
+})
+
+test('notify error formatting distinguishes API envelopes from network failures', () => {
+  const apiErr = new ApiError(400, { code: 'validation_failed', message: 'bad pair' })
+  assert.equal(notifySaveErrorMessage(apiErr), '请求参数不符合要求，请核对后重试')
+  assert.equal(notifyReadErrorMessage(apiErr), '请求参数不符合要求，请核对后重试')
+  assert.equal(notifySaveErrorMessage(new TypeError('Failed to fetch')), NOTIFY_NETWORK_ERROR)
+  assert.equal(NOTIFY_NETWORK_ERROR, '网络异常，请稍后重试')
 })

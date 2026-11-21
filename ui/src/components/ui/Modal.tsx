@@ -37,6 +37,9 @@ type ModalProps = {
    * 短弹窗不要开，保持既有布局逐像素不变。
    */
   scrollBody?: boolean
+  /** 退场过渡期标记：用于触发关闭动画后再卸载。 */
+  closing?: boolean
+  className?: string
 }
 
 /**
@@ -55,6 +58,8 @@ export function Modal({
   returnFocusTo,
   layer,
   scrollBody,
+  closing,
+  className,
 }: ModalProps) {
   // 叠层时两份弹窗同时在场。固定 id 会重复，故每个实例各取一个。
   const descriptionId = useId()
@@ -66,10 +71,12 @@ export function Modal({
       <Dialog.Portal>
         <Dialog.Overlay
           className="app-modal-backdrop"
+          data-closing={closing ? 'true' : undefined}
           style={{ zIndex: contentZ - 10 }}
         />
         <Dialog.Content
-          className={cx('modal-demo app-modal', scrollBody && 'app-modal-scroll')}
+          className={cx('modal-demo app-modal', scrollBody && 'app-modal-scroll', className)}
+          data-closing={closing ? 'true' : undefined}
           style={{ zIndex: contentZ }}
           aria-describedby={description ? descriptionId : undefined}
           onCloseAutoFocus={(event) => {

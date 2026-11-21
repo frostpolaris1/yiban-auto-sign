@@ -14,7 +14,7 @@
 import type { ReactNode } from 'react'
 import { BrandMark } from '@/components/ui/BrandMark'
 import { Icon } from '@/components/ui/Icon'
-import { useTheme } from '@/lib/theme'
+import { originFromEvent, useTheme } from '@/lib/theme'
 import { APP_VERSION } from '@/lib/version'
 import { AuthAside } from './AuthAside'
 
@@ -39,7 +39,7 @@ function AuthTopBar() {
         className="app-theme-toggle"
         aria-label={`切换到${nextTheme}主题`}
         title={`切换到${nextTheme}主题`}
-        onClick={toggleTheme}
+        onClick={(event) => toggleTheme(originFromEvent(event))}
       >
         <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
       </button>

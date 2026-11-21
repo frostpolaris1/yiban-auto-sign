@@ -60,6 +60,8 @@ logs/
 # 缺此行的后果：审查清单漏 13 个 logs 源码文件，审查假绿。
 # 该行与上一行并存；git 本身两行都认，ocr 只认这一行。
 !frontend/src/logs/**
+!ui/src/features/logs/
+!ui/src/features/logs/**
 data/
 # 裸机演练（scripts/drill-baremetal.sh）在演练树根生成的运行件
 /.venv-bare/

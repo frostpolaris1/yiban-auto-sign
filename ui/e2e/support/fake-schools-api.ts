@@ -1,7 +1,14 @@
 import type { Page, Route } from '@playwright/test'
 import type { AccountSummary } from '../../src/lib/api/account'
 import type { School, SchoolAdmin } from '../../src/lib/api/school'
-import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import type { User } from '../../src/lib/api/user'
+import {
+  EMPTY_ACCOUNT_SUMMARY,
+  SESSION_CSRF,
+  SESSION_EMAIL,
+  SESSION_PASSWORD,
+  type Role,
+} from './fake-accounts-api'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
 
 /**
@@ -60,6 +67,53 @@ export const ADMINS: SchoolAdmin[] = [
   },
 ]
 
+/**
+ * C7 选择器的候选用户：学校页的候选来自整体用户列表里 role=admin/master 的行。
+ * 邮箱是保留域 `example.com`；首字符不同，掩码可区分（a*** / m***）。
+ * 按最近登录排序时 admin-candidate 在 master-candidate 之前。
+ */
+export const CANDIDATE_USERS: User[] = [
+  {
+    id: 'user-9',
+    email: 'admin-candidate@example.com',
+    role: 'admin',
+    status: 'active',
+    must_change_password: false,
+    account_count: 0,
+    pending_count: 0,
+    review_count: 0,
+    created_at: '2026-06-01T00:00:00Z',
+    last_login_at: '2026-10-20T09:00:00Z',
+    deleted_at: null,
+  },
+  {
+    id: 'user-8',
+    email: 'master-candidate@example.com',
+    role: 'master',
+    status: 'active',
+    must_change_password: false,
+    account_count: 0,
+    pending_count: 0,
+    review_count: 0,
+    created_at: '2026-06-02T00:00:00Z',
+    last_login_at: '2026-09-01T09:00:00Z',
+    deleted_at: null,
+  },
+  {
+    id: 'user-7',
+    email: 'plain-member@example.com',
+    role: 'user',
+    status: 'active',
+    must_change_password: false,
+    account_count: 0,
+    pending_count: 0,
+    review_count: 0,
+    created_at: '2026-06-03T00:00:00Z',
+    last_login_at: null,
+    deleted_at: null,
+  },
+]
+
 export type MockSchoolsOptions = {
   role: Role | null
   schools?: School[]
@@ -71,6 +125,8 @@ export type MockSchoolsOptions = {
   adminNextCursors?: Record<string, Record<string, string>>
   listError?: { status: number; code: string; message: string }
   createError?: { status: number; code: string; message: string }
+  /** 二次口令连续失败：绑定/解绑都回 429。 */
+  reauthThrottled?: boolean
   /** 壳摘要读数。学校页自身不查 summary，缺省零计数。 */
   accountSummary?: AccountSummary
   /** 照片夹具。缺省为一份含 school-alpha 缺省图的合成库。 */
@@ -86,6 +142,12 @@ function errorBody(code: string, message: string) {
   return JSON.stringify({
     error: { code, message, details: { source: 'fake-schools-api' }, trace_id: 'trace-test' },
   })
+}
+
+function maskEmail(email: string): string {
+  const at = email.indexOf('@')
+  if (at <= 0) return email
+  return `${email.slice(0, 1)}***${email.slice(at)}`
 }
 
 export async function mockSchoolsApi(
@@ -120,6 +182,24 @@ export async function mockSchoolsApi(
 
   const fail = (route: Route, status: number, code: string, message: string) =>
     route.fulfill({ status, contentType: 'application/json', body: errorBody(code, message) })
+
+  /** 危险写的二次口令校验：缺值 400、口令错 403、注入节流 429。 */
+  const reauthRejected = (route: Route, body: unknown): boolean => {
+    if (options.reauthThrottled) {
+      void fail(route, 429, 'rate_limited', '尝试过多，请稍后再试')
+      return true
+    }
+    const provided = (body as { current_password?: unknown } | null)?.current_password
+    if (typeof provided !== 'string' || provided === '') {
+      void fail(route, 400, 'validation_failed', 'current_password is required')
+      return true
+    }
+    if (provided !== SESSION_PASSWORD) {
+      void fail(route, 403, 'forbidden', 'current_password is incorrect')
+      return true
+    }
+    return false
+  }
 
   const requireManager = async (route: Route): Promise<boolean> => {
     if (sessionRole === 'master' || sessionRole === 'admin') return true
@@ -171,6 +251,32 @@ export async function mockSchoolsApi(
     if (url.pathname === '/api/accounts/summary' && request.method() === 'GET') {
       // 壳在每页为 master/admin 读一次；学校页不额外读取。
       return json(route, options.accountSummary ?? EMPTY_ACCOUNT_SUMMARY)
+    }
+
+    // C7 候选：整体用户列表按角色取 admin/master；学校页只读不写。
+    if (url.pathname === '/api/users' && request.method() === 'GET') {
+      if (!(await requireMaster(route))) return
+      const role = url.searchParams.get('role') ?? ''
+      const items = CANDIDATE_USERS.filter((user) => role === '' || user.role === role)
+      return json(route, {
+        items,
+        next_cursor: '',
+        counts: { pending: 0, normal: items.length, vacant: 0, deleted: 0 },
+      })
+    }
+
+    // C7 检索：只回 id、掩码邮箱与状态。
+    if (url.pathname === '/api/users/lookup' && request.method() === 'GET') {
+      if (!(await requireManager(route))) return
+      const q = (url.searchParams.get('q') ?? '').toLowerCase()
+      const items = CANDIDATE_USERS.filter((user) => user.email.startsWith(q))
+        .slice(0, Number(url.searchParams.get('limit') ?? 20))
+        .map((user) => ({
+          id: user.id,
+          email_masked: maskEmail(user.email),
+          status: user.status,
+        }))
+      return json(route, { items })
     }
 
     if (url.pathname === '/api/schools' && request.method() === 'GET') {
@@ -239,13 +345,15 @@ export async function mockSchoolsApi(
       }
       if (request.method() === 'POST') {
         if (!(await requireMaster(route))) return
+        if (reauthRejected(route, body)) return
         const payload = (body ?? {}) as { user_id?: string }
         const userId = (payload.user_id ?? '').trim()
         if (userId === '') return fail(route, 400, 'validation_error', 'user_id 必填')
+        const candidate = CANDIDATE_USERS.find((user) => user.id === userId)
         const created: SchoolAdmin = {
           user_id: userId,
-          email: `${userId}@example.com`,
-          role: 'admin',
+          email: candidate?.email ?? `${userId}@example.com`,
+          role: candidate?.role ?? 'admin',
           granted_by: 'user-1',
           created_at: '2026-10-28T10:30:00Z',
         }
@@ -257,6 +365,7 @@ export async function mockSchoolsApi(
     const member = url.pathname.match(/^\/api\/schools\/([^/]+)\/admins\/([^/]+)$/)
     if (member && request.method() === 'DELETE') {
       if (!(await requireMaster(route))) return
+      if (reauthRejected(route, body)) return
       const [, schoolId, userId] = member
       adminsBySchool[schoolId] = (adminsBySchool[schoolId] ?? []).filter(
         (item) => item.user_id !== userId,

@@ -15,11 +15,12 @@
 
 import type { IconName } from '@/components/ui/Icon'
 import type { Role } from '@/lib/api/auth'
+import { SHOWCASE } from '@/lib/showcase-mode'
 import {
-  ENGINE_VIEW_ROLES,
   RUN_VIEW_ROLES,
   SCHOOL_VIEW_ROLES,
-  SCHEDULE_VIEW_ROLES,
+  SETTINGS_VIEW_ROLES,
+  SYSTEM_VIEW_ROLES,
   USER_VIEW_ROLES,
   roleAllowed,
 } from '../../lib/roles'
@@ -46,6 +47,12 @@ export type NavLeaf = {
   crumbs: string[]
   /** 缺省＝全体可见。给出时只对这些角色渲染。 */
   roles?: readonly Role[]
+  /** 入口合并期：这些路径也点亮本项（如 /queue 临时落到 /run）。 */
+  alsoActive?: readonly string[]
+  /** 页面未上线：渲染为不可点条目，title 说明原因。 */
+  pendingNote?: string
+  /** 仅开发或展示构建渲染，生产侧栏隐藏（路由仍保留直达）。 */
+  devOrShowcaseOnly?: boolean
 }
 
 export type NavGroup = {
@@ -53,6 +60,8 @@ export type NavGroup = {
   text: string
   icon: IconName
   children: NavLeaf[]
+  /** 仅开发或展示构建渲染，生产侧栏隐藏（路由仍保留直达）。 */
+  devOrShowcaseOnly?: boolean
 }
 
 export type NavItem = NavLeaf | NavGroup
@@ -68,21 +77,50 @@ export function isNavGroup(item: NavItem): item is NavGroup {
 
 export const NAV: NavSection[] = [
   {
-    label: '工作区',
+    label: '今日',
     items: [
       {
         key: 'dashboard',
-        text: '仪表盘',
+        text: '总览',
         to: '/',
         icon: 'dashboard',
-        crumbs: ['工作区', '仪表盘'],
+        crumbs: ['今日', '总览'],
       },
+      {
+        key: 'queue',
+        text: '待办',
+        to: '/queue',
+        icon: 'listTodo',
+        roles: RUN_VIEW_ROLES,
+        crumbs: ['今日', '待办'],
+      },
+      {
+        key: 'logs',
+        text: '签到台账',
+        to: '/logs',
+        icon: 'scrollText',
+        roles: RUN_VIEW_ROLES,
+        crumbs: ['今日', '签到台账'],
+      },
+    ],
+  },
+  {
+    label: '管理',
+    items: [
       {
         key: 'accounts',
         text: '账号',
         to: '/accounts',
         icon: 'accounts',
-        crumbs: ['工作区', '账号'],
+        crumbs: ['管理', '账号'],
+      },
+      {
+        key: 'users',
+        text: '用户',
+        to: '/users',
+        icon: 'userCog',
+        roles: USER_VIEW_ROLES,
+        crumbs: ['管理', '用户'],
       },
       {
         key: 'schools',
@@ -90,31 +128,7 @@ export const NAV: NavSection[] = [
         to: '/schools',
         icon: 'school',
         roles: SCHOOL_VIEW_ROLES,
-        crumbs: ['工作区', '学校'],
-      },
-      {
-        key: 'schedule',
-        text: '时间片',
-        to: '/schedule',
-        icon: 'calendar',
-        roles: SCHEDULE_VIEW_ROLES,
-        crumbs: ['工作区', '时间片'],
-      },
-      {
-        key: 'run',
-        text: '运行',
-        to: '/run',
-        icon: 'activity',
-        roles: RUN_VIEW_ROLES,
-        crumbs: ['工作区', '运行'],
-      },
-      {
-        key: 'engine',
-        text: '执行监控',
-        to: '/engine',
-        icon: 'gauge',
-        roles: ENGINE_VIEW_ROLES,
-        crumbs: ['工作区', '执行监控'],
+        crumbs: ['管理', '学校'],
       },
     ],
   },
@@ -122,24 +136,34 @@ export const NAV: NavSection[] = [
     label: '系统',
     items: [
       {
+        key: 'audit',
+        text: '审计日志',
+        to: '/audit',
+        icon: 'shield',
+        roles: RUN_VIEW_ROLES,
+        crumbs: ['系统', '审计日志'],
+      },
+      {
         key: 'settings',
         text: '账号设置',
         to: '/settings',
         icon: 'settings',
+        roles: SETTINGS_VIEW_ROLES,
         crumbs: ['系统', '账号设置'],
       },
       {
-        key: 'users',
-        text: '用户管理',
-        to: '/users',
-        icon: 'userCog',
-        roles: USER_VIEW_ROLES,
-        crumbs: ['系统', '用户管理'],
+        key: 'system',
+        text: '系统设置',
+        to: '/system',
+        icon: 'sliders',
+        roles: SYSTEM_VIEW_ROLES,
+        crumbs: ['系统', '系统设置'],
       },
       {
         key: 'design',
         text: '设计系统',
         icon: 'design',
+        devOrShowcaseOnly: true,
         children: [
           {
             key: 'design-gallery',
@@ -160,22 +184,39 @@ export const NAV_LEAVES: NavLeaf[] = NAV.flatMap((section) =>
   section.items.flatMap((item) => (isNavGroup(item) ? item.children : [item])),
 )
 
-function navLeafVisible(leaf: NavLeaf, role: Role | null | undefined): boolean {
+/** 设计系统导航仅在展示构建或开发模式渲染。 */
+export function isDesignNavEnabled(): boolean {
+  return SHOWCASE || Boolean(import.meta.env?.DEV)
+}
+
+function navLeafVisible(
+  leaf: NavLeaf,
+  role: Role | null | undefined,
+  includeDesign: boolean,
+): boolean {
+  if (leaf.devOrShowcaseOnly && !includeDesign) return false
   return leaf.roles === undefined || roleAllowed(role, leaf.roles)
 }
 
 /**
  * 按角色过滤后的导航。整页无权限的叶子不渲染；子项全被过滤的分组一起消失。
- * 面包屑仍用 `NAV_LEAVES`：直接访问无权限页时标题与面包屑照常可解析。
+ * 面包屑仍用 `NAV_LEAVES`：直接访问无权限页或直达 `/design` 时标题与面包屑照常可解析。
  */
-export function visibleNav(role: Role | null | undefined): NavSection[] {
+export function visibleNav(
+  role: Role | null | undefined,
+  options?: { includeDesign?: boolean },
+): NavSection[] {
+  const includeDesign = options?.includeDesign ?? isDesignNavEnabled()
   return NAV.flatMap((section): NavSection[] => {
     const items = section.items.flatMap((item): NavItem[] => {
       if (isNavGroup(item)) {
-        const children = item.children.filter((child) => navLeafVisible(child, role))
+        if (item.devOrShowcaseOnly && !includeDesign) return []
+        const children = item.children.filter((child) =>
+          navLeafVisible(child, role, includeDesign),
+        )
         return children.length > 0 ? [{ ...item, children }] : []
       }
-      return navLeafVisible(item, role) ? [item] : []
+      return navLeafVisible(item, role, includeDesign) ? [item] : []
     })
     return items.length > 0 ? [{ ...section, items }] : []
   })
@@ -183,10 +224,11 @@ export function visibleNav(role: Role | null | undefined): NavSection[] {
 
 export function crumbsFor(pathname: string): string[] {
   const leaf = NAV_LEAVES.find((item) => item.to === pathname)
-  return leaf?.crumbs ?? ['工作区', '未命名页面']
+  return leaf?.crumbs ?? ['系统', '未命名页面']
 }
 
 export function documentTitleFor(pathname: string): string {
   const leaf = NAV_LEAVES.find((item) => item.to === pathname)
-  return leaf ? `${leaf.text} · 易班自动签到` : '易班自动签到'
+  const title = leaf?.text
+  return title ? `${title} · 易班自动签到` : '易班自动签到'
 }

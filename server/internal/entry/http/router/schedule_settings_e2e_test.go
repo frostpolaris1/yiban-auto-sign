@@ -345,9 +345,14 @@ func TestScheduleSettingsHotGateEndToEnd(t *testing.T) {
 		t.Fatalf("被拒写落了覆盖行: %v", store.boolRows)
 	}
 
-	// 开闸：DB 行 true 覆盖 env（env 未设为 false），下一次请求立即生效。
+	// 开闸：DB 行 true 覆盖 env（env 未设为 false），下一次请求立即生效；
+	// GET /api/admin/schedule-settings 同步回显 db 覆盖（allow_time_pref=true, source=db）。
 	if rec := putSchedule(`{"allow_time_pref":true}`, master.CSRFToken, &master); rec.Code != http.StatusOK {
 		t.Fatalf("open gate = %d: %s", rec.Code, rec.Body.String())
+	}
+	getRec := serve(engine, requestWithSession(http.MethodGet, "/api/admin/schedule-settings", "", "", &master))
+	if getRec.Code != http.StatusOK || !strings.Contains(getRec.Body.String(), `"allow_time_pref":{"source":"db","value":true}`) {
+		t.Fatalf("get schedule-settings = %d: %s", getRec.Code, getRec.Body.String())
 	}
 	rec := serve(engine, requestWithSession(http.MethodGet, "/api/me/time-pref", "", "", &user))
 	if rec.Code != http.StatusOK {

@@ -29,6 +29,10 @@ export type AccountLocation = Schemas['AccountLocation']
 export type AccountLocationUpdate = Schemas['AccountLocationUpdate']
 export type AccountDevice = Schemas['AccountDevice']
 export type AccountCreateBody = Schemas['AccountCreate']
+export type AccountBatchAction = Schemas['AccountBatchAction']
+export type AccountBatchRequest = Schemas['AccountBatchRequest']
+export type AccountBatchItem = Schemas['AccountBatchItem']
+export type AccountBatchResult = Schemas['AccountBatchResult']
 
 /** 查询串视图。字段直接取契约生成的 `AccountList` 参数，不另写一份。 */
 export type AccountQuery = NonNullable<operations['AccountList']['parameters']['query']>
@@ -45,6 +49,7 @@ export const ACCOUNT_PATHS = {
   location: (id: string) => `/api/accounts/${encodeURIComponent(id)}/location`,
   deviceRefresh: (id: string) => `/api/accounts/${encodeURIComponent(id)}/device-refresh`,
   restore: (id: string) => `/api/accounts/${encodeURIComponent(id)}/restore`,
+  batch: '/api/accounts/batch',
 } as const
 
 /**
@@ -121,9 +126,12 @@ export function setAccountLocation(
   })
 }
 
-/** 204 软删除。成功后无响应体。 */
-export function deleteAccount(id: string): Promise<void> {
-  return apiRequest<void>(ACCOUNT_PATHS.detail(id), { method: 'DELETE' })
+/** 204 软删除。二次口令随 DELETE 请求体发送。 */
+export function deleteAccount(id: string, currentPassword: string): Promise<void> {
+  return apiRequest<void>(ACCOUNT_PATHS.detail(id), {
+    method: 'DELETE',
+    body: JSON.stringify({ current_password: currentPassword }),
+  })
 }
 
 /** 建号。`owner_user_id` 只给 master/admin；指定属主必须是活跃用户。 */
@@ -135,14 +143,32 @@ export function createAccount(body: AccountCreateBody): Promise<Account> {
 }
 
 /** 恢复软删账号。只归 master/admin；行保持删除前状态。 */
-export function restoreAccount(id: string): Promise<Account> {
-  return apiRequest<Account>(ACCOUNT_PATHS.restore(id), { method: 'POST' })
+export function restoreAccount(id: string, currentPassword: string): Promise<Account> {
+  return apiRequest<Account>(ACCOUNT_PATHS.restore(id), {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword }),
+  })
 }
 
 /**
- * 设备刷新：无请求体。响应只给掩码、机型与授权标志；
+ * 设备刷新：请求体只带二次口令。响应只给掩码、机型与授权标志；
  * 明文设备码从不出服务端。502 表示平台失败，零写库。
  */
-export function refreshDevice(id: string): Promise<AccountDevice> {
-  return apiRequest<AccountDevice>(ACCOUNT_PATHS.deviceRefresh(id), { method: 'POST' })
+export function refreshDevice(id: string, currentPassword: string): Promise<AccountDevice> {
+  return apiRequest<AccountDevice>(ACCOUNT_PATHS.deviceRefresh(id), {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword }),
+  })
+}
+
+/**
+ * 批量动作：同一动作作用于 1..10 个账号。
+ * 每项独立事务；响应逐项给 ok/error，顺序与请求 ids 一致。
+ * 二次口令在请求体里必填：缺值 400、口令错 403、连续失败 429。
+ */
+export function batchAccounts(body: AccountBatchRequest): Promise<AccountBatchResult> {
+  return apiRequest<AccountBatchResult>(ACCOUNT_PATHS.batch, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
 }

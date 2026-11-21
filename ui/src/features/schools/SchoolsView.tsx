@@ -17,12 +17,14 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/Button'
+import { Alert } from '@/components/ui/Alert'
 import { Card } from '@/components/ui/Card'
 import { DeniedCard } from '@/components/ui/DeniedCard'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { ReauthDialog } from '@/components/ui/ReauthDialog'
 import { notifySuccess } from '@/components/ui/toast'
 import type { Role } from '@/lib/api/auth'
-import { describeApiError } from '@/lib/api/client'
+import { describeApiError, describeReauthError } from '@/lib/api/client'
 import {
   addSchoolAdmin,
   createSchool,
@@ -36,7 +38,6 @@ import {
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from '@/lib/cursor'
 import { SHOWCASE, useMe } from '@/lib/session'
 import { showcaseSchools } from '@/lib/showcase'
-import { SchoolAdminRemoveModal } from './SchoolAdminRemoveModal'
 import { SchoolAdminsModal } from './SchoolAdminsModal'
 import { SchoolCreateModal } from './SchoolCreateModal'
 import { SchoolDetailDrawer } from './SchoolDetailDrawer'
@@ -122,20 +123,24 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
   })
 
   const addMutation = useMutation({
-    mutationFn: (input: { schoolId: string; userId: string }) =>
-      addSchoolAdmin(input.schoolId, { user_id: input.userId }),
+    // `label` 只用于成功文案（掩码邮箱），不进请求体、不暴露原始 userId。
+    mutationFn: (input: { schoolId: string; userId: string; password: string; label: string }) =>
+      addSchoolAdmin(input.schoolId, {
+        user_id: input.userId,
+        current_password: input.password,
+      }),
     onSuccess: (_admin, input) => {
       void queryClient.invalidateQueries({ queryKey: ['school-admins', input.schoolId] })
       setAdminsError(null)
-      notifySuccess(`已添加管理员 ${input.userId}`)
+      notifySuccess(`已添加管理员 ${input.label}`)
     },
-    onError: (error) => setAdminsError(describeApiError(error)),
+    onError: (error) => setAdminsError(describeReauthError(error)),
   })
 
   const removeMutation = useMutation({
     // `email` 只用于成功文案，不进请求体。
-    mutationFn: (input: { schoolId: string; uid: string; email: string }) =>
-      removeSchoolAdmin(input.schoolId, input.uid),
+    mutationFn: (input: { schoolId: string; uid: string; email: string; password: string }) =>
+      removeSchoolAdmin(input.schoolId, input.uid, input.password),
     onSuccess: (_result, input) => {
       void queryClient.invalidateQueries({ queryKey: ['school-admins', input.schoolId] })
       setRemoveTarget(null)
@@ -143,7 +148,7 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
       setAdminsError(null)
       notifySuccess(`已移除管理员 ${input.email}`)
     },
-    onError: (error) => setRemoveError(describeApiError(error)),
+    onError: (error) => setRemoveError(describeReauthError(error)),
   })
 
   const openDetail = (school: School, opener: HTMLElement | null) => {
@@ -188,7 +193,7 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
   return (
     <>
       <PageHeader
-        eyebrow="工作区 · 学校"
+        eyebrow="管理 · 学校"
         title={
           <>
             学校 <span className="accent">列表</span>
@@ -298,34 +303,44 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
           setRemoveTarget(null)
           setRemoveError(null)
         }}
-        onAdd={(userId) => {
+        onAdd={(userId, password, label) => {
           if (!adminsTarget) return
           setAdminsError(null)
-          addMutation.mutate({ schoolId: adminsTarget.id, userId })
+          addMutation.mutate({ schoolId: adminsTarget.id, userId, password, label })
         }}
         onRemove={openRemove}
       />
 
-      <SchoolAdminRemoveModal
-        admin={removeTarget}
+      <ReauthDialog
+        open={removeTarget !== null}
+        title="移除管理员？"
+        description={removeTarget ? `管理员 ${removeTarget.email}` : undefined}
+        confirmText="确认移除"
+        danger
         pending={removeMutation.isPending}
         error={removeError}
         returnFocusTo={removeReturnFocus}
         onClose={() => {
+          if (removeMutation.isPending) return
           removeMutation.reset()
           setRemoveTarget(null)
           setRemoveError(null)
         }}
-        onConfirm={() => {
+        onConfirm={(password) => {
           if (!adminsTarget || !removeTarget) return
           setRemoveError(null)
           removeMutation.mutate({
             schoolId: adminsTarget.id,
             uid: removeTarget.user_id,
             email: removeTarget.email,
+            password,
           })
         }}
-      />
+      >
+        <Alert tone="danger" title="解除绑定">
+          移除后该用户不再管理此学校。确认后本行从管理员列表移除。
+        </Alert>
+      </ReauthDialog>
     </>
   )
 }

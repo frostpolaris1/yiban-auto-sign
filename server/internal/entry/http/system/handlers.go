@@ -71,9 +71,10 @@ type AutoApprove interface {
 	SetAutoApprove(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, enabled bool) (bool, error)
 }
 
-// ScheduleSettings 是调度设置写回端口（sett2）。
+// ScheduleSettings 是调度设置读写端口（sett2 + 04c 读面补齐）。
 // 未注入时端点回 501：写面缺失必须显性。
 type ScheduleSettings interface {
+	ScheduleSettings(ctx context.Context, scope corescope.Scope) (appsettings.ScheduleReport, error)
 	SetSchedule(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, changes []appsettings.ScheduleChange) error
 }
 
@@ -163,6 +164,27 @@ func settingsReportResponse(report appsettings.Report) oapi.SettingsReport {
 	return oapi.SettingsReport{Groups: groups}
 }
 
+// AdminScheduleSettings 实现 GET /api/admin/schedule-settings。master/admin 可读。
+func (h *Handler) AdminScheduleSettings(c *gin.Context) {
+	session, ok := requester(c)
+	if !ok {
+		return
+	}
+	if !h.allowAdmin(c, session) {
+		return
+	}
+	if h.scheduleSettings == nil {
+		respond.NotImplemented(c.Writer, c.Request)
+		return
+	}
+	report, err := h.scheduleSettings.ScheduleSettings(c.Request.Context(), scopeOf(session.User))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, scheduleSettingsReportResponse(report))
+}
+
 // AdminScheduleSettingsSet 实现 PUT /api/admin/schedule-settings。仅 master。
 //
 // 部分补丁语义：缺字段=不动该键；显式 null=删覆盖行回 env；值=upsert。
@@ -205,6 +227,43 @@ func (h *Handler) AdminScheduleSettingsSet(c *gin.Context, _ oapi.AdminScheduleS
 		return
 	}
 	respond.JSON(c.Writer, http.StatusOK, settingsReportResponse(report))
+}
+
+func scheduleSettingsReportResponse(report appsettings.ScheduleReport) oapi.ScheduleSettingsReport {
+	return oapi.ScheduleSettingsReport{
+		EdgeFrontSec: oapi.ScheduleEdgeSetting{
+			Value:  report.EdgeFrontSec.Value,
+			Source: oapi.ScheduleSettingSource(report.EdgeFrontSec.Source),
+		},
+		EdgeBackSec: oapi.ScheduleEdgeSetting{
+			Value:  report.EdgeBackSec.Value,
+			Source: oapi.ScheduleSettingSource(report.EdgeBackSec.Source),
+		},
+		AllowTimePref: oapi.ScheduleBoolSetting{
+			Value:  report.AllowTimePref.Value,
+			Source: oapi.ScheduleSettingSource(report.AllowTimePref.Source),
+		},
+		SundaySign: oapi.ScheduleBoolSetting{
+			Value:  report.SundaySign.Value,
+			Source: oapi.ScheduleSettingSource(report.SundaySign.Source),
+		},
+		SaturdaySign: oapi.ScheduleBoolSetting{
+			Value:  report.SaturdaySign.Value,
+			Source: oapi.ScheduleSettingSource(report.SaturdaySign.Source),
+		},
+		DefaultSignStartMin: oapi.ScheduleMinuteSetting{
+			Value:  report.DefaultSignStartMin.Value,
+			Source: oapi.ScheduleSettingSource(report.DefaultSignStartMin.Source),
+		},
+		DefaultSignEndMin: oapi.ScheduleMinuteSetting{
+			Value:  report.DefaultSignEndMin.Value,
+			Source: oapi.ScheduleSettingSource(report.DefaultSignEndMin.Source),
+		},
+		SignDist: oapi.ScheduleSignDistSetting{
+			Value:  oapi.ScheduleSignDist(report.SignDist.Value),
+			Source: oapi.ScheduleSettingSource(report.SignDist.Source),
+		},
+	}
 }
 
 // scheduleFieldKind 是 PUT 字段的值类型（解码分派用）：布尔字面、整数分钟

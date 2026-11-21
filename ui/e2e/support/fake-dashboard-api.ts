@@ -1,6 +1,7 @@
 import type { Page, Route } from '@playwright/test'
 import type { AccountSummary } from '../../src/lib/api/account'
 import type { AuditStatusReport } from '../../src/lib/api/audit'
+import type { EngineSnapshot } from '../../src/lib/api/engine'
 import type { DiagnosticsItem, SignStatusItem } from '../../src/lib/api/me'
 import type {
   CapacityReport,
@@ -68,6 +69,11 @@ export type MockDashboardOptions = {
   /** 审计链巡检结论。缺省完好 128 行；断链用例覆盖 ok/empty/broken_at。 */
   auditStatus?: AuditStatusReport
   auditStatusError?: Failure
+  /** 引擎运行快照。缺省运行中（1 在飞、0 待领、1 待重试）；视觉基线使用固定时刻。 */
+  engineSnapshot?: EngineSnapshot
+  /** 公告正文；缺省空串＝无公告（横幅不渲染）。 */
+  announcementText?: string
+  engineError?: Failure
 }
 
 const SIGN_STATUS_RUN_AT = '2026-10-28T06:41:00+08:00'
@@ -160,6 +166,41 @@ export const DEFAULT_TIME_PREF: TimePref = {
 
 /** 待处理账号计数的缺省夹具：与容量/统计缺省同套合成口径。 */
 export const DEFAULT_ACCOUNT_SUMMARY: AccountSummary = { pending: 2, rejected: 1 }
+
+/** 看板引擎脉冲的缺省快照：全部时刻固定在 DASHBOARD_DAY，视觉基线零时钟漂移。 */
+export const DEFAULT_ENGINE_SNAPSHOT: EngineSnapshot = {
+  inflight: [
+    {
+      account_id: 'acc-0001',
+      account_phone_masked: '138****8001',
+      school_id: 'school-alpha',
+      school_name: '合成学校甲',
+      claimed_at: `${DASHBOARD_DAY}T08:31:00+08:00`,
+      lease_expires_at: `${DASHBOARD_DAY}T08:33:00+08:00`,
+    },
+  ],
+  due_now: 0,
+  today_success: 3,
+  today_failed: 0,
+  retrying: [
+    {
+      task_id: 'task-r1',
+      account_id: 'acc-0003',
+      account_phone_masked: '138****8003',
+      school_id: 'school-alpha',
+      school_name: '合成学校甲',
+      task_name: '每日签到',
+      attempts: 1,
+      run_at: `${DASHBOARD_DAY}T08:40:00+08:00`,
+      result: 'transient',
+    },
+  ],
+  retrying_truncated: false,
+  paused: false,
+  last_claim_at: `${DASHBOARD_DAY}T08:31:00+08:00`,
+  last_tick_at: `${DASHBOARD_DAY}T08:32:00+08:00`,
+  worker_started_at: `${DASHBOARD_DAY}T06:00:00+08:00`,
+}
 
 /** 30 天终态：固定到 DASHBOARD_DAY，视觉基线不随日历漂移。 */
 export const DEFAULT_SIGN_STATS: SignStatsReport = {
@@ -340,6 +381,7 @@ export async function mockDashboardApi(
   }))
   const timePref: TimePref = { ...(options.timePref ?? DEFAULT_TIME_PREF) }
   const auditStatus: AuditStatusReport = { ...(options.auditStatus ?? DEFAULT_AUDIT_STATUS) }
+  let engineSnapshot: EngineSnapshot = { ...(options.engineSnapshot ?? DEFAULT_ENGINE_SNAPSHOT) }
   const failures: Record<
     | 'signStatus'
     | 'diagnostics'
@@ -348,7 +390,8 @@ export async function mockDashboardApi(
     | 'signStats'
     | 'prefStats'
     | 'accountSummary'
-    | 'auditStatus',
+    | 'auditStatus'
+    | 'engine',
     FailureEntry
   > = {
     signStatus: { spec: options.signStatusError, hits: 0 },
@@ -359,6 +402,7 @@ export async function mockDashboardApi(
     prefStats: { spec: options.prefStatsError, hits: 0 },
     accountSummary: { spec: options.accountSummaryError, hits: 0 },
     auditStatus: { spec: options.auditStatusError, hits: 0 },
+    engine: { spec: options.engineError, hits: 0 },
   }
 
   const json = (route: Route, body: unknown, status = 200) =>
@@ -489,10 +533,47 @@ export async function mockDashboardApi(
       return json(route, auditStatus)
     }
 
+    if (url.pathname === '/api/admin/engine' && request.method() === 'GET') {
+      if (!(await deny(route, ['master', 'admin']))) return
+      const failure = takeFailure('engine')
+      if (failure) return fail(route, failure.status, failure.code, failure.message)
+      return json(route, engineSnapshot)
+    }
+
+    if (url.pathname === '/api/announcement' && request.method() === 'GET') {
+      const text = options.announcementText ?? ''
+      return json(route, { text, updated_at: text === '' ? null : '2026-11-19T10:00:00Z' })
+    }
+
+    if (url.pathname === '/api/admin/engine/pause' && request.method() === 'PUT') {
+      if (!(await deny(route, ['master', 'admin']))) return
+      const update = body as { paused?: boolean; current_password?: string }
+      // 方向门先于口令校验，与服务端同序。
+      if (typeof update.paused !== 'boolean') return fail(route, 400, 'validation_failed', '缺少目标状态')
+      if (update.paused === false && sessionRole !== 'master') {
+        return fail(route, 403, 'forbidden', '仅主管理员可恢复')
+      }
+      if (!update.current_password) return fail(route, 400, 'validation_failed', '缺少口令')
+      engineSnapshot = { ...engineSnapshot, paused: update.paused === true }
+      return json(route, { paused: engineSnapshot.paused })
+    }
+
     return fail(route, 404, 'not_found', '未找到资源')
   })
 
   return { calls }
+}
+
+export function pauseCalls(api: FakeDashboardApi): DashboardApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'PUT' && call.path === '/api/admin/engine/pause',
+  )
+}
+
+export function engineSnapshotCalls(api: FakeDashboardApi): DashboardApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'GET' && call.path === '/api/admin/engine',
+  )
 }
 
 export function signStatusCalls(api: FakeDashboardApi): DashboardApiCall[] {
