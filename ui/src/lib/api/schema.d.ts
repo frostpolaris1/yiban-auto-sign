@@ -2545,6 +2545,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sign-stats/failures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Report per-task-row terminal failure counts by result for one business day.
+         * @description Master and admin only. Master reads all schools; admin reads bound
+         *     schools only (an admin with no binding sees empty items and total 0).
+         *     An out-of-scope or missing school_id or task_id answers 404 (matching
+         *     account diagnostics); when both are in scope and task_id does not belong
+         *     to school_id, the request answers 400. Counts sign_tasks rows directly
+         *     rather than deduplicating by account, and includes only terminal
+         *     failed rows (state = failed) for the effective business day while
+         *     excluding soft-deleted accounts regardless of account status. Empty
+         *     result values are normalized to unknown (merged with literal unknown),
+         *     and values outside the Outcome vocabulary are returned verbatim so
+         *     vocabulary drift stays visible. An empty day returns an empty items
+         *     array and total 0.
+         */
+        get: operations["SignStatsFailures"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/time-prefs/stats": {
         parameters: {
             query?: never;
@@ -3931,6 +3962,30 @@ export interface components {
             by_status: components["schemas"]["SignStatsCounts"];
             /** @description Days in the window with no task rows. */
             days_missing: string[];
+        };
+        SignFailuresScope: {
+            /** @description Selected school filter when provided. */
+            school_id?: string;
+            /** @description Selected school task filter when provided. */
+            task_id?: string;
+        };
+        SignFailureBucket: {
+            /** @description Failure result token; empty result maps to unknown, out-of-vocabulary values stay verbatim. */
+            result: string;
+            /** @description Number of failed task rows with this result. */
+            count: number;
+        };
+        SignFailuresReport: {
+            /**
+             * Format: date
+             * @description Effective business day YYYY-MM-DD.
+             */
+            day: string;
+            scope: components["schemas"]["SignFailuresScope"];
+            /** @description Failure result buckets ordered by count descending then result ascending. */
+            items: components["schemas"]["SignFailureBucket"][];
+            /** @description Total failed task rows across all buckets. */
+            total: number;
         };
         PrefStatsSlot: {
             /** @description Minutes from the effective window start; multiple of five. */
@@ -7846,6 +7901,38 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    SignStatsFailures: {
+        parameters: {
+            query?: {
+                /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
+                day?: string;
+                /** @description Optional school UUID to narrow the aggregation. */
+                school_id?: string;
+                /** @description Optional school task UUID to narrow the aggregation. */
+                task_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Failure attribution counts for the effective business day. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignFailuresReport"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
         };
     };

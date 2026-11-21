@@ -86,6 +86,11 @@ type TaskStats interface {
 	OffsetCountsForTask(ctx context.Context, schoolID, taskID, day string) (map[int]int, error)
 }
 
+// FailureStats 是按业务日与作用域读取失败归因分布的端口（任务 07）。
+type FailureStats interface {
+	Failures(ctx context.Context, scope corescope.Scope, filter coreschedule.SignFailureFilter) (appstats.FailureReport, error)
+}
+
 // LegacyStats 是全校口径的拥挤度端口：只服务未接任务过滤的旧装配与测试替身。
 type LegacyStats interface {
 	OffsetCounts(ctx context.Context, schoolID string) (map[int]int, error)
@@ -454,6 +459,63 @@ func (h *Handler) SignStats(c *gin.Context, params oapi.SignStatsParams) {
 		out.DaysMissing = append(out.DaysMissing, openapi_types.Date{Time: parsed})
 	}
 	respond.JSON(c.Writer, 200, out)
+}
+
+// SignStatsFailures 实现 GET /api/sign-stats/failures。
+func (h *Handler) SignStatsFailures(c *gin.Context, params oapi.SignStatsFailuresParams) {
+	scope, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	if h.stats == nil {
+		fail(c, errs.New(errs.CodeInternal, "stats service is not wired"))
+		return
+	}
+	failures, ok := h.stats.(FailureStats)
+	if !ok {
+		fail(c, errs.New(errs.CodeInternal, "stats service has no failure counts"))
+		return
+	}
+	day := h.today()
+	if params.Day != nil && *params.Day != "" {
+		day = *params.Day
+	}
+	filter := coreschedule.SignFailureFilter{Day: day}
+	if params.SchoolId != nil {
+		filter.SchoolID = *params.SchoolId
+	}
+	if params.TaskId != nil {
+		filter.TaskID = *params.TaskId
+	}
+	report, err := failures.Failures(c.Request.Context(), scope, filter)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	parsedDay, err := time.Parse("2006-01-02", report.Day)
+	if err != nil {
+		fail(c, errs.New(errs.CodeInternal, "invalid statistics day"))
+		return
+	}
+	items := make([]oapi.SignFailureBucket, len(report.Items))
+	for i, item := range report.Items {
+		items[i] = oapi.SignFailureBucket{Result: item.Result, Count: item.Count}
+	}
+	var outScope oapi.SignFailuresScope
+	if report.SchoolID != "" {
+		schoolID := report.SchoolID
+		outScope.SchoolId = &schoolID
+	}
+	if report.TaskID != "" {
+		taskID := report.TaskID
+		outScope.TaskId = &taskID
+	}
+	respond.JSON(c.Writer, 200, oapi.SignFailuresReport{
+		Day:   openapi_types.Date{Time: parsedDay},
+		Scope: outScope,
+		Items: items,
+		Total: report.Total,
+	})
 }
 
 // TimePrefStats 实现 GET /api/time-prefs/stats。
