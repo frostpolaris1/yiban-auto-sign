@@ -337,3 +337,19 @@ test('invariant 12: the showcase audit page renders fixtures with zero requests'
 
   expect(apiRequests, 'the audit fixture never touches the API').toEqual([])
 })
+
+test('invariant 13: the showcase logs page renders both tabs with zero requests', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/logs?tab=events')
+  await expect(page.getByRole('heading', { level: 1, name: /签到\s*台账/ })).toBeVisible()
+  await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toContainText('138****8001')
+
+  await page.getByRole('tab', { name: '运行巡检' }).click()
+  await expect(page.getByRole('heading', { name: '在飞清单' })).toBeVisible()
+  await expect(page.locator('dl', { hasText: '待执行' })).toContainText('3')
+
+  expect(apiRequests, 'the logs fixture never touches the API').toEqual([])
+})

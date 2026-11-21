@@ -24,18 +24,17 @@ import { AccountsPage } from '@/pages/AccountsPage'
 import { AuditPage } from '@/pages/AuditPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
-import { EnginePage } from '@/pages/EnginePage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { LoginPage } from '@/pages/LoginPage'
+import { LogsPage } from '@/pages/LogsPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { QueuePage } from '@/pages/QueuePage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
-import { RunPage } from '@/pages/RunPage'
 import { SchedulePage } from '@/pages/SchedulePage'
 import { SchoolsPage } from '@/pages/SchoolsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { UsersPage } from '@/pages/UsersPage'
-import { parseRunSearchRecord, runSearchRecord } from '@/features/run/urlState'
+import { parseRunSearchRecord, runSearchRecord } from '@/features/logs/urlState'
 import { parseUserSearchRecord, userSearchRecord } from '@/features/user/urlState'
 import { parseDay } from '@/lib/format'
 import { sanitizeRedirect } from '@/lib/redirect'
@@ -86,34 +85,32 @@ const schoolsRoute = createRoute({
   component: SchoolsPage,
 })
 
-/** 运行页：master/admin。筛选与业务日是 URL 状态：校验即净化。 */
+/** 旧运行页入口：保底一个版本周期，302 到签到台账·签到事件页签并保留合法筛选。 */
 const runRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/run',
   validateSearch: (search: Record<string, unknown>) => parseRunSearchRecord(search),
-  component: RunRouteComponent,
+  beforeLoad: ({ search }) => {
+    throw redirect({
+      to: '/logs',
+      search: runSearchRecord({ ...search, tab: 'events' }),
+      replace: true,
+    })
+  },
 })
 
-/** 执行监控：master/admin。快照无筛选与分页，无查询串。 */
+/** 旧执行监控入口：保底一个版本周期，302 到签到台账·运行巡检页签。 */
 const engineRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/engine',
-  component: EnginePage,
+  beforeLoad: () => {
+    throw redirect({
+      to: '/logs',
+      search: { tab: 'patrol' },
+      replace: true,
+    })
+  },
 })
-
-/** 把类型化的 search 传给页面，并让页面通过回调写回查询串。 */
-function RunRouteComponent() {
-  const search = runRoute.useSearch()
-  const navigate = useNavigate()
-  return (
-    <RunPage
-      search={search}
-      onSearchChange={(next, opts) => {
-        void navigate({ to: '/run', search: runSearchRecord(next), replace: opts?.replace })
-      }}
-    />
-  )
-}
 
 /** 用户管理：只归 master；非 master 直接访问落到无权限卡片。
  * 筛选、含已删除与游标是 URL 状态：校验即净化，非法值在解析时丢弃。
@@ -156,16 +153,29 @@ const queueRoute = createRoute({
 })
 
 /**
- * 目标目录的占位入口：B3 落地前重定向到现有承载页。
- * /logs → /run；页面就绪时把重定向换成真 page 组件。
+ * 签到台账：master/admin。合并签到事件与运行巡检两页签；
+ * 页签、筛选、业务日与游标均为 URL 状态（校验即净化）。
  */
 const logsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/logs',
-  beforeLoad: () => {
-    throw redirect({ to: '/run' })
-  },
+  validateSearch: (search: Record<string, unknown>) => parseRunSearchRecord(search),
+  component: LogsRouteComponent,
 })
+
+/** 把类型化的 search 传给签到台账页，并让页面通过回调写回查询串。 */
+function LogsRouteComponent() {
+  const search = logsRoute.useSearch()
+  const navigate = useNavigate()
+  return (
+    <LogsPage
+      search={parseRunSearchRecord(search as Record<string, unknown>)}
+      onSearchChange={(next, opts) => {
+        void navigate({ to: '/logs', search: runSearchRecord(next), replace: opts?.replace })
+      }}
+    />
+  )
+}
 
 /** 审计日志：master/admin。权限门由 AuditView 内部执行，user 不发审计请求。 */
 const auditRoute = createRoute({

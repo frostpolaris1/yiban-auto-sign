@@ -1398,10 +1398,48 @@
   padding: 6px 0;
 }
 
-/* ---------- UX-3 运行页 ----------
- * 三段一页：今日摘要、学校泳道、历史检索。
- * 颜色只取令牌，明暗两套同源；390 宽单列堆叠，不出现横向溢出。
+/* ---------- UX-3 / B3 签到台账 ----------
+ * 两页签一页：签到事件（今日摘要、学校泳道、历史检索）与运行巡检。
+ * 颜色只取令牌，明暗两套同源；390 宽单列堆叠，表格在 .table-scroll 内横滚，页面不横向溢出。
  */
+.logs-page,
+.logs-page .tab-panel,
+.logs-page .card {
+  min-width: 0;
+}
+
+.logs-page .tab-panel.is-active {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.logs-page .tab-panel > .card {
+  margin-bottom: 0;
+}
+
+.logs-page .table-scroll {
+  position: relative;
+}
+
+.run-table {
+  min-width: 540px;
+}
+
+.engine-inflight-table {
+  min-width: 0;
+}
+
+.run-table th,
+.run-table td {
+  padding-right: 12px;
+}
+
+.run-table th:last-child,
+.run-table td:last-child {
+  padding-right: 0;
+}
+
 .run-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

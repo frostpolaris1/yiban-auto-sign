@@ -187,7 +187,7 @@ export type KpiCard = {
   /** 成功率环比 pill；其余卡不设。 */
   pill?: RatePill | null
   /** 整卡链接目标。设置时卡片渲染为站内链接，可访问名称来自卡内文本。 */
-  href?: '/accounts' | '/run'
+  href?: '/accounts' | '/logs?tab=events'
 }
 
 /** `counts` 为 null 时值是 `—`：没有数据就不编数字。 */
@@ -309,7 +309,7 @@ export function todayKpiCards(
       label: '今日失败',
       value: stats?.failed ?? null,
       unit: '个',
-      href: '/run',
+      href: '/logs?tab=events',
       note:
         stats === null
           ? '等待读取'
@@ -323,7 +323,7 @@ export function todayKpiCards(
       label: '进行中/待签',
       value: stats?.active ?? null,
       unit: '个',
-      href: '/run',
+      href: '/logs?tab=events',
       note: stats === null ? '等待读取' : '查看实时进度 →',
     },
     {

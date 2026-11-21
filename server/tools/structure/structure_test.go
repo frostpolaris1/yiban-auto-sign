@@ -250,7 +250,8 @@ func TestStructureRowsPinned(t *testing.T) {
 	// R3（审计锚点）：adapters 增 anchor（库外锚点文件读写）。
 	// admin-ia-b1：ui/src/features 增 queue（三组待办工作台）。
 	// admin-ia-b2：ui/src/features 增 audit（审计台账）。
-	const want = "2389ccc953ded0891623595f2ff0b1456097bf89f92bd6853fb77927bc61a2c4"
+	// admin-ia-b3：ui/src/features 的 run 合并改名为 logs（签到台账）。
+	const want = "20d3af99e29f9503f10fdf23e8adeb8b56b57513a31113137c7754fdfa0e0776"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}

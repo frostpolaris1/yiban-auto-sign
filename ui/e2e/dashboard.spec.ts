@@ -749,10 +749,10 @@ test('invariant 9: the health strip links engine chips and the run ledger', asyn
 
   const strip = page.locator('.app-health-strip')
   await strip.getByRole('link', { name: /在飞/ }).click()
-  await expect(page).toHaveURL(/\/engine$/)
+  await expect(page).toHaveURL(/\/logs\?tab=patrol$/)
   await page.goBack()
   await page.locator('.app-health-strip').getByRole('link', { name: '运行台账 →' }).click()
-  await expect(page).toHaveURL(/\/run$/)
+  await expect(page).toHaveURL(/\/logs\?tab=events$/)
 })
 
 test('invariant 9: a user never reads the account summary nor sees the pending account KPI', async ({
