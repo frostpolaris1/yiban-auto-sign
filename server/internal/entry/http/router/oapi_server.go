@@ -452,6 +452,15 @@ func (s *server) SignStats(c *gin.Context, params oapi.SignStatsParams) {
 	s.schedule.SignStats(c, params)
 }
 
+// SignStatsFailures 委托失败归因统计处理器。未装配时仍是 501。
+func (s *server) SignStatsFailures(c *gin.Context, params oapi.SignStatsFailuresParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.SignStatsFailures(c, params)
+}
+
 // TimePrefStats 委托自选时间片统计处理器。未装配时仍是 501。
 func (s *server) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams) {
 	if s.schedule == nil {
