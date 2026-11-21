@@ -525,8 +525,15 @@ EOF
     # U2 的统一备份要求容器内有版本匹配的 pg_dump 与 pg_restore。
     # tar -ch 解引用符号链接：成员按 DT_NEEDED 名（.so.N）落成真件，
     # 不依赖镜像里的 .so.N.M 真名（随镜像版本漂移）。
+    #
+    # 因此这里只能列 .so.N。此前多列了一条 libpq.so.5.${PG_MAJOR}，
+    # 是错把「libpq soname 次版本」当成「PG 主版本」：两者无关。postgres:18
+    # 初版的 libpq 恰好是 .so.5.18，镜像 2026-11-17T20:19Z 重建后升到 .so.5.19
+    # （PG 18.1），该条 Cannot stat ⇒ tar 非零 ⇒ H5 判死 ⇒ update-rollback-e2e
+    # 从 2026-11-21T08:30Z 起全红。只请求 .so.N 后，-h 解引用出的成员名仍是
+    # DT_NEEDED 名，镜像侧真名怎么漂都不影响。
     PGTOOLS_TAR="$LOG_DIR/pg18tools.tar"
-    PG_LIBS="lib/x86_64-linux-gnu/libpq.so.5 lib/x86_64-linux-gnu/libpq.so.5.${PG_MAJOR}"
+    PG_LIBS="lib/x86_64-linux-gnu/libpq.so.5"
     PG_LIBS="$PG_LIBS lib/x86_64-linux-gnu/libgssapi_krb5.so.2 lib/x86_64-linux-gnu/libkrb5.so.3"
     PG_LIBS="$PG_LIBS lib/x86_64-linux-gnu/libk5crypto.so.3 lib/x86_64-linux-gnu/libkrb5support.so.0"
     PG_LIBS="$PG_LIBS lib/x86_64-linux-gnu/libcom_err.so.2 lib/x86_64-linux-gnu/libkeyutils.so.1"
