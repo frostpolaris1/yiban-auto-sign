@@ -2,7 +2,12 @@ import type { Page, Route } from '@playwright/test'
 import type { EngineSnapshot } from '../../src/lib/api/engine'
 import type { AdminTaskRow } from '../../src/lib/api/task'
 import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
-import { ENGINE_SNAPSHOT, ENGINE_VISUAL_SNAPSHOT, VISUAL_NOW } from './fake-engine-api'
+import {
+  ENGINE_SNAPSHOT,
+  ENGINE_VISUAL_SNAPSHOT,
+  VISUAL_NOW,
+  liveEngineSnapshot,
+} from './fake-engine-api'
 import {
   fakeSourceCloseCalls,
   fakeSourceClosed,
@@ -79,7 +84,10 @@ function errorBody(code: string, message: string) {
 export async function mockLogsApi(page: Page, options: MockLogsOptions): Promise<FakeLogsApi> {
   const calls: ApiCall[] = []
   const sessionRole = options.role
-  let engineSnapshotState = { ...(options.snapshot ?? ENGINE_SNAPSHOT) }
+  // 缺省取**注册路由这一刻**的活快照：ENGINE_SNAPSHOT 的时刻在模块 import 时就
+  // 冻住了，整份行为套件串行跑到巡检用例时（常在两三分钟后）租约早已到期，
+  // 「1 分」断言于是稳定失败。活快照让租约剩余回到 1 分多钟。
+  let engineSnapshotState = { ...(options.snapshot ?? liveEngineSnapshot()) }
   const tasks = options.tasks ?? RUN_TASKS
 
   const json = (route: Route, body: unknown, status = 200) =>
