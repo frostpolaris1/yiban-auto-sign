@@ -28,6 +28,8 @@ import { Topbar } from './Topbar'
 type AppShellProps = {
   /** 顶栏通知收件箱插槽：由 `app` 装配层注入，壳层不直接依赖域目录。 */
   renderInbox?: (me: SessionUser) => ReactNode
+  /** 顶栏全局搜索插槽：同上，装配层注入。 */
+  renderSearch?: (me: SessionUser) => ReactNode
 }
 
 /**
@@ -35,7 +37,7 @@ type AppShellProps = {
  * 遮罩是普通元素，可见性由 `body.has-drawer-open` 决定。
  * 改成条件渲染会让 vendor 的过渡失效。
  */
-export function AppShell({ renderInbox }: AppShellProps = {}) {
+export function AppShell({ renderInbox, renderSearch }: AppShellProps = {}) {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const meQuery = useMe()
   const expired = useSessionExpired()
@@ -109,6 +111,7 @@ export function AppShell({ renderInbox }: AppShellProps = {}) {
           }}
           loggingOut={logoutMutation.isPending}
           inbox={renderInbox ? renderInbox(me) : null}
+          search={renderSearch ? renderSearch(me) : null}
         />
         <main className="content app-content">
           {logoutError ? (

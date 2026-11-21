@@ -120,9 +120,13 @@ function focusFilterInput() {
 type AccountsViewProps = {
   /** 照片区由页面装配后传入；本功能不依赖照片功能。 */
   photoSection?: (account: Account) => ReactNode
+  /** 全局搜索落地（任务书 06）：检索词进搜索框，沿用既有防抖与精确命中判定。 */
+  initialQuery?: string
+  /** 全局搜索落地：该行加入高亮集合，复用现有精确匹配样式。 */
+  locateId?: string
 }
 
-export function AccountsView({ photoSection }: AccountsViewProps = {}) {
+export function AccountsView({ photoSection, initialQuery, locateId }: AccountsViewProps = {}) {
   const queryClient = useQueryClient()
 
   const meQuery = useMe()
@@ -136,7 +140,12 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   const schools = schoolsQuery.data ?? []
 
   const [filters, setFilters] = useState<AccountFilterValues>({})
-  const [qInput, setQInput] = useState('')
+  const [qInput, setQInput] = useState(initialQuery ?? '')
+
+  // 同路由再次落地（从搜索跳搜索）不重挂载：查询串是新的事实源，搜索框同步。
+  useEffect(() => {
+    setQInput(initialQuery ?? '')
+  }, [initialQuery])
   const [stack, setStack] = useState(emptyCursorStack)
   const cursor = currentCursor(stack)
 
@@ -568,6 +577,11 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   const error = accountsQuery.isError ? describeApiError(accountsQuery.error) : null
   // 高亮只认已提交给服务端的 q：输入框还在防抖时不提前标。
   const highlightIds = exactMatchIds(rows, filters.q)
+  // 全局搜索落地（任务书 06）：locate 行加入高亮集合，复用现有精确匹配样式。
+  const markedIds =
+    locateId && rows.some((row) => row.id === locateId)
+      ? new Set([...highlightIds, locateId])
+      : highlightIds
 
   return (
     <>
@@ -711,7 +725,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
           loading={accountsQuery.isLoading || accountsQuery.isFetching}
           error={error}
           role={role}
-          highlightIds={highlightIds}
+          highlightIds={markedIds}
           hasActiveFilters={hasActiveFilters}
           onClearFilters={clearFilters}
           includeDeleted={filters.includeDeleted ?? false}

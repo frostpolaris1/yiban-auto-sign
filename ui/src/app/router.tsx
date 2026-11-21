@@ -21,6 +21,7 @@ import {
 } from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
 import { NotifyInbox } from '@/features/notify/InboxDrawer'
+import { GlobalSearch } from '@/features/search/GlobalSearch'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { AuditPage } from '@/pages/AuditPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -50,7 +51,12 @@ const rootRoute = createRootRoute({
  * 改成带路径会让 URL 多一层前缀，面包屑与深链都要跟着改。
  */
 function ShellRouteComponent() {
-  return <AppShell renderInbox={(me) => <NotifyInbox me={me} />} />
+  return (
+    <AppShell
+      renderInbox={(me) => <NotifyInbox me={me} />}
+      renderSearch={(me) => <GlobalSearch me={me} />}
+    />
+  )
 }
 
 const shellRoute = createRoute({
@@ -71,11 +77,28 @@ const designRoute = createRoute({
   component: DesignPage,
 })
 
+/**
+ * 账号页查询串：`?q=<检索词>&locate=<行 id>`（任务书 06 的搜索落地通道）。
+ * q 交给页面检索框沿用既有防抖与请求；locate 让该行沿用现有精确命中样式。
+ * 校验即净化：非字符串与空串在解析时丢弃。
+ */
 const accountsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/accounts',
-  component: AccountsPage,
+  validateSearch: (search: Record<string, unknown>): { q?: string; locate?: string } => {
+    const next: { q?: string; locate?: string } = {}
+    if (typeof search.q === 'string' && search.q !== '') next.q = search.q
+    if (typeof search.locate === 'string' && search.locate !== '') next.locate = search.locate
+    return next
+  },
+  component: AccountsRouteComponent,
 })
+
+/** 把类型化的 search 传给页面。页面不直接依赖路由定义。 */
+function AccountsRouteComponent() {
+  const { q, locate } = accountsRoute.useSearch()
+  return <AccountsPage initialQuery={q} locateId={locate} />
+}
 
 /** 账号设置（个人域）：账号信息、改密与本人通知订阅。master/admin 进页，user 渲染无权限卡片。 */
 const settingsRoute = createRoute({

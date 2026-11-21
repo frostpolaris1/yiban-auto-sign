@@ -7,13 +7,19 @@
  *
  * **口径**
  * 路径 `/accounts` 与 `nav.ts` 的叶子一一对应。
+ * `initialQuery`/`locateId` 来自路由查询串（全局搜索落地通道），本页只转手。
  */
 
 import { AccountsView } from '@/features/accounts/AccountsView'
 import { AccountPhotos } from '@/features/photos/AccountPhotos'
 import { SHOWCASE, useMe } from '@/lib/session'
 
-export function AccountsPage() {
+type AccountsPageProps = {
+  initialQuery?: string
+  locateId?: string
+}
+
+export function AccountsPage({ initialQuery, locateId }: AccountsPageProps) {
   const me = useMe()
   const role = me.data?.role ?? null
   // 契约：/api/accounts/{id}/photos 归 user 与 admin；该端点不含 master。
@@ -21,6 +27,8 @@ export function AccountsPage() {
   const canViewPhotos = SHOWCASE || role === 'user' || role === 'admin'
   return (
     <AccountsView
+      initialQuery={initialQuery}
+      locateId={locateId}
       photoSection={
         canViewPhotos
           ? (account) => (
