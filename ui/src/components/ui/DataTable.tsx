@@ -9,6 +9,10 @@
  * 组件只渲染当前一页。**从不持有全量结果集**。
  * 最小宽度缺省 900px。窄屏在 `.table-scroll` 内横向滚动。
  * 页码窗口最多 5 个。
+ * 排序列由调用方用 `sorted` 标记视觉态；表头据此写 `aria-sort`（ascending/descending）。
+ * 没有排序标记的列**不写**该属性：本表没有列头排序交互，逐列声明排序状态只会让读屏
+ * 在每个表头上多念一句，也把「可排序」这件事说成了真的。只加属性不改视觉。
+ * 读屏播报点：页脚条数带 `aria-live="polite"`，翻页后整条重读。
  */
 
 import type { ReactNode } from 'react'
@@ -78,6 +82,13 @@ export function DataTable<T>({
                   className={column.sorted ? `sorted-${column.sorted}` : undefined}
                   style={column.width ? { width: column.width } : undefined}
                   scope="col"
+                  aria-sort={
+                    column.sorted === 'asc'
+                      ? 'ascending'
+                      : column.sorted === 'desc'
+                        ? 'descending'
+                        : undefined
+                  }
                 >
                   {column.header}
                   {column.sorted ? (
@@ -115,7 +126,7 @@ export function DataTable<T>({
       </div>
 
       <div className="data-foot">
-        <div className="data-foot-info">
+        <div className="data-foot-info" aria-live="polite" aria-atomic="true">
           <span>
             显示 <strong>{first}–{last}</strong> / 共 <strong>{total}</strong> 条
           </span>

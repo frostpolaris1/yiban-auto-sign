@@ -13,6 +13,8 @@
  * 行增删与重排走 180ms 过渡；不改行点击、菜单与焦点还原的语义。
  * 过渡库会永久给 tbody 写 `position: relative`：表体文字由次像素抗锯齿变为灰度。
  * 视觉基线按此口径拍，不是颜色或字号变化。
+ * 读屏播报点：页脚条数带 `aria-live="polite"`，读到数据或翻页时整条重读；
+ * 自渲染的错误行用 `role="alert"`，与 `Alert` 同口径；加载行不加 `role`。
  */
 
 import { useAutoAnimate } from '@formkit/auto-animate/react'
@@ -80,7 +82,9 @@ export function SchoolsTable({
             {error ? (
               <tr>
                 <td colSpan={6}>
-                  <span className="app-muted">{error}</span>{' '}
+                  <span className="app-muted" role="alert">
+                    {error}
+                  </span>{' '}
                   <Button variant="ghost" size="sm" onClick={onRetry}>
                     重试
                   </Button>
@@ -157,7 +161,7 @@ export function SchoolsTable({
       </div>
 
       <div className="data-foot">
-        <div className="data-foot-info">
+        <div className="data-foot-info" aria-live="polite" aria-atomic="true">
           <span>
             第 <strong>{pageIndex + 1}</strong> 页
           </span>
