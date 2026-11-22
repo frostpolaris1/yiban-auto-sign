@@ -38,7 +38,8 @@ import type {
   ScheduleWindow,
   ScheduleWindowList,
 } from './api/schedule'
-import type { PrefStatsReport, SignStatsReport } from './api/stats'
+import type { PrefStatsReport, SignFailuresReport, SignStatsReport } from './api/stats'
+import type { MailSettingsReport } from './api/mail'
 import type { Notification, NotificationPage, UnreadCount } from './api/notify'
 
 let seq = 0
@@ -380,6 +381,25 @@ export function showcaseSignStats(): SignStatsReport {
     total: 9,
     by_status: { pending: 1, running: 0, success: 8, failed: 4, skipped: 2 },
     days_missing: [],
+  }
+}
+
+/**
+ * 看板「今日失败明细」：与 30 天夹具同一天（2026-10-30），失败总数与
+ * `showcaseSignStats` 末两日的 4 条 failed 对齐，比例才说得通。
+ * 三个桶：确定性失败（credential_invalid）、可重试的临时波动（transient），
+ * 以及服务端把空结果码归一后的 unknown —— 正好覆盖卡片要渲染的三类标签。
+ */
+export function showcaseSignFailures(): SignFailuresReport {
+  return {
+    day: '2026-10-30',
+    scope: {},
+    items: [
+      { result: 'credential_invalid', count: 2 },
+      { result: 'transient', count: 1 },
+      { result: 'unknown', count: 1 },
+    ],
+    total: 4,
   }
 }
 
@@ -833,6 +853,22 @@ export function showcaseScheduleSettings(): ScheduleSettingsReport {
     default_sign_start_min: { value: 390, source: 'default' },
     default_sign_end_min: { value: 470, source: 'default' },
     sign_dist: { value: 'front', source: 'default' },
+  }
+}
+
+/**
+ * 账号设置页（展示构建）：SMTP 生效值合成夹具，零网络请求。
+ * 三类来源齐备（host 来自环境变量、tls_mode 走默认、其余为数据库覆盖）；
+ * 敏感两项只给"已设置 + 固定掩码"，密码项只给 set 标志 —— 与契约一样永不回显原值。
+ */
+export function showcaseMailSettings(): MailSettingsReport {
+  return {
+    host: { value: 'smtp.example.com', source: 'env' },
+    port: { value: 465, source: 'env' },
+    tls_mode: { value: 'auto', source: 'default' },
+    from: { set: true, masked: '****', source: 'db' },
+    user: { set: true, masked: '****', source: 'db' },
+    pass: { set: true, source: 'db' },
   }
 }
 

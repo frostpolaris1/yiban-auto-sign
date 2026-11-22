@@ -15,6 +15,7 @@
  * 无权限与不可评审一律置灰，并给一句可见原因。
  * 置灰判据只取原因：原因非空即可用性为假，二者不会分叉。
  * 展示构建只读时原因统一为 `展示模式只读`，不再追加状态类说明。
+ * 已删行的行菜单多一条「彻底删除」：只能硬删已软删除的行，需二次口令复核。
  * 行增删与重排走 180ms 过渡；不改行点击、菜单与焦点还原的语义。
  * 过渡库会永久给 tbody 写 `position: relative`：表体文字由次像素抗锯齿变为灰度。
  * 视觉基线按此口径拍，不是颜色或字号变化。
@@ -70,6 +71,7 @@ type AccountsTableProps = {
   onLocation: (account: Account, opener: HTMLElement | null) => void
   onDelete: (account: Account, opener: HTMLElement | null) => void
   onRestore: (account: Account, opener: HTMLElement | null) => void
+  onPurge: (account: Account, opener: HTMLElement | null) => void
 }
 
 export function AccountsTable({
@@ -97,6 +99,7 @@ export function AccountsTable({
   onLocation,
   onDelete,
   onRestore,
+  onPurge,
 }: AccountsTableProps) {
   // 列表过渡：180ms 与 vendor 过渡同量级；尊重系统「减少动态效果」偏好。
   const [tbodyRef] = useAutoAnimate<HTMLTableSectionElement>({
@@ -228,6 +231,7 @@ export function AccountsTable({
                           onLocation={onLocation}
                           onDelete={onDelete}
                           onRestore={onRestore}
+                          onPurge={onPurge}
                         />
                       </div>
                     </td>
@@ -373,6 +377,7 @@ export function AccountsTable({
                         onLocation={onLocation}
                         onDelete={onDelete}
                         onRestore={onRestore}
+                        onPurge={onPurge}
                       />
                       {notes.size > 0 ? (
                         <span className="app-deny-note">{[...notes].join('；')}</span>

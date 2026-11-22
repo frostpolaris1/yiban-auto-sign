@@ -19,7 +19,8 @@ import { BusyButton } from '@/components/ui/BusyButton'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { notifySuccess } from '@/components/ui/toast'
-import { sendTestMail, sendTestWebhook } from '@/lib/api/adminSettings'
+import { sendTestWebhook } from '@/lib/api/adminSettings'
+import { sendTestMail } from '@/lib/api/mail'
 import {
   formatMailReauthModalError,
   formatMailTestResultError,

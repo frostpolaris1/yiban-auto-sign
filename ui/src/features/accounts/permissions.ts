@@ -12,6 +12,7 @@
  * 暂停与恢复是 (角色, 状态) 二元谓词：
  * 暂停只从 active 出发；恢复只认匹配的暂停种类。
  * 无会话角色时一律禁用，原因与「有角色但权限不足」分开写。
+ * 行菜单里的彻底删除（purge）与恢复同归 master/admin；它只对已软删除的行可用。
  * 展示构建（`VITE_SHOWCASE=1`）只读：全部写动作返回同一条原因，
  * 该原因优先于角色与状态判断；读动作（schoolFilter）不受影响。
  */
@@ -98,14 +99,18 @@ export function pauseDenyReason(
   return '仅正常状态可暂停'
 }
 
-export type RowMenuItem = 'edit' | 'location' | 'delete' | 'restore'
+export type RowMenuItem = 'edit' | 'location' | 'delete' | 'restore' | 'purge'
 
-/** 行菜单各项的端点角色：PATCH 与 DELETE 对全体开放，location 只归 user/admin，恢复归 master/admin。 */
+/**
+ * 行菜单各项的端点角色：PATCH 与 DELETE 对全体开放，location 只归 user/admin，
+ * 恢复与彻底删除归 master/admin（purge 只删已软删除的行，成功后不可恢复）。
+ */
 const MENU_ALLOWED: Record<RowMenuItem, readonly Role[]> = {
   edit: ['master', 'admin', 'user'],
   location: ['user', 'admin'],
   delete: ['master', 'admin', 'user'],
   restore: ['master', 'admin'],
+  purge: ['master', 'admin'],
 }
 
 export function canUseMenu(role: Role | null | undefined, item: RowMenuItem): boolean {
@@ -120,6 +125,7 @@ export function menuDenyReason(
   if (SHOWCASE) return READ_ONLY_REASON
   if (canUseMenu(role, item)) return null
   if (!role) return '会话角色未识别'
-  if (item === 'restore') return '需要管理员权限'
+  // 恢复与彻底删除都只归 master/admin：同一句原因，不另立措辞。
+  if (item === 'restore' || item === 'purge') return '需要管理员权限'
   return '仅 user/admin 可设置'
 }

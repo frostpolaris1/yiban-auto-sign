@@ -11,6 +11,7 @@
  * `include_deleted` 打开时软删行也回，行内带 `deleted_at`。
  * lookup 归 master/admin：只回 id、掩码邮箱、状态；`q` 必填，无游标。
  * `temp_password` 只在 `resetUserPassword` 的响应出现一次，本层不留副本。
+ * 彻底删除（purge）是 204 无响应体，且只接受已软删除的行。
  * 查询串只带非空值。空串与 undefined 都不出现。
  */
 
@@ -44,6 +45,7 @@ export const USER_PATHS = {
   list: '/api/users',
   lookup: '/api/users/lookup',
   batch: '/api/users/batch',
+  purge: (id: string) => `/api/users/${encodeURIComponent(id)}/purge`,
 } as const
 
 export function buildUserSearch(query: UserQuery = {}): string {
@@ -98,6 +100,18 @@ export function deleteUser(id: string, currentPassword: string): Promise<void> {
 /** 恢复软删用户。409 邮箱被占用；429 活跃用户容量满。 */
 export function restoreUser(id: string, currentPassword: string): Promise<User> {
   return apiRequest<User>(`${USER_PATHS.list}/${id}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword }),
+  })
+}
+
+/**
+ * 彻底删除（硬删）：只能删已软删除的用户，行与名下账号一起物理删除。
+ * 审计行永久保留。目标未先软删 409；不存在或越权 404；成功 204 无响应体。
+ * 请求体必带操作者本人二次口令：缺值 400、口令错 403、连续失败 429，被拒零写入。
+ */
+export function purgeUser(id: string, currentPassword: string): Promise<void> {
+  return apiRequest<void>(USER_PATHS.purge(id), {
     method: 'POST',
     body: JSON.stringify({ current_password: currentPassword }),
   })

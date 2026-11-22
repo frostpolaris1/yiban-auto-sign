@@ -22,15 +22,24 @@
 
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Alert } from '@/components/ui/Alert'
 import { BusyButton } from '@/components/ui/BusyButton'
 import { Card } from '@/components/ui/Card'
+import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { DeniedCard } from '@/components/ui/DeniedCard'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { SelectionBar } from '@/components/ui/SelectionBar'
 import { notifySuccess } from '@/components/ui/toast'
 import type { Role } from '@/lib/api/auth'
 import { describeApiError, describeReauthError } from '@/lib/api/client'
-import { batchUsers, listUsers, type User, type UserBatchAction, type UserBatchResult } from '@/lib/api/user'
+import {
+  batchUsers,
+  listUsers,
+  purgeUser,
+  type User,
+  type UserBatchAction,
+  type UserBatchResult,
+} from '@/lib/api/user'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage, type CursorStack } from '@/lib/cursor'
 import { LIST_POLL_INTERVAL_MS } from '@/lib/query'
 import { USER_VIEW_ROLES, roleAllowed } from '@/lib/roles'
@@ -116,6 +125,10 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
   const [drawerReturnFocus, setDrawerReturnFocus] = useState<HTMLElement | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [createReturnFocus, setCreateReturnFocus] = useState<HTMLElement | null>(null)
+  // 彻底删除：只对已软删除的行出现，且必须二次口令复核。
+  const [purgeTarget, setPurgeTarget] = useState<User | null>(null)
+  const [purgeReturnFocus, setPurgeReturnFocus] = useState<HTMLElement | null>(null)
+  const [purgeError, setPurgeError] = useState<string | null>(null)
 
   // 批量选择：只对 master 开放；切分组/筛选/翻页即清空。
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set<string>())
@@ -137,7 +150,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
   }
 
   // 模态或抽屉打开时暂停轮询：后台刷新不得改写用户正在操作的行。
-  const modalOpen = detailUser !== null || createOpen || batch !== null
+  const modalOpen = detailUser !== null || createOpen || batch !== null || purgeTarget !== null
 
   const usersQuery = useQuery({
     queryKey: [
@@ -216,6 +229,35 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
     setDetailUser(user)
     setDrawerReturnFocus(opener)
   }
+
+  const openPurge = (user: User, opener: HTMLElement | null) => {
+    purgeMutation.reset()
+    setPurgeError(null)
+    setPurgeReturnFocus(opener)
+    setPurgeTarget(user)
+  }
+
+  const closePurge = () => {
+    // 在途锁关：结论不能因为 X/Esc 而丢弃到操作者看不到的地方。
+    if (purgeMutation.isPending) return
+    purgeMutation.reset()
+    setPurgeTarget(null)
+    setPurgeError(null)
+  }
+
+  const purgeMutation = useMutation({
+    mutationFn: (input: { user: User; password: string }) =>
+      purgeUser(input.user.id, input.password),
+    onSuccess: (_result, input) => {
+      invalidateUsers()
+      setPurgeTarget(null)
+      setPurgeError(null)
+      notifySuccess(`已彻底删除 ${input.user.email}`)
+    },
+    onError: (error) => {
+      setPurgeError(describeReauthError(error))
+    },
+  })
 
   const rows = usersQuery.data?.items ?? []
   const error = usersQuery.isError ? describeApiError(usersQuery.error) : null
@@ -437,6 +479,8 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
               onSearchChange({ ...urlState, cursor: next })
             }}
             onManage={openDetail}
+            canPurge={allowed && !SHOWCASE}
+            onPurge={openPurge}
           />
         </AsyncState>
       </Card>
@@ -466,6 +510,31 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
           notifySuccess(`已创建 ${user.email}`)
         }}
       />
+
+      <ConfirmModal
+        open={purgeTarget !== null}
+        title="彻底删除用户？"
+        description={
+          purgeTarget ? `用户 ${purgeTarget.email} · 已删除` : undefined
+        }
+        confirmText="确认彻底删除"
+        tone="danger"
+        requirePassword
+        pending={purgeMutation.isPending}
+        error={purgeError}
+        returnFocusTo={purgeReturnFocus}
+        onClose={closePurge}
+        onConfirm={(password) => {
+          if (!purgeTarget) return
+          setPurgeError(null)
+          purgeMutation.mutate({ user: purgeTarget, password: password ?? '' })
+        }}
+      >
+        <Alert tone="danger" title="不可恢复">
+          这个用户行与名下账号会被物理删除，凭据与签到任务一并消失。操作不可恢复；
+          审计记录保留，仍可查到这次删除。
+        </Alert>
+      </ConfirmModal>
 
       <UserBatchModal
         open={batch !== null}
