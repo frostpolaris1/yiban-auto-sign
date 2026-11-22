@@ -14,6 +14,8 @@
  * 颜色、圆角、阴影一律取自 tokens.css 的令牌。
  * 本文件不得出现颜色字面量。`scripts/token-gate.mjs` 会判红。
  * vendor 已定义的几何留在 vendor 类里，不在此重复。
+ * 「减少动态效果」偏好下，vendor 的入场动画与几何过渡统一在此静置：
+ * 只把时间归零、位移落到终点，不隐藏元素——动画不承载信息。
  */
 
 /* ---------- 无障碍辅助 ---------- */
@@ -2825,6 +2827,41 @@ html {
   .app-select-content,
   .tab-panel.is-active {
     animation: none;
+  }
+}
+
+/* ---------- 减少动态效果：vendor 动效兜底 ----------
+ * vendor 自带的入场动画（rise-in / bar-in）与几何过渡（位移、宽高、max-height）
+ * 默认不看偏好，这里按「归零时间 + 落到终点」处理：
+ * - 入场动画用 animation: none 直接呈现最终帧（`both` 填充本来就是这个终态）；
+ * - 无限循环的 spinner 停转，圆环仍在，不改成隐藏；
+ * - 凡是 transform 表示状态的（开关滑块、排序箭头、勾选标记、抽屉开合）只去掉过渡，
+ *   保留位移，否则状态就丢了；
+ * - 纯装饰的悬停位移（KPI 卡上浮）直接归零。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .hero,
+  .grid,
+  .kpi-card,
+  .error-card,
+  .progress-fill,
+  .spinner {
+    animation: none;
+  }
+
+  .kpi-card,
+  .dd-menu,
+  .nav-submenu,
+  .d-sidebar,
+  .app-capacity-meter-fill,
+  .nav-item-group .nav-link .chev,
+  .switch .track::after,
+  .data-table thead th .sort svg {
+    transition: none;
+  }
+
+  .kpi-card:hover {
+    transform: none;
   }
 }
 

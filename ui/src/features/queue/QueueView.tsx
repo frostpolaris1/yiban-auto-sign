@@ -12,6 +12,7 @@
  * 避免跨页与侧栏重复取数；翻页与切换分段使用 `keepPreviousData` 消除闪烁与跳变。
  * 实时流连接 `/api/admin/events`（展示模式除外），300ms 尾随合并突发事件并精准失效受影响组；
  * 断线期间页面可见时每 10 秒轮询任务组。
+ * 动效口径：锚点跳组的平滑滚动在「减少动态效果」偏好下直接落位（behavior: auto）。
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -418,7 +419,11 @@ export function QueueView() {
   const jumpToGroup = (id: string) => {
     const element = document.getElementById(id)
     if (element) {
-      element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      // 跳组滚动也吃「减少动态效果」：偏好开启时直接落位，不做平滑滚动。
+      const reduced =
+        typeof window !== 'undefined' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      element.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' })
     }
   }
 
