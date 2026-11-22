@@ -181,6 +181,14 @@ test('invariant 7: the school drawer shows the default photo and clears it', asy
 
   await expect(drawer.getByRole('img', { name: '学校缺省图' })).toBeVisible()
   await drawer.getByRole('button', { name: '清除缺省图' }).click()
+  // 清除是不可逆写：先开确认弹窗，确认后才发请求。
+  const confirmClear = page.getByRole('dialog', { name: '清除学校缺省图？' })
+  await expect(confirmClear).toBeVisible()
+  expect(
+    photoCalls(api, 'PUT').filter((call) => call.path === '/api/schools/school-alpha/default-photo'),
+    'opening the dialog must not send the request',
+  ).toEqual([])
+  await confirmClear.getByRole('button', { name: '确认清除' }).click()
   await expect(drawer).toContainText('未设置缺省图')
   await expect(drawer.getByRole('img', { name: '学校缺省图' })).toHaveCount(0)
 

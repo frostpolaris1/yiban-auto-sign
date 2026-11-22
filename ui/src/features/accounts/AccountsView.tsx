@@ -20,6 +20,7 @@
  * 结果区块，失败原因换成中文并保留原始码作诊断线索。
  * 列表每 10 秒条件轮询一次；模态或抽屉打开时暂停，展示模式不发请求。
  * 角色来自 `GET /api/auth/me`。取不到时一切写操作置灰并给原因。
+ * 学校筛选下拉的数据源失败时给局部「重试」，只重取学校列表，不重取账号列表。
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -720,7 +721,10 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
         {schoolsQuery.isError ? (
           <div className="app-alert-block">
             <Alert tone="warning" title="学校列表加载失败">
-              {describeApiError(schoolsQuery.error)}
+              {describeApiError(schoolsQuery.error)}{' '}
+              <Button variant="ghost" size="sm" onClick={() => void schoolsQuery.refetch()}>
+                重试
+              </Button>
             </Alert>
           </div>
         ) : null}

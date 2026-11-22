@@ -10,6 +10,7 @@
  * 学校名从同一份学校列表解析；取不到时退回学校 ID。
  * 照片区由页面注入：账号照片端点归 user/admin；上传与删除只归所有者本人，
  * 缺省图动作只归 admin。
+ * 详情读取失败时保留列表摘要并给「重试」，只重取本抽屉的详情，不牵连列表。
  */
 
 import { useEffect, useState } from 'react'
@@ -92,7 +93,10 @@ export function AccountDetailDrawer({
     >
       {detail.isError ? (
         <Alert tone="danger" title="详情加载失败">
-          {describeApiError(detail.error)}
+          {describeApiError(detail.error)}{' '}
+          <Button variant="ghost" size="sm" onClick={() => void detail.refetch()}>
+            重试
+          </Button>
         </Alert>
       ) : null}
 
