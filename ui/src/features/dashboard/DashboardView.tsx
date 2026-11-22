@@ -6,11 +6,10 @@
  * `features/dashboard` 域容器：页面只引用它。
  *
  * **口径**
- * 角色取数隔离是本容器的第一不变式：
- * user 只读 sign-status 与 diagnostics；master/admin 只读 windows、capacity、
- * audit-status、engine、sign-stats 与 account summary。
- * 未命中的查询一律 `enabled: false`，挂载即零请求。
- * sign-status 每 30 秒轮询；页面隐藏时不轮询（`refetchIntervalInBackground: false`）。
+ * ticket13 起 user 不再进管理壳：壳层一律把 user 302 到用户端 `/app`。
+ * 本容器只服务 master/admin：windows、capacity、audit-status、engine、
+ * sign-stats 与 account summary；未选任务前容量与拥挤度保持 `enabled: false`，
+ * 挂载即零请求。
  * audit-status 与 engine 快照在挂载时按需读取，失败只挂对应区段。
  * windows 与时间片页共用缓存键 `['schedule-windows', day]`。
  * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与趋势图共用一次读取；
@@ -23,7 +22,7 @@
  * 展示模式用合成夹具，零网络请求。
  */
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getAccountSummary } from '@/lib/api/account'
@@ -31,7 +30,6 @@ import { describeApiError, describeReauthError } from '@/lib/api/client'
 import { getAuditStatus } from '@/lib/api/audit'
 import { getAnnouncement } from '@/lib/api/announcement'
 import { getEngineSnapshot, setEnginePause } from '@/lib/api/engine'
-import { getDiagnostics, getSignStatus } from '@/lib/api/me'
 import type { Role } from '@/lib/api/auth'
 import { getCapacity, listScheduleWindows } from '@/lib/api/schedule'
 import { getPrefStats, getSignFailures, getSignStats } from '@/lib/api/stats'
@@ -42,12 +40,10 @@ import {
   showcaseAnnouncement,
   showcaseAuditStatus,
   showcaseCapacity,
-  showcaseDiagnostics,
   showcaseEngineSnapshot,
   showcasePrefStats,
   showcaseSignFailures,
   showcaseSignStats,
-  showcaseSignStatus,
   showcaseWindows,
 } from '@/lib/showcase'
 import { Alert } from '@/components/ui/Alert'
@@ -55,14 +51,10 @@ import { ReauthDialog } from '@/components/ui/ReauthDialog'
 import { AuditStatusCard } from './AuditStatusCard'
 import { CapacityCard } from './CapacityCard'
 import { PrefCrowdingCard, SignTrendCard } from './ChartCards'
-import { DiagnosticsCard } from './DiagnosticsCard'
 import { FailureBreakdownCard } from './FailureBreakdownCard'
 import { KpiGrid } from './KpiGrid'
-import { SignStatusCard } from './SignStatusCard'
 import {
   capacityOptions,
-  signCounts,
-  signKpiCards,
   todayKpiCards,
   todayStats,
   windowCounts,
@@ -73,10 +65,6 @@ import {
  * 页面刷新回初值（验收口径「本会话内不再出现、刷新回」）。
  */
 let announcementDismissedForSession = false
-
-const SIGN_STATUS_KEY = ['me-sign-status'] as const
-const DIAGNOSTICS_KEY = ['me-diagnostics'] as const
-const SIGN_POLL_MS = 30_000
 
 /**
  * 公告横幅：有正文且本会话未关闭时渲染；关闭状态只活在会话内，不写偏好。
@@ -99,38 +87,15 @@ function announcementBannerNode(
 
 type DashboardViewProps = {
   role: Role
-  /** user 视角的附加卡（时间偏好在 `features/system/plans`，由页面传入）。 */
-  extraCards?: ReactNode
 }
 
-export function DashboardView({ role, extraCards }: DashboardViewProps) {
-  const isUser = role === 'user'
+export function DashboardView({ role }: DashboardViewProps) {
   const day = dayOf(new Date())
-
-  const signStatusQuery = useQuery({
-    queryKey: SIGN_STATUS_KEY,
-    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseSignStatus()) : getSignStatus()),
-    enabled: isUser,
-    // 轮询取最新状态：每次挂载与每次到期都要重新取数；展示模式零请求不轮询。
-    staleTime: 0,
-    retry: false,
-    refetchInterval: SHOWCASE ? false : SIGN_POLL_MS,
-    refetchIntervalInBackground: false,
-  })
-
-  const diagnosticsQuery = useQuery({
-    queryKey: DIAGNOSTICS_KEY,
-    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseDiagnostics()) : getDiagnostics()),
-    enabled: isUser,
-    staleTime: 30_000,
-    retry: false,
-  })
 
   const windowsQuery = useQuery({
     queryKey: ['schedule-windows', day],
     queryFn: () =>
       SHOWCASE ? Promise.resolve(showcaseWindows(day)) : listScheduleWindows({ day }),
-    enabled: !isUser,
     staleTime: 0,
     retry: false,
   })
@@ -155,7 +120,7 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
             schoolId: selected?.schoolId ?? '',
             taskId: selected?.taskId ?? '',
           }),
-    enabled: !isUser && selected !== null,
+    enabled: selected !== null,
     staleTime: 0,
     retry: false,
   })
@@ -174,7 +139,6 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
   const signStatsQuery = useQuery({
     queryKey: ['sign-stats', 30, businessDay],
     queryFn: () => (SHOWCASE ? Promise.resolve(showcaseSignStats()) : getSignStats(30)),
-    enabled: !isUser,
     staleTime: 0,
     retry: false,
   })
@@ -185,7 +149,6 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     queryKey: ['sign-failures', businessDay],
     queryFn: () =>
       SHOWCASE ? Promise.resolve(showcaseSignFailures()) : getSignFailures(),
-    enabled: !isUser,
     staleTime: 0,
     retry: false,
   })
@@ -195,7 +158,6 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     queryKey: ['audit-status'],
     queryFn: () =>
       SHOWCASE ? Promise.resolve(showcaseAuditStatus()) : getAuditStatus(),
-    enabled: !isUser,
     staleTime: 60_000,
     retry: false,
   })
@@ -205,7 +167,6 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     queryKey: ['dashboard-engine'],
     queryFn: () =>
       SHOWCASE ? Promise.resolve(showcaseEngineSnapshot()) : getEngineSnapshot(),
-    enabled: !isUser,
     staleTime: 15_000,
     retry: false,
   })
@@ -276,7 +237,7 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
             schoolId: selected?.schoolId ?? '',
             taskId: selected?.taskId ?? '',
           }),
-    enabled: !isUser && selected !== null,
+    enabled: selected !== null,
     staleTime: 0,
     retry: false,
     // 拥挤度是「实时」诉求：15 秒轮询；页面隐藏时不轮询。
@@ -285,56 +246,17 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     refetchIntervalInBackground: false,
   })
 
-  const signStatusItems = signStatusQuery.data?.items ?? []
-  const diagnosticsItems = diagnosticsQuery.data?.items ?? []
-  // master/admin 的四张 KPI 与图表共用这份 30 天报告；只读末两天作今日终态。
+  // 四张 KPI 与图表共用这份 30 天报告；只读末两天作今日终态。
   const stats = todayStats(signStatsQuery.data)
 
   // 待处理账号：与账号页提示条共用缓存键；读数失败只挂该卡（显「—」）。
   const accountSummaryQuery = useQuery({
     queryKey: ['account-summary'],
     queryFn: () => (SHOWCASE ? Promise.resolve(showcaseAccountSummary()) : getAccountSummary()),
-    enabled: !isUser,
     staleTime: 0,
     retry: false,
   })
 
-  if (isUser) {
-    return (
-      <>
-        {announcementBannerNode(announcementText, announcementDismissed, setAnnouncementDismissed)}
-        <KpiGrid
-          cards={signKpiCards(
-            signStatusQuery.data ? signCounts(signStatusQuery.data.items) : null,
-          )}
-        />
-        <div className="grid">
-          <SignStatusCard
-            items={signStatusItems}
-            updatedAt={signStatusQuery.data?.updated_at ?? null}
-            loading={signStatusQuery.isPending}
-            error={
-              signStatusQuery.isError ? describeApiError(signStatusQuery.error) : null
-            }
-            onRetry={() => {
-              void signStatusQuery.refetch()
-            }}
-          />
-          <DiagnosticsCard
-            items={diagnosticsItems}
-            loading={diagnosticsQuery.isPending}
-            error={
-              diagnosticsQuery.isError ? describeApiError(diagnosticsQuery.error) : null
-            }
-            onRetry={() => {
-              void diagnosticsQuery.refetch()
-            }}
-          />
-          {extraCards}
-        </div>
-      </>
-    )
-  }
   return (
     <>
       {announcementBannerNode(announcementText, announcementDismissed, setAnnouncementDismissed)}

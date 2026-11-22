@@ -1,21 +1,19 @@
 /**
  * **功能**
- * 新建账号弹窗：普通用户两页向导，master/admin 单页含绑定用户。
+ * 新建账号弹窗：master/admin 单页建号，含绑定用户（选填）。
  *
  * **归属**
- * `features/accounts` 展示层：建号走 `POST /api/accounts`，
- * 设备刷新走 `POST /api/accounts/{id}/device-refresh`，机型走 PATCH。
+ * `features/accounts` 展示层：建号走 `POST /api/accounts`。
  * 表单状态与校验走 react-hook-form＋zod（2026-10-29 天花板裁决 S2）；
- * 判据单一来源在 `schema.ts`，这里只保留请求体构造与角色分支。
+ * 判据单一来源在 `schema.ts`，这里只保留请求体构造。
  *
  * **口径**
- * 双形状按会话角色分（8v8）：user 两页——第 1 页学校、手机号、易班口令；
- * 第 2 页设备信息按需读取（二次口令）＋可选机型，「跳过」不阻断完成。
- * master/admin 单页：多一个「绑定用户（选填）」邮箱字段，300ms 防抖查
- * lookup：命中带 id 提交，未注册给内联提示（不静默建号），留空＝自有。
- * 普通用户界面零邮箱字段：本组件按角色分支，user 分支不渲染任何邮箱输入。
+ * ticket13 起 user 不再进管理壳（AppShell 一律 302 用户端 `/app`），
+ * 弹窗只剩 master/admin 单页形状：一个「绑定用户（选填）」邮箱字段，
+ * 300ms 防抖查 lookup：命中带 id 提交，未注册给内联提示（不静默建号），
+ * 留空＝自有。
  * 提交仍以服务端校验为准：lookup 只是预检，两步之间可被软删。
- * 学校列表三角色均可读（8v8①），下拉数据源在弹窗打开时取。
+ * 学校列表可读（8v8①），下拉数据源在弹窗打开时取。
  * 必填判据失败是历史模态级单条文案（schema.ts 的常量），不移动焦点。
  */
 
@@ -29,20 +27,14 @@ import { BusyButton } from '@/components/ui/BusyButton'
 import { Button } from '@/components/ui/Button'
 import { FilterField } from '@/components/ui/FilterField'
 import { Modal } from '@/components/ui/Modal'
-import { ReauthDialog } from '@/components/ui/ReauthDialog'
 import {
   createAccount,
-  refreshDevice,
-  updateAccount,
   type Account,
   type AccountCreateBody,
-  type AccountDevice,
 } from '@/lib/api/account'
-import { describeApiError, describeReauthError } from '@/lib/api/client'
+import { describeApiError } from '@/lib/api/client'
 import { listAllSchools } from '@/lib/api/school'
 import { lookupUsers } from '@/lib/api/user'
-import type { Role } from '@/lib/api/auth'
-import { AccountDeviceView } from './AccountDeviceView'
 import { userStatusLabel } from '@/lib/identity'
 import { ACCOUNT_CREATE_REQUIRED_TEXT, accountCreateSchema, type AccountCreateFormValues } from './schema'
 
@@ -61,7 +53,6 @@ function isCompleteEmail(value: string): boolean {
 
 type AccountCreateModalProps = {
   open: boolean
-  role: Role | null
   returnFocusTo: HTMLElement | null
   onClose: () => void
   onCreated: (account: Account) => void
@@ -69,21 +60,10 @@ type AccountCreateModalProps = {
 
 export function AccountCreateModal({
   open,
-  role,
   returnFocusTo,
   onClose,
   onCreated,
 }: AccountCreateModalProps) {
-  if (role === 'user') {
-    return (
-      <UserWizard
-        open={open}
-        returnFocusTo={returnFocusTo}
-        onClose={onClose}
-        onCreated={onCreated}
-      />
-    )
-  }
   return (
     <ManagerForm
       open={open}
@@ -94,7 +74,7 @@ export function AccountCreateModal({
   )
 }
 
-/** 学校下拉的数据源。三角色均可读学校；失败留在弹窗内可重试。 */
+/** 学校下拉的数据源。master/admin 均可读学校；失败留在弹窗内可重试。 */
 function useSchoolOptions(open: boolean) {
   return useQuery({
     queryKey: ['schools', 'create'],
@@ -148,142 +128,6 @@ function CreateShell({ open, returnFocusTo, onClose, title, description, footer,
   )
 }
 
-/** 普通用户两页向导（8v8：第 2 页可跳过，跳过后可在详情补录）。 */
-function UserWizard({
-  open,
-  returnFocusTo,
-  onClose,
-  onCreated,
-}: {
-  open: boolean
-  returnFocusTo: HTMLElement | null
-  onClose: () => void
-  onCreated: (account: Account) => void
-}) {
-  const [step, setStep] = useState<1 | 2>(1)
-  const [phoneModel, setPhoneModel] = useState('')
-  const [error, setError] = useState<string | null>(null)
-
-  const { register, handleSubmit, reset } = useForm<AccountCreateFormValues>({
-    resolver: zodResolver(accountCreateSchema),
-    // 与现状一致：必填失败只有模态级文案，不把焦点搬去字段。
-    shouldFocusError: false,
-    defaultValues: { school_id: '', phone: '', name: '', password: '' },
-  })
-
-  // 第 1 页成功不关弹窗：进第 2 页；onCreated 在跳过/完成关闭时才交回容器。
-  const create = useMutation({
-    mutationFn: (body: AccountCreateBody) => createAccount(body),
-    onSuccess: () => {
-      setError(null)
-      setStep(2)
-    },
-    onError: (cause) => setError(describeApiError(cause)),
-  })
-  void onCreated
-
-  const schools = useSchoolOptions(open)
-  const createdAccount = create.data ?? null
-
-  useEffect(() => {
-    if (!open) {
-      setStep(1)
-      setPhoneModel('')
-      setError(null)
-      reset()
-    }
-  }, [open, reset])
-
-  // 校验入口在 zod（schema.ts）：非法值零请求；合法体逐字与迁移前一致。
-  const submitPageOne = handleSubmit(
-    (values) => {
-      setError(null)
-      const body: AccountCreateBody = {
-        school_id: values.school_id,
-        phone: values.phone.trim(),
-        password: values.password,
-      }
-      if (values.name.trim() !== '') body.name = values.name.trim()
-      create.mutate(body)
-    },
-    () => setError(ACCOUNT_CREATE_REQUIRED_TEXT),
-  )
-
-  if (step === 2 && createdAccount) {
-    return (
-      <WizardStepTwo
-        open={open}
-        account={createdAccount}
-        phoneModel={phoneModel}
-        onPhoneModelChange={setPhoneModel}
-        returnFocusTo={returnFocusTo}
-        onClose={() => {
-          onClose()
-          onCreated(createdAccount)
-        }}
-      />
-    )
-  }
-
-  return (
-    <CreateShell
-      open={open}
-      returnFocusTo={returnFocusTo}
-      onClose={onClose}
-      error={error}
-      title="新建账号"
-      description="第 1 页共 2 页：先登记账号，下一步补设备信息。"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose} disabled={create.isPending}>
-            取消
-          </Button>
-          <BusyButton
-            variant="primary"
-            busy={create.isPending}
-            busyLabel="提交中…"
-            onClick={submitPageOne}
-          >
-            提交
-          </BusyButton>
-        </>
-      }
-    >
-      <SchoolSelect registration={register('school_id')} schools={schools.data ?? []} />
-      <FilterField id="account-create-phone" label="手机号" required>
-        <input
-          className="input"
-          type="tel"
-          inputMode="numeric"
-          autoComplete="off"
-          {...register('phone')}
-        />
-      </FilterField>
-      <FilterField
-        id="account-create-name"
-        label="备注名（选填）"
-        hint="最多 50 字；留空显示为「账号+手机尾号」"
-      >
-        <input
-          className="input"
-          type="text"
-          autoComplete="off"
-          maxLength={50}
-          {...register('name')}
-        />
-      </FilterField>
-      <FilterField id="account-create-password" label="易班口令" required>
-        <input
-          className="input"
-          type="password"
-          autoComplete="new-password"
-          {...register('password')}
-        />
-      </FilterField>
-    </CreateShell>
-  )
-}
-
 function SchoolSelect({
   registration,
   schools,
@@ -302,145 +146,6 @@ function SchoolSelect({
         ))}
       </select>
     </FilterField>
-  )
-}
-
-/** 第 2 页：按需读取设备信息，成功只读展示；失败不阻断；机型可选。 */
-function WizardStepTwo({
-  open,
-  account,
-  phoneModel,
-  onPhoneModelChange,
-  returnFocusTo,
-  onClose,
-}: {
-  open: boolean
-  account: Account
-  phoneModel: string
-  onPhoneModelChange: (value: string) => void
-  returnFocusTo: HTMLElement | null
-  onClose: () => void
-}) {
-  const [saveError, setSaveError] = useState<string | null>(null)
-  const [deviceOpen, setDeviceOpen] = useState(false)
-  const [deviceReturnFocus, setDeviceReturnFocus] = useState<HTMLElement | null>(null)
-
-  const device = useMutation({
-    mutationFn: (password: string) => refreshDevice(account.id, password),
-    onSuccess: () => setDeviceOpen(false),
-  })
-
-  // 关闭即弃：口令与错误都不跨次复用。
-  useEffect(() => {
-    if (!open) {
-      device.reset()
-      setDeviceOpen(false)
-      setDeviceReturnFocus(null)
-    }
-    // 只随弹窗开合变化；reset 是稳定回调，不进依赖。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
-
-  const save = useMutation({
-    mutationFn: () => updateAccount(account.id, { phone_model: phoneModel }),
-    onSuccess: () => onClose(),
-    onError: (cause) => setSaveError(describeApiError(cause)),
-  })
-
-  return (
-    <Modal
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) onClose()
-      }}
-      title="新建账号"
-      description="第 2 页共 2 页：设备信息由系统补全，可跳过。"
-      returnFocusTo={returnFocusTo}
-      scrollBody
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose} disabled={save.isPending}>
-            跳过
-          </Button>
-          <BusyButton
-            variant="primary"
-            busy={save.isPending}
-            busyLabel="保存中…"
-            onClick={() => {
-              setSaveError(null)
-              if (phoneModel.trim() === '') {
-                onClose()
-                return
-              }
-              save.mutate()
-            }}
-          >
-            完成
-          </BusyButton>
-        </>
-      }
-    >
-      {device.isPending ? <p className="app-muted">正在从易班平台读取设备信息…</p> : null}
-      {device.data ? <AccountDeviceView device={device.data as AccountDevice} /> : null}
-      {!device.isPending && !device.data ? (
-        <p className="app-muted">
-          设备信息需要你的登录口令二次确认后读取；也可跳过，稍后在账号详情补录。
-        </p>
-      ) : null}
-      <div className="app-detail-actions">
-        <BusyButton
-          variant="ghost"
-          size="sm"
-          busy={device.isPending}
-          busyLabel="读取中…"
-          onClick={(event) => {
-            device.reset()
-            setDeviceReturnFocus(event.currentTarget)
-            setDeviceOpen(true)
-          }}
-        >
-          读取设备信息
-        </BusyButton>
-      </div>
-
-      <FilterField
-        id="account-create-phone-model"
-        label="机型（选填）"
-        hint="留空则不保存机型"
-      >
-        <input
-          className="input"
-          type="text"
-          autoComplete="off"
-          value={phoneModel}
-          onChange={(event) => onPhoneModelChange(event.target.value)}
-        />
-      </FilterField>
-      {saveError ? (
-        <div className="app-modal-error">
-          <Alert tone="danger" title="保存失败">
-            {saveError}
-          </Alert>
-        </div>
-      ) : null}
-
-      <ReauthDialog
-        open={deviceOpen}
-        title="读取设备信息？"
-        description="用已存凭据向易班平台读回设备登记字段；平台失败不会写入任何数据。"
-        confirmText="读取"
-        pending={device.isPending}
-        error={device.isError ? describeReauthError(device.error) : null}
-        returnFocusTo={deviceReturnFocus}
-        layer={2}
-        onClose={() => {
-          if (device.isPending) return
-          device.reset()
-          setDeviceOpen(false)
-        }}
-        onConfirm={(password) => device.mutate(password)}
-      />
-    </Modal>
   )
 }
 

@@ -23,8 +23,9 @@ export function AccountsPage({ initialQuery, locateId }: AccountsPageProps) {
   const me = useMe()
   const role = me.data?.role ?? null
   // 契约：/api/accounts/{id}/photos 归 user 与 admin；该端点不含 master。
+  // 管理壳只有 admin/master：user 由壳层 302 用户端 `/app`，照片归用户端 App。
   // 展示构建没有后端，保留照片区以便看样式。
-  const canViewPhotos = SHOWCASE || role === 'user' || role === 'admin'
+  const canViewPhotos = SHOWCASE || role === 'admin'
   return (
     <AccountsView
       initialQuery={initialQuery}

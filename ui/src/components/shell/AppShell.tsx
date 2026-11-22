@@ -9,6 +9,7 @@
  * 抽屉开合由 `body.has-drawer-open` 表达。vendor 的 CSS 认这个类。
  * 路由变化、Esc、点遮罩都关闭抽屉。
  * 会话解析中显示整页加载态；无会话落到 `/login` 并带上站内回跳地址。
+ * 会话是 `user` 时不进壳：一律 `replace` 跳用户端 `/app`（对称 `UserAppShell` 的反向守卫）。
  * `must_change_password` 为真时内容区顶部常驻提示条，并给出改密出口。
  * 首个 Tab 落在「跳转到正文」的 skip link 上；内容区 `main` 带 `tabIndex={-1}`，
  * 只作锚点，不进 Tab 序列。skip link 复用 `.uapp-skip` 的定位与显隐节奏。
@@ -97,6 +98,10 @@ export function AppShell({ renderInbox, renderSearch }: AppShellProps = {}) {
   }
 
   const me = meQuery.data
+
+  // 管理台只归 master/admin：user 一律 302 到用户端 `/app`，
+  // 对称 `UserAppShell` 里「非 user 回管理台」的反向守卫；壳不渲染任何业务请求。
+  if (me.role === 'user') return <Navigate to="/app" replace />
 
   return (
     <div className="shell">
