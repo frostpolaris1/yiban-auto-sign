@@ -51,7 +51,7 @@ export function FailureBreakdownCard({
       action={<span className="app-caption">{caption}</span>}
     >
       <div className="table-scroll">
-        <table className="table">
+        <table className="table app-failure-table">
           <caption className="app-visually-hidden">今日失败明细</caption>
           <thead>
             <tr>

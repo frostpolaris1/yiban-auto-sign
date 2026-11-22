@@ -3790,3 +3790,24 @@ html[data-density="compact"] .card {
   border-radius: 8px;
   background: var(--bg-muted);
 }
+
+/* ---------- 看板失败明细的窄屏列宽 ----------
+ * 卡里四列（失败结果/条数/占比/处置建议）在 390 宽下被压到每列不足 60px，
+ * 「2 条」断成「2」+「条」、「50.0%」断成「50.0」+「%」。数字列断行尤为难读：
+ * 读到的「2」和「条」不在同一行，扫一眼会错认成两列数据。
+ * `.data-cell-mono` 给的是 overflow-wrap: anywhere（长邮箱/长 ID 不撑破栅格），
+ * 对「数值+单位」这种短串只会帮倒忙，故本卡内把两个数字列改回不折行。
+ * 只作用在本卡内部，不动 `.data-cell-mono` 的全局口径。
+ */
+.app-failure-table th:nth-child(2),
+.app-failure-table td:nth-child(2),
+.app-failure-table th:nth-child(3),
+.app-failure-table td:nth-child(3) {
+  white-space: nowrap;
+}
+
+/* 处置建议是整句中文，窄屏让它自然折行；最小宽度防被两个窄列挤成竖排。 */
+.app-failure-table th:last-child,
+.app-failure-table td:last-child {
+  min-width: 8em;
+}
