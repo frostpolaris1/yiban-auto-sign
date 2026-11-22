@@ -9,6 +9,8 @@
  * - 通过全角色端点 `GET /api/announcement` 读取当前线上公告与最近更新时间（`updated_at`）。
  * - 发布经 `PUT /api/admin/announcement`：单行、去除首尾空白、不超过 200 字，前端先拦换行与超长。
  * - 清空公告显式发送 `{ text: '' }`，`text` 置空且 `updated_at` 回到 `null`。
+ * - 清空是广播级不可逆写（撤下后原正文不在库里）：按钮只开确认弹窗，
+ *   弹窗里点「确认清空」才发请求，文案写明后果。
  * - 仅主管理员可发布或清空；`admin` 与展示模式置灰写控件并给出明确原因。
  */
 
@@ -19,6 +21,7 @@ import { AsyncState } from '@/components/ui/AsyncState'
 import { BusyButton } from '@/components/ui/BusyButton'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
+import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { TextAreaInput } from '@/components/ui/Input'
 import { notifySuccess } from '@/components/ui/toast'
 import {
@@ -47,6 +50,8 @@ export function AnnouncementSection({ canWrite, readOnlyReason }: AnnouncementSe
   const [draft, setDraft] = useState<string | null>(null)
   const [fieldError, setFieldError] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [confirmingClear, setConfirmingClear] = useState(false)
+  const [clearOpener, setClearOpener] = useState<HTMLElement | null>(null)
 
   const query = useQuery({
     queryKey: ANNOUNCEMENT_QUERY_KEY,
@@ -60,6 +65,7 @@ export function AnnouncementSection({ canWrite, readOnlyReason }: AnnouncementSe
       setFieldError(null)
       setSubmitError(null)
       setDraft(null)
+      setConfirmingClear(false)
       queryClient.setQueryData(ANNOUNCEMENT_QUERY_KEY, next)
       void queryClient.invalidateQueries({ queryKey: ANNOUNCEMENT_QUERY_KEY })
       notifySuccess(submittedText === '' ? '全站公告已清空' : '全站公告已发布')
@@ -87,8 +93,14 @@ export function AnnouncementSection({ canWrite, readOnlyReason }: AnnouncementSe
     mutation.mutate(checked.text)
   }
 
-  function handleClear() {
+  /** 清空只开确认弹窗：请求由弹窗的确认动作发出。 */
+  function handleClear(opener: HTMLElement) {
     if (!canWrite || mutation.isPending || query.data === undefined) return
+    setClearOpener(opener)
+    setConfirmingClear(true)
+  }
+
+  function confirmClear() {
     setFieldError(null)
     setSubmitError(null)
     mutation.mutate('')
@@ -168,7 +180,8 @@ export function AnnouncementSection({ canWrite, readOnlyReason }: AnnouncementSe
                   }}
                 />
 
-                {submitError ? <Alert tone="danger">{submitError}</Alert> : null}
+                {/* 确认弹窗开着时失败文案只留在弹窗里，避免同一段话出现两次。 */}
+                {submitError && !confirmingClear ? <Alert tone="danger">{submitError}</Alert> : null}
 
                 <div className="sys-card-actions">
                   <BusyButton
@@ -188,7 +201,7 @@ export function AnnouncementSection({ canWrite, readOnlyReason }: AnnouncementSe
                     size="sm"
                     disabled={!canWrite || mutation.isPending || query.data.text === ''}
                     title={readOnlyReason ?? undefined}
-                    onClick={handleClear}
+                    onClick={(event) => handleClear(event.currentTarget)}
                   >
                     清空公告
                   </Button>
@@ -199,6 +212,22 @@ export function AnnouncementSection({ canWrite, readOnlyReason }: AnnouncementSe
           ) : null}
         </AsyncState>
       </Card>
+
+      <ConfirmModal
+        open={confirmingClear}
+        title="清空全站公告？"
+        description="清空后所有用户立即看不到当前公告，原正文不会保留在库里（未提交的输入框内容不受影响）。需要时可重新发布。"
+        confirmText="确认清空"
+        tone="danger"
+        pending={mutation.isPending}
+        error={confirmingClear ? submitError : null}
+        returnFocusTo={clearOpener}
+        onConfirm={confirmClear}
+        onClose={() => {
+          setConfirmingClear(false)
+          setSubmitError(null)
+        }}
+      />
     </section>
   )
 }

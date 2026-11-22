@@ -308,8 +308,12 @@ test('announcement reads GET /api/announcement, rejects line breaks and >200 cha
     { text: '明早 06:00 正常签退，请提前核对密码。' },
   ])
 
-  // 清空公告。
+  // 清空公告：广播级不可逆写，先开确认弹窗，确认后才发请求。
   await section.getByRole('button', { name: '清空公告' }).click()
+  const confirmClear = page.getByRole('dialog', { name: '清空全站公告？' })
+  await expect(confirmClear).toBeVisible()
+  expect(callsTo(api.calls, 'PUT', '/api/admin/announcement')).toHaveLength(1)
+  await confirmClear.getByRole('button', { name: '确认清空' }).click()
   await expect(page.getByText('全站公告已清空')).toBeVisible()
   await expect(section).toContainText('当前未发布全站公告')
   await expect(section).toContainText('未发布')

@@ -11,6 +11,7 @@
  * 保存与清除都先经确认弹窗；确认前不发 PUT。
  * 请求体只含 offset_min；null 表示清除。
  * 保存成功的反馈走 toast；429／403 等错误留在确认层内，可回看。
+ * 读数失败给「重试」，只重取本卡的偏好，不影响同页其它卡片。
  */
 
 import { useState } from 'react'
@@ -113,7 +114,10 @@ export function TimePrefCard() {
       {prefQuery.isError ? (
         <div className="app-alert-block">
           <Alert tone="danger" title="读取失败">
-            {timePrefErrorText(prefQuery.error)}
+            {timePrefErrorText(prefQuery.error)}{' '}
+            <Button variant="ghost" size="sm" onClick={() => void prefQuery.refetch()}>
+              重试
+            </Button>
           </Alert>
         </div>
       ) : null}

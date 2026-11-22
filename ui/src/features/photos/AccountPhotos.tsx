@@ -13,6 +13,7 @@
  * 字节只经单图端点取给 `<img src>`，本组件不读文件内容、不生成对象 URL。
  * 本大图与学校缺省图用不同缓存键；设为缺省图后只失效学校缺省图缓存。
  * 展示构建不加载真实图片：缩略位显示合成占位，上传与缺省图动作置灰。
+ * 列表读取失败给「重试」，只重取本账号的照片横条，不影响抽屉其它区块。
  */
 
 import { useRef, useState } from 'react'
@@ -155,7 +156,10 @@ export function AccountPhotos({ accountId, schoolId, ownerUserId }: AccountPhoto
 
       {photosQuery.isError ? (
         <Alert tone="danger" title="照片加载失败">
-          {describeApiError(photosQuery.error)}
+          {describeApiError(photosQuery.error)}{' '}
+          <Button variant="ghost" size="sm" onClick={() => void photosQuery.refetch()}>
+            重试
+          </Button>
         </Alert>
       ) : null}
 
