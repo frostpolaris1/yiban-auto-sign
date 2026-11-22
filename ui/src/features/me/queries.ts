@@ -36,7 +36,15 @@ export const ME_KEYS = {
   calendar: (from: string, to: string) => ['me', 'sign-calendar', from, to] as const,
   calendarDay: (day: string) => ['me', 'sign-calendar-day', day] as const,
   announcement: ['announcement'] as const,
-  photos: (accountId: string) => ['account', accountId, 'photos'] as const,
+  /** 照片列表的**前缀**键：invalidate 用它，能命中所有 limit 变体。 */
+  photosBase: (accountId: string) => ['account', accountId, 'photos'] as const,
+  /**
+   * 照片列表键必须带 limit。
+   * 首页只要 1 张、账号页要 20 张，共用同一个键时后到者会把另一边的数据覆盖成
+   * 「只有 1 张」或「多了 19 张」，两边都按自己的 limit 解读，列表就错位。
+   */
+  photos: (accountId: string, limit: number) =>
+    ['account', accountId, 'photos', limit] as const,
   mailNotify: ['me', 'mail-notify'] as const,
   photoRetention: ['me', 'photo-retention'] as const,
 }
@@ -114,7 +122,7 @@ export function useAnnouncement() {
 
 export function useLatestPhoto(accountId: string | null) {
   return useQuery({
-    queryKey: ME_KEYS.photos(accountId ?? 'none'),
+    queryKey: ME_KEYS.photos(accountId ?? 'none', 1),
     queryFn: () => listAccountPhotos(accountId!, { limit: 1 }),
     enabled: accountId !== null,
     staleTime: 30_000,

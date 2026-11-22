@@ -131,16 +131,40 @@ export function windowGeometry(
   }
 }
 
-/** 下一次执行的近似文案；只由窗口与时间片推导，不承诺精确。 */
-export function nextRunText(pref: TimePref | undefined): string {
-  if (!pref?.window) return '明天早上'
-  const start = clockMinutes(pref.window.start)
-  if (start === null) return `明天 ${pref.window.start}`
-  const offset = pref.offset_min ?? 0
+/**
+ * 下一次执行的近似文案；只由窗口与时间片推导，不承诺精确。
+ *
+ * **「明天」只在窗口确实已过时出现。** 早间窗口（如 06:30）在当天尚未到点时，
+ * 文案必须写「今天 06:30 左右」——写死「明天」会让用户以为今天不签了。
+ * 判据取业务钟（Asia/Shanghai）当天的当前分钟，与 `todayKey` 同一时区来源，
+ * 不读机器时区。窗口起点尚未到（`now < start`）即今天还能签。
+ *
+ * 下游只把它当提示，不参与任何调度：执行时刻由窗口与平台决定。
+ */
+export function nextRunText(pref: TimePref | undefined, now: Date = new Date()): string {
+  const start = pref?.window ? clockMinutes(pref.window.start) : null
+  if (start === null) {
+    if (!pref?.window) return '明天早上'
+    return `明天 ${pref.window.start}`
+  }
+  const offset = pref?.offset_min ?? 0
   const minutes = Math.min(23 * 60 + 59, start + offset)
   const hour = String(Math.floor(minutes / 60)).padStart(2, '0')
   const minute = String(minutes % 60).padStart(2, '0')
-  return `明天 ${hour}:${minute} 左右`
+  const clock = `${hour}:${minute}`
+  return businessNowMinutes(now) <= minutes ? `今天 ${clock} 左右` : `明天 ${clock} 左右`
+}
+
+/** 业务钟（Asia/Shanghai）当天的分钟数；不读机器时区。 */
+function businessNowMinutes(now: Date): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: SHANGHAI,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(now)
+  const pick = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? '0')
+  return pick('hour') * 60 + pick('minute')
 }
 
 export type HomeTone = 'success' | 'warning' | 'danger' | 'info'
