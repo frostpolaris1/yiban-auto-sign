@@ -2,7 +2,7 @@
 
 React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 
-页面：登录、忘记密码、重置密码、看板、账号、学校、时间片、账号设置、用户管理、运行、执行监控与设计演示。
+页面：认证三页（登录/注册同页双签、忘记密码、重置密码）、管理端（总览、待办、签到台账、账号、用户、学校、审计日志、账号设置、系统设置、设计系统[门控]）与用户端 App（主页、历史、设置、账号、新建账号与设置深链）。
 看板按角色取数：user 读签到状态与诊断，master/admin 读窗口与容量体检。
 仪表盘的时间偏好卡只对 user 渲染，并调用 `/api/me/time-pref`。
 账号设置页的改密卡接登录态 `POST /api/auth/change-password`，成功即清待改密标记。
@@ -59,12 +59,12 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 ui/src/
 ├── app/            启动、Provider、路由
 ├── pages/          路由页。一页一文件，文件名以 Page 结尾
-├── features/       按域组织：auth / dashboard / design / accounts / schools / user / schedule / run / settings
+├── features/       按域组织：auth / dashboard / design / accounts / schools / user / me / notify / photos / queue / search / logs / audit / settings / system
 ├── components/
 │   ├── shell/      Sidebar / Topbar / Footer / AppShell / nav 配置
 │   └── ui/         Button / Input / Card / Table / Modal / Drawer / Tabs / Switch / Badge / Menu / Icon / BrandMark / Toaster
 ├── lib/            api 按域拆分 / query / theme / format / cursor / roles / cx
-└── styles/         tokens.css / adminator.css / app.css
+└── styles/         tokens.css / adminator.css / app.css / user-app.css
 ```
 
 依赖方向单向：`pages → features → components/ui → lib`。
