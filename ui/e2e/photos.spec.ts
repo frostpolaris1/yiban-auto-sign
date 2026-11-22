@@ -7,7 +7,7 @@ import { mockSchoolsApi } from './support/fake-schools-api'
  * 照片域的不变式（编号见各用例标题）。
  *
  * 1. 管理员在账号抽屉看到归属用户的图片横条，字节只经单图端点取。
- * 2. 普通用户在本人账号上可上传；上传成功后库就地刷新。
+ * 2. 所有者上传后库就地刷新；管理台只剩 admin 本人是所有者，由 10 同测（user 端 /app 上传未覆盖）。
  * 3. 上传被拒时库不变，服务端消息可见。
  * 4. 删除在大图预览里发起并经确认；确认前零请求；确认后缩略图消失。
  * 5. 他人账号只读：无上传、无删除，但管理员可设学校缺省图。
@@ -78,27 +78,13 @@ test('invariant 1: an admin sees the owner library as a strip and fetches bytes 
   )
 })
 
-test('invariant 2: the owner uploads a photo and the library refreshes', async ({ page }) => {
-  const api = await mockAccountsApi(page, { role: 'user' })
-  await openAccounts(page)
-  const drawer = await openAccountDrawer(page, '138****8000')
-
-  await uploadFile(drawer)
-
-  await expect(drawer.getByRole('img')).toHaveCount(3)
-  const upload = photoCalls(api, 'POST').find((call) => call.path === '/api/me/photos')
-  expect(upload, 'upload posts the multipart body').toBeTruthy()
-  expect(api.photos.byOwner['user-1']).toHaveLength(3)
-  await expect(drawer).not.toContainText('上传失败')
-})
-
 test('invariant 3: a rejected upload keeps the library and shows the server message', async ({
   page,
 }) => {
   const fixture = createPhotoFixture({
     uploadError: { status: 413, code: 'payload_too_large', message: '图片超过 10 MiB' },
   })
-  await mockAccountsApi(page, { role: 'user', photos: fixture })
+  await mockAccountsApi(page, { role: 'admin', photos: fixture })
   await openAccounts(page)
   const drawer = await openAccountDrawer(page, '138****8000')
 
@@ -109,14 +95,13 @@ test('invariant 3: a rejected upload keeps the library and shows the server mess
 })
 
 test('invariant 4: delete starts in the preview and asks before removing', async ({ page }) => {
-  const api = await mockAccountsApi(page, { role: 'user' })
+  const api = await mockAccountsApi(page, { role: 'admin' })
   await openAccounts(page)
   const drawer = await openAccountDrawer(page, '138****8000')
 
   await drawer.getByRole('button', { name: `查看照片 ${PHOTO_ALPHA.id}` }).click()
   const preview = page.getByRole('dialog', { name: '照片预览' })
   await expect(preview).toBeVisible()
-  await expect(preview.getByRole('button', { name: /设为缺省图/ })).toHaveCount(0)
 
   await preview.getByRole('button', { name: `删除图片 ${PHOTO_ALPHA.id}` }).click()
   const confirm = page.getByRole('dialog', { name: '删除图片' })
@@ -245,7 +230,8 @@ test('invariant 9: a failed default-photo write shows a danger alert, not a succ
 
 test('fixture contract: a user cannot read or delete another owner photo', async ({ page }) => {
   await mockAccountsApi(page, { role: 'user' })
-  await openAccounts(page)
+  // ticket13：user 不再进管理壳；这里只需要一个已登录的页面上下文。
+  await page.goto('/app')
 
   // 页面从不发这两个请求；这里直接钉住假 API 与契约一致的语义（越权＝不存在）。
   const readStatus = await page.evaluate(async () => {

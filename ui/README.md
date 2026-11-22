@@ -3,8 +3,8 @@
 React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 
 页面：认证三页（登录/注册同页双签、忘记密码、重置密码）、管理端（总览、待办、签到台账、账号、用户、学校、审计日志、账号设置、系统设置、设计系统[门控]）与用户端 App（主页、历史、设置、账号、新建账号与设置深链）。
-看板按角色取数：user 读签到状态与诊断，master/admin 读窗口与容量体检。
-仪表盘的时间偏好卡只对 user 渲染，并调用 `/api/me/time-pref`。
+看板只归 master/admin（读窗口与容量体检）；user 进管理台路由一律被壳层 302 到 `/app`。
+时间偏好改由用户端 App 的设置页维护（`TimePrefDialog` → `/api/me/time-pref`），管理台的旧偏好卡已随 user 视角退役。
 账号设置页的改密卡接登录态 `POST /api/auth/change-password`，成功即清待改密标记。
 用户管理页只归 master：`/users` 走 `GET /api/users` 的服务端游标分页；建号走 `POST /api/users`（`UserCreateModal`）。
 
@@ -165,11 +165,11 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 
 | Adminator 源（commit 4c76854） | 提取内容 | 我们的落点 |
 |---|---|---|
-| `src/index.html` | `shell` 占位、`hero`、`kpi-grid`、`monthly-footer`、`.table` + `tag` | `AppShell`、`PageHeader`、`KpiGrid`、`SignStatusCard`、`CapacityCard` |
+| `src/index.html` | `shell` 占位、`hero`、`kpi-grid`、`monthly-footer`、`.table` + `tag` | `AppShell`、`PageHeader`、`KpiGrid`、`DashboardView` 各卡（含 `CapacityCard`） |
 | `src/signin.html` | `auth-shell`、`auth-aside`、`auth-card`、`auth-form`、`field-row` | `LoginPage`、`AuthAside`、`LoginForm`、`PublicAuthPage`、`ForgotPasswordPage`、`ResetPasswordPage` |
 | `src/ui.html` | `alert`、`badge`、`tag`、`progress`、`spinner`、`tabs`、`modal-demo`、`popover-demo`、`avatar-group` | `FeedbackSection`、`IndicatorsSection`、`OverlaysSection`、`NavigationSection`、`Alert`、`Badge`、`Modal`、`Tabs`、`Hint` |
 | `src/forms.html` | `form-grid`、`field`、`input`、`select`、`textarea`、`check`、`switch`、`form-actions` | `FormsSection`、`Input`、`SwitchControl` |
-| `src/basic-table.html` | `.table`、`.cell-name`、`.cell-date`、`.tag` | `SignStatusCard` 的表格 |
+| `src/basic-table.html` | `.table`、`.cell-name`、`.cell-date`、`.tag` | 列表视图（Accounts/Users/Audit 等）的表格 |
 | `src/datatable.html` | `data-toolbar`、`data-table`、`data-cell-user`、`data-cell-mono`、`data-cell-actions`、`pager` | `TableSection`、`DataTable` |
 | `src/charts.html` | `chart-canvas-wrap`、`chart-meta-row`、`btn-group` | 未移植。类名已记录 |
 | `src/calendar.html` | `cal-shell`、`cal-rail`、`mini-cal-grid`、`upc-list` | 未移植。类名已记录 |

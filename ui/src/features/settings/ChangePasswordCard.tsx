@@ -20,7 +20,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
-import { TextInput } from '@/components/ui/Input'
+import { PasswordInput } from '@/components/ui/Input'
 import { notifySuccess } from '@/components/ui/toast'
 import { SessionExpiredError, changePassword, type SessionUser } from '@/lib/api/auth'
 import { ME_QUERY_KEY, expireSession } from '@/lib/session'
@@ -138,11 +138,9 @@ export function ChangePasswordCard({ className }: ChangePasswordCardProps) {
           mutation.mutate()
         }}
       >
-        <TextInput
+        <PasswordInput
           id={CURRENT_ID}
           label="当前密码"
-          type="password"
-          icon="shield"
           placeholder="••••••••"
           autoComplete="current-password"
           required
@@ -151,11 +149,9 @@ export function ChangePasswordCard({ className }: ChangePasswordCardProps) {
           onChange={(event) => setCurrent(event.target.value)}
         />
 
-        <TextInput
+        <PasswordInput
           id={NEXT_ID}
           label="新密码"
-          type="password"
-          icon="shield"
           placeholder="••••••••"
           autoComplete="new-password"
           required
@@ -165,11 +161,9 @@ export function ChangePasswordCard({ className }: ChangePasswordCardProps) {
           onChange={(event) => setNext(event.target.value)}
         />
 
-        <TextInput
+        <PasswordInput
           id={CONFIRM_ID}
           label="确认新密码"
-          type="password"
-          icon="shield"
           placeholder="••••••••"
           autoComplete="new-password"
           required

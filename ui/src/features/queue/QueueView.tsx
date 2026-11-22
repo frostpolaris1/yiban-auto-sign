@@ -1,7 +1,7 @@
 /**
  * **功能**
  * 待办工作台容器：顶部遥测摘要 + 三组独立分页队列（待审核 / 今日失败 / 今日未签）+
- * SSE 实时推送（防抖合并失效）+ 驳回理由弹窗 + 对象诊断抽屉。
+ * SSE 实时推送（防抖合并失效）+ 通过确认弹窗 + 驳回理由弹窗 + 对象诊断抽屉。
  *
  * **归属**
  * `features/queue` 域容器：页面只引用它。
@@ -13,12 +13,14 @@
  * 实时流连接 `/api/admin/events`（展示模式除外），300ms 尾随合并突发事件并精准失效受影响组；
  * 断线期间页面可见时每 10 秒轮询任务组。
  * 动效口径：锚点跳组的平滑滚动在「减少动态效果」偏好下直接落位（behavior: auto）。
+ * 通过是纯确认门：确认后才提交；提交中的「处理中…」与失败错误仍留在行内呈现。
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { DeniedCard } from '@/components/ui/DeniedCard'
 import { Icon } from '@/components/ui/Icon'
 import { notifySuccess } from '@/components/ui/toast'
@@ -155,6 +157,10 @@ export function QueueView() {
 
   // 行内错误与弹窗/抽屉目标
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
+  const [approveTarget, setApproveTarget] = useState<{
+    account: Account
+    trigger: HTMLElement | null
+  } | null>(null)
   const [rejectTarget, setRejectTarget] = useState<{
     account: Account
     trigger: HTMLElement | null
@@ -626,7 +632,9 @@ export function QueueView() {
                       disabled={busy || SHOWCASE}
                       title={SHOWCASE ? READ_ONLY_REASON : undefined}
                       aria-label={`通过 ${account.phone_masked}`}
-                      onClick={() => approveMutation.mutate(account)}
+                      onClick={(event) =>
+                        setApproveTarget({ account, trigger: event.currentTarget })
+                      }
                     >
                       <Icon name="check" size={14} />
                       {approvingThis ? '处理中…' : '通过'}
@@ -929,6 +937,28 @@ export function QueueView() {
           )
         })}
       </QueueGroup>
+
+      <ConfirmModal
+        open={approveTarget !== null}
+        title="通过账号"
+        description={
+          approveTarget
+            ? `${approveTarget.account.display_name || approveTarget.account.phone_masked} · ${approveTarget.account.phone_masked} · ${
+                schoolsById.get(approveTarget.account.school_id) ?? approveTarget.account.school_id
+              }`
+            : undefined
+        }
+        confirmText="确认通过"
+        returnFocusTo={approveTarget?.trigger ?? null}
+        onClose={() => setApproveTarget(null)}
+        onConfirm={() => {
+          if (!approveTarget) return
+          setApproveTarget(null)
+          approveMutation.mutate(approveTarget.account)
+        }}
+      >
+        <p className="app-muted">确认后该账号将进入自动签到流程，可随时驳回或停用。</p>
+      </ConfirmModal>
 
       <QueueRejectModal
         account={rejectTarget?.account ?? null}

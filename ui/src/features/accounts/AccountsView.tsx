@@ -892,7 +892,6 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
 
       <AccountCreateModal
         open={createOpen}
-        role={role}
         returnFocusTo={createReturnFocus}
         onClose={closeCreate}
         onCreated={(account: Account) => {

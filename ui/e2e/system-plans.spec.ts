@@ -9,26 +9,25 @@ import {
   previewCalls,
   scheduleCalls,
   timePrefGetCalls,
-  timePrefPutCalls,
   windowsCalls,
   windowsRefreshCalls,
 } from './support/fake-schedule-api'
 
 /**
- * 系统设置（`/system` 签到计划分区）与时间偏好卡的不变式。
+ * 系统设置（`/system` 签到计划分区）的不变式；时间偏好卡已不存在于管理台（见不变式 6）。
  *
  * 1. 路由与角色：master/admin 从侧栏「系统设置」进 `/system`（页顶锚链含「计划」）；
  *    `/schedule`（含 `?day=`）302 重定向到 `/system`（保 day，锚定 `#plans`），
- *    非法 `?day=` 丢弃并回落今日；user 无导航项，直达 `/system` 与 `/schedule`
- *    均只见无权限卡片，且零 schedule 请求。
+ *    非法 `?day=` 丢弃并回落今日；user 直达 `/system` 与 `/schedule` 一并 302 到
+ *    用户端 `/app`：管理台壳与计划表都不渲染，且零 schedule 请求。
  * 2. 窗口一览：日期改写请求 day；「重新发现」改发 POST windows/refresh；
  *    null 窗口行禁用「查看计划」。
  * 3. 预览：打开即发 preview，参数与所点行一致；停用任务显示提示且两个写动作禁用。
  * 4. Build：确认前零 POST；确认体只含契约三字段；409 文案如实；成功后列表刷新。
  * 5. Override：reason 空或超长、end<=start 由前端拒绝；确认前零 POST；
  *    确认体只含契约六字段；成功后展示重建计划（version≠0）。
- * 6. 时间偏好：master/admin 不渲染该卡；user 渲染；allowed=false 禁用控件并说明；
- *    PUT 体只含 offset_min；429/403 文案如实；清除同样先确认。
+ * 6. 时间偏好：user 专属界面在用户端 `/app`（不属本文件）；管理台不渲染该卡，
+ *    也不读 `/api/me/time-pref`。
  * 7. 焦点：预览、覆盖、确认三个模态焦点进入与还原，Esc 与遮罩关闭。
  *
  * 断言用户可见结果，不钉内部调用顺序。
@@ -108,22 +107,17 @@ test('invariant 1: /schedule redirects to /system#plans preserving day and drops
   expect(lastWindowsCall(api)?.params.day).toMatch(/^\d{4}-\d{2}-\d{2}$/)
 })
 
-test('invariant 1: a user has no system entry and sends zero schedule requests on /system or /schedule', async ({
+test('invariant 1: a user is sent to /app from /system and /schedule and sends zero schedule requests', async ({
   page,
 }) => {
   const api = await mockScheduleApi(page, { role: 'user' })
-  await page.goto('/')
-  const sidebar = page.locator('.d-sidebar')
-  await expect(sidebar.getByRole('link', { name: '系统设置', exact: true })).toHaveCount(0)
-  await expect(sidebar.getByRole('link', { name: '账号设置', exact: true })).toHaveCount(0)
-  await expect(sidebar.getByRole('link', { name: '签到计划', exact: true })).toHaveCount(0)
-  await expect(sidebar.getByRole('link', { name: '签到台账', exact: true })).toHaveCount(0)
 
   for (const url of [`/system?day=${SCHEDULE_DAY}`, `/schedule?day=${SCHEDULE_DAY}`]) {
     await page.goto(url)
-    await expect(page).toHaveURL(/\/system/)
-    await expect(page.getByText('无权访问')).toBeVisible()
-    await expect(page.getByText('你的角色无权查看系统设置')).toBeVisible()
+    await expect(page).toHaveURL(/\/app$/)
+    await expect(page.locator('.uapp-bar'), 'the user app takes over').toBeVisible()
+    await expect(page.locator('.d-sidebar'), 'the manager shell never renders').toHaveCount(0)
+    await expect(page.locator('#plans')).toHaveCount(0)
     await expect(page.getByRole('table', { name: '时间片窗口' })).toHaveCount(0)
   }
   expect(scheduleCalls(api), 'a denied page sends no schedule request').toHaveLength(0)
@@ -356,94 +350,6 @@ test('invariant 6: managers see no time preference card', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByText('签到时间偏好')).toHaveCount(0)
   expect(timePrefGetCalls(api), 'the card is the only reader').toHaveLength(0)
-})
-
-test('invariant 6: a user reads and saves the offset through a confirmation', async ({ page }) => {
-  const api = await mockScheduleApi(page, { role: 'user' })
-  await page.goto('/')
-
-  await expect(page.getByText('签到时间偏好')).toBeVisible()
-  await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 15 分钟')
-  const select = page.getByLabel('偏移分钟')
-  await expect(select).toHaveValue('15')
-
-  await select.selectOption('20')
-  await page.getByRole('button', { name: '保存偏好' }).click()
-  const confirm = page.getByRole('dialog', { name: '保存时间偏好？' })
-  await expect(confirm).toBeVisible()
-  await expect(confirm).toContainText('窗口开始 + 20 分钟')
-  expect(timePrefPutCalls(api), 'no write before confirmation').toHaveLength(0)
-
-  await confirm.getByRole('button', { name: '确认保存' }).click()
-  await expect.poll(() => timePrefPutCalls(api).length).toBe(1)
-  expect(timePrefPutCalls(api)[0].body).toEqual({ offset_min: 20 })
-  await expect(
-    page.locator('[data-sonner-toast]').filter({ hasText: '已保存时间偏好' }),
-  ).toBeVisible()
-  await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 20 分钟')
-})
-
-test('invariant 6: clearing the preference also asks first', async ({ page }) => {
-  const api = await mockScheduleApi(page, { role: 'user' })
-  await page.goto('/')
-  await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 15 分钟')
-
-  await page.getByRole('button', { name: '清除', exact: true }).click()
-  const confirm = page.getByRole('dialog', { name: '清除时间偏好？' })
-  await expect(confirm).toBeVisible()
-  expect(timePrefPutCalls(api), 'no write before confirmation').toHaveLength(0)
-
-  await confirm.getByRole('button', { name: '确认清除' }).click()
-  await expect.poll(() => timePrefPutCalls(api).length).toBe(1)
-  expect(timePrefPutCalls(api)[0].body).toEqual({ offset_min: null })
-  await expect(
-    page.locator('[data-sonner-toast]').filter({ hasText: '已清除时间偏好' }),
-  ).toBeVisible()
-  await expect(page.locator('.app-pref-current')).toHaveText('未设置')
-})
-
-test('invariant 6: a deployment gate disables the controls and says why', async ({ page }) => {
-  await mockScheduleApi(page, { role: 'user', timePref: { offset_min: null, allowed: false, window: { start: '06:00', end: '06:30' }, estimated: null, estimate_note: '待生成' } })
-  await page.goto('/')
-
-  await expect(page.getByText('此部署未开放时间偏好')).toBeVisible()
-  await expect(page.getByLabel('偏移分钟')).toBeDisabled()
-  await expect(page.getByRole('button', { name: '保存偏好' })).toBeDisabled()
-  await expect(page.getByRole('button', { name: '清除', exact: true })).toBeDisabled()
-})
-
-test('invariant 6: a cooldown answers 429 in plain words', async ({ page }) => {
-  await mockScheduleApi(page, {
-    role: 'user',
-    timePrefPutError: { status: 429, code: 'rate_limited', message: 'too frequent' },
-  })
-  await page.goto('/')
-  await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 15 分钟')
-
-  await page.getByLabel('偏移分钟').selectOption('30')
-  await page.getByRole('button', { name: '保存偏好' }).click()
-  const confirm = page.getByRole('dialog', { name: '保存时间偏好？' })
-  await confirm.getByRole('button', { name: '确认保存' }).click()
-  await expect(confirm.getByText('修改太频繁，请稍后再试')).toBeVisible()
-})
-
-test('invariant 6: a 403 disables the controls and says why', async ({ page }) => {
-  await mockScheduleApi(page, {
-    role: 'user',
-    timePrefPutError: { status: 403, code: 'forbidden', message: 'disabled' },
-  })
-  await page.goto('/')
-  await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 15 分钟')
-
-  await page.getByLabel('偏移分钟').selectOption('30')
-  await page.getByRole('button', { name: '保存偏好' }).click()
-  const confirm = page.getByRole('dialog', { name: '保存时间偏好？' })
-  await confirm.getByRole('button', { name: '确认保存' }).click()
-  await expect(confirm.getByText('此部署未开放时间偏好')).toBeVisible()
-
-  await confirm.getByRole('button', { name: '取消', exact: true }).click()
-  await expect(page.getByLabel('偏移分钟'), 'a closed gate stays closed').toBeDisabled()
-  await expect(page.getByRole('button', { name: '保存偏好' })).toBeDisabled()
 })
 
 test('invariant 7: the preview modal traps focus, closes on Escape and restores it', async ({

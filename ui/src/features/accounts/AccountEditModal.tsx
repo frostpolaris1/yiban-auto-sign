@@ -125,6 +125,7 @@ export function AccountEditModal({
       title={resubmit ? '修改并重新提交？' : '编辑账号？'}
       description={account ? `账号 ${account.phone_masked}` : undefined}
       returnFocusTo={returnFocusTo}
+      scrollBody
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>

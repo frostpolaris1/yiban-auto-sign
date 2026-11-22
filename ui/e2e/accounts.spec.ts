@@ -94,6 +94,18 @@ function accountsWith(id: string, patch: Partial<(typeof ACCOUNTS)[number]>) {
   return ACCOUNTS.map((item) => (item.id === id ? { ...item, ...patch } : item))
 }
 
+// ticket13：user 不再进管理壳——壳层一律 302 用户端 /app。
+test('ticket13: a user is redirected to /app and reads no account summary', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'user' })
+  await page.goto('/accounts')
+
+  await expect(page, 'a user never lands the console accounts page').toHaveURL(/\/app$/)
+  await expect(page.locator('.d-sidebar')).toHaveCount(0)
+  await expect(page.getByRole('table', { name: '账号列表' })).toHaveCount(0)
+  // /app 自己会读 /api/accounts、/api/schools、/api/me；唯一能归因管理台侧栏的是汇总。
+  expect(summaryCalls(api), 'a redirected user never reads the account summary').toHaveLength(0)
+})
+
 test('invariant 1: each filter rides the request and clearing removes it', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
@@ -210,15 +222,16 @@ for (const theme of ['light', 'dark'] as const) {
         /* localStorage 禁用时主题退回媒体查询，下面的断言会明确失败。 */
       }
     }, theme)
-    await mockAccountsApi(page, { role: 'user' })
+    // user 不再进管理壳（ticket13）：管理台里仍会遇到的置灰是「待审核行不能暂停」。
+    await mockAccountsApi(page, { role: 'admin' })
     await openAccounts(page)
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
 
-    await expect(page.getByLabel('学校筛选')).toBeDisabled()
+    await expect(page.getByRole('button', { name: '暂停 138****8000' })).toBeDisabled()
 
-    const note = page.locator('.app-deny-note').first()
+    const note = rowFor(page, '138****8000').locator('.app-deny-note')
     await expect(note).toBeVisible()
-    await expect(note).toContainText('需要管理员权限')
+    await expect(note).toContainText('仅正常状态可暂停')
     const paint = await note.evaluate((element) => {
       const style = getComputedStyle(element)
       return { color: style.color, opacity: style.opacity }
@@ -227,23 +240,6 @@ for (const theme of ['light', 'dark'] as const) {
       'rgba(0, 0, 0, 0)',
     )
     expect(Number(paint.opacity), `reason text must stay opaque in ${theme}`).toBeGreaterThan(0)
-
-    await expect(page.getByRole('button', { name: '验证 138****8000' })).toBeDisabled()
-    await expect(page.getByRole('button', { name: '评审 138****8000' })).toBeDisabled()
-    const userSign = page.getByRole('button', { name: '签到 138****8000' })
-    await expect(userSign).toBeDisabled()
-    await expect(userSign).toHaveAttribute('title', '仅正常状态的账号可签到')
-    await expect(page.getByRole('button', { name: '暂停 139****9000' })).toBeEnabled()
-
-    await expect(page.getByRole('button', { name: '暂停 138****8000' })).toBeDisabled()
-    await expect(rowFor(page, '138****8000').locator('.app-deny-note')).toContainText(
-      '仅正常状态可暂停',
-    )
-
-    await expect(page.getByRole('button', { name: '恢复 135****0001' })).toBeDisabled()
-    await expect(rowFor(page, '135****0001').locator('.app-deny-note')).toContainText(
-      '该暂停种类只能由对应角色恢复',
-    )
   })
 }
 
@@ -640,7 +636,7 @@ test('invariant 6: an invalid phone blocks the edit form', async ({ page }) => {
 
 test('invariant 6: a rejected account resubmits from its edit entry', async ({ page }) => {
   const api = await mockAccountsApi(page, {
-    role: 'user',
+    role: 'master',
     accounts: accountsWith('acc-1', {
       status: 'rejected',
       reject_reason: '照片不清晰',
@@ -648,6 +644,8 @@ test('invariant 6: a rejected account resubmits from its edit entry', async ({ p
       reviewed_by: 'user-9',
     }),
   })
+  // 默认视口就是 1280×720：被拒账号多出「已驳回」Alert 后正文变长，
+  // 全靠 Modal 的 scrollBody 限高把页脚钉住，否则「保存修改」会被顶出视口点不到。
   await openAccounts(page)
 
   const menu = await openRowMenu(page, '138****8000')
@@ -656,6 +654,11 @@ test('invariant 6: a rejected account resubmits from its edit entry', async ({ p
   await entry.click()
   const dialog = page.getByRole('dialog', { name: '修改并重新提交？' })
   await expect(dialog, 'the modal shows why the account was rejected').toContainText('照片不清晰')
+  // 回归钉子：1280×720 下长正文只在正文区滚动，页脚动作必须留在视口内。
+  await expect(
+    dialog.getByRole('button', { name: '保存修改' }),
+    'the footer action stays in the 720px-tall viewport',
+  ).toBeInViewport()
 
   await dialog.getByLabel('密码').fill('new-secret')
   await fillReauth(dialog)
@@ -680,7 +683,7 @@ test('invariant 6: a rejected account resubmits from its edit entry', async ({ p
 
 test('invariant 6: a phone change sends an active account back to review', async ({ page }) => {
   const api = await mockAccountsApi(page, {
-    role: 'user',
+    role: 'master',
     accounts: accountsWith('acc-1', { status: 'active', reject_reason: '' }),
   })
   await openAccounts(page)
@@ -706,7 +709,7 @@ test('invariant 6: a phone change sends an active account back to review', async
 
 test('invariant 6: a password edit keeps the active status', async ({ page }) => {
   const api = await mockAccountsApi(page, {
-    role: 'user',
+    role: 'master',
     accounts: accountsWith('acc-1', { status: 'active', reject_reason: '' }),
   })
   await openAccounts(page)
@@ -763,7 +766,7 @@ test('invariant 6: the name is prefilled and sent only when changed', async ({ p
 
 test('invariant 6: a name-only edit keeps a rejected account rejected', async ({ page }) => {
   const api = await mockAccountsApi(page, {
-    role: 'user',
+    role: 'master',
     accounts: accountsWith('acc-1', {
       status: 'rejected',
       reject_reason: '照片不清晰',
@@ -796,29 +799,9 @@ test('invariant 6: a name-only edit keeps a rejected account rejected', async ({
 })
 
 // ---------------------------------------------------------------------------
-// 设备字段的角色门：设备码是平台设备身份，user 只能由平台回读；
-// 机型是非凭据标签，user 可改。清除哨兵只在管理者模态提供。
+// 设备字段的管理者模态：设备码是平台设备身份，管理者可带哨兵清除或改写；
+// user 不再进管理壳（ticket13），其设备码在 /app 只读展示。
 // ---------------------------------------------------------------------------
-
-test('device gate: a user edit hides the device code and keeps the model', async ({ page }) => {
-  const api = await mockAccountsApi(page, { role: 'user' })
-  await openAccounts(page)
-
-  const menu = await openRowMenu(page, '138****8000')
-  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
-  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
-  await expect(dialog.getByLabel('设备识别码', { exact: true })).toHaveCount(0)
-  await expect(dialog.getByLabel('清除设备识别码')).toHaveCount(0)
-  await expect(dialog.getByLabel('机型')).toBeVisible()
-
-  await dialog.getByLabel('机型').fill('Pixel')
-  await dialog.getByRole('button', { name: '保存修改' }).click()
-  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
-  expect(patchCalls(api, 'acc-1')[0].body).toEqual({
-    phone_model: 'Pixel',
-    expected_updated_at: ACC1_UPDATED_AT,
-  })
-})
 
 test('device gate: an admin clears the device code with the sentinel', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'admin' })
@@ -912,13 +895,6 @@ test('the list shows the device model and falls back to a dash', async ({ page }
   await expect(rowFor(page, '138****8000')).toContainText('Pixel 7')
   await expect(rowFor(page, '139****9000')).toContainText('iPhone 13')
   await expect(rowFor(page, '135****0001').getByText('—')).toHaveCount(1)
-})
-
-test('a user sees the device model of an own account', async ({ page }) => {
-  await mockAccountsApi(page, { role: 'user' })
-  await openAccounts(page)
-
-  await expect(rowFor(page, '138****8000')).toContainText('Pixel 7')
 })
 
 test('loading and empty rows span every column', async ({ page }) => {
@@ -1046,36 +1022,6 @@ test('ux2 master: the single form sends an optional remark name', async ({ page 
 // 空表单/空白手机号不得发建号请求；合法值的请求体只含三个必填字段，
 // 密码不 trim、手机号 trim。RHF+zod 迁移前后都必须逐字成立。
 
-test('ux2 user: an empty first page sends no create and then sends the exact body', async ({
-  page,
-}) => {
-  const api = await mockAccountsApi(page, { role: 'user' })
-  await openAccounts(page)
-
-  await page.getByRole('button', { name: '新建账号' }).click()
-  const dialog = page.getByRole('dialog')
-  await dialog.getByRole('button', { name: '提交' }).click()
-  await expect(dialog).toContainText('学校、手机号与易班口令都是必填')
-  expect(createCalls(api), 'an empty wizard page must not create').toHaveLength(0)
-
-  // 空白手机号同样是未填写：仍零请求。
-  await dialog.getByLabel('手机号').fill('   ')
-  await dialog.getByRole('button', { name: '提交' }).click()
-  expect(createCalls(api), 'a whitespace phone must not create').toHaveLength(0)
-
-  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
-  await dialog.getByLabel('手机号').fill('13800000000')
-  await dialog.getByLabel('易班口令').fill(' wizard-pass-1 ')
-  await dialog.getByRole('button', { name: '提交' }).click()
-  await expect.poll(() => createCalls(api).length).toBe(1)
-  // 逐字：手机号 trim、密码原样、备注名未填不出现。
-  expect(createCalls(api)[0].body).toEqual({
-    school_id: 'school-a',
-    phone: '13800000000',
-    password: ' wizard-pass-1 ',
-  })
-})
-
 test('ux2 master: an empty single form sends no create and then sends the exact body', async ({
   page,
 }) => {
@@ -1103,7 +1049,7 @@ test('ux2 master: an empty single form sends no create and then sends the exact 
 
 test('invariant 6: a pending account keeps its queued status on a rebind', async ({ page }) => {
   const api = await mockAccountsApi(page, {
-    role: 'user',
+    role: 'master',
     accounts: accountsWith('acc-1', { status: 'pending', reject_reason: '' }),
   })
   await openAccounts(page)
@@ -1216,7 +1162,7 @@ test('invariant 7: fixed location validates and caches for prefill', async ({ pa
 })
 
 test('invariant 8: delete waits for confirmation and removes the row', async ({ page }) => {
-  const api = await mockAccountsApi(page, { role: 'user' })
+  const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
 
   const menu = await openRowMenu(page, '135****0001')
@@ -1294,116 +1240,11 @@ test('invariant 9: the close control is a 24x24 target with a keyboard focus rin
 })
 
 // ---------------------------------------------------------------------------
-// UX-2（8v8）：账号提交双形状。两页向导、单页绑定用户、设备码只读、恢复。
+// UX-2（8v8）：账号提交只剩 master/admin 单页表单（ticket13 起 user 不再进管理壳）。
 //
 // 断言用户可见结果与请求参数，不钉内部调用顺序。
 // 设备码在界面上是文本不是输入框：全文只在服务端，响应只给掩码。
 // ---------------------------------------------------------------------------
-
-const CREATE_FORM_LABELS = ['学校', '手机号', '备注名（选填）', '易班口令'] as const
-
-/** user 两页向导：填第 1 页并提交，进入第 2 页。表单字段一律在 dialog 内取。 */
-async function submitWizardPageOne(page: Page, phone = '13800000000') {
-  const dialog = page.getByRole('dialog')
-  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
-  await dialog.getByLabel('手机号').fill(phone)
-  await dialog.getByLabel('易班口令').fill('wizard-pass-1')
-  await dialog.getByRole('button', { name: '提交' }).click()
-  // 第 2 页的可达标志是「跳过」：成功与失败两条路径都在这一页。
-  await expect(dialog.getByRole('button', { name: '跳过' })).toBeVisible()
-}
-
-test('ux2 user: the wizard has two pages, zero email fields and a readonly device code', async ({
-  page,
-}) => {
-  const api = await mockAccountsApi(page, { role: 'user' })
-  await openAccounts(page)
-
-  await page.getByRole('button', { name: '新建账号' }).click()
-  await expect(page.getByRole('heading', { name: '新建账号' })).toBeVisible()
-
-  // 第 1 页只有学校、手机号、备注名、口令；零邮箱字段、零绑定用户文案（8v8⑤）。
-  const dialog = page.getByRole('dialog')
-  for (const label of CREATE_FORM_LABELS) {
-    await expect(dialog.locator('label').filter({ hasText: label })).toBeVisible()
-  }
-  await expect(page.getByLabel(/邮箱/)).toHaveCount(0)
-  await expect(page.getByText('绑定用户')).toHaveCount(0)
-
-  await submitWizardPageOne(page)
-
-  // 建号请求不带 owner_user_id：留空即自有；备注名未填也不带。
-  await expect.poll(() => createCalls(api).length).toBe(1)
-  const create = createCalls(api)[0]
-  expect(create.body).toMatchObject({ phone: '13800000000' })
-  expect(create.body).not.toHaveProperty('owner_user_id')
-
-  // 第 2 页：设备读取要二次口令（契约要求 current_password），不是自动请求。
-  const dialog2 = page.getByRole('dialog')
-  await expect(dialog2.getByText('设备信息需要你的登录口令二次确认后读取')).toBeVisible()
-  await dialog2.getByRole('button', { name: '读取设备信息' }).click()
-  const reauth = page.getByRole('dialog', { name: '读取设备信息？' })
-  await fillReauth(reauth)
-  await reauth.getByRole('button', { name: '读取', exact: true }).click()
-  // 设备码是只读文本（非输入框）且带来源说明。
-  await expect(dialog2.getByText(DEVICE_READ.device_code_masked)).toBeVisible({
-    timeout: 10_000,
-  })
-  await expect(dialog2.getByText('来自易班平台登记，不可修改')).toBeVisible()
-  await expect(page.locator('#account-create-device input, #account-create-device textarea')).toHaveCount(0)
-  await expect(deviceRefreshCalls(api, 'acc-new')).toHaveLength(1)
-  expect(deviceRefreshCalls(api, 'acc-new')[0].body).toEqual({
-    current_password: SESSION_PASSWORD,
-  })
-})
-
-test('ux2 user: a failed device read stays non-blocking and offers the later entry', async ({
-  page,
-}) => {
-  await mockAccountsApi(page, {
-    role: 'user',
-    deviceRefreshError: { status: 502, code: 'upstream_unavailable', message: '平台不可用' },
-  })
-  await openAccounts(page)
-
-  await page.getByRole('button', { name: '新建账号' }).click()
-  await submitWizardPageOne(page)
-
-  // 读取失败留在二次口令弹窗里，不阻断跳过。
-  await page.getByRole('dialog').getByRole('button', { name: '读取设备信息' }).click()
-  const reauth = page.getByRole('dialog', { name: '读取设备信息？' })
-  await fillReauth(reauth)
-  await reauth.getByRole('button', { name: '读取', exact: true }).click()
-  await expect(reauth.getByText('平台暂时不可用，请稍后再试。')).toBeVisible()
-  await reauth.getByRole('button', { name: '取消' }).click()
-
-  // 跳过仍可达：完成不被阻断。
-  await page.getByRole('dialog').getByRole('button', { name: '跳过' }).click()
-  await expect(page.getByText('已创建 138****0000')).toBeVisible()
-})
-
-test('ux2 user: skip lands on the drawer device block with a reachable refresh', async ({
-  page,
-}) => {
-  const api = await mockAccountsApi(page, { role: 'user' })
-  await openAccounts(page)
-
-  await page.getByRole('button', { name: '新建账号' }).click()
-  await submitWizardPageOne(page)
-  await page.getByRole('dialog').getByRole('button', { name: '跳过' }).click()
-  await expect(page.getByText('已创建 138****0000')).toBeVisible()
-
-  // 补录入口：详情抽屉的设备块与「刷新设备」可达（8v8③）。
-  await page.getByRole('button', { name: '查看 138****0000' }).click()
-  const drawer = page.getByRole('dialog', { name: '账号详情' })
-  await expect(drawer.getByText('设备信息')).toBeVisible()
-  await drawer.getByRole('button', { name: '刷新设备' }).click()
-  const reauth = page.getByRole('dialog', { name: '刷新设备？' })
-  await fillReauth(reauth)
-  await reauth.getByRole('button', { name: '刷新设备' }).click()
-  await expect(drawer.getByText(DEVICE_READ.device_code_masked)).toBeVisible()
-  await expect(deviceRefreshCalls(api, 'acc-new')).toHaveLength(1)
-})
 
 test('ux2 master: the single form resolves owner by email lookup and leaves it blank for self', async ({
   page,
@@ -1553,7 +1394,7 @@ test('ux2 master: a dotless-domain email passes the completeness gate and binds 
   expect(createCalls(api)[0].body).toMatchObject({ owner_user_id: 'user-intranet' })
 })
 
-test('ux2 user: the device block does not carry data across accounts', async ({ page }) => {
+test('ux2 master: the device block does not carry data across accounts', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
 
@@ -1637,12 +1478,6 @@ test('ux2 master: the deleted filter reveals restore and the row returns to norm
   await expect.poll(() => lastListCall(api)?.params.include_deleted ?? 'absent').toBe('true')
   // 恢复后行回原状态：软删徽标消失。
   await expect(deletedRowFor(page, '131****0000').getByText('已删除')).toHaveCount(0)
-})
-
-test('ux2 user: no deleted filter and no restore entry', async ({ page }) => {
-  await mockAccountsApi(page, { role: 'user' })
-  await openAccounts(page)
-  await expect(page.getByRole('checkbox', { name: '含已删除' })).toHaveCount(0)
 })
 
 test('the deleted-at column only renders while the deleted filter is on', async ({ page }) => {
@@ -1784,15 +1619,6 @@ test('n190: deleting the pending account refetches the summary and hides the ban
     .poll(() => summaryCalls(api).length, 'the delete invalidates the summary')
     .toBeGreaterThan(before)
   await expect(page.locator('.app-pending-banner')).toHaveCount(0)
-})
-
-test('n190: a user never reads the summary and sees no banner or badge', async ({ page }) => {
-  const api = await mockAccountsApi(page, { role: 'user' })
-  await openAccounts(page)
-
-  expect(summaryCalls(api), 'a user never reads the account summary').toHaveLength(0)
-  await expect(page.locator('.app-pending-banner')).toHaveCount(0)
-  await expect(accountsNavLink(page).locator('.nav-badge')).toHaveCount(0)
 })
 
 test('n190: a failing summary hides the banner and keeps the page usable', async ({ page }) => {
