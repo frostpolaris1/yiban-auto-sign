@@ -43,6 +43,16 @@ function trackApiRequests(page: Page): string[] {
 
 test.use({ baseURL: 'http://127.0.0.1:4174' })
 
+/**
+ * 改密卡。设置页在本轮新增了邮件设置卡，展示模式下同样渲染一份只读说明节点；
+ * 改密断言必须收窄到本卡，否则页面级选择器会命中两个元素触发严格模式。
+ */
+function changePasswordCard(page: Page) {
+  return page
+    .locator('section.card')
+    .filter({ has: page.getByRole('heading', { name: '修改密码' }) })
+}
+
 test('invariant 7: the showcase dashboard renders fixtures with zero requests', async ({
   page,
 }) => {
@@ -264,7 +274,8 @@ test('invariant 8: the settings page shows the read-only reason and sends no pas
   await expect(submit).toBeDisabled()
   await expect(submit).toHaveAttribute('title', READ_ONLY_REASON)
   await submit.click({ force: true })
-  await expect(page.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
+  // 收窄到改密卡：本页还有邮件设置卡，展示模式下同样渲染只读说明。
+  await expect(changePasswordCard(page).locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
 
   expect(apiRequests, 'a read-only showcase sends no password change').toEqual([])
 })
@@ -279,11 +290,13 @@ test('invariant 8: the settings form ignores Enter while read-only', async ({ pa
   await page.getByLabel(/^确认新密码/).press('Enter')
   // Chromium 对「唯一提交按钮被禁用」的表单不派发隐式提交。
   // 用同一 submit 事件路径补一次，直接验证 onSubmit 的只读守卫。
-  await page.locator('form').evaluate((form) => (form as HTMLFormElement).requestSubmit())
+  await changePasswordCard(page)
+    .locator('form')
+    .evaluate((form) => (form as HTMLFormElement).requestSubmit())
 
   await expect(page).toHaveURL(/\/settings$/)
   await expect(page.getByRole('button', { name: '修改密码' })).toBeDisabled()
-  await expect(page.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
+  await expect(changePasswordCard(page).locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
   expect(apiRequests, 'a read-only showcase sends no password change').toEqual([])
 })
 

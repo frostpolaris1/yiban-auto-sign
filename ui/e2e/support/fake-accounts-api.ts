@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { Page, Request, Route } from '@playwright/test'
 import type { Account, AccountSummary, AccountVerifyResult } from '../../src/lib/api/account'
 import type { AuditStatusReport } from '../../src/lib/api/audit'
+import type { MailSettingsReport } from '../../src/lib/api/mail'
 import type { components } from '../../src/lib/api/schema'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
 import { handleDefaultNotifyRoute } from './fake-notify-api'
@@ -250,6 +251,13 @@ export type MockOptions = {
   deviceRefreshError?: { status: number; code: string; message: string }
   /** 恢复的失败注入。缺省清掉软删标记。 */
   restoreError?: { status: number; code: string; message: string }
+  /** 彻底删除（purge）的失败注入。缺省 204 并把该行从内存里抹掉。 */
+  purgeError?: { status: number; code: string; message: string }
+  /**
+   * 批量签到的逐项失败注入：键是账号 id，值是该 id 的逐项错误。
+   * 用来断言「一项失败不影响后面的项、也不回滚已入队的」。
+   */
+  signBatchItemError?: Record<string, { code: string; message: string }>
   /** 二次口令连续失败：任何危险写都回 429。 */
   reauthThrottled?: boolean
   /** 写端点的人为延迟（毫秒）；用来观察在途锁关。GET 不受影响。 */
@@ -273,6 +281,12 @@ export type MockOptions = {
   notifySetError?: { status: number; code: string; message: string; once?: boolean }
   /** PUT /api/admin/notify 断网模拟。 */
   notifyNetworkError?: boolean
+  /** 邮件设置的读取失败注入。 */
+  mailGetError?: { status: number; code: string; message: string }
+  /** 邮件设置的保存失败注入。 */
+  mailPutError?: { status: number; code: string; message: string }
+  /** 测试邮件的失败注入。 */
+  mailTestError?: { status: number; code: string; message: string }
   /** 挂起 PUT /api/admin/notify 直到调用 api.releaseNotifyPut()，用于确定性测试在途锁定态。 */
   holdNotifyPut?: boolean
   /** 照片夹具。缺省为一份 user-1 拥有两张图的合成库。 */
@@ -337,6 +351,17 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       items.map((item) => ({ ...item })),
     ]),
   )
+  // 邮件设置的合成生效值：主机与端口来自环境变量，发件人与账号是数据库覆盖，
+  // 密码只有 set 标志（服务端连掩码都不发）。写端点会就地更新这份副本。
+  const mailSettings: MailSettingsReport = {
+    host: { value: 'smtp.example.com', source: 'env' },
+    port: { value: 465, source: 'env' },
+    tls_mode: { value: 'auto', source: 'default' },
+    from: { set: true, masked: '****', source: 'db' },
+    user: { set: true, masked: '****', source: 'db' },
+    pass: { set: true, source: 'db' },
+  }
+
   // 软删行每份测试一个副本：恢复会改行内标记，不能污染共享夹具。
   const deletedAccounts = (options.deletedAccounts ?? DELETED_ACCOUNTS).map((item) => ({
     ...item,
@@ -769,6 +794,69 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return fail(route, 405, 'internal_error', '不支持的方法')
     }
 
+    // 邮件设置：读放行 master/admin，写只归 master（与契约 x-roles 一致）。
+    if (url.pathname === '/api/admin/mail-settings') {
+      if (sessionRole !== 'master' && sessionRole !== 'admin') {
+        return fail(route, 403, 'forbidden', '仅 master/admin 可读邮件设置')
+      }
+      if (request.method() === 'GET') {
+        if (options.mailGetError) {
+          const { status, code, message } = options.mailGetError
+          return fail(route, status, code, message)
+        }
+        return json(route, request, mailSettings)
+      }
+      if (request.method() === 'PUT') {
+        if (sessionRole !== 'master') {
+          return fail(route, 403, 'forbidden', '仅 master 可修改邮件设置')
+        }
+        if (reauthRejected(route, body)) return
+        if (options.mailPutError) {
+          const { status, code, message } = options.mailPutError
+          return fail(route, status, code, message)
+        }
+        const payload = (body ?? {}) as Record<string, unknown>
+        const keys = ['host', 'port', 'tls_mode', 'from', 'user', 'pass']
+        const known = Object.keys(payload).filter((key) => key !== 'current_password')
+        if (known.length === 0 || known.some((key) => !keys.includes(key))) {
+          return fail(route, 400, 'validation_failed', 'invalid mail settings update')
+        }
+        if (typeof payload.host === 'string') mailSettings.host = { value: payload.host, source: 'db' }
+        if (typeof payload.port === 'number') {
+          mailSettings.port = { value: payload.port, source: 'db' }
+        }
+        if (
+          payload.tls_mode === 'auto' ||
+          payload.tls_mode === 'implicit' ||
+          payload.tls_mode === 'starttls'
+        ) {
+          mailSettings.tls_mode = { value: payload.tls_mode, source: 'db' }
+        }
+        if (typeof payload.from === 'string') {
+          mailSettings.from = { set: true, masked: '****', source: 'db' }
+        }
+        if (typeof payload.user === 'string') {
+          mailSettings.user = { set: true, masked: '****', source: 'db' }
+        }
+        if (typeof payload.pass === 'string') mailSettings.pass = { set: true, source: 'db' }
+        return json(route, request, mailSettings)
+      }
+      return fail(route, 405, 'internal_error', '不支持的方法')
+    }
+
+    // 测试邮件：只归 master；收件人恒为登录人本人，409 表示 SMTP 未开启或无邮箱。
+    if (url.pathname === '/api/admin/mail/test' && request.method() === 'POST') {
+      if (sessionRole !== 'master') {
+        return fail(route, 403, 'forbidden', '仅主管理员可触发测试邮件')
+      }
+      if (reauthRejected(route, body)) return
+      if (options.mailTestError) {
+        const { status, code, message } = options.mailTestError
+        return fail(route, status, code, message)
+      }
+      return json(route, request, { message: 'queued' })
+    }
+
     // 批量动作：二次口令必填；每项独立处理，顺序与请求一致。
     if (url.pathname === '/api/accounts/batch' && request.method() === 'POST') {
       if (reauthRejected(route, body)) return
@@ -834,6 +922,71 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         return { id, status: 'ok' as const }
       })
       return json(route, request, { items })
+    }
+
+    // 批量签到：整批只校验 1..10 与去重；通过后逐项独立入队，某项失败不影响后续。
+    if (url.pathname === '/api/accounts/batch/sign' && request.method() === 'POST') {
+      if (sessionRole !== 'master' && sessionRole !== 'admin') {
+        return fail(route, 403, 'forbidden', '仅 master/admin 可批量签到')
+      }
+      const payload = (body ?? {}) as { ids?: unknown }
+      const ids = Array.isArray(payload.ids) ? payload.ids : []
+      if (
+        ids.length < 1 ||
+        ids.length > 10 ||
+        !ids.every((item) => typeof item === 'string') ||
+        new Set(ids).size !== ids.length
+      ) {
+        return fail(route, 400, 'validation_failed', 'invalid batch sign request')
+      }
+      // 端点不需要二次口令：这里也不看 current_password，与契约一致。
+      const items = (ids as string[]).map((id) => {
+        const injected = options.signBatchItemError?.[id]
+        if (injected) {
+          return {
+            id,
+            status: 'error' as const,
+            code: injected.code as components['schemas']['ErrorCode'],
+            message: injected.message,
+          }
+        }
+        const target = knownAccounts.find((item) => item.id === id)
+        if (!target || target.deleted_at) {
+          return { id, status: 'error' as const, code: 'not_found' as const, message: '账号不存在' }
+        }
+        if (target.status !== 'active') {
+          return {
+            id,
+            status: 'error' as const,
+            code: 'conflict' as const,
+            message: 'account is not active',
+          }
+        }
+        return { id, status: 'ok' as const, task_id: `task-${id}` }
+      })
+      return json(route, request, { items })
+    }
+
+    // 彻底删除：二次口令必填；只接受已软删除的行，成功 204 且该行不再出现。
+    const purgeMatch = /^\/api\/accounts\/([^/]+)\/purge$/.exec(url.pathname)
+    if (purgeMatch && request.method() === 'POST') {
+      const target = knownAccounts.find((item) => item.id === purgeMatch[1])
+      if (!target) return fail(route, 404, 'not_found', '账号不存在或无权访问')
+      if (reauthRejected(route, body)) return
+      if (options.purgeError) {
+        const { status, code, message } = options.purgeError
+        return fail(route, status, code, message)
+      }
+      if (!target.deleted_at) return fail(route, 409, 'conflict', '账号未删除')
+      for (let i = allAccounts.length - 1; i >= 0; i -= 1) {
+        if (allAccounts[i].id === target.id) allAccounts.splice(i, 1)
+      }
+      for (const key of Object.keys(pages)) {
+        pages[key] = pages[key].filter((item) => item.id !== target.id)
+      }
+      const at = deletedAccounts.findIndex((item) => item.id === target.id)
+      if (at >= 0) deletedAccounts.splice(at, 1)
+      return route.fulfill({ status: 204 })
     }
 
     const match = url.pathname.match(

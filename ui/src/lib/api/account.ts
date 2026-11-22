@@ -9,6 +9,8 @@
  * 类型来自生成的 `schema.d.ts`。**不在此重写契约字段**。
  * `status` 用契约枚举，不另立字符串联合。
  * 写操作走 `apiRequest`，由它附 CSRF 头并抛 `ApiError` 信封。
+ * 批量签到与单条签到一样不要求二次口令：每项独立入队，逐项回 ok/error。
+ * 彻底删除（purge）是 204 无响应体，只能作用于已软删除的行。
  */
 
 import type { components, operations } from './schema'
@@ -33,6 +35,9 @@ export type AccountBatchAction = Schemas['AccountBatchAction']
 export type AccountBatchRequest = Schemas['AccountBatchRequest']
 export type AccountBatchItem = Schemas['AccountBatchItem']
 export type AccountBatchResult = Schemas['AccountBatchResult']
+export type AccountBatchSignRequest = Schemas['AccountBatchSignRequest']
+export type AccountBatchSignItem = Schemas['AccountBatchSignItem']
+export type AccountBatchSignResult = Schemas['AccountBatchSignResult']
 export type AccountDetectRequest = Schemas['AccountDetectRequest']
 export type AccountDetectResult = Schemas['AccountDetectResult']
 export type AccountPersonNameResult = Schemas['AccountPersonNameResult']
@@ -58,6 +63,8 @@ export const ACCOUNT_PATHS = {
   selfDelete: (id: string) => `/api/me/accounts/${encodeURIComponent(id)}/delete`,
   selfRestore: (id: string) => `/api/me/accounts/${encodeURIComponent(id)}/restore`,
   batch: '/api/accounts/batch',
+  batchSign: '/api/accounts/batch/sign',
+  purge: (id: string) => `/api/accounts/${encodeURIComponent(id)}/purge`,
 } as const
 
 /**
@@ -228,5 +235,34 @@ export function batchAccounts(body: AccountBatchRequest): Promise<AccountBatchRe
   return apiRequest<AccountBatchResult>(ACCOUNT_PATHS.batch, {
     method: 'POST',
     body: JSON.stringify(body),
+  })
+}
+
+/**
+ * 批量签到：一次入队 1..10 个账号，只归 master/admin。
+ * 与单条签到一致，**不要二次口令**。
+ * 空数组、超过 10 个或 ids 重复由服务端整批拒绝（400），一项都不入队；
+ * 通过校验后逐项独立入队，某项失败不阻断后续、也不回滚已入队的项。
+ * 逐项错误码：不存在/越权 not_found、id 不是 UUID validation_failed、
+ * 账号非 active conflict，以及引擎侧的 already_signed / sign_running /
+ * window_closed / capacity_exceeded / rate_limited（引擎全局暂停时
+ * message 是 engine is paused）。ok 项只带 task_id，不等待执行结果。
+ */
+export function batchSignAccounts(body: AccountBatchSignRequest): Promise<AccountBatchSignResult> {
+  return apiRequest<AccountBatchSignResult>(ACCOUNT_PATHS.batchSign, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+/**
+ * 彻底删除（硬删）：只能删已软删除的账号，凭据与签到任务一起物理删除。
+ * 审计行永久保留。目标未先软删 409；不存在或越权 404；成功 204 无响应体。
+ * 契约要求 `current_password`：缺值 400、口令错 403、连续失败 429，被拒零写入。
+ */
+export function purgeAccount(id: string, currentPassword: string): Promise<void> {
+  return apiRequest<void>(ACCOUNT_PATHS.purge(id), {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword }),
   })
 }

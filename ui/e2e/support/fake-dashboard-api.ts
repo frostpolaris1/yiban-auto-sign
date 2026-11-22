@@ -9,7 +9,11 @@ import type {
   ScheduleWindow,
   TimePref,
 } from '../../src/lib/api/schedule'
-import type { PrefStatsReport, SignStatsReport } from '../../src/lib/api/stats'
+import type {
+  PrefStatsReport,
+  SignFailuresReport,
+  SignStatsReport,
+} from '../../src/lib/api/stats'
 import { SESSION_CSRF, SESSION_EMAIL, DEFAULT_AUDIT_STATUS, type Role } from './fake-accounts-api'
 
 /**
@@ -17,8 +21,8 @@ import { SESSION_CSRF, SESSION_EMAIL, DEFAULT_AUDIT_STATUS, type Role } from './
  *
  * 一份路由处理 `/api/auth/me`、`/api/me/sign-status`、`/api/me/diagnostics`、
  * `/api/me/time-pref`、`/api/schedule/windows`、`/api/capacity`、
- * `/api/sign-stats`、`/api/time-prefs/stats`、`/api/accounts/summary`
- * 与 `/api/admin/audit-status`。
+ * `/api/sign-stats`、`/api/sign-stats/failures`、`/api/time-prefs/stats`、
+ * `/api/accounts/summary` 与 `/api/admin/audit-status`。
  * 响应体只用登记过的合成值：学校与任务带「合成」前缀，账号是 `acc-000N`。
  * 角色按契约 `x-roles` 判：sign-status 仅 user；windows、capacity、summary
  * 与 audit-status 仅 master/admin。
@@ -59,8 +63,11 @@ export type MockDashboardOptions = {
   capacityError?: Failure
   signStats?: SignStatsReport
   prefStats?: PrefStatsReport
+  /** 今日失败明细分桶；缺省 DEFAULT_SIGN_FAILURES。 */
+  signFailures?: SignFailuresReport
   signStatsError?: Failure
   prefStatsError?: Failure
+  signFailuresError?: Failure
   /** 待处理账号计数。缺省 {pending: 2, rejected: 1}，第 5 卡值 3。 */
   accountSummary?: AccountSummary
   accountSummaryError?: Failure
@@ -220,6 +227,21 @@ export const DEFAULT_SIGN_STATS: SignStatsReport = {
   total: 10,
   by_status: { pending: 1, running: 0, success: 9, failed: 4, skipped: 3 },
   days_missing: [],
+}
+
+/**
+ * 今日失败明细：三个桶合计 4 条，与 DEFAULT_SIGN_STATS 的 by_status.failed 对齐。
+ * 计入 `unknown` 桶，用来盯住「空结果码归一」这一层。
+ */
+export const DEFAULT_SIGN_FAILURES: SignFailuresReport = {
+  day: DASHBOARD_DAY,
+  scope: {},
+  items: [
+    { result: 'credential_invalid', count: 2 },
+    { result: 'transient', count: 1 },
+    { result: 'unknown', count: 1 },
+  ],
+  total: 4,
 }
 
 /** 合成窗口 08:30–09:00 的六个槽；人数固定。 */
@@ -389,6 +411,7 @@ export async function mockDashboardApi(
     | 'windows'
     | 'capacity'
     | 'signStats'
+    | 'signFailures'
     | 'prefStats'
     | 'accountSummary'
     | 'auditStatus'
@@ -400,6 +423,7 @@ export async function mockDashboardApi(
     windows: { spec: options.windowsError, hits: 0 },
     capacity: { spec: options.capacityError, hits: 0 },
     signStats: { spec: options.signStatsError, hits: 0 },
+    signFailures: { spec: options.signFailuresError, hits: 0 },
     prefStats: { spec: options.prefStatsError, hits: 0 },
     accountSummary: { spec: options.accountSummaryError, hits: 0 },
     auditStatus: { spec: options.auditStatusError, hits: 0 },
@@ -503,6 +527,13 @@ export async function mockDashboardApi(
       return json(route, options.capacity ?? capacityFor(day, row))
     }
 
+    if (url.pathname === '/api/sign-stats/failures' && request.method() === 'GET') {
+      if (!(await deny(route, ['master', 'admin']))) return
+      const failure = takeFailure('signFailures')
+      if (failure) return fail(route, failure.status, failure.code, failure.message)
+      return json(route, options.signFailures ?? DEFAULT_SIGN_FAILURES)
+    }
+
     if (url.pathname === '/api/sign-stats' && request.method() === 'GET') {
       if (!(await deny(route, ['master', 'admin']))) return
       const failure = takeFailure('signStats')
@@ -603,6 +634,12 @@ export function auditStatusCalls(api: FakeDashboardApi): DashboardApiCall[] {
 
 export function signStatsCalls(api: FakeDashboardApi): DashboardApiCall[] {
   return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/sign-stats')
+}
+
+export function signFailureCalls(api: FakeDashboardApi): DashboardApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'GET' && call.path === '/api/sign-stats/failures',
+  )
 }
 
 export function prefStatsCalls(api: FakeDashboardApi): DashboardApiCall[] {

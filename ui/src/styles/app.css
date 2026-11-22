@@ -3827,3 +3827,78 @@ html[data-density="compact"] .card {
   border-radius: 8px;
   background: var(--bg-muted);
 }
+
+/* ---------- 看板失败明细：窄屏改堆叠 ----------
+ * 这卡四列：失败结果 / 条数 / 占比 / 处置建议。390 宽下卡内只有约 338px 可用，
+ * vendor `.table` 的单元格左右内边距是 0，四列直接贴在一起：表头「条数」被挤成两行、
+ * 「2 条」与「50.0%」只隔 1px，而 `.data-cell-mono` 的 overflow-wrap: anywhere
+ * 还会把「2 条」从中间劈开——读到的「2」和「条」不在同一行，扫一眼会错认成两列数据。
+ * 四列排 338px 没有可行的等分方案，故窄屏改为每条堆叠：结果一行、条数与占比同行、
+ * 处置建议一行。信息一个不丢，也不用横滑去够第四列。
+ * 代价写在明处：堆叠后不再是 table 布局，读屏失去列头关联，故条数与占比自带单位
+ * （「2 条」「50.0%」）、处置建议是完整句子，单元格自身可解释。
+ * 宽屏（>640px）保持原表格布局，本轮不改变任何宽屏像素。
+ */
+
+/* 「数值+单位」不折行：断成两行会被误读成两列数据。 */
+.app-failure-table th:nth-child(2),
+.app-failure-table td:nth-child(2),
+.app-failure-table th:nth-child(3),
+.app-failure-table td:nth-child(3) {
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  /* 列头只对表格布局有意义；堆叠后视觉隐藏，仍留在无障碍树与文本检索里。 */
+  .app-failure-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .app-failure-table,
+  .app-failure-table tbody,
+  .app-failure-table tr,
+  .app-failure-table td {
+    display: block;
+    width: auto;
+  }
+
+  /* 行分隔从单元格边框上移到整行：堆叠后每行是独立的一块。 */
+  .app-failure-table tr {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .app-failure-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  /* 特异度要对齐 vendor 的 .table tbody td（0,1,2）：只写 .app-failure-table td（0,1,1）
+   * 会输给它，单元格内边距与下边框照旧生效，堆叠后每行里会多出两条横线。 */
+  .app-failure-table tbody td {
+    padding: 0;
+    border-bottom: 0;
+  }
+
+  .app-failure-table td:nth-child(2),
+  .app-failure-table td:nth-child(3) {
+    display: inline-block;
+    margin-top: 2px;
+    color: var(--t-muted);
+  }
+
+  /* 占比前的分隔点。纯装饰；单位已在单元格内，读屏按标点朗读。 */
+  .app-failure-table td:nth-child(3)::before {
+    content: "·";
+    margin: 0 6px;
+  }
+
+  .app-failure-table td:last-child {
+    margin-top: 4px;
+    font-size: 12.5px;
+  }
+}

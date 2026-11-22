@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 行内「更多」菜单：编辑、位置、删除三项的收纳入口。
+ * 行内「更多」菜单：活行收编辑、位置、删除；已删行收恢复与彻底删除。
  *
  * **归属**
  * `features/accounts` 展示层：权限判断走 permissions，动作回调由调用方给。
@@ -25,6 +25,7 @@ type AccountRowMenuProps = {
   onLocation: (account: Account, opener: HTMLElement | null) => void
   onDelete: (account: Account, opener: HTMLElement | null) => void
   onRestore: (account: Account, opener: HTMLElement | null) => void
+  onPurge: (account: Account, opener: HTMLElement | null) => void
 }
 
 type RowMenuEntry = {
@@ -42,9 +43,10 @@ export function AccountRowMenu({
   onLocation,
   onDelete,
   onRestore,
+  onPurge,
 }: AccountRowMenuProps) {
   const triggerRef = useRef<HTMLButtonElement | null>(null)
-  // 软删行只剩恢复一条路：编辑、位置与删除对已删行都是 404，不放进菜单。
+  // 软删行只有恢复与彻底删除两条路：编辑、位置与删除对已删行都是 404，不放进菜单。
   const entries: RowMenuEntry[] =
     account.deleted_at != null
       ? [
@@ -53,6 +55,13 @@ export function AccountRowMenu({
             label: '恢复',
             icon: 'rotateCcw',
             onRun: () => onRestore(account, triggerRef.current),
+          },
+          {
+            item: 'purge',
+            label: '彻底删除',
+            icon: 'trash',
+            danger: true,
+            onRun: () => onPurge(account, triggerRef.current),
           },
         ]
       : [

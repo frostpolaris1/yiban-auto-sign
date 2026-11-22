@@ -15,7 +15,8 @@
  * windows 与时间片页共用缓存键 `['schedule-windows', day]`。
  * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与趋势图共用一次读取；
  * 缓存键带上海业务日，每 60 秒复核、跨日才重取。
- * 首屏顺序＝KPI×4（含待处理账号直达入口）→容量体检+时段拥挤度（并排）→30天趋势→底部健康与审计状态条。
+ * 首屏顺序＝KPI×4（含待处理账号直达入口）→容量体检+时段拥挤度（并排）→30天趋势+今日失败明细→底部健康与审计状态条。
+ * 失败明细走独立端点（按失败结果分桶），不重读 sign-stats：趋势与 KPI 共用那一次读取。
  * 拥挤度每 15 秒轮询（自选写入无 SSE 事件）；页面隐藏时不轮询。
  * 容量默认选第一个可用任务；没有可用任务就不发容量与拥挤度请求。
  * 各卡错误态独立，重试只重取该卡的数据。
@@ -33,7 +34,7 @@ import { getEngineSnapshot, setEnginePause } from '@/lib/api/engine'
 import { getDiagnostics, getSignStatus } from '@/lib/api/me'
 import type { Role } from '@/lib/api/auth'
 import { getCapacity, listScheduleWindows } from '@/lib/api/schedule'
-import { getPrefStats, getSignStats } from '@/lib/api/stats'
+import { getPrefStats, getSignFailures, getSignStats } from '@/lib/api/stats'
 import { dayOf } from '@/lib/format'
 import { SHOWCASE } from '@/lib/session'
 import {
@@ -44,6 +45,7 @@ import {
   showcaseDiagnostics,
   showcaseEngineSnapshot,
   showcasePrefStats,
+  showcaseSignFailures,
   showcaseSignStats,
   showcaseSignStatus,
   showcaseWindows,
@@ -54,6 +56,7 @@ import { AuditStatusCard } from './AuditStatusCard'
 import { CapacityCard } from './CapacityCard'
 import { PrefCrowdingCard, SignTrendCard } from './ChartCards'
 import { DiagnosticsCard } from './DiagnosticsCard'
+import { FailureBreakdownCard } from './FailureBreakdownCard'
 import { KpiGrid } from './KpiGrid'
 import { SignStatusCard } from './SignStatusCard'
 import {
@@ -176,8 +179,16 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     retry: false,
   })
 
-
-
+  // 今日失败明细：独立端点（按失败结果分桶），不与 30 天报告共用读取。
+  // 不传 day：业务日由服务端按部署时区判定，跨日复核复用同一份 businessDay 键。
+  const signFailuresQuery = useQuery({
+    queryKey: ['sign-failures', businessDay],
+    queryFn: () =>
+      SHOWCASE ? Promise.resolve(showcaseSignFailures()) : getSignFailures(),
+    enabled: !isUser,
+    staleTime: 0,
+    retry: false,
+  })
   // 审计链巡检：按需复算全链，耗时随行数线性增长，故不轮询；
   // 只在挂载、重试或缓存过期后取一次。展示构建读合成结论，零请求。
   const auditStatusQuery = useQuery({
@@ -385,6 +396,16 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
           error={signStatsQuery.isError ? describeApiError(signStatsQuery.error) : null}
           onRetry={() => {
             void signStatsQuery.refetch()
+          }}
+        />
+        <FailureBreakdownCard
+          report={signFailuresQuery.data}
+          loading={signFailuresQuery.isPending}
+          error={
+            signFailuresQuery.isError ? describeApiError(signFailuresQuery.error) : null
+          }
+          onRetry={() => {
+            void signFailuresQuery.refetch()
           }}
         />
       </div>
