@@ -33,7 +33,7 @@ export type SearchResult = {
   title: string
   subtitle: string
   /** 跳转目标：逻辑层不依赖路由实例，由组件落到具体 route。 */
-  route: 'accounts' | 'users' | 'run'
+  route: 'accounts' | 'users' | 'logs'
   /** 目标页可复现这批结果的检索词（掩码号会被改写为后 4 位）。 */
   query: string
   /** 账号行定位用 id：落地页据此高亮现有精确命中样式。 */
@@ -114,9 +114,8 @@ function mapTasks(items: AdminTaskRow[], term: string): SearchResult[] {
     id: item.id,
     title: `${item.task_name} · ${item.school_name}`,
     subtitle: `${item.account_phone_masked} · ${taskStatusLabel(item.state)}`,
-    // 台账已迁到 `/logs?tab=events`（`/run` 只剩 302）。route 保留 'run' 这个名字
-    // 只是历史包袱，跳转由 GlobalSearch 决定；这里补注释防后来者按字面意思改回去。
-    route: 'run' as const,
+    // 台账基点在 `/logs?tab=events`（`/run` 只剩 302 重定向桩），route 名与落点一致。
+    route: 'logs' as const,
     query,
   }))
 }

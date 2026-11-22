@@ -15,7 +15,7 @@
  * 清空输入或关闭面板同样作废在途请求。
  * 结果按角色收敛（见 searchResults）；无结果给提示词与示例。
  * 点击跳转：账号→`/accounts`（q+locate 高亮），用户→`/users?q=`，
- * 任务→`/run?q=`（本基点台账在 /run；`/logs` 仍是重定向桩）。
+ * 任务→`/logs?tab=events&q=`（台账即基点；`/run` 已是 302 重定向桩）。
  */
 
 import {
