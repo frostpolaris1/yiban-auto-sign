@@ -9,6 +9,7 @@ import {
   heroClock,
   homeState,
   windowGeometry,
+  nextRunText,
 } from '../../src/features/me/display.ts'
 
 /**
@@ -140,4 +141,19 @@ test('sky palette follows the Shanghai wall clock, not the machine zone', () => 
       }
     }
   }
+})
+
+test('next run says today while the window is still ahead', () => {
+  // 早间窗口 06:30 + 15min = 06:45。06:00 时还没到点，当天仍会执行。
+  const beforeStart = new Date('2026-11-11T06:00:00+08:00')
+  assert.equal(nextRunText(PREF, beforeStart), '今天 06:45 左右')
+  // 06:45 整点仍算今天（含等号），文案不跳变。
+  assert.equal(nextRunText(PREF, new Date('2026-11-11T06:45:00+08:00')), '今天 06:45 左右')
+  // 过了 06:45 才轮到明天。
+  assert.equal(nextRunText(PREF, new Date('2026-11-11T06:46:00+08:00')), '明天 06:45 左右')
+  assert.equal(nextRunText(PREF, new Date('2026-11-11T23:00:00+08:00')), '明天 06:45 左右')
+  // 业务钟：东京 07:00 = 上海 06:00，仍算今天；换机器不改结论。
+  assert.equal(nextRunText(PREF, new Date('2026-11-11T07:00:00+09:00')), '今天 06:45 左右')
+  // 无窗口时不编造时刻。
+  assert.equal(nextRunText(undefined, beforeStart), '明天早上')
 })
