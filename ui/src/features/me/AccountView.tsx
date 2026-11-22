@@ -336,7 +336,7 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
   const uploadRef = useRef<HTMLInputElement | null>(null)
 
   const photosQuery = useQuery({
-    queryKey: account ? ME_KEYS.photos(account.id) : ['account', 'none', 'photos'],
+    queryKey: ME_KEYS.photos(account?.id ?? 'none', 20),
     queryFn: () => listAccountPhotos(account!.id, { limit: 20 }),
     enabled: account !== null,
     staleTime: 0,
@@ -528,7 +528,7 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
 
   const refreshPhotos = () => {
     if (!account) return
-    void queryClient.invalidateQueries({ queryKey: ME_KEYS.photos(account.id) })
+    void queryClient.invalidateQueries({ queryKey: ME_KEYS.photosBase(account.id) })
   }
 
   const onUpload = async (file: File) => {
