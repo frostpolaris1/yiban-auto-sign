@@ -593,6 +593,12 @@ test('register: matching confirm shows a done check; unchecked agreement blocks 
   await page.getByRole('button', { name: '创建账号', exact: true }).click()
   expect(registered).toBe(0)
   await expect(page.locator('#register-agree')).toBeFocused()
+  await expect(page.locator('#register-agree')).toHaveAttribute('aria-invalid', 'true')
+  await expect(page.locator('#register-agree')).toHaveAttribute(
+    'aria-describedby',
+    'register-agree-error',
+  )
+  await expect(page.locator('#register-agree-error')).toBeVisible()
   await page.locator('.app-register-agree .box').click()
   await expect(page.locator('#register-agree')).toBeChecked()
   await expect(page.getByRole('button', { name: '创建账号', exact: true })).toBeEnabled()

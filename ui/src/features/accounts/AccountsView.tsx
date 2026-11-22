@@ -237,11 +237,13 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
   const [batch, setBatch] = useState<{ action: AccountBatchAction; rows: Account[] } | null>(null)
   const [batchError, setBatchError] = useState<string | null>(null)
   const [batchResult, setBatchResult] = useState<AccountBatchResult | null>(null)
+  const [batchReturnFocus, setBatchReturnFocus] = useState<HTMLElement | null>(null)
   // 批量签到：确认走 ConfirmModal（无二次口令），逐项结果留在页面内可回看的区块里。
   const [signTarget, setSignTarget] = useState<Account[] | null>(null)
   const [signBatchRows, setSignBatchRows] = useState<Account[] | null>(null)
   const [signBatchResult, setSignBatchResult] = useState<AccountBatchSignResult | null>(null)
   const [signBatchError, setSignBatchError] = useState<string | null>(null)
+  const [signBatchReturnFocus, setSignBatchReturnFocus] = useState<HTMLElement | null>(null)
 
   const clearSelection = () => setSelectedIds(new Set<string>())
 
@@ -585,11 +587,12 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
   const overBatchLimit = selectedRows.length > 10
   const allDeleted = selectedRows.length > 0 && selectedRows.every((row) => row.deleted_at != null)
 
-  const openBatch = (action: AccountBatchAction) => {
+  const openBatch = (action: AccountBatchAction, opener?: HTMLElement | null) => {
     if (selectedRows.length === 0) return
     batchMutation.reset()
     setBatchError(null)
     setBatchResult(null)
+    setBatchReturnFocus(opener ?? null)
     setBatch({ action, rows: selectedRows })
   }
 
@@ -659,11 +662,12 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
   })
 
   /** 确认前不发请求：弹窗只交代影响范围，点了确认才整批提交。 */
-  const openSignBatch = () => {
+  const openSignBatch = (opener?: HTMLElement | null) => {
     if (selectedRows.length === 0) return
     batchSignMutation.reset()
     setSignBatchError(null)
     setSignBatchResult(null)
+    setSignBatchReturnFocus(opener ?? null)
     setSignTarget(selectedRows)
   }
 
@@ -765,7 +769,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
               size="sm"
               disabled={overBatchLimit || batchPending || batchSignMutation.isPending}
               title={overBatchLimit ? '一次最多 10 条' : undefined}
-              onClick={openSignBatch}
+              onClick={(event) => openSignBatch(event.currentTarget)}
             >
               批量签到
             </Button>
@@ -774,7 +778,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
               size="sm"
               disabled={overBatchLimit || batchPending}
               title={overBatchLimit ? '一次最多 10 条' : undefined}
-              onClick={() => openBatch('review_approve')}
+              onClick={(event) => openBatch('review_approve', event.currentTarget)}
             >
               审核通过
             </Button>
@@ -783,7 +787,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
               size="sm"
               disabled={overBatchLimit || batchPending}
               title={overBatchLimit ? '一次最多 10 条' : undefined}
-              onClick={() => openBatch('review_reject')}
+              onClick={(event) => openBatch('review_reject', event.currentTarget)}
             >
               驳回
             </Button>
@@ -792,7 +796,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
               size="sm"
               disabled={overBatchLimit || batchPending}
               title={overBatchLimit ? '一次最多 10 条' : undefined}
-              onClick={() => openBatch('pause')}
+              onClick={(event) => openBatch('pause', event.currentTarget)}
             >
               暂停
             </Button>
@@ -801,7 +805,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
               size="sm"
               disabled={overBatchLimit || batchPending}
               title={overBatchLimit ? '一次最多 10 条' : undefined}
-              onClick={() => openBatch('resume')}
+              onClick={(event) => openBatch('resume', event.currentTarget)}
             >
               恢复签到
             </Button>
@@ -811,7 +815,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
                 size="sm"
                 disabled={overBatchLimit || batchPending}
                 title={overBatchLimit ? '一次最多 10 条' : undefined}
-                onClick={() => openBatch('delete')}
+                onClick={(event) => openBatch('delete', event.currentTarget)}
               >
                 删除
               </Button>
@@ -826,7 +830,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
                       ? undefined
                       : '仅已删除账号可恢复账号'
                 }
-                onClick={() => openBatch('restore')}
+                onClick={(event) => openBatch('restore', event.currentTarget)}
               >
                 恢复账号
               </Button>
@@ -1060,6 +1064,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
         confirmText="确认签到"
         pending={batchSignMutation.isPending}
         error={signBatchError}
+        returnFocusTo={signBatchReturnFocus}
         onClose={closeSignBatch}
         onConfirm={() => {
           if (!signTarget) return
@@ -1086,6 +1091,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
         pending={batchPending}
         error={batchError}
         result={batchResult}
+        returnFocusTo={batchReturnFocus}
         onClose={closeBatch}
         onConfirm={(password, reason) => {
           if (!batch) return

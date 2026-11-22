@@ -47,6 +47,8 @@ type AccountBatchModalProps = {
   result: AccountBatchResult | null
   onClose: () => void
   onConfirm: (password: string, reason?: string) => void
+  /** 关闭后回焦的触发元素。 */
+  returnFocusTo?: HTMLElement | null
 }
 
 export function AccountBatchModal({
@@ -58,6 +60,7 @@ export function AccountBatchModal({
   result,
   onClose,
   onConfirm,
+  returnFocusTo,
 }: AccountBatchModalProps) {
   const [password, setPassword] = useState('')
   const [reason, setReason] = useState('')
@@ -92,6 +95,7 @@ export function AccountBatchModal({
           ? `将作用于已选 ${rows.length} 个账号。${DESCRIPTIONS[action]}`
           : undefined
       }
+      returnFocusTo={returnFocusTo}
       footer={
         result ? (
           <Button variant="ghost" onClick={onClose}>

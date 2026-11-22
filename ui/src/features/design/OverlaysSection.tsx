@@ -19,12 +19,19 @@ import { Modal } from '@/components/ui/Modal'
 
 export function OverlaysSection() {
   const [modalOpen, setModalOpen] = useState(false)
+  const [modalReturnFocus, setModalReturnFocus] = useState<HTMLElement | null>(null)
 
   return (
     <Card className="col-6" eyebrow="Overlays" title="弹窗与下拉">
       <div className="app-demo-stack">
         <div className="demo-row">
-          <Button variant="primary" onClick={() => setModalOpen(true)}>
+          <Button
+            variant="primary"
+            onClick={(event) => {
+              setModalReturnFocus(event.currentTarget)
+              setModalOpen(true)
+            }}
+          >
             打开弹窗
           </Button>
 
@@ -66,6 +73,7 @@ export function OverlaysSection() {
         onOpenChange={setModalOpen}
         title="删除账号？"
         description="删除后无法恢复。本批不发送请求。"
+        returnFocusTo={modalReturnFocus}
         footer={
           <>
             <Button variant="ghost" onClick={() => setModalOpen(false)}>

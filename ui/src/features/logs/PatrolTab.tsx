@@ -75,6 +75,7 @@ export function PatrolTab({ allowed, role, liveStatus, events }: PatrolTabProps)
   // 全局暂停开关：暂停 master+admin 可发，恢复仅 master；二次口令走 ReauthDialog。
   const [pauseDialog, setPauseDialog] = useState<'pause' | 'resume' | null>(null)
   const [pauseError, setPauseError] = useState<string | null>(null)
+  const [pauseReturnFocus, setPauseReturnFocus] = useState<HTMLElement | null>(null)
   const paused = engineQuery.data?.paused === true
   const pauseMutation = useMutation({
     mutationFn: (vars: { paused: boolean; password: string }) =>
@@ -131,8 +132,9 @@ export function PatrolTab({ allowed, role, liveStatus, events }: PatrolTabProps)
           paused={paused}
           pauseCanToggle={pauseCanToggle}
           pauseBlockedReason={pauseBlockedReason}
-          onTogglePause={() => {
+          onTogglePause={(opener) => {
             setPauseError(null)
+            setPauseReturnFocus(opener ?? null)
             setPauseDialog(paused ? 'resume' : 'pause')
           }}
         />
@@ -148,6 +150,7 @@ export function PatrolTab({ allowed, role, liveStatus, events }: PatrolTabProps)
         confirmText={pauseDialog === 'resume' ? '恢复引擎' : '暂停引擎'}
         pending={pauseMutation.isPending}
         error={pauseError}
+        returnFocusTo={pauseReturnFocus}
         onClose={() => {
           if (pauseMutation.isPending) return
           setPauseDialog(null)
@@ -176,7 +179,7 @@ type EngineBodyProps = {
   paused: boolean
   pauseCanToggle: boolean
   pauseBlockedReason?: string
-  onTogglePause: () => void
+  onTogglePause: (opener?: HTMLElement | null) => void
 }
 
 /** 快照正文：四指标、在飞、待重试与最近事件。只在有数据时渲染。 */
@@ -218,7 +221,7 @@ function EngineBody({
               className="app-engine-pause"
               disabled={!pauseCanToggle}
               title={pauseCanToggle ? undefined : pauseBlockedReason}
-              onClick={onTogglePause}
+              onClick={(event) => onTogglePause(event.currentTarget)}
             >
               暂停引擎
             </Button>

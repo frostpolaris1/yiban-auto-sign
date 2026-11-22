@@ -135,6 +135,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
   const [batch, setBatch] = useState<{ action: UserBatchAction; rows: User[] } | null>(null)
   const [batchError, setBatchError] = useState<string | null>(null)
   const [batchResult, setBatchResult] = useState<UserBatchResult | null>(null)
+  const [batchReturnFocus, setBatchReturnFocus] = useState<HTMLElement | null>(null)
 
   const toggleRow = (id: string) => {
     setSelectedIds((previous) => {
@@ -181,10 +182,11 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
     refetchIntervalInBackground: false,
   })
 
-  const openBatch = (action: UserBatchAction, rows: User[]) => {
+  const openBatch = (action: UserBatchAction, rows: User[], opener?: HTMLElement | null) => {
     batchMutation.reset()
     setBatchError(null)
     setBatchResult(null)
+    setBatchReturnFocus(opener ?? null)
     setBatch({ action, rows })
   }
 
@@ -250,9 +252,11 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
       purgeUser(input.user.id, input.password),
     onSuccess: (_result, input) => {
       invalidateUsers()
+      setPurgeReturnFocus(null)
       setPurgeTarget(null)
       setPurgeError(null)
       notifySuccess(`已彻底删除 ${input.user.email}`)
+      document.getElementById('user-filter-q')?.focus()
     },
     onError: (error) => {
       setPurgeError(describeReauthError(error))
@@ -380,7 +384,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
               size="sm"
               disabled={overBatchLimit || batchPending}
               title={overBatchLimit ? '一次最多 10 条' : undefined}
-              onClick={() => openBatch('disable', selectedRows)}
+              onClick={(event) => openBatch('disable', selectedRows, event.currentTarget)}
             >
               停用
             </Button>
@@ -389,7 +393,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
               size="sm"
               disabled={overBatchLimit || batchPending}
               title={overBatchLimit ? '一次最多 10 条' : undefined}
-              onClick={() => openBatch('enable', selectedRows)}
+              onClick={(event) => openBatch('enable', selectedRows, event.currentTarget)}
             >
               启用
             </Button>
@@ -399,7 +403,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
                 size="sm"
                 disabled={overBatchLimit || batchPending}
                 title={overBatchLimit ? '一次最多 10 条' : undefined}
-                onClick={() => openBatch('reset_password', selectedRows)}
+                onClick={(event) => openBatch('reset_password', selectedRows, event.currentTarget)}
               >
                 重置口令
               </Button>
@@ -408,7 +412,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
                 size="sm"
                 disabled={overBatchLimit || batchPending}
                 title={overBatchLimit ? '一次最多 10 条' : undefined}
-                onClick={() => openBatch('delete', selectedRows)}
+                onClick={(event) => openBatch('delete', selectedRows, event.currentTarget)}
               >
                 删除
               </Button>
@@ -423,7 +427,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
                       ? undefined
                       : '仅已删除用户可恢复'
                 }
-                onClick={() => openBatch('restore', selectedRows)}
+                onClick={(event) => openBatch('restore', selectedRows, event.currentTarget)}
               >
                 恢复
               </Button>
@@ -543,6 +547,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
         pending={batchPending}
         error={batchError}
         result={batchResult}
+        returnFocusTo={batchReturnFocus}
         onClose={closeBatch}
         onConfirm={(password) => {
           if (!batch) return

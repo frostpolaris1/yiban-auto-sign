@@ -36,7 +36,7 @@ export type PauseAction = {
   paused: boolean
   canToggle: boolean
   blockedReason?: string
-  onToggle: () => void
+  onToggle: (opener?: HTMLElement | null) => void
 }
 
 type AuditStatusCardProps = {
@@ -163,7 +163,7 @@ export function AuditStatusCard({
                     className="app-health-action"
                     disabled={!pause.canToggle}
                     title={pause.canToggle ? undefined : pause.blockedReason}
-                    onClick={pause.onToggle}
+                    onClick={(event) => pause.onToggle(event.currentTarget)}
                   >
                     暂停引擎
                   </Button>

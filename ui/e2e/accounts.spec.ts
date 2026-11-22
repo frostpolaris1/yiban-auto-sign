@@ -1812,8 +1812,15 @@ test('batch: three selected rows send exactly one batch request and clear the ba
   }
   await expect(page.getByRole('region', { name: '批量操作' })).toContainText('已选 3 条')
 
-  await page.getByRole('button', { name: '审核通过', exact: true }).click()
+  const approveBatchTrigger = page.getByRole('button', { name: '审核通过', exact: true })
+  await approveBatchTrigger.click()
   const dialog = page.getByRole('dialog', { name: '批量审核通过？' })
+  await expect(dialog).toContainText('将作用于已选 3 个账号')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(approveBatchTrigger).toBeFocused()
+
+  await approveBatchTrigger.click()
   await expect(dialog).toContainText('将作用于已选 3 个账号')
   await fillReauth(dialog)
   await dialog.getByRole('button', { name: '确认审核通过' }).click()

@@ -155,21 +155,15 @@ export function QueueView() {
   const [unsignedSegment, setUnsignedSegment] = useState<UnsignedSegment>('pending')
   const [unsignedStack, setUnsignedStack] = useState<CursorStack>(() => emptyCursorStack())
 
-  // 行内错误与弹窗/抽屉目标
+  // 行内错误与弹窗/抽屉目标（回焦引用独立于 open 目标，确保 usePresence 退场动画结束后仍能回焦）
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
-  const [approveTarget, setApproveTarget] = useState<{
-    account: Account
-    trigger: HTMLElement | null
-  } | null>(null)
-  const [rejectTarget, setRejectTarget] = useState<{
-    account: Account
-    trigger: HTMLElement | null
-  } | null>(null)
+  const [approveTarget, setApproveTarget] = useState<Account | null>(null)
+  const [approveReturnFocus, setApproveReturnFocus] = useState<HTMLElement | null>(null)
+  const [rejectTarget, setRejectTarget] = useState<Account | null>(null)
+  const [rejectReturnFocus, setRejectReturnFocus] = useState<HTMLElement | null>(null)
   const [rejectError, setRejectError] = useState<string | null>(null)
-  const [diagTarget, setDiagTarget] = useState<{
-    target: QueueDiagnosticsTarget
-    trigger: HTMLElement | null
-  } | null>(null)
+  const [diagTarget, setDiagTarget] = useState<QueueDiagnosticsTarget | null>(null)
+  const [diagReturnFocus, setDiagReturnFocus] = useState<HTMLElement | null>(null)
 
   // SSE 实时推送：300ms 尾随合并 + 按事件精准失效缓存（展示模式禁用）
   const live = useRunLive(queryClient, allowed && !SHOWCASE, undefined, {
@@ -589,7 +583,7 @@ export function QueueView() {
           const approvingThis =
             approveMutation.isPending && approveMutation.variables?.id === account.id
           const rejectingThis =
-            rejectMutation.isPending && rejectTarget?.account.id === account.id
+            rejectMutation.isPending && rejectTarget?.id === account.id
           const busy = approvingThis || rejectingThis
           const rowError = rowErrors[account.id]
           const displayName = account.display_name || `账号${account.phone_masked.slice(-4)}`
@@ -632,9 +626,10 @@ export function QueueView() {
                       disabled={busy || SHOWCASE}
                       title={SHOWCASE ? READ_ONLY_REASON : undefined}
                       aria-label={`通过 ${account.phone_masked}`}
-                      onClick={(event) =>
-                        setApproveTarget({ account, trigger: event.currentTarget })
-                      }
+                      onClick={(event) => {
+                        setApproveReturnFocus(event.currentTarget)
+                        setApproveTarget(account)
+                      }}
                     >
                       <Icon name="check" size={14} />
                       {approvingThis ? '处理中…' : '通过'}
@@ -650,7 +645,8 @@ export function QueueView() {
                     aria-label={`驳回 ${account.phone_masked}`}
                     onClick={(event) => {
                       setRejectError(null)
-                      setRejectTarget({ account, trigger: event.currentTarget })
+                      setRejectReturnFocus(event.currentTarget)
+                      setRejectTarget(account)
                     }}
                   >
                     驳回
@@ -661,16 +657,14 @@ export function QueueView() {
                     size="sm"
                     className="q-action-btn"
                     aria-label={`详情 ${account.phone_masked}`}
-                    onClick={(event) =>
+                    onClick={(event) => {
+                      setDiagReturnFocus(event.currentTarget)
                       setDiagTarget({
-                        target: {
-                          accountId: account.id,
-                          title: account.phone_masked,
-                          subtitle: `${schoolName} · ${account.display_name || account.phone_masked}`,
-                        },
-                        trigger: event.currentTarget,
+                        accountId: account.id,
+                        title: account.phone_masked,
+                        subtitle: `${schoolName} · ${account.display_name || account.phone_masked}`,
                       })
-                    }
+                    }}
                   >
                     详情
                   </Button>
@@ -797,16 +791,14 @@ export function QueueView() {
                     size="sm"
                     className="q-action-btn"
                     aria-label={`详情 ${task.account_phone_masked}`}
-                    onClick={(event) =>
+                    onClick={(event) => {
+                      setDiagReturnFocus(event.currentTarget)
                       setDiagTarget({
-                        target: {
-                          accountId: task.account_id,
-                          title: task.account_phone_masked,
-                          subtitle: `${task.school_name} · ${task.task_name}`,
-                        },
-                        trigger: event.currentTarget,
+                        accountId: task.account_id,
+                        title: task.account_phone_masked,
+                        subtitle: `${task.school_name} · ${task.task_name}`,
                       })
-                    }
+                    }}
                   >
                     详情
                   </Button>
@@ -918,16 +910,14 @@ export function QueueView() {
                     size="sm"
                     className="q-action-btn"
                     aria-label={`详情 ${task.account_phone_masked}`}
-                    onClick={(event) =>
+                    onClick={(event) => {
+                      setDiagReturnFocus(event.currentTarget)
                       setDiagTarget({
-                        target: {
-                          accountId: task.account_id,
-                          title: task.account_phone_masked,
-                          subtitle: `${task.school_name} · ${task.task_name}`,
-                        },
-                        trigger: event.currentTarget,
+                        accountId: task.account_id,
+                        title: task.account_phone_masked,
+                        subtitle: `${task.school_name} · ${task.task_name}`,
                       })
-                    }
+                    }}
                   >
                     详情
                   </Button>
@@ -943,34 +933,34 @@ export function QueueView() {
         title="通过账号"
         description={
           approveTarget
-            ? `${approveTarget.account.display_name || approveTarget.account.phone_masked} · ${approveTarget.account.phone_masked} · ${
-                schoolsById.get(approveTarget.account.school_id) ?? approveTarget.account.school_id
+            ? `${approveTarget.display_name || approveTarget.phone_masked} · ${approveTarget.phone_masked} · ${
+                schoolsById.get(approveTarget.school_id) ?? approveTarget.school_id
               }`
             : undefined
         }
         confirmText="确认通过"
-        returnFocusTo={approveTarget?.trigger ?? null}
+        returnFocusTo={approveReturnFocus}
         onClose={() => setApproveTarget(null)}
         onConfirm={() => {
           if (!approveTarget) return
           setApproveTarget(null)
-          approveMutation.mutate(approveTarget.account)
+          approveMutation.mutate(approveTarget)
         }}
       >
         <p className="app-muted">确认后该账号将进入自动签到流程，可随时驳回或停用。</p>
       </ConfirmModal>
 
       <QueueRejectModal
-        account={rejectTarget?.account ?? null}
+        account={rejectTarget}
         schoolName={
           rejectTarget
-            ? schoolsById.get(rejectTarget.account.school_id) ?? rejectTarget.account.school_id
+            ? schoolsById.get(rejectTarget.school_id) ?? rejectTarget.school_id
             : ''
         }
         pending={rejectMutation.isPending}
         error={rejectError}
         readOnly={SHOWCASE}
-        returnFocusTo={rejectTarget?.trigger ?? null}
+        returnFocusTo={rejectReturnFocus}
         onClose={() => {
           setRejectTarget(null)
           setRejectError(null)
@@ -978,13 +968,13 @@ export function QueueView() {
         onSubmit={(reason) => {
           if (!rejectTarget) return
           setRejectError(null)
-          rejectMutation.mutate({ account: rejectTarget.account, reason })
+          rejectMutation.mutate({ account: rejectTarget, reason })
         }}
       />
 
       <QueueDiagnosticsDrawer
-        target={diagTarget?.target ?? null}
-        returnFocusTo={diagTarget?.trigger ?? null}
+        target={diagTarget}
+        returnFocusTo={diagReturnFocus}
         onClose={() => setDiagTarget(null)}
       />
     </div>

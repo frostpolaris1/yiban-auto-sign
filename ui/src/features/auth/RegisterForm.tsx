@@ -27,6 +27,7 @@ import {
   type SessionUser,
 } from '@/lib/api/auth'
 import { ApiError, describeApiError } from '@/lib/api/client'
+import { fieldErrorId } from '@/lib/field-aria'
 import { clearSessionExpired, ME_QUERY_KEY, SHOWCASE } from '@/lib/session'
 import { cx } from '@/lib/cx'
 import {
@@ -339,9 +340,10 @@ export function RegisterForm({
               type="checkbox"
               checked={draft.agree}
               aria-invalid={errors.agree ? true : undefined}
+              aria-describedby={errors.agree ? fieldErrorId('register-agree') : undefined}
               onChange={(event) => change({ agree: event.target.checked })}
             />
-            <span className="box" />
+            <span className="box" aria-hidden="true" />
             <span>
               我已阅读并同意
               <a
@@ -364,7 +366,7 @@ export function RegisterForm({
             </span>
           </label>
           {errors.agree ? (
-            <div className="field-error" role="alert">
+            <div className="field-error" id={fieldErrorId('register-agree')} role="alert">
               <Icon name="alertCircle" size={11} />
               {errors.agree}
             </div>

@@ -143,9 +143,15 @@ test('invariant 3 & 4: approve removes row & decrements summary; reject opens mo
   await expect(pendingGroup).toContainText('138****8000')
   await expect(pendingGroup).toContainText('139****9000')
 
-  // 一键通过 138****8000：先出确认弹窗，未确认前不发任何 review 请求
-  await pendingGroup.getByRole('button', { name: '通过 138****8000' }).click()
+  // 一键通过 138****8000：先出确认弹窗，Esc 关闭回焦触发按钮；未确认前不发任何 review 请求
+  const approveTrigger = pendingGroup.getByRole('button', { name: '通过 138****8000' })
+  await approveTrigger.click()
   const approveModal = page.getByRole('dialog', { name: '通过账号' })
+  await expect(approveModal).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(approveModal).toBeHidden()
+  await expect(approveTrigger).toBeFocused()
+  await approveTrigger.click()
   await expect(approveModal).toBeVisible()
   expect(reviewCalls(api)).toHaveLength(0)
   await approveModal.getByRole('button', { name: '确认通过' }).click()
@@ -161,9 +167,15 @@ test('invariant 3 & 4: approve removes row & decrements summary; reject opens mo
     .poll(() => visibleText(summary.locator('button').first().locator('.q-tele-value')))
     .toBe('2')
 
-  // 驳回 139****9000
-  await pendingGroup.getByRole('button', { name: '驳回 139****9000' }).click()
+  // 驳回 139****9000（先验取消回焦，再走正式驳回）
+  const rejectTrigger = pendingGroup.getByRole('button', { name: '驳回 139****9000' })
+  await rejectTrigger.click()
   const modal = page.getByRole('dialog', { name: '驳回账号' })
+  await expect(modal).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(modal).toBeHidden()
+  await expect(rejectTrigger).toBeFocused()
+  await rejectTrigger.click()
   await expect(modal).toBeVisible()
   const confirmReject = modal.getByRole('button', { name: '确认驳回' })
   await expect(confirmReject).toBeDisabled()
@@ -266,7 +278,8 @@ test('invariant 7: diagnostics drawer opens and closes, and 390px layout has zer
   expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1)
 
   const failedGroup = page.locator('[data-queue-group="failed"]')
-  await failedGroup.getByRole('button', { name: '详情 138****8003' }).click()
+  const detailTrigger = failedGroup.getByRole('button', { name: '详情 138****8003' })
+  await detailTrigger.click()
   const drawer = page.getByRole('dialog', { name: '诊断 · 138****8003' })
   await expect(drawer).toBeVisible()
   await expect(drawer).toContainText('credential_invalid')
@@ -274,6 +287,7 @@ test('invariant 7: diagnostics drawer opens and closes, and 390px layout has zer
 
   await drawer.getByRole('button', { name: '关闭详情' }).click()
   await expect(drawer).toBeHidden()
+  await expect(detailTrigger).toBeFocused()
 })
 
 test('invariant 8: SSE bursts coalesce into a single task refresh without refetching schools', async ({
