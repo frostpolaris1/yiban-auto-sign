@@ -352,6 +352,8 @@ for (const theme of THEMES) {
     // user 已被壳层 302 到 /app、进不了 /accounts，这里改用 admin 会话打开。
     await mockAccountsApi(page, { role: 'admin' })
     await openWithTheme(page, '/accounts', theme)
+    // 换夹具后列表会重取一次：先钉住数据态，否则背后表格停在骨架/空态，弹窗本体却没变。
+    await expectData(page, '/accounts')
     await page.getByRole('button', { name: '更多操作 139****9000' }).click()
     await page.getByRole('menu').getByRole('menuitem', { name: /位置/ }).click()
     await expect(page.getByRole('dialog', { name: '设置位置策略？' })).toBeVisible()
