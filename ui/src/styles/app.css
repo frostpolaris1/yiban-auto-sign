@@ -1380,8 +1380,9 @@
   outline: 2px solid var(--bg-card);
   outline-offset: 2px;
 }
+/* 对比度复测：裸 --t-muted 对 --bg-card 仅 4.31，88% 混基色后 4.91 达标（深色主题本就达标）。 */
 .app-auth-links span {
-  color: var(--t-muted);
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
 }
 .auth-main input::placeholder {
   color: var(--t-muted);
@@ -1490,8 +1491,9 @@
 /* ---------- 弹窗层级与限高 ----------
  * 叠层序号由 `Modal` 的 `layer` 写成行内 z-index：遮罩 190 起，内容 200 起，每层加 20。
  * 高层遮罩因此压暗低层弹窗，焦点陷阱仍由 Radix 的层栈只陷最上层。
- * 限高与正文滚动只对内容可能超出视口的弹窗生效（当前只有计划预览）；
- * 其余弹窗不套这组规则，布局与既有基线保持逐像素一致。 */
+ * 限高与正文滚动只对内容可能超出视口的弹窗生效（计划预览、新建/编辑账号、
+ * 账号向导、修改口令牌名、时间偏好、更新日志）。短弹窗不套这组规则，
+ * 布局与既有基线保持逐像素一致。 */
 .app-modal-scroll {
   display: flex;
   flex-direction: column;
@@ -2384,7 +2386,9 @@ a.kpi-card {
 
 /* ---------- 08 批 1：顶栏不透明、全站对比度派生与实色语义按钮 ----------
  * 全部走 DESIGN-CONTRACT §1 派生路径（color-mix + 既有令牌），零新增令牌、零颜色字面量。
- * - F-01：.d-topbar 提到 94% 不透明，消除滚动内容与面包屑叠印；html 补 scroll-padding-top 防焦点遮挡。
+ * - F-01：vendor 顶栏半透明穿透；令牌 parity 钉死 --overlay，故扩展层覆盖为实底——
+ *   .d-topbar 背景用 --bg-body 盖住 vendor 的 --overlay，backdrop 滤镜一并置 none（实底之上
+ *   只剩合成开销）；消除滚动内容与面包屑叠印；html 补 scroll-padding-top 防焦点遮挡。
  * - F-04：表头/占位/面包屑分隔/搜索触发/弱字统一 88% --t-muted + 12% --t-base（浅 ≥4.91 / 深 ≥7.52）。
  * - 危险描边/必填星号/字段错字浅色用 75% --danger + 25% --t-base（5.44:1）；角标浅 5.44 / 深 6.81。
  * - 浅色实色语义按钮白字对比不足（画廊/删除弹窗），底色按 sRGB 混入 --t-base 压深过 AA（≥4.86）；
@@ -2396,6 +2400,8 @@ html {
 
 .d-topbar {
   background: var(--bg-body);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .data-table thead th,
@@ -3820,6 +3826,11 @@ html[data-density="compact"] .card {
   margin-top: 0;
   flex-shrink: 0;
   border-color: var(--t-muted);
+}
+/* 触达：隐形 input 本体拉到 44×44 对齐触控下限（absolute + opacity:0，无视觉影响；点击由整行 label 转发）。 */
+.app-register-agree input {
+  width: 44px;
+  height: 44px;
 }
 .app-register-agree input:focus-visible + .box {
   outline: 2px solid var(--primary);
