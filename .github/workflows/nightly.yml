@@ -41,7 +41,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.11'
+          python-version: '3.13'
           cache: pip
           cache-dependency-path: requirements.lock
 
@@ -49,9 +49,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.lock
-          # 与 ci.yml 同一组钉版工具，保证两轨判定口径一致
-          # （ruff 0.16.6 / pytest 9.1.1 / pytest-xdist 3.8.0）
-          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0
+          # 与 ci.yml **逐字同一组**钉版工具，保证两轨判定口径一致：
+          # ruff 0.16.6 / pytest 9.1.1 / pytest-xdist 3.8.0 /
+          # mypy 1.19.0 / import-linter 2.15 / grimp 3.17。
+          # 缺 mypy 与 import-linter 会让 tests/test_mypy_type_gate.py 与
+          # tests/test_import_linter_gate.py 在**解释器里找不到工具**时直接 failed：
+          # 这两道门明令禁止静默跳过（门禁工具不在场就是红，不是 skip）。
+          # 2026-11-18～20 连续三夜红即此因；三件套只钉在 ci.yml 是本文件的历史疏漏。
+          # grimp 必须与 import-linter 同钉：后者对 grimp 只给下限、无上界。
+          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0 mypy==1.19.0 import-linter==2.15 grimp==3.17
 
       # 全量轨也跑 Lint：夜间信号应覆盖 fast 轨的全部门禁，避免"白天 lint 漏判"
       - name: Lint (ruff)
