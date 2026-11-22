@@ -10,6 +10,8 @@
  * 路由变化、Esc、点遮罩都关闭抽屉。
  * 会话解析中显示整页加载态；无会话落到 `/login` 并带上站内回跳地址。
  * `must_change_password` 为真时内容区顶部常驻提示条，并给出改密出口。
+ * 首个 Tab 落在「跳转到正文」的 skip link 上；内容区 `main` 带 `tabIndex={-1}`，
+ * 只作锚点，不进 Tab 序列。skip link 复用 `.uapp-skip` 的定位与显隐节奏。
  */
 
 import { useEffect, useState, type ReactNode } from 'react'
@@ -98,6 +100,10 @@ export function AppShell({ renderInbox, renderSearch }: AppShellProps = {}) {
 
   return (
     <div className="shell">
+      {/* 键盘首站：未聚焦时由 `.uapp-skip` 定位在视口外，零占位。 */}
+      <a className="uapp-skip" href="#app-main">
+        跳转到正文
+      </a>
       <Sidebar me={me} pathname={pathname} onNavigate={() => setDrawerOpen(false)} />
       <div className="main">
         <Topbar
@@ -113,7 +119,8 @@ export function AppShell({ renderInbox, renderSearch }: AppShellProps = {}) {
           inbox={renderInbox ? renderInbox(me) : null}
           search={renderSearch ? renderSearch(me) : null}
         />
-        <main className="content app-content">
+        {/* `tabIndex={-1}` 让 skip link 能把焦点落到正文，而不把正文拉进 Tab 序列。 */}
+        <main className="content app-content" id="app-main" tabIndex={-1}>
           {logoutError ? (
             <div className="app-alert-block">
               <Alert tone="danger" title="退出失败">

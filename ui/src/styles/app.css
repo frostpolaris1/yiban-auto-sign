@@ -4,6 +4,8 @@
  * **功能**
  * 只补 vendor 缺口：遮罩定位、Radix 状态映射、无障碍辅助类、
  * 画廊布局，以及 vendor 漏掉的 `.ma-1`..`.ma-6`。
+ * 键盘焦点环：vendor 用 `outline: 0` 或 `opacity: 0` 抹掉焦点环的地方，
+ * 在此按 `:focus-visible` 补回，鼠标操作不受影响。
  *
  * **归属**
  * `styles` 样式层：不定义新配色，只消费令牌。
@@ -173,6 +175,14 @@
 /* 零特异性兜底：未单独声明焦点环的原生控件也要看得见键盘焦点。
    用 :where() 压到 0,0,1，任何自带 outline 的组件规则仍能覆盖它。 */
 :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* vendor 的 `.check input` 是 opacity:0 的隐形原件，可见方框是兄弟 `.box`。
+   兜底轮廓画在隐形 input 上等于没画，这里把环移到方框上。
+   与下方 `.app-register-agree` 同款写法，另覆盖画廊里的裸 `.check` 与 `.check.radio`。 */
+.check input:focus-visible + .box {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
@@ -2712,6 +2722,12 @@ html {
   font-size: 13.5px;
   cursor: pointer;
   outline: none;
+}
+/* 本块自身的 `outline: none`（0,1,0）写在兜底之后，同级后者胜，把环抹掉了。
+   Radix Select 的键盘高亮会把 DOM 焦点真放到项上，所以补一条更高的 0,2,0 把环要回来。 */
+.app-select-item:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
 }
 .app-select-item[data-highlighted] {
   background: var(--bg-hover);

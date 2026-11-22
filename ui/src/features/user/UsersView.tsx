@@ -388,6 +388,11 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
             </span>
           </SelectionBar>
         ) : null}
+        {/* 读屏播报点：常驻挂载，数据到位或翻页时整句重读。
+            加载/错误/空态已由 AsyncState 的 role="status" 播报，这里只补数据态； */}
+        <span className="app-visually-hidden" aria-live="polite" aria-atomic="true">
+          {listStatus === 'data' ? `第 ${stack.index + 1} 页，本页 ${rows.length} 条` : ''}
+        </span>
         <AsyncState
           status={listStatus}
           error={error ?? undefined}

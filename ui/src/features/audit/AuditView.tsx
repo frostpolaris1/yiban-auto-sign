@@ -11,6 +11,8 @@
  * 断链时页头出危险告警，列表照常可用；列表读取失败只影响列表区，结论保持。
  * 筛选变化一律回第一页（游标清空）；翻页只带游标，末页 `next_cursor` 为空时下一页禁用。
  * 空态区分「无记录」与「筛选无命中」；详情只在行抽屉里展开，列表不撑破栅格。
+ * 读屏播报点在列表卡头部常驻（视觉隐藏的 `aria-live="polite"`），内容同分页条；
+ * 分页条本身只在数据态渲染，播报点若跟着它挂载，首屏读完读屏会漏读。
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -256,6 +258,11 @@ export function AuditView() {
           </div>
 
           <span className="app-caption">游标分页</span>
+          {/* 读屏播报点：常驻挂载，整句随翻页重读。
+              分页条本身只在数据态出现，播报点若跟着它挂载，首屏读完读屏会漏读。 */}
+          <span className="app-visually-hidden" aria-live="polite" aria-atomic="true">
+            {showPager ? formatAuditPager(stack.index, rows.length) : ''}
+          </span>
         </header>
 
         <div className="a-toolbar">
