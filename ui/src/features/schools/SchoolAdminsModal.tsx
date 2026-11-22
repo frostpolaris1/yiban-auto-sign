@@ -10,6 +10,7 @@
  * 管理员选择器（C7）：空输入给候选（现有 admin/master 用户，
  * 按最近登录排序，取前 6 个，已绑定者剔除）；输入走 `/api/users/lookup`；
  * 无命中给「没有匹配用户」；选中后可清除；移除必经确认弹窗。
+ * 管理员列表与用户检索失败都各给「重试」，只重取失败的那一路。
  * 绑定是危险写：必须填操作者本人本站登录口令；口令只存在于本模态，
  * 成功或关闭即清空。
  * 展示构建只读：添加与移除都置灰，原因写在添加按钮下方。
@@ -213,7 +214,12 @@ export function SchoolAdminsModal({
               onChange={(event) => setQuery(event.target.value)}
             />
             {searching && lookup.isError ? (
-              <span className="app-deny-note">用户检索失败，请稍后重试</span>
+              <span className="app-deny-note">
+                用户检索失败，请稍后重试{' '}
+                <Button variant="ghost" size="sm" onClick={() => void lookup.refetch()}>
+                  重试
+                </Button>
+              </span>
             ) : searching && lookup.isFetching ? (
               <span className="app-muted">查询中…</span>
             ) : results.length === 0 && searching ? (
@@ -288,7 +294,10 @@ export function SchoolAdminsModal({
       {listError ? (
         <div className="app-modal-error">
           <Alert tone="danger" title="管理员列表加载失败">
-            {listError}
+            {listError}{' '}
+            <Button variant="ghost" size="sm" onClick={() => void adminsQuery.refetch()}>
+              重试
+            </Button>
           </Alert>
         </div>
       ) : null}
