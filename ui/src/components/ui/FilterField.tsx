@@ -32,7 +32,11 @@ export function FilterField({ id, label, hint, error, required, children }: Filt
     <div className="field">
       <label className="field-label" htmlFor={id}>
         {label}
-        {required ? <span className="req">*</span> : null}
+        {required ? (
+          <span className="req" aria-hidden="true">
+            *
+          </span>
+        ) : null}
       </label>
       <Slot.Root id={id} aria-invalid={error ? true : undefined} aria-describedby={fieldDescribedBy(id, hint, error)}>
         {children}

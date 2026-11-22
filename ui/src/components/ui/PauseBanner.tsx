@@ -22,7 +22,7 @@ type PauseBannerProps = {
   canResume: boolean
   /** 不可恢复时的原因（如「仅主管理员可恢复」或展示模式只读）。 */
   resumeBlockedReason?: string
-  onResume: () => void
+  onResume: (opener?: HTMLElement | null) => void
 }
 
 export function PauseBanner({
@@ -44,7 +44,7 @@ export function PauseBanner({
             size="sm"
             disabled={!canResume}
             title={canResume ? undefined : resumeBlockedReason}
-            onClick={onResume}
+            onClick={(event) => onResume(event.currentTarget)}
           >
             恢复引擎
           </Button>

@@ -92,7 +92,7 @@ export function DataTable<T>({
                 >
                   {column.header}
                   {column.sorted ? (
-                    <span className="sort">
+                    <span className="sort" aria-hidden="true">
                       <Icon name="chevronDown" />
                     </span>
                   ) : null}

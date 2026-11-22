@@ -333,6 +333,7 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
   const [photoBusy, setPhotoBusy] = useState(false)
   const [photoError, setPhotoError] = useState<string | null>(null)
   const [photoToDelete, setPhotoToDelete] = useState<Photo | null>(null)
+  const [photoDeleteReturnFocus, setPhotoDeleteReturnFocus] = useState<HTMLElement | null>(null)
   const uploadRef = useRef<HTMLInputElement | null>(null)
 
   const photosQuery = useQuery({
@@ -827,7 +828,10 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
                   type="button"
                   className="uapp-photo-delete"
                   aria-label="删除照片"
-                  onClick={() => setPhotoToDelete(photo)}
+                  onClick={(event) => {
+                    setPhotoDeleteReturnFocus(event.currentTarget)
+                    setPhotoToDelete(photo)
+                  }}
                 >
                   <span className="uapp-photo-delete-pill" aria-hidden="true">
                     ×
@@ -1077,6 +1081,7 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
         }}
         title="删除现场照片"
         description="照片用于签到审核，删除后不可恢复。"
+        returnFocusTo={photoDeleteReturnFocus}
         footer={
           <>
             <button

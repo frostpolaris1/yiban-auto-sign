@@ -64,17 +64,22 @@ export function GlobalSearch({ me }: { me: SessionUser }) {
     setActive(-1)
   }, [])
 
-  // Ctrl/Cmd+K：开着就聚焦输入，关着就开面板。浏览器默认行为一律吃掉。
+  // Ctrl/Cmd+K：开着就关闭并回焦触发按钮，关着就开面板。浏览器默认行为一律吃掉。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
-        setOpen((current) => !current)
+        if (open) {
+          close()
+          triggerRef.current?.focus()
+        } else {
+          setOpen(true)
+        }
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [close, open])
 
   // 面板打开后聚焦输入；关闭路径不在此处（Esc 自己负责焦点回还）。
   useEffect(() => {
@@ -158,6 +163,11 @@ export function GlobalSearch({ me }: { me: SessionUser }) {
   }
 
   const onInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Tab') {
+      // 自绘弹层内只有搜索输入一个可聚焦控件（结果项用 aria-activedescendant 驱动）：拦截 Tab 防止焦点逃出弹层。
+      event.preventDefault()
+      return
+    }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       if (results.length === 0) return

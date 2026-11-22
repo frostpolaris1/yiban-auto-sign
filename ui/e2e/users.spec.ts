@@ -985,4 +985,8 @@ test('reauth: a batch with a wrong password keeps the modal open', async ({ page
   await expect(dialog.getByText('口令不正确，或当前状态不允许这个操作。')).toBeVisible()
   await expect(dialog).toBeVisible()
   await expect.poll(() => batchUserCalls(api).length).toBe(1)
+
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('button', { name: '停用', exact: true })).toBeFocused()
 })

@@ -286,6 +286,12 @@ test.describe('global search', () => {
       'the combobox stays expanded while the popup is open, hits or not',
     ).toHaveAttribute('aria-expanded', 'true')
 
+    // Tab / Shift+Tab 锁定在自绘搜索弹层内，不逃出到背景页面。
+    await page.keyboard.press('Tab')
+    expect(await activeRole(page), 'Tab stays trapped in combobox').toBe('combobox')
+    await page.keyboard.press('Shift+Tab')
+    expect(await activeRole(page), 'Shift+Tab stays trapped in combobox').toBe('combobox')
+
     await page.keyboard.press('Escape')
     await expect(dialog).toBeHidden()
     const focused = await page.evaluate(() => document.activeElement?.className ?? '')

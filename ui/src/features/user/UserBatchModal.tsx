@@ -45,6 +45,8 @@ type UserBatchModalProps = {
   result: UserBatchResult | null
   onClose: () => void
   onConfirm: (password: string) => void
+  /** 关闭后回焦的触发元素。 */
+  returnFocusTo?: HTMLElement | null
 }
 
 export function UserBatchModal({
@@ -56,6 +58,7 @@ export function UserBatchModal({
   result,
   onClose,
   onConfirm,
+  returnFocusTo,
 }: UserBatchModalProps) {
   const [password, setPassword] = useState('')
 
@@ -86,6 +89,7 @@ export function UserBatchModal({
           ? `将作用于已选 ${rows.length} 个用户。${DESCRIPTIONS[action]}`
           : undefined
       }
+      returnFocusTo={returnFocusTo}
       footer={
         result ? (
           <Button variant="ghost" onClick={onClose}>

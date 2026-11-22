@@ -191,6 +191,7 @@ export function DashboardView({ role }: DashboardViewProps) {
   const queryClient = useQueryClient()
   const [pauseDialog, setPauseDialog] = useState<'pause' | 'resume' | null>(null)
   const [pauseError, setPauseError] = useState<string | null>(null)
+  const [pauseReturnFocus, setPauseReturnFocus] = useState<HTMLElement | null>(null)
   const paused = engineQuery.data?.paused === true
   const pauseMutation = useMutation({
     mutationFn: (vars: { paused: boolean; password: string }) =>
@@ -215,8 +216,9 @@ export function DashboardView({ role }: DashboardViewProps) {
     paused,
     canToggle: pauseBlockedReason === undefined,
     blockedReason: pauseBlockedReason,
-    onToggle: () => {
+    onToggle: (opener?: HTMLElement | null) => {
       setPauseError(null)
+      setPauseReturnFocus(opener ?? null)
       setPauseDialog(paused ? 'resume' : 'pause')
     },
   }
@@ -361,6 +363,7 @@ export function DashboardView({ role }: DashboardViewProps) {
         confirmText={pauseDialog === 'resume' ? '恢复引擎' : '暂停引擎'}
         pending={pauseMutation.isPending}
         error={pauseError}
+        returnFocusTo={pauseReturnFocus}
         onClose={() => {
           if (pauseMutation.isPending) return
           setPauseDialog(null)
