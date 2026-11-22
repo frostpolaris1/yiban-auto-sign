@@ -11,11 +11,13 @@
  * 手机号输入防抖 250ms。列表与详情走 react-query；写操作成功后失效两者
  * 的缓存，并同时失效 `['account-summary']`（与看板第 5 卡同键）。
  * 待审提示条只对 master/admin 取数；仅当 pending+rejected>0 显示。
- * 危险写（删除、恢复、设备刷新、凭据编辑、批量）要求操作者二次口令；
+ * 危险写（删除、恢复、彻底删除、设备刷新、凭据编辑、批量）要求操作者二次口令；
  * 400/403/429 用统一文案，口令只存在于当前模态内。
  * 编辑账号总是带 `expected_updated_at`；409 时弹窗不关，
  * 给「载入最新」与「用我的版本重试」两条出路；重试发送的是当前表单值。
  * 批量动作一次最多 10 条；每项独立事务，部分失败回结果清单。
+ * 批量签到不走二次口令（与单条签到一致）：确认后整批提交，逐项成败落在页面内的
+ * 结果区块，失败原因换成中文并保留原始码作诊断线索。
  * 列表每 10 秒条件轮询一次；模态或抽屉打开时暂停，展示模式不发请求。
  * 角色来自 `GET /api/auth/me`。取不到时一切写操作置灰并给原因。
  */
@@ -26,16 +28,19 @@ import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { ReauthDialog } from '@/components/ui/ReauthDialog'
 import { SelectionBar } from '@/components/ui/SelectionBar'
 import { notifySuccess } from '@/components/ui/toast'
 import {
   batchAccounts,
+  batchSignAccounts,
   deleteAccount,
   getAccount,
   getAccountSummary,
   listAccounts,
   pauseAccount,
+  purgeAccount,
   restoreAccount,
   reviewAccount,
   setAccountLocation,
@@ -45,6 +50,7 @@ import {
   type Account,
   type AccountBatchAction,
   type AccountBatchResult,
+  type AccountBatchSignResult,
   type AccountLocation,
   type AccountLocationUpdate,
   type AccountStatus,
@@ -79,6 +85,7 @@ import {
 } from './drafts'
 import { can, denyReason, type AccountActionKind } from './permissions'
 import { exactMatchIds } from './search'
+import { BATCH_SIGN_LIMIT, SIGN_BATCH_TOAST, batchSignRows, signBatchSummary } from './sign-batch'
 import { statusLabel } from './display'
 
 /** 批量动作的中文名与确认文案由 `AccountBatchModal` 统一持有。 */
@@ -213,6 +220,10 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
   const [restoreTarget, setRestoreTarget] = useState<Account | null>(null)
   const [restoreReturnFocus, setRestoreReturnFocus] = useState<HTMLElement | null>(null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
+  // 彻底删除：只对已软删除的行开放，成功后该行从列表消失。
+  const [purgeTarget, setPurgeTarget] = useState<Account | null>(null)
+  const [purgeReturnFocus, setPurgeReturnFocus] = useState<HTMLElement | null>(null)
+  const [purgeError, setPurgeError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [createReturnFocus, setCreateReturnFocus] = useState<HTMLElement | null>(null)
   const createReason = denyReason(role, 'create')
@@ -225,6 +236,11 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
   const [batch, setBatch] = useState<{ action: AccountBatchAction; rows: Account[] } | null>(null)
   const [batchError, setBatchError] = useState<string | null>(null)
   const [batchResult, setBatchResult] = useState<AccountBatchResult | null>(null)
+  // 批量签到：确认走 ConfirmModal（无二次口令），逐项结果留在页面内可回看的区块里。
+  const [signTarget, setSignTarget] = useState<Account[] | null>(null)
+  const [signBatchRows, setSignBatchRows] = useState<Account[] | null>(null)
+  const [signBatchResult, setSignBatchResult] = useState<AccountBatchSignResult | null>(null)
+  const [signBatchError, setSignBatchError] = useState<string | null>(null)
 
   const clearSelection = () => setSelectedIds(new Set<string>())
 
@@ -254,6 +270,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
     locationTarget !== null ||
     deleteTarget !== null ||
     restoreTarget !== null ||
+    purgeTarget !== null ||
     batch !== null
 
   const accountsQuery = useQuery({
@@ -282,9 +299,13 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
     refetchIntervalInBackground: false,
   })
 
-  // 筛选或翻页都换一批行：选择不跨页、不跨视图。
+  // 筛选或翻页都换一批行：选择不跨页、不跨视图；上一批的签到结果也不再对应本页。
   useEffect(() => {
     setSelectedIds(new Set<string>())
+    setSignTarget(null)
+    setSignBatchRows(null)
+    setSignBatchResult(null)
+    setSignBatchError(null)
   }, [filters, cursor])
 
   const mutation = useMutation({
@@ -371,6 +392,40 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
     setRestoreReturnFocus(opener)
     setRestoreTarget(account)
   }
+
+  const openPurge = (account: Account, opener: HTMLElement | null) => {
+    purgeMutation.reset()
+    setPurgeError(null)
+    setPurgeReturnFocus(opener)
+    setPurgeTarget(account)
+  }
+
+  const closePurge = () => {
+    // 在途锁关：结论不能因为 X/Esc 而丢弃到操作者看不到的地方。
+    if (purgeMutation.isPending) return
+    purgeMutation.reset()
+    setPurgeTarget(null)
+    setPurgeError(null)
+  }
+
+  const purgeMutation = useMutation({
+    mutationFn: (input: { account: Account; password: string }) =>
+      purgeAccount(input.account.id, input.password),
+    onSuccess: (_result, input) => {
+      void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      void queryClient.invalidateQueries({ queryKey: ['account', input.account.id] })
+      void queryClient.invalidateQueries({ queryKey: ['account-summary'] })
+      // 行随刷新消失：先清还原点，焦点直接落筛选输入，不掉到 body。
+      setPurgeReturnFocus(null)
+      setPurgeTarget(null)
+      setPurgeError(null)
+      focusFilterInput()
+      notifySuccess(`已彻底删除 ${input.account.phone_masked}`)
+    },
+    onError: (error) => {
+      setPurgeError(describeReauthError(error))
+    },
+  })
 
   const shapeMutation = useMutation({
     mutationFn: async (input: ShapeMutationInput) => {
@@ -574,6 +629,52 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
   })
   const batchPending = batchMutation.isPending
 
+  /** 批量签到的逐行标签：手机号掩码；映射不到的行回落原始 id。 */
+  const signLabels = new Map((signBatchRows ?? []).map((row) => [row.id, row.phone_masked]))
+
+  const batchSignMutation = useMutation({
+    mutationFn: (rows: Account[]) => {
+      // 结果行的标签来自提交时的快照：列表随后刷新不影响这次回执的对应关系。
+      setSignBatchRows(rows)
+      return batchSignAccounts({ ids: rows.map((row) => row.id) })
+    },
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      void queryClient.invalidateQueries({ queryKey: ['account-summary'] })
+      setSignBatchError(null)
+      setSignBatchResult(result)
+      setSignTarget(null)
+      clearSelection()
+      // 有失败时结果清单就是反馈本身：不再叠一条成功 toast 盖住它。
+      if (result.items.every((item) => item.status === 'ok')) {
+        notifySuccess(`${SIGN_BATCH_TOAST}：${result.items.length} 条`)
+      }
+    },
+    onError: (error) => {
+      // 整批被拒（空/超 10/重复 id/权限）没有逐项结果，错误留在页面内可回看。
+      setSignBatchResult(null)
+      setSignBatchError(describeApiError(error))
+    },
+  })
+
+  /** 确认前不发请求：弹窗只交代影响范围，点了确认才整批提交。 */
+  const openSignBatch = () => {
+    if (selectedRows.length === 0) return
+    batchSignMutation.reset()
+    setSignBatchError(null)
+    setSignBatchResult(null)
+    setSignTarget(selectedRows)
+  }
+
+  const closeSignBatch = () => {
+    if (batchSignMutation.isPending) return
+    batchSignMutation.reset()
+    setSignTarget(null)
+    setSignBatchRows(null)
+    setSignBatchResult(null)
+    setSignBatchError(null)
+  }
+
   const error = accountsQuery.isError ? describeApiError(accountsQuery.error) : null
   // 高亮只认已提交给服务端的 q：输入框还在防抖时不提前标。
   const highlightIds = exactMatchIds(rows, filters.q)
@@ -658,6 +759,15 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
             <Button
               variant="ghost"
               size="sm"
+              disabled={overBatchLimit || batchPending || batchSignMutation.isPending}
+              title={overBatchLimit ? '一次最多 10 条' : undefined}
+              onClick={openSignBatch}
+            >
+              批量签到
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
               disabled={overBatchLimit || batchPending}
               title={overBatchLimit ? '一次最多 10 条' : undefined}
               onClick={() => openBatch('review_approve')}
@@ -720,6 +830,27 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
           </SelectionBar>
         ) : null}
 
+        {/*
+          批量签到的结果是入队回执：没有模态可以承接，所以留在页面内。
+          选择在提交成功后清空，这条区块仍留着，直到用户自己关掉或换筛选。
+        */}
+        {signBatchResult !== null ? (
+          <div className="app-batch-result" role="status" aria-label="批量签到结果">
+            <div className="app-batch-result-row">
+              <strong>{signBatchSummary(signBatchResult)}</strong>
+              <Button variant="ghost" size="sm" onClick={closeSignBatch}>
+                关闭结果
+              </Button>
+            </div>
+            {batchSignRows(signBatchResult.items, signLabels).map((row) => (
+              <div className="app-batch-result-row" key={row.id}>
+                <span className="data-cell-mono">{row.label}</span>
+                {row.ok ? <span>{row.detail}</span> : <strong>{row.detail}</strong>}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         <AccountsTable
           rows={rows}
           loading={accountsQuery.isLoading || accountsQuery.isFetching}
@@ -751,6 +882,7 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
           onLocation={openLocation}
           onDelete={openDelete}
           onRestore={openRestore}
+          onPurge={openPurge}
         />
       </Card>
 
@@ -881,6 +1013,68 @@ export function AccountsView({ photoSection, initialQuery, locateId }: AccountsV
           恢复后账号保持删除前状态；同属主已有活跃账号时服务端会拒绝。
         </Alert>
       </ReauthDialog>
+
+      <ConfirmModal
+        open={purgeTarget !== null}
+        title="彻底删除账号？"
+        description={
+          purgeTarget
+            ? `账号 ${purgeTarget.phone_masked} · 已删除 · 当前状态 ${statusLabel(purgeTarget.status)}`
+            : undefined
+        }
+        confirmText="确认彻底删除"
+        tone="danger"
+        requirePassword
+        pending={purgeMutation.isPending}
+        error={purgeError}
+        returnFocusTo={purgeReturnFocus}
+        onClose={closePurge}
+        onConfirm={(password) => {
+          if (!purgeTarget) return
+          setPurgeError(null)
+          purgeMutation.mutate({ account: purgeTarget, password: password ?? '' })
+        }}
+      >
+        <Alert tone="danger" title="不可恢复">
+          这个账号行、凭据与签到任务会被物理删除，无法再恢复。操作不可恢复；
+          审计记录保留，仍可查到这次删除。
+        </Alert>
+      </ConfirmModal>
+
+      {/*
+        批量签到不进二次口令流程：契约端点与单条签到一样只校验角色，
+        再要一次口令会让用户以为这里有契约没有的门槛。
+        确认弹窗只交代影响范围与「逐项独立、不回滚」的口径。
+      */}
+      <ConfirmModal
+        open={signTarget !== null}
+        title="批量签到？"
+        description={
+          signTarget
+            ? `将为已选 ${signTarget.length} 个账号各入队一次签到，最多 ${BATCH_SIGN_LIMIT} 条。`
+            : undefined
+        }
+        confirmText="确认签到"
+        pending={batchSignMutation.isPending}
+        error={signBatchError}
+        onClose={closeSignBatch}
+        onConfirm={() => {
+          if (!signTarget) return
+          setSignBatchError(null)
+          batchSignMutation.mutate(signTarget)
+        }}
+      >
+        <ul className="app-batch-impact" aria-label="影响范围">
+          {(signTarget ?? []).map((row) => (
+            <li key={row.id} className="data-cell-mono">
+              {row.phone_masked}
+            </li>
+          ))}
+        </ul>
+        <Alert tone="warning" title="逐项独立">
+          每项单独入队：某一项失败不影响后面的项，也不回滚已经入队的项。结果会逐条列在页面上。
+        </Alert>
+      </ConfirmModal>
 
       <AccountBatchModal
         open={batch !== null}

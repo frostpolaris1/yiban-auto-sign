@@ -140,6 +140,8 @@ export type MockUsersOptions = {
   resetError?: { status: number; code: string; message: string }
   deleteError?: { status: number; code: string; message: string }
   restoreError?: { status: number; code: string; message: string }
+  /** 彻底删除（purge）的失败注入。缺省 204 并把该行从内存里抹掉。 */
+  purgeError?: { status: number; code: string; message: string }
   lookupError?: { status: number; code: string; message: string }
   /** 二次口令连续失败：任何危险写都回 429。 */
   reauthThrottled?: boolean
@@ -424,6 +426,29 @@ export async function mockUsersApi(
       return json(route, request, { items })
     }
 
+    // 彻底删除：二次口令必填；只接受已软删除的行，成功 204 且该行不再出现。
+    const purgeMatch = /^\/api\/users\/([^/]+)\/purge$/.exec(url.pathname)
+    if (purgeMatch && request.method() === 'POST') {
+      const id = purgeMatch[1]
+      const index = users.findIndex((item) => item.id === id)
+      if (index < 0) return fail(route, 404, 'not_found', '用户不存在')
+      if (reauthRejected(route, body)) return
+      if (options.purgeError) {
+        return fail(
+          route,
+          options.purgeError.status,
+          options.purgeError.code,
+          options.purgeError.message,
+        )
+      }
+      // 未先软删的行不能彻底删除：契约判 409，与真实服务端同口径。
+      if (users[index].deleted_at === null) {
+        return fail(route, 409, 'conflict', '用户未删除')
+      }
+      users.splice(index, 1)
+      return route.fulfill({ status: 204 })
+    }
+
     const userMatch = /^\/api\/users\/([^/]+)(\/(password-reset|restore))?$/.exec(url.pathname)
     if (userMatch) {
       const id = userMatch[1]
@@ -521,4 +546,15 @@ export function callsTo(api: FakeUsersApi, method: string, path: string): ApiCal
 
 export function batchUserCalls(api: FakeUsersApi): ApiCall[] {
   return callsTo(api, 'POST', '/api/users/batch')
+}
+
+/** 彻底删除的请求：`POST /api/users/{id}/purge`，成功 204。 */
+export function purgeUserCalls(api: FakeUsersApi, id?: string): ApiCall[] {
+  return api.calls.filter(
+    (call) =>
+      call.method === 'POST' &&
+      call.path.startsWith('/api/users/') &&
+      call.path.endsWith('/purge') &&
+      (id === undefined || call.path === `/api/users/${id}/purge`),
+  )
 }

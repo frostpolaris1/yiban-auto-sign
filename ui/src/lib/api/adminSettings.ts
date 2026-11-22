@@ -9,7 +9,7 @@
  * 所有路径、字段与返回值与 `openapi.yaml` 对齐：
  * - 调度设置读回全部 8 键及其来源（`db` / `env` / `default`），写回返回配置名册 `SettingsReport`。
  * - 配额写回为部分补丁，传 `null` 删覆盖行恢复默认 1；传 0 表示不限。
- * - 测试邮件在 body 中显式传 `current_password`，不依赖隐式会话；测试 Webhook 无请求体。
+ * - 测试 Webhook 无请求体。测试邮件（需复核操作者口令）已归入 `lib/api/mail.ts`，此处不再重复路径常量。
  */
 
 import { apiRequest } from './client'
@@ -31,8 +31,6 @@ export type SettingsReport = components['schemas']['SettingsReport']
 export type SettingGroup = components['schemas']['SettingGroup']
 export type SettingItem = components['schemas']['SettingItem']
 export type SettingSource = components['schemas']['SettingSource']
-export type AdminMailTestRequest = components['schemas']['AdminMailTestRequest']
-export type MailTestResult = components['schemas']['MailTestResult']
 export type WebhookTestResult = components['schemas']['WebhookTestResult']
 
 export const REGISTRATION_STATUS_QUERY_KEY = ['auth-registration'] as const
@@ -91,13 +89,6 @@ export function updateScheduleSettings(
 
 export function getAdminSettings(): Promise<SettingsReport> {
   return apiRequest<SettingsReport>('/api/admin/settings')
-}
-
-export function sendTestMail(body: AdminMailTestRequest): Promise<MailTestResult> {
-  return apiRequest<MailTestResult>('/api/admin/mail/test', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
 }
 
 export function sendTestWebhook(): Promise<WebhookTestResult> {

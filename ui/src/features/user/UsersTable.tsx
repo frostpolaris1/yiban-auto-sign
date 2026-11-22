@@ -11,6 +11,7 @@
  * 加载、错误与空态由 `AsyncState` 在容器层处理；本组件只渲染数据态。
  * 已删行（`deleted_at` 非空）在状态格叠加「已删除」徽标。
  * 行操作「管理」开右侧抽屉；写动作的在途态都在抽屉与弹窗内。
+ * 已删行的操作格多一枚「彻底删除」：只能硬删已软删除的行，需二次口令确认。
  * 上次登录为空时显示破折号，由 `lib/format` 统一给出。
  */
 
@@ -35,6 +36,9 @@ type UsersTableProps = {
   onToggleRow: (id: string) => void
   onToggleAll: (ids: string[], checked: boolean) => void
   onManage: (user: User, opener: HTMLElement | null) => void
+  /** 彻底删除：只对已软删除的行出现，且只归 master。 */
+  canPurge: boolean
+  onPurge: (user: User, opener: HTMLElement | null) => void
 }
 
 export function UsersTable({
@@ -49,6 +53,8 @@ export function UsersTable({
   onToggleRow,
   onToggleAll,
   onManage,
+  canPurge,
+  onPurge,
 }: UsersTableProps) {
   const visibleIds = rows.map((row) => row.id)
   const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id))
@@ -122,14 +128,27 @@ export function UsersTable({
                 <td className="data-cell-mono">{formatDateTime(user.created_at)}</td>
                 <td className="data-cell-mono">{formatDateTime(user.last_login_at)}</td>
                 <td>
-                  <BusyButton
-                    size="sm"
-                    variant="ghost"
-                    aria-label={`管理 ${user.email}`}
-                    onClick={(event) => onManage(user, event.currentTarget)}
-                  >
-                    管理
-                  </BusyButton>
+                  <div className="data-cell-actions app-row-actions">
+                    <BusyButton
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`管理 ${user.email}`}
+                      onClick={(event) => onManage(user, event.currentTarget)}
+                    >
+                      管理
+                    </BusyButton>
+                    {canPurge && user.deleted_at !== null ? (
+                      <BusyButton
+                        size="sm"
+                        variant="outline-danger"
+                        aria-label={`彻底删除 ${user.email}`}
+                        title="不可恢复，审计记录保留"
+                        onClick={(event) => onPurge(user, event.currentTarget)}
+                      >
+                        彻底删除
+                      </BusyButton>
+                    ) : null}
+                  </div>
                 </td>
               </tr>
             ))}
