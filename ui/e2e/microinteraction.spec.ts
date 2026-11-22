@@ -1,13 +1,7 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { deleteCalls, mockAccountsApi, SESSION_PASSWORD } from './support/fake-accounts-api'
-import { accountIdentity, mockDashboardApi } from './support/fake-dashboard-api'
-import {
-  SCHEDULE_DAY,
-  mockScheduleApi,
-  overrideCalls,
-  planCalls,
-  timePrefPutCalls,
-} from './support/fake-schedule-api'
+import { mockDashboardApi } from './support/fake-dashboard-api'
+import { SCHEDULE_DAY, mockScheduleApi, overrideCalls, planCalls } from './support/fake-schedule-api'
 import { createSchoolCalls, mockSchoolsApi } from './support/fake-schools-api'
 import { installFakeEventSource, mockLogsApi } from './support/fake-logs-api'
 import { visibleText } from './support/visible-text'
@@ -18,12 +12,11 @@ async function fillReauth(dialog: Locator, password = SESSION_PASSWORD) {
 }
 
 /**
- * 微交互批（3bw）的六条不变式。
+ * 微交互批（3bw）的不变式；编号沿用历史，2（时间偏好）随卡移出管理台而移交用户端用例。
  *
  * 1. 写操作成功 ⇒ 出现 toast（`data-sonner-toast`，成功类型），页面内不再有成功提示条；
  *    写操作失败 ⇒ 无 toast，错误文案留在模态或表单内。
- * 2. 时间偏好保存成功 ⇒ toast；429／403 ⇒ 无 toast，卡内错误文案。
- * 3. 看板 KPI、容量三格、预览三格的终值等于期望数字（不是「约等于」）。
+ * 3. 容量三格、预览三格的终值等于期望数字（不是「约等于」）。
  * 4. 列表过渡不回归：行增删后行点击仍开抽屉、菜单项不触发抽屉、焦点仍还原。
  * 5. 双主题：toast 在明暗两主题下都存在且可见。
  * 6. 展示模式：`e2e/showcase.spec.ts`。
@@ -34,10 +27,6 @@ async function fillReauth(dialog: Locator, password = SESSION_PASSWORD) {
 
 function toast(page: Page): Locator {
   return page.locator('[data-sonner-toast]')
-}
-
-function kpiValue(page: Page, label: string): Locator {
-  return page.locator('.kpi-card').filter({ hasText: label }).locator('.kpi-value')
 }
 
 function metric(page: Page, label: string): Locator {
@@ -263,61 +252,6 @@ test('invariant 1: an override toasts the rebuilt version', async ({ page }) => 
   await expect(page.getByText('操作结果')).toHaveCount(0)
 })
 
-test('invariant 2: saving the time preference toasts', async ({ page }) => {
-  const api = await mockScheduleApi(page, { role: 'user' })
-  await page.goto('/')
-  await page.getByLabel('偏移分钟').selectOption('20')
-  await page.getByRole('button', { name: '保存偏好' }).click()
-  await page.getByRole('dialog', { name: '保存时间偏好？' }).getByRole('button', { name: '确认保存' }).click()
-
-  await expect.poll(() => timePrefPutCalls(api).length).toBe(1)
-  await expect(toast(page).filter({ hasText: '已保存时间偏好：窗口开始 + 20 分钟' })).toBeVisible()
-  await expect(page.getByText('操作结果')).toHaveCount(0)
-})
-
-for (const failure of [
-  { status: 429, code: 'rate_limited', message: '限流', shown: '修改太频繁，请稍后再试' },
-  { status: 403, code: 'forbidden', message: '无权', shown: '此部署未开放时间偏好' },
-] as const) {
-  test(`invariant 2: a ${failure.status} save keeps the error in the card and sends no toast`, async ({
-    page,
-  }) => {
-    await mockScheduleApi(page, {
-      role: 'user',
-      timePrefPutError: { status: failure.status, code: failure.code, message: failure.message },
-    })
-    await page.goto('/')
-    await page.getByLabel('偏移分钟').selectOption('20')
-    await page.getByRole('button', { name: '保存偏好' }).click()
-    const confirm = page.getByRole('dialog', { name: '保存时间偏好？' })
-    await confirm.getByRole('button', { name: '确认保存' }).click()
-
-    await expect(confirm).toContainText(failure.shown)
-    await expect(confirm).toBeVisible()
-    await expect(toast(page)).toHaveCount(0)
-  })
-}
-
-test('invariant 3: dashboard KPI numbers settle on the exact counts', async ({ page }) => {
-  const items = [
-    { ...accountIdentity('acc-0001'), account_id: 'acc-0001', state: 'success', run_at: null, stale: false },
-    { ...accountIdentity('acc-0002'), account_id: 'acc-0002', state: 'success', run_at: null, stale: false },
-    { ...accountIdentity('acc-0003'), account_id: 'acc-0003', state: 'pending', run_at: null, stale: false },
-    { ...accountIdentity('acc-0004'), account_id: 'acc-0004', state: 'running', run_at: null, stale: false },
-    { ...accountIdentity('acc-0005'), account_id: 'acc-0005', state: 'failed', run_at: null, stale: false },
-    { ...accountIdentity('acc-0006'), account_id: 'acc-0006', state: 'skipped', run_at: null, stale: false },
-    { ...accountIdentity('acc-0007'), account_id: 'acc-0007', state: null, run_at: null, stale: false },
-  ]
-  await mockDashboardApi(page, { role: 'user', signStatusItems: items })
-  await page.goto('/')
-  await expect(page.getByRole('table', { name: '今日签到状态' })).toBeVisible()
-
-  await expect.poll(() => visibleText(kpiValue(page, '账号总数'))).toBe('7个')
-  await expect.poll(() => visibleText(kpiValue(page, '已签'))).toBe('2个')
-  await expect.poll(() => visibleText(kpiValue(page, '进行中/待签'))).toBe('2个')
-  await expect.poll(() => visibleText(kpiValue(page, '异常'))).toBe('2个')
-})
-
 test('invariant 3: capacity numbers settle on the exact report', async ({ page }) => {
   await mockDashboardApi(page, { role: 'admin' })
   await page.goto('/')
@@ -373,7 +307,7 @@ test('invariant 3: number components keep the line box of plain text', async ({ 
 })
 
 test('invariant 4: rows stay clickable and focus returns after a delete', async ({ page }) => {
-  const api = await mockAccountsApi(page, { role: 'user' })
+  const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
 
   await page.getByRole('button', { name: '更多操作 135****0001' }).click()
@@ -449,7 +383,7 @@ test.describe('motion enabled', () => {
   test('invariant 4: a deleting row keeps the remaining rows clickable while it animates out', async ({
     page,
   }) => {
-    const api = await mockAccountsApi(page, { role: 'user' })
+    const api = await mockAccountsApi(page, { role: 'master' })
     await openAccounts(page)
 
     await page.getByRole('button', { name: '更多操作 135****0001' }).click()

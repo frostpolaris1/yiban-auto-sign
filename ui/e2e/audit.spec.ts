@@ -14,7 +14,7 @@ import {
  * 2. 翻页只用 `cursor`；`next_cursor` 为空时下一页禁用。
  * 3. 断链态页头出危险告警且列表仍可用；列表失败只有列表区出错＋重试，页头结论保持。
  * 4. 无记录与筛选无命中两种空态文案不同；非法日期在客户端阻止提交并提示。
- * 5. user 直达 `/audit` 得无权限卡，且零审计请求。
+ * 5. user 直达 `/audit` 被 302 到用户端 `/app`：管理台壳与审计表都不渲染，且零审计请求。
  * 6. 390 筛选纵向堆叠、表格在自身容器内横向滚动、页面零横向溢出。
  */
 
@@ -219,12 +219,17 @@ test('predicate 4: empty copy differs from filtered no-match, and an invalid dat
   ).toBe(false)
 })
 
-test('predicate 5: user reaches the denied card with zero audit requests', async ({ page }) => {
+test('predicate 5: a user is sent to /app from /audit and sends zero audit requests', async ({
+  page,
+}) => {
   const api = await mockAuditApi(page, { role: 'user' })
   await page.goto('/audit')
 
-  await expect(page.getByText('无权访问')).toBeVisible()
-  await expect(page.getByText('你的角色无权查看审计日志')).toBeVisible()
+  await expect(page).toHaveURL(/\/app$/)
+  await expect(page.locator('.uapp-bar'), 'the user app takes over').toBeVisible()
+  await expect(page.locator('.d-sidebar'), 'the manager shell never renders').toHaveCount(0)
+  await expect(page.getByRole('heading', { level: 1, name: /审计\s*日志/ })).toHaveCount(0)
+  await expect(page.locator('[data-audit-row]')).toHaveCount(0)
   expect(auditListCalls(api)).toHaveLength(0)
   expect(auditStatusCalls(api)).toHaveLength(0)
 })

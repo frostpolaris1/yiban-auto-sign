@@ -21,8 +21,8 @@ async function fillReauth(dialog: Locator, password = SESSION_PASSWORD) {
 /**
  * 用户管理页的不变式。
  *
- * 1. 角色可见性：master 从侧栏进页见列表；admin/user 无导航项，
- *    直接访问只有无权限卡片，且零用户列表请求。
+ * 1. 角色可见性：master 从侧栏进页见列表；admin 无导航项，直接访问只有
+ *    无权限卡片，且零用户列表请求；user 由壳层一律 302 用户端 `/app`。
  * 2. 列表内容：邮箱、角色中文标签、状态、账号数与待处理徽标、是否需要改密、
  *    创建时间与上次登录。空的上次登录显示破折号。
  * 3. 游标翻页：两页数据不重不漏；末页「下一页」禁用；回退不发游标。
@@ -84,27 +84,50 @@ test('invariant 2: each row shows the email, role, status, accounts and password
   await expect(pending.getByRole('cell').nth(4)).toContainText('待处理 1')
 })
 
-for (const role of ['admin', 'user'] as const) {
-  test(`invariant 1: the ${role} role has no entry and no user list request`, async ({ page }) => {
-    const api = await mockUsersApi(page, { role })
-    await page.goto('/')
-    await expect(
-      page.locator('.d-sidebar').getByRole('link', { name: '用户', exact: true }),
-    ).toHaveCount(0)
+test('invariant 1: the admin role has no entry and no user list request', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'admin' })
+  await page.goto('/')
+  await expect(
+    page.locator('.d-sidebar').getByRole('link', { name: '用户', exact: true }),
+  ).toHaveCount(0)
 
-    await page.goto('/users')
-    await expect(page.getByText('无权访问')).toBeVisible()
-    await expect(page.getByText('你的角色无权查看用户管理')).toBeVisible()
-    await expect(page.getByRole('table', { name: '用户列表' })).toHaveCount(0)
-    expect(listUserCalls(api), 'a denied page sends no user list request').toHaveLength(0)
+  await page.goto('/users')
+  await expect(page.getByText('无权访问')).toBeVisible()
+  await expect(page.getByText('你的角色无权查看用户管理')).toBeVisible()
+  await expect(page.getByRole('table', { name: '用户列表' })).toHaveCount(0)
+  expect(listUserCalls(api), 'a denied page sends no user list request').toHaveLength(0)
 
-    // 死胡同不允许：卡片必须有出口，且不做静默重定向。
-    await expect(page).toHaveURL(/\/users$/)
-    await page.getByRole('button', { name: '返回看板' }).click()
-    await expect(page).toHaveURL(/\/$/)
-    expect(listUserCalls(api), 'the exit sends no list request either').toHaveLength(0)
-  })
-}
+  // 死胡同不允许：卡片必须有出口，且不做静默重定向。
+  await expect(page).toHaveURL(/\/users$/)
+  await page.getByRole('button', { name: '返回看板' }).click()
+  await expect(page).toHaveURL(/\/$/)
+  expect(listUserCalls(api), 'the exit sends no list request either').toHaveLength(0)
+})
+
+// ticket13：user 不再进管理壳——壳层一律 302 用户端 /app，不落无权限卡片。
+test('invariant 1: the user role is redirected to the user app with no user list request', async ({
+  page,
+}) => {
+  const api = await mockUsersApi(page, { role: 'user' })
+  await page.goto('/')
+  await expect(page, 'user visiting the console root is redirected').toHaveURL('/app')
+
+  await page.goto('/users')
+  await expect(page, 'user never lands the console users page').toHaveURL('/app')
+  await expect(page.getByText('无权访问')).toHaveCount(0)
+  await expect(page.getByText('你的角色无权查看用户管理')).toHaveCount(0)
+  expect(listUserCalls(api), 'a redirected user sends no user list request').toHaveLength(0)
+})
+
+test('invariant 1: the denial card offers the previous page when the visit has a source', async ({
+  page,
+}) => {
+  await mockUsersApi(page, { role: 'admin' })
+  await page.goto('/users', { referer: 'http://127.0.0.1:4173/' })
+  await expect(page.getByText('无权访问')).toBeVisible()
+  await expect(page.getByText('你的角色无权查看用户管理')).toBeVisible()
+  await expect(page.getByRole('button', { name: '返回上一页' })).toBeVisible()
+})
 
 test('invariant 3: the two pages neither repeat nor drop a row', async ({ page }) => {
   const api = await mockUsersApi(page, {

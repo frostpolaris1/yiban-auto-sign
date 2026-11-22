@@ -15,7 +15,8 @@
  *    `409` / 冷却 `429`（含 Retry-After 秒数） / `502` 关闭弹窗并在按钮旁展示；
  *    Webhook 无弹窗直发空 POST 并内联展示结果。
  * 5. RBAC 与窄屏：`admin` 只读看到全部读数但所有写按钮置灰并标出原因且零写请求；
- *    `user` 仅渲染无权卡片、零管理读请求；390px 视口六分区全渲染且无水平溢出。
+ *    `user` 直达 `/system` 被 302 到用户端 `/app`：管理台壳与各分区都不渲染，
+ *    零 `/api/admin/*` 与 `/api/auth/registration` 请求；390px 视口六分区全渲染且无水平溢出。
  *    名册与版本两分区自身行为守卫在 `system-roster.spec.ts`。
  */
 
@@ -539,16 +540,20 @@ test('server write errors on policy and announcement display inline alerts and p
   await expect(annSection.getByLabel('公告正文')).toHaveValue('保留草稿不被清空')
 })
 
-test('user sees DeniedCard on /system and fires zero admin/policy/announcement requests', async ({
-  page,
-}) => {
+test('a user is sent to /app from /system and fires zero admin requests', async ({ page }) => {
   const api = await mockScheduleApi(page, { role: 'user' })
   await page.goto(`/system?day=${SCHEDULE_DAY}`)
-  await expect(page.getByText('你的角色无权查看系统设置')).toBeVisible()
-  await expect(page.locator('#policy')).toHaveCount(0)
 
-  const leaked = api.calls.filter((call) => call.path !== '/api/auth/me')
-  expect(leaked).toEqual([])
+  await expect(page).toHaveURL(/\/app$/)
+  await expect(page.locator('.uapp-bar'), 'the user app takes over').toBeVisible()
+  await expect(page.locator('.d-sidebar'), 'the manager shell never renders').toHaveCount(0)
+  await expect(page.locator('#policy')).toHaveCount(0)
+  await expect(page.locator('#announcement')).toHaveCount(0)
+
+  const policyReads = api.calls.filter(
+    (call) => call.path.startsWith('/api/admin/') || call.path === '/api/auth/registration',
+  )
+  expect(policyReads, 'the policy endpoints are never read').toEqual([])
 })
 
 test('390px mobile viewport on /system has zero horizontal overflow', async ({ page }) => {

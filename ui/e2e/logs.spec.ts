@@ -88,7 +88,8 @@ test('invariant 1: master reaches /logs from the sidebar and switches tabs via d
   await expect(page.getByRole('tab', { name: '运行巡检' })).toHaveAttribute('aria-selected', 'true')
 })
 
-test('invariant 1: the user role has no sidebar entry and sends zero requests on either tab', async ({
+// ticket13：user 不再进管理壳——壳层一律 302 用户端 /app，不落无权限卡片。
+test('invariant 1: the user role has no sidebar entry and is redirected with zero requests on either tab', async ({
   page,
 }) => {
   await installFakeEventSource(page)
@@ -99,13 +100,13 @@ test('invariant 1: the user role has no sidebar entry and sends zero requests on
   ).toHaveCount(0)
 
   await page.goto('/logs?tab=events')
-  await expect(page.getByText('无权访问')).toBeVisible()
-  await expect(page.getByText('你的角色无权查看签到台账')).toBeVisible()
-  expect(listTaskCalls(api), 'denied events tab sends no task request').toHaveLength(0)
+  await expect(page, 'user never lands the console logs page').toHaveURL('/app')
+  await expect(page.getByText('无权访问')).toHaveCount(0)
+  expect(listTaskCalls(api), 'a redirected user sends no task request').toHaveLength(0)
 
   await page.goto('/logs?tab=patrol')
-  await expect(page.getByText('无权访问')).toBeVisible()
-  expect(engineCalls(api), 'denied patrol tab sends no engine request').toHaveLength(0)
+  await expect(page).toHaveURL('/app')
+  expect(engineCalls(api), 'a redirected user sends no engine request').toHaveLength(0)
 })
 
 test('invariant 1: the admin role reaches both tabs', async ({ page }) => {

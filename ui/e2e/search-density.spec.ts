@@ -5,6 +5,7 @@ import { mockDashboardApi } from './support/fake-dashboard-api'
 /**
  * 任务书 06：顶栏全局搜索 + 密度切换。
  * 断言用户可见不变式：搜得到、跳得到、按角色收敛、密度可持久化。
+ * user 角色进不了管理台壳（一律 302 到用户端 `/app`），故顶栏搜索只对管理角色存在。
  * 防抖 250ms 用「最终只发一次带 q 的请求」来钉，不钉计时器本身。
  */
 
@@ -325,28 +326,18 @@ test.describe('global search', () => {
     await expect(dialog.getByText('东区宿舍')).toHaveCount(0)
   })
 
-  test('user role gets no search group and issues no request', async ({ page }) => {
+  test('user role is sent to /app and never gets the manager search', async ({ page }) => {
     const accounts = await mockAccountsApi(page, { role: 'user' })
     const fixture = await mockSearchEndpoints(page, 'user')
     await page.goto('/design')
 
-    await openSearch(page)
-    // 从面板打开起记录所有 /api 请求：user 角色没有任何检索组。
-    const during: string[] = []
-    page.on('request', (request) => {
-      const pathname = new URL(request.url()).pathname
-      if (pathname.startsWith('/api/')) during.push(pathname)
-    })
-
-    const dialog = page.getByRole('dialog', { name: '全局搜索' })
-    await typeQuery(page, '签到')
-    await expect(dialog.getByText('当前角色不启用全局检索。')).toBeVisible()
-    await expect(dialog.getByRole('option')).toHaveCount(0)
-    await expect(dialog.getByRole('group')).toHaveCount(0)
+    await expect(page).toHaveURL(/\/app$/)
+    await expect(page.locator('.uapp-bar'), 'the user app takes over').toBeVisible()
+    await expect(page.locator('.d-sidebar'), 'the manager shell never renders').toHaveCount(0)
+    await expect(page.locator('.d-topbar .cmd'), 'no global search trigger').toHaveCount(0)
 
     expect(fixture.paths, 'no role-gated search endpoint is called').toEqual([])
     expect(qAccountCalls(accounts), 'no account query is issued').toEqual([])
-    expect(during, 'no /api request at all while a user searches').toEqual([])
   })
 })
 

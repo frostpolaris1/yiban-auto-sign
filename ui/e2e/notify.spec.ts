@@ -19,7 +19,7 @@ import {
  * 4. 游标分页：next_cursor 非空显示「加载更多」，翻页请求对应 cursor 且不重发同游标，末页按钮隐藏。
  * 5. 30 秒轮询：页面可见且抽屉关闭时轮询；抽屉打开暂停；页面隐藏暂停。
  * 6. 负向：列表失败保留角标并出错误与重试；单条已读失败留原位提示；空列表显示「暂无通知」；
- *    user 角色零铃铛、零通知请求。
+ *    user 角色被 302 到用户端 `/app`，管理台壳与铃铛都不渲染。
  */
 
 function bellButton(page: Page): Locator {
@@ -274,18 +274,21 @@ test('invariant 6b: empty inbox shows status message rather than error', async (
   await expect(drawer.getByRole('alert')).toHaveCount(0)
 })
 
-test('invariant 6c: user role renders no bell and sends zero notification requests', async ({
+test('invariant 6c: a user is sent to /app and never gets the manager bell or inbox requests', async ({
   page,
 }) => {
   const api = await mockNotifyApi(page, { role: 'user' })
   await page.goto('/design')
 
-  await expect(page.getByRole('heading', { name: /组件画廊/ })).toBeVisible()
+  await expect(page).toHaveURL(/\/app$/)
+  await expect(page.locator('.uapp-bar'), 'the user app takes over').toBeVisible()
+  await expect(page.locator('.d-sidebar'), 'the manager shell never renders').toHaveCount(0)
+  await expect(page.locator('.topbar-actions')).toHaveCount(0)
   await expect(bellButton(page)).toHaveCount(0)
-  expect(unreadCountCalls(api)).toHaveLength(0)
-  expect(notificationListCalls(api)).toHaveLength(0)
-  expect(markReadCalls(api)).toHaveLength(0)
-  expect(markAllReadCalls(api)).toHaveLength(0)
+
+  // 收件箱插槽只装配在管理台壳（src/app/router.tsx:65 → AppShell），用户端从不读它。
+  const inboxReads = api.calls.filter((call) => call.path.startsWith('/api/me/notifications'))
+  expect(inboxReads, 'the user app never polls the manager inbox').toEqual([])
 })
 
 test('invariant 6d: next-page failure keeps page 1 and retries without duplicating cursor', async ({

@@ -9,7 +9,6 @@ import {
   DEFAULT_PREF_STATS,
   DEFAULT_SIGN_STATS,
   type DashboardApiCall,
-  accountIdentity,
   accountSummaryCalls,
   auditStatusCalls,
   capacityCalls,
@@ -27,10 +26,11 @@ import {
 /**
  * 看板的十条不变式。
  *
- * 1. 角色取数隔离：user 零窗口、容量与审计巡检请求；master/admin 零签到状态与诊断请求。
- * 2. KPI 由条目派生，四项计数与列表行数一致；空账号全零。
- * 3. 轮询：30 秒后自动再取一次；页面隐藏时不轮询。
- * 4. 过期标记：stale=true 的行带「数据已过期」，全 false 时一处也没有。
+ * 1. 角色取数隔离：user 一律 302 到 /app，零窗口、容量、审计巡检与引擎快照请求；
+ *    master/admin 零签到状态与诊断请求。
+ * 2. （已退役）签到状态表随 SignStatusCard 删除；今日 KPI 改由 30 天报告派生，见第 9 条。
+ * 3. 轮询：拥挤度 15 秒后自动再取一次；页面隐藏时不轮询。
+ * 4. （已退役）过期标记随签到状态表一并删除。
  * 5. 容量体检：默认选第一可用任务并即发请求；切换选择器触发新请求；
  *    shortfall>0 用 danger 徽章；缺口建议按瓶颈给配置动作（通道给数字与复制，
  *    出口只给配置名），无缺口不渲染建议块。
@@ -108,18 +108,20 @@ function statsWithTail(
   }
 }
 
-test('invariant 1: the user dashboard sends no window or capacity request', async ({ page }) => {
+test('invariant 1: a user is sent to /app and reads no console dashboard data', async ({
+  page,
+}) => {
   const api = await mockDashboardApi(page, { role: 'user' })
-  await openDashboard(page)
-  await expect(signTable(page)).toBeVisible()
-  await expect(diagnosticsTable(page)).toBeVisible()
-
-  expect(windowsCalls(api), 'a user never reads the window list').toHaveLength(0)
-  expect(capacityCalls(api), 'a user never reads capacity').toHaveLength(0)
-  expect(auditStatusCalls(api), 'a user never inspects the audit chain').toHaveLength(0)
-  expect(engineSnapshotCalls(api), 'a user never reads the engine snapshot').toHaveLength(0)
+  await page.goto('/')
+  await expect(page, 'user never lands the console dashboard').toHaveURL(/\/app$/)
+  await expect(page.locator('.d-sidebar')).toHaveCount(0)
   await expect(page.getByText('容量体检')).toHaveCount(0)
   await expect(page.getByText('审计链巡检')).toHaveCount(0)
+
+  expect(windowsCalls(api), 'a redirected user reads no window list').toHaveLength(0)
+  expect(capacityCalls(api), 'a redirected user reads no capacity').toHaveLength(0)
+  expect(auditStatusCalls(api), 'a redirected user inspects no audit chain').toHaveLength(0)
+  expect(engineSnapshotCalls(api), 'a redirected user reads no engine snapshot').toHaveLength(0)
 })
 
 test('invariant 1: a manager sends no sign-status or diagnostics request', async ({ page }) => {
@@ -219,97 +221,39 @@ test('invariant 10: the health pulse bar shows engine status, live counters and 
   expect(engineSnapshotCalls(api).length).toBe(2)
 })
 
-test('invariant 2: the four KPI counts match the rows', async ({ page }) => {
-  const items = [
-    { ...accountIdentity('acc-0001'), account_id: 'acc-0001', state: 'success', run_at: null, stale: false },
-    { ...accountIdentity('acc-0002'), account_id: 'acc-0002', state: 'success', run_at: null, stale: false },
-    { ...accountIdentity('acc-0003'), account_id: 'acc-0003', state: 'pending', run_at: null, stale: false },
-    { ...accountIdentity('acc-0004'), account_id: 'acc-0004', state: 'running', run_at: null, stale: false },
-    { ...accountIdentity('acc-0005'), account_id: 'acc-0005', state: 'failed', run_at: null, stale: false },
-    { ...accountIdentity('acc-0006'), account_id: 'acc-0006', state: 'skipped', run_at: null, stale: false },
-    { ...accountIdentity('acc-0007'), account_id: 'acc-0007', state: null, run_at: null, stale: false },
-  ]
-  await mockDashboardApi(page, { role: 'user', signStatusItems: items })
-  await openDashboard(page)
-
-  await expectKpi(page, '账号总数', '7个')
-  await expectKpi(page, '已签', '2个')
-  await expectKpi(page, '进行中/待签', '2个')
-  await expectKpi(page, '异常', '2个')
-  await expect(signTable(page).locator('tbody tr')).toHaveCount(7)
-})
-
-test('invariant 2: no accounts means zero KPI and two empty cards', async ({ page }) => {
-  await mockDashboardApi(page, { role: 'user', signStatusItems: [], diagnosticsItems: [] })
-  await openDashboard(page)
-
-  await expectKpi(page, '账号总数', '0个')
-  await expectKpi(page, '已签', '0个')
-  await expectKpi(page, '进行中/待签', '0个')
-  await expectKpi(page, '异常', '0个')
-  await expect(page.getByText('今日暂无签到任务')).toHaveCount(2)
-  await expect(signTable(page).locator('tbody tr')).toHaveCount(1)
-})
-
-test('invariant 3: sign status polls again after thirty seconds', async ({ page }) => {
+test('invariant 3: the crowding card polls again after fifteen seconds', async ({ page }) => {
   await page.clock.install()
-  const api = await mockDashboardApi(page, { role: 'user' })
+  const api = await mockDashboardApi(page, { role: 'admin' })
   await openDashboard(page)
-  await expect(signTable(page).locator('tbody tr')).toHaveCount(4)
 
-  const base = signStatusCalls(api).length
-  expect(base, 'one read when the card mounts').toBe(1)
+  await expect.poll(() => prefStatsCalls(api).length, 'one read for the selected task').toBe(1)
 
-  await page.clock.runFor(25_000)
-  expect(signStatusCalls(api).length, 'no poll before the interval elapses').toBe(base)
+  await page.clock.runFor(12_000)
+  expect(prefStatsCalls(api).length, 'no poll before the interval elapses').toBe(1)
 
-  await page.clock.runFor(6_000)
-  await expect.poll(() => signStatusCalls(api).length).toBe(base + 1)
+  await page.clock.runFor(4_000)
+  await expect.poll(() => prefStatsCalls(api).length).toBe(2)
 })
 
 test('invariant 3: a hidden page does not poll', async ({ page }) => {
   await page.clock.install()
-  const api = await mockDashboardApi(page, { role: 'user' })
+  const api = await mockDashboardApi(page, { role: 'admin' })
   await openDashboard(page)
-  await expect(signTable(page).locator('tbody tr')).toHaveCount(4)
+  await expect.poll(() => prefStatsCalls(api).length).toBe(1)
 
-  const base = signStatusCalls(api).length
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
     window.dispatchEvent(new Event('visibilitychange'))
   })
-  await page.clock.runFor(65_000)
-  expect(signStatusCalls(api).length, 'a hidden page sends no poll').toBe(base)
+  await page.clock.runFor(40_000)
+  expect(prefStatsCalls(api).length, 'a hidden page sends no poll').toBe(1)
 
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
     window.dispatchEvent(new Event('visibilitychange'))
   })
-  await page.clock.runFor(31_000)
-  await expect.poll(() => signStatusCalls(api).length).toBe(base + 1)
-})
-
-test('invariant 4: a stale row carries the expiry badge', async ({ page }) => {
-  await mockDashboardApi(page, {
-    role: 'user',
-    signStatusItems: [
-      { ...accountIdentity('acc-0001'), account_id: 'acc-0001', state: 'success', run_at: null, stale: true },
-      { ...accountIdentity('acc-0002'), account_id: 'acc-0002', state: 'pending', run_at: null, stale: false },
-    ],
-  })
-  await openDashboard(page)
-
-  const rows = signTable(page).locator('tbody tr')
-  await expect(rows.nth(0)).toContainText('数据已过期')
-  await expect(rows.nth(1)).not.toContainText('数据已过期')
-  await expect(signTable(page).getByText('数据已过期')).toHaveCount(1)
-})
-
-test('invariant 4: fresh rows carry no expiry badge', async ({ page }) => {
-  await mockDashboardApi(page, { role: 'user' })
-  await openDashboard(page)
-  await expect(signTable(page).locator('tbody tr')).toHaveCount(4)
-  await expect(signTable(page).getByText('数据已过期')).toHaveCount(0)
+  await page.clock.runFor(16_000)
+  await expect.poll(() => prefStatsCalls(api).length).toBe(2)
 })
 
 test('invariant 5: capacity defaults to the first usable task and follows the picker', async ({
@@ -458,56 +402,6 @@ test('invariant 6: an empty window list says so and sends no capacity request', 
   )
 })
 
-test('invariant 6: a failing sign-status read leaves the diagnostics card usable', async ({
-  page,
-}) => {
-  await mockDashboardApi(page, {
-    role: 'user',
-    signStatusError: {
-      status: 500,
-      code: 'internal_error',
-      message: '签到状态暂不可用',
-      once: true,
-    },
-  })
-  await openDashboard(page)
-
-  const card = page.locator('.card').filter({ hasText: '签到状态' })
-  await expect(card).toContainText('签到状态暂不可用')
-  await expect(card.getByRole('button', { name: '重试' })).toBeVisible()
-  // 取不到数据时 KPI 回退占位；重试成功后回升（两步都钉住）。
-  await expectKpi(page, '账号总数', '—')
-  await expect(diagnosticsTable(page).locator('tbody tr')).toHaveCount(4)
-
-  await card.getByRole('button', { name: '重试' }).click()
-  await expect(signTable(page).locator('tbody tr')).toHaveCount(4)
-  await expectKpi(page, '账号总数', '4个')
-})
-
-test('invariant 6: a failing diagnostics read leaves the sign-status card usable', async ({
-  page,
-}) => {
-  await mockDashboardApi(page, {
-    role: 'user',
-    diagnosticsError: {
-      status: 500,
-      code: 'internal_error',
-      message: '诊断暂不可用',
-      once: true,
-    },
-  })
-  await openDashboard(page)
-
-  const card = page.locator('.card').filter({ hasText: '签到诊断' })
-  await expect(card).toContainText('诊断暂不可用')
-  await expect(card.getByRole('button', { name: '重试' })).toBeVisible()
-  await expect(signTable(page).locator('tbody tr')).toHaveCount(4)
-  await expectKpi(page, '账号总数', '4个')
-
-  await card.getByRole('button', { name: '重试' }).click()
-  await expect(diagnosticsTable(page).locator('tbody tr')).toHaveCount(4)
-})
-
 test('invariant 6: a failing capacity read leaves the KPI usable and recovers on retry', async ({
   page,
 }) => {
@@ -574,13 +468,13 @@ test('invariant 8: a manager gets two aggregate charts and both stats reads', as
   expect(prefStatsCalls(api)[0].params['task_id']).toBe('task-daily')
 })
 
-test('invariant 8: a user dashboard renders no aggregate charts', async ({ page }) => {
+test('invariant 8: a user is sent to /app and reads no aggregate charts', async ({ page }) => {
   const api = await mockDashboardApi(page, { role: 'user' })
-  await openDashboard(page)
-  await expect(signTable(page)).toBeVisible()
+  await page.goto('/')
+  await expect(page, 'user never lands the console dashboard').toHaveURL(/\/app$/)
 
-  expect(signStatsCalls(api), 'a user never reads sign statistics').toHaveLength(0)
-  expect(prefStatsCalls(api), 'a user never reads crowding').toHaveLength(0)
+  expect(signStatsCalls(api), 'a redirected user reads no sign statistics').toHaveLength(0)
+  expect(prefStatsCalls(api), 'a redirected user reads no crowding').toHaveLength(0)
   await expect(page.getByText('30 天签到趋势')).toHaveCount(0)
   await expect(page.locator('.app-chart-canvas')).toHaveCount(0)
 })
@@ -756,13 +650,14 @@ test('invariant 9: the health strip links engine chips and the run ledger', asyn
   await expect(page).toHaveURL(/\/logs\?tab=events$/)
 })
 
-test('invariant 9: a user never reads the account summary nor sees the pending account KPI', async ({
+test('invariant 9: a user is sent to /app and never reads the account summary', async ({
   page,
 }) => {
   const api = await mockDashboardApi(page, { role: 'user' })
-  await openDashboard(page)
+  await page.goto('/')
+  await expect(page, 'user never lands the console dashboard').toHaveURL(/\/app$/)
 
-  expect(accountSummaryCalls(api), 'a user never reads the summary').toHaveLength(0)
+  expect(accountSummaryCalls(api), 'a redirected user reads no summary').toHaveLength(0)
   await expect(page.locator('.kpi-card').filter({ hasText: '待处理账号' })).toHaveCount(0)
 })
 
@@ -920,9 +815,14 @@ test('invariant 13: the pause button stays disabled until the engine snapshot la
   page,
 }) => {
   await mockDashboardApi(page, { role: 'master' })
+  // 快照请求挂在闸门上：先看清「读取中」的禁用态再放行。固定延时在并发负载下会抢跑。
+  let releaseEngine = (): void => {}
+  const engineGate = new Promise<void>((resolve) => {
+    releaseEngine = resolve
+  })
   await page.route('**/api/admin/engine', async (route) => {
-    // 让快照晚到，观察加载门；fallback 交回假 API，不能 continue 绕过夹具。
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    // fallback 交回假 API，不能 continue 绕过夹具。
+    await engineGate
     await route.fallback()
   })
   await openDashboard(page)
@@ -931,5 +831,7 @@ test('invariant 13: the pause button stays disabled until the engine snapshot la
   const pause = strip.getByRole('button', { name: '暂停引擎' })
   await expect(pause).toBeDisabled()
   await expect(pause).toHaveAttribute('title', '引擎状态读取中')
-  await expect(pause).toBeEnabled({ timeout: 5000 })
+
+  releaseEngine()
+  await expect(pause).toBeEnabled({ timeout: 10_000 })
 })

@@ -15,10 +15,10 @@ import { visibleText } from './support/visible-text'
  * 待办页（/queue）的行为不变式：
  *
  * 1. 权限隔离：master/admin 经侧栏「待办」进入并正常加载；user 无侧栏入口，
- *    直接访问显示无权限卡片且零业务请求。
+ *    直达任意管理台路由被壳层 302 至 /app，管理台壳不渲染且零业务请求。
  * 2. 独立分段与独立游标：翻「今日失败」下一页不会改变「待审核」请求的 cursor；
  *    组内分段切换（待审核/已拒绝、待签/进行中）独立运作。
- * 3. 一键通过：review 恰好 1 次，该行离开待审组，摘要待审核计数 −1，出现 toast。
+ * 3. 一键通过：先确认弹窗，确认后 review 恰好 1 次，该行离开待审组，摘要待审核计数 −1，出现 toast。
  * 4. 驳回理由弹窗：须填理由才能提交；提交后触发 review(reject)，账号转入「已拒绝」分段。
  * 5. 一键重签（重试）：sign 恰好 1 次；失败组保持该行（异步不乐观删行），出现 toast；
  *    失败时错误留在行内。
@@ -36,7 +36,7 @@ async function openQueue(page: Page) {
   await expect(page.locator('[data-queue-group="unsigned"]')).toBeVisible()
 }
 
-test('invariant 1: master reaches /queue via sidebar; user is denied with zero requests', async ({
+test('invariant 1: master reaches /queue via sidebar; user is redirected to /app with no task read', async ({
   page,
 }) => {
   await installFakeEventSource(page)
@@ -51,12 +51,14 @@ test('invariant 1: master reaches /queue via sidebar; user is denied with zero r
   await page.unrouteAll({ behavior: 'ignoreErrors' })
   const userApi = await mockQueueApi(page, { role: 'user' })
   await page.goto('/')
-  await expect(page.locator('.d-sidebar').getByRole('link', { name: '待办', exact: true })).toHaveCount(0)
+  await expect(page).toHaveURL(/\/app$/)
+  await expect(page.locator('.d-sidebar')).toHaveCount(0)
 
   await page.goto('/queue')
-  await expect(page.getByText('无权访问')).toBeVisible()
-  await expect(page.getByText('你的角色无权查看待办队列')).toBeVisible()
-  expect(accountListCalls(userApi)).toHaveLength(0)
+  await expect(page).toHaveURL(/\/app$/)
+  await expect(page.getByText('无权访问')).toHaveCount(0)
+  // /app 首页自己要读 /api/accounts（用户端账号列表），账号请求不能归因控制台；
+  // 待办页独有的任务列表读取才是这条不变式的信号。
   expect(taskListCalls(userApi)).toHaveLength(0)
 })
 
@@ -141,12 +143,17 @@ test('invariant 3 & 4: approve removes row & decrements summary; reject opens mo
   await expect(pendingGroup).toContainText('138****8000')
   await expect(pendingGroup).toContainText('139****9000')
 
-  // 一键通过 138****8000
+  // 一键通过 138****8000：先出确认弹窗，未确认前不发任何 review 请求
   await pendingGroup.getByRole('button', { name: '通过 138****8000' }).click()
+  const approveModal = page.getByRole('dialog', { name: '通过账号' })
+  await expect(approveModal).toBeVisible()
+  expect(reviewCalls(api)).toHaveLength(0)
+  await approveModal.getByRole('button', { name: '确认通过' }).click()
   // 请求由事件处理器发出，draw 之后才落到 fake 的 calls 里；用 poll 等它落地,
   // 直接同步断言会偶发读到上一条（见下方驳回那段的同一处竞态）。
   await expect.poll(() => reviewCalls(api).length).toBe(1)
   expect(reviewCalls(api)[0].body).toEqual({ decision: 'approve' })
+  await expect(approveModal).toBeHidden()
 
   await expect(page.locator('[data-sonner-toast]').filter({ hasText: '已通过 东区宿舍' })).toBeVisible()
   await expect(pendingGroup.getByText('138****8000')).toHaveCount(0)

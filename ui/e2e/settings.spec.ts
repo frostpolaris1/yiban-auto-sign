@@ -468,7 +468,7 @@ test('settings: initial notification load error offers retry and recovers', asyn
   )
 })
 
-test('settings: user role has no sidebar entry and lands on the denied card with zero business requests', async ({
+test('settings: user role has no sidebar entry and is redirected to the user app with zero console admin requests', async ({
   page,
 }) => {
   const api = await mockAccountsApi(page, { role: 'user' })
@@ -480,16 +480,19 @@ test('settings: user role has no sidebar entry and lands on the denied card with
   const beforeSettings = api.calls.length
   await page.goto('/settings')
 
-  await expect(page.getByRole('heading', { name: '无权访问' })).toBeVisible()
-  await expect(page.getByText('你的角色无权访问账号设置')).toBeVisible()
-  await expect(page.getByRole('button', { name: '返回看板' })).toBeVisible()
+  // ticket13：user 不再进管理壳——壳层一律 302 用户端 /app，不落无权限卡片。
+  await expect(page, 'user never lands the console settings page').toHaveURL('/app')
+  await expect(page.getByRole('heading', { name: '无权访问' })).toHaveCount(0)
+  await expect(page.getByText('你的角色无权访问账号设置')).toHaveCount(0)
   await expect(page.getByRole('heading', { name: '修改密码' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: '通知订阅' })).toHaveCount(0)
 
-  const businessCalls = api.calls
+  // /app 自己要读 /api/me/*、/api/accounts、/api/schools、公告，这些不能归因控制台；
+  // 能唯一归因账号设置页的是 /api/admin/*（邮件设置、通知开关），一条都不许出现。
+  const consoleCalls = api.calls
     .slice(beforeSettings)
-    .filter((call) => call.path !== '/api/auth/me')
-  expect(businessCalls, 'user role sends zero business requests on /settings').toEqual([])
+    .filter((call) => call.path.startsWith('/api/admin/'))
+  expect(consoleCalls, 'user role sends zero /api/admin requests on /settings').toEqual([])
 })
 
 test('settings: 390px viewport renders the notification matrix without horizontal overflow', async ({

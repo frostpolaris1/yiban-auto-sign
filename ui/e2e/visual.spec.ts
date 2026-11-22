@@ -19,14 +19,15 @@ import { visibleText } from './support/visible-text'
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：13 条常驻路由（含 `/logs` 两页签与固定业务日 `/system?day=...`，页内 Date 冻结在
- * VISUAL_NOW，快照时刻全部派生自它）与看板的两个视角（user/admin），
- * × 2 套主题 × 2 个宽度 = 60 张；另有抽屉／模态／菜单、
- * 无权限页与溢出判据，文件合计 105 条用例（2026-11-18 实数）。
- * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检；
+ * 矩阵：14 条常驻路由（含 `/logs` 两页签与固定业务日 `/system?day=...`，页内 Date 冻结在
+ * VISUAL_NOW，快照时刻全部派生自它）与看板（admin），
+ * × 2 套主题 × 2 个宽度；另有抽屉／模态／菜单态与溢出判据。
+ * 看板只归 master/admin（窗口／容量体检）：user 被壳层 302 到 `/app`，
+ * 用户端界面由本文件末尾独立的 user app describe 覆盖，不再有 dashboard-user 视角。
  * 系统设置按固定业务日入常驻矩阵（缺省日期会随日历漂移）。
- * 另有抽屉／模态／菜单态、无权限页与时间偏好卡等按需快照（合计 104 张／平台）。
- * 溢出判据跑全部常驻路由；`/` 另跑 user 视角（另一套布局）。
+ * 基线目录 `e2e/visual.spec.ts-snapshots/`，每平台百余张（现行实数见目录计数）；
+ * 无权限页快照已随 user 视角退役（user 进不了管理台路由，权限门留在行为用例里）。
+ * 溢出判据跑全部常驻路由（覆盖 `/` 的 master 形态）。
  * 基线随 spec 入库，目录是 `e2e/visual.spec.ts-snapshots/`。
  * 首次运行 `npm run test:visual:update`。此后每次必须 0 差异。
  */
@@ -48,10 +49,9 @@ const ROUTES = [
   { path: `/reset-password?token=${RESET_TOKEN}`, name: 'reset-password' },
 ] as const
 
-const DASHBOARD_VIEWS = [
-  { role: 'user', name: 'dashboard-user' },
-  { role: 'admin', name: 'dashboard-admin' },
-] as const
+// 管理台看板只归 master/admin：user 一律被壳层 302 到 /app，
+// 用户端界面由本文件末尾独立的 user app describe 覆盖，不再有 dashboard-user 视角。
+const DASHBOARD_VIEWS = [{ role: 'admin', name: 'dashboard-admin' }] as const
 
 const VIEWPORTS = [
   { name: '1440', width: 1440, height: 900 },
@@ -258,25 +258,19 @@ for (const theme of THEMES) {
         await openWithTheme(page, '/', theme, view.role)
         // 数据态到位再拍：不等就会拍到「加载中…」。
         // 数字先断言终值再拍：滚动中间帧不得进基线。
-        if (view.role === 'user') {
-          await expect(page.getByRole('table', { name: '今日签到状态' })).toContainText(
-            '账号 #1',
-          )
-          await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4个', '1个', '1个', '1个'])
-        } else {
-          await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
-          // 容量三指标只数容量卡：运行状态卡另有自己的 metric，不再全局计数。
-          const capacity = page.locator('.card').filter({ hasText: '容量体检' })
-          await expect(capacity.locator('.app-metric')).toHaveCount(3)
-          await expectNumbers(capacity.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
-          // 四张 KPI：成功/失败/进行中/待处理；总览不再展示成功率卡。
-          await expectNumbers(page.locator('.kpi-card .kpi-value'), [
-            '3个',
-            '0个',
-            '1个',
-            '3个',
-          ])
-        }
+        await expect(page.getByLabel('任务')).toContainText('合成学校甲 · 每日签到')
+        // 容量三指标只数容量卡：运行状态卡另有自己的 metric，不再全局计数。
+        const capacity = page.locator('.card').filter({ hasText: '容量体检' })
+        await expect(capacity.locator('.app-metric')).toHaveCount(3)
+        await expectNumbers(capacity.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+        // 四张 KPI：成功/失败/进行中/待处理；总览不再展示成功率卡。
+        await expectNumbers(page.locator('.kpi-card .kpi-value'), [
+          '3个',
+          '0个',
+          '1个',
+          '3个',
+        ])
+        await waitForAnimations(page)
         await expect(page).toHaveScreenshot(`${view.name}-${theme}-${viewport.name}.png`, {
           fullPage: true,
         })
@@ -288,6 +282,7 @@ for (const theme of THEMES) {
         await page.setViewportSize({ width: viewport.width, height: viewport.height })
         await openWithTheme(page, route.path, theme)
         await expectData(page, route.path)
+        await waitForAnimations(page)
         await expect(page).toHaveScreenshot(`${route.name}-${theme}-${viewport.name}.png`, {
           fullPage: true,
         })
@@ -302,6 +297,7 @@ for (const theme of THEMES) {
     await openWithTheme(page, '/accounts', theme)
     await page.getByRole('button', { name: '查看 138****8000' }).click()
     await expect(page.getByRole('dialog', { name: '账号详情' })).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`accounts-drawer-${theme}-1440.png`)
   })
 
@@ -313,6 +309,7 @@ for (const theme of THEMES) {
     await page.getByRole('button', { name: '查看 138****8000' }).click()
     await expect(page.getByRole('dialog', { name: '账号详情' })).toBeVisible()
     await expect(page.getByRole('region', { name: '账号照片' })).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`accounts-drawer-photos-${theme}-1440.png`)
   })
 
@@ -321,6 +318,7 @@ for (const theme of THEMES) {
     await openWithTheme(page, '/accounts', theme)
     await page.getByRole('button', { name: '暂停 139****9000' }).click()
     await expect(page.getByRole('dialog', { name: '暂停账号？' })).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`accounts-modal-${theme}-1440.png`)
   })
 
@@ -332,6 +330,9 @@ for (const theme of THEMES) {
     await expect(page.getByRole('menu')).toBeVisible()
     // 与 profile menu 同纪律：等入场动画结束，快照不带中间帧。
     await page.waitForTimeout(250)
+    await waitForAnimations(page)
+    // 行 hover 底会随列表重挂随机丢失：指针挪到中性点，快照只收稳态行。
+    await page.mouse.move(8, 8)
     await expect(page).toHaveScreenshot(`accounts-rowmenu-${theme}-1440.png`)
   })
 
@@ -341,18 +342,20 @@ for (const theme of THEMES) {
     await page.getByRole('button', { name: '更多操作 138****8000' }).click()
     await page.getByRole('menu').getByRole('menuitem', { name: /编辑/ }).click()
     await expect(page.getByRole('dialog', { name: '编辑账号？' })).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`accounts-edit-${theme}-1440.png`)
   })
 
   test(`visual accounts location modal ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
-    // 位置策略只归 user/admin（beforeEach 是 master，会置灰打不开）：
-    // 叠一层 user 角色的 mock，后注册的 route 先匹配。
-    await mockAccountsApi(page, { role: 'user' })
+    // 位置策略只归 user/admin（beforeEach 是 master，会置灰打不开）。
+    // user 已被壳层 302 到 /app、进不了 /accounts，这里改用 admin 会话打开。
+    await mockAccountsApi(page, { role: 'admin' })
     await openWithTheme(page, '/accounts', theme)
     await page.getByRole('button', { name: '更多操作 139****9000' }).click()
     await page.getByRole('menu').getByRole('menuitem', { name: /位置/ }).click()
     await expect(page.getByRole('dialog', { name: '设置位置策略？' })).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`accounts-location-${theme}-1440.png`)
   })
 
@@ -362,6 +365,7 @@ for (const theme of THEMES) {
     await page.getByRole('button', { name: '更多操作 135****0001' }).click()
     await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
     await expect(page.getByRole('dialog', { name: '删除账号？' })).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`accounts-delete-${theme}-1440.png`)
   })
 }
@@ -382,6 +386,7 @@ for (const theme of THEMES) {
     await expectData(page, '/accounts')
     const link = page.getByRole('link', { name: '账号，待处理账号 3' })
     await expect(link.locator('.nav-badge')).toHaveText('3')
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`nav-badge-${theme}-1440.png`, { fullPage: true })
   })
 }
@@ -403,6 +408,7 @@ for (const theme of THEMES) {
     await page.locator('.table-scroll').evaluate((el) => {
       el.scrollLeft = 0
     })
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`toast-${theme}-1440.png`)
   })
 }
@@ -413,6 +419,7 @@ for (const theme of THEMES) {
     await openWithTheme(page, '/schools', theme)
     await page.getByRole('button', { name: '查看 合成学校甲' }).click()
     await expect(page.getByRole('dialog', { name: '学校详情' })).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`schools-drawer-${theme}-1440.png`)
   })
 
@@ -423,6 +430,7 @@ for (const theme of THEMES) {
     await page.getByRole('button', { name: '查看 合成学校甲' }).click()
     await expect(page.getByRole('dialog', { name: '学校详情' })).toBeVisible()
     await expect(page.getByRole('region', { name: '学校缺省图' })).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`schools-drawer-photos-${theme}-1440.png`)
   })
 
@@ -442,6 +450,7 @@ for (const theme of THEMES) {
     await page.getByRole('button', { name: '更多操作 合成学校甲' }).click()
     await page.getByRole('menu').getByRole('menuitem', { name: /编辑/ }).click()
     await expect(page.getByRole('dialog', { name: '编辑学校？' })).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`schools-edit-${theme}-1440.png`)
   })
 
@@ -452,6 +461,7 @@ for (const theme of THEMES) {
     await page.getByRole('menu').getByRole('menuitem', { name: /管理员/ }).click()
     await expect(page.getByRole('dialog', { name: '学校管理员' })).toBeVisible()
     await expect(page.getByText('admin-one@example.com')).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`schools-admins-${theme}-1440.png`)
   })
 
@@ -461,14 +471,10 @@ for (const theme of THEMES) {
     await openWithTheme(page, '/schools', theme, 'admin')
     await page.getByRole('button', { name: '更多操作 合成学校甲' }).click()
     await expect(page.getByRole('menu')).toBeVisible()
+    await waitForAnimations(page)
+    // 同 accounts row menu：不留按钮 hover 底，快照口径与行态解耦。
+    await page.mouse.move(8, 8)
     await expect(page).toHaveScreenshot(`schools-rowmenu-admin-${theme}-1440.png`)
-  })
-
-  test(`visual schools denied ${theme}`, async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, '/schools', theme, 'user')
-    await expect(page.getByText('你的角色无权查看学校管理')).toBeVisible()
-    await expect(page).toHaveScreenshot(`schools-denied-${theme}-1440.png`)
   })
 }
 
@@ -476,6 +482,8 @@ for (const theme of THEMES) {
   test(`visual system preview ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme)
+    // 背景层同样要数据态：弹窗本体逐像素稳定，飘的是身后骨架→数据重排的那几帧。
+    await expectData(page, '/system')
     await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
     const dialog = page.getByRole('dialog', { name: '计划预览' })
     await expect(dialog).toBeVisible()
@@ -483,36 +491,22 @@ for (const theme of THEMES) {
     await expect(dialog).toContainText('v0')
     // 三个数字并行滚动：三格都落定再拍，避免高负载下拍到中间帧。
     await expectNumbers(dialog.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`system-preview-${theme}-1440.png`)
   })
 
   test(`visual system override ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme)
+    // 背景层同样要数据态：弹窗本体逐像素稳定，飘的是身后骨架→数据重排的那几帧。
+    await expectData(page, '/system')
     await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
     await page.getByRole('dialog', { name: '计划预览' }).getByRole('button', { name: '写入覆盖' }).click()
     const dialog = page.getByRole('dialog', { name: '写入窗口覆盖？' })
     await expect(dialog).toBeVisible()
     await expect(dialog.getByLabel('开始时间')).toHaveValue('2026-10-28T08:10')
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`system-override-${theme}-1440.png`)
-  })
-
-  test(`visual system denied ${theme}`, async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme, 'user')
-    await expect(page.getByText('你的角色无权查看系统设置')).toBeVisible()
-    await expect(page).toHaveScreenshot(`system-denied-${theme}-1440.png`, { fullPage: true })
-  })
-
-  test(`visual dashboard time preference card ${theme}`, async ({ page }) => {
-    // 偏好卡只对 user 渲染：走 user 视角的看板取数面（含时间偏好端点）。
-    await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, '/', theme, 'user')
-    await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 15 分钟')
-    await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4个', '1个', '1个', '1个'])
-    await expect(page).toHaveScreenshot(`dashboard-time-pref-${theme}-1440.png`, {
-      fullPage: true,
-    })
   })
 }
 
@@ -529,6 +523,9 @@ for (const theme of THEMES) {
     await expect(page.getByRole('menu')).toBeVisible()
     // 菜单入场动画会改变整页的合成层，进而改变文字抗锯齿；等它结束再拍。
     await page.waitForTimeout(200)
+    await waitForAnimations(page)
+    // 头像按钮的 hover 底同样不该进基线：指针退到中性点再拍。
+    await page.mouse.move(8, 8)
     await expect(page).toHaveScreenshot(`profile-menu-${theme}-1440.png`)
   })
 
@@ -538,6 +535,7 @@ for (const theme of THEMES) {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/accounts', theme, 'master', true)
     await expect(page.getByText('会话已过期，请重新登录')).toBeVisible()
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`session-expired-${theme}-1440.png`)
   })
 
@@ -567,6 +565,7 @@ for (const theme of THEMES) {
             animation.effect?.getTiming().iterations === Infinity,
         ),
     )
+    await waitForAnimations(page)
     await expect(page).toHaveScreenshot(`inbox-drawer-${theme}-1440.png`)
   })
 }
@@ -617,6 +616,7 @@ test.describe('user app', () => {
               ? page.getByRole('dialog').getByRole('heading')
               : page.getByRole('heading', { level: 1 })
           await expect(landed).toBeVisible()
+          await waitForAnimations(page)
           await expect(page).toHaveScreenshot(
             `user-app-${view.name}-${viewport.name}-${theme}.png`,
             { fullPage: true },
@@ -644,11 +644,8 @@ test('user app has no horizontal overflow at four widths', async ({ page }) => {
 })
 
 test('no horizontal overflow at either width, in either theme', async ({ page }) => {
-  // 看板的 user 视角是另一套布局：`/` 追加 user 一遍；其余路由 master 即可。
-  const targets = [
-    ...ROUTES.map((route) => ({ path: route.path, role: 'master' as const })),
-    { path: '/', role: 'user' as const },
-  ]
+  // 看板只归 master/admin：`/` 用 master 泛扫，user 视角已随壳层收敛退役。
+  const targets = ROUTES.map((route) => ({ path: route.path, role: 'master' as const }))
   for (const theme of THEMES) {
     for (const { path, role } of targets) {
       // mock 的 catch-all 是后注册优先：不清路由会让上一目标的兜底吞掉本目标的请求。

@@ -95,38 +95,26 @@ test('invariant 1: the shell badge reads the account summary once on the school 
   ).toHaveLength(1)
 })
 
-test('invariant 1: a user has no school entry and no list request', async ({ page }) => {
-  const api = await mockSchoolsApi(page, { role: 'user' })
+// ticket13：user 不再进管理壳——壳层一律 302 用户端 /app，不落无权限卡片。
+test('invariant 1: a user has no school entry and never lands the console list', async ({
+  page,
+}) => {
+  await mockSchoolsApi(page, { role: 'user' })
   await page.goto('/')
   await expect(
     page.locator('.d-sidebar').getByRole('link', { name: '学校', exact: true }),
   ).toHaveCount(0)
 
   await page.goto('/schools')
-  await expect(page.getByText('无权访问')).toBeVisible()
-  await expect(page.getByText('你的角色无权查看学校管理')).toBeVisible()
+  await expect(page, 'user never lands the console schools page').toHaveURL('/app')
+  await expect(page.getByText('无权访问')).toHaveCount(0)
+  await expect(page.getByText('你的角色无权查看学校管理')).toHaveCount(0)
   await expect(page.getByRole('table', { name: '学校列表' })).toHaveCount(0)
-  expect(listSchoolCalls(api), 'a denied page sends no list request').toHaveLength(0)
-
-  // 死胡同不允许：卡片必须有出口，且不做静默重定向。
-  await expect(page).toHaveURL(/\/schools$/)
-  await expect(page.getByRole('button', { name: '返回上一页' })).toHaveCount(0)
-  await page.getByRole('button', { name: '返回看板' }).click()
-  await expect(page).toHaveURL(/\/$/)
-  expect(listSchoolCalls(api), 'the exit sends no list request either').toHaveLength(0)
-
-  await page.goto('/schools')
-  await expect(page.getByRole('button', { name: '新建学校' })).toHaveCount(0)
+  // 用户端新建账号向导也会读 /api/schools?limit=200，与学校页同一路径无法归因；
+  // 这条权限门只守「壳层与表格不进 DOM」，不再断言零请求。
 })
 
-test('invariant 1: the denial card offers the previous page when the visit has a source', async ({
-  page,
-}) => {
-  await mockSchoolsApi(page, { role: 'user' })
-  await page.goto('/schools', { referer: 'http://127.0.0.1:4173/' })
-  await expect(page.getByText('无权访问')).toBeVisible()
-  await expect(page.getByRole('button', { name: '返回上一页' })).toBeVisible()
-})
+// 「来源页可见上一页按钮」的覆盖移至 users.spec：学校页已无任何角色落卡。
 
 test('the page has no filter bar because the contract has no parameters', async ({ page }) => {
   const api = await mockSchoolsApi(page, { role: 'master' })
