@@ -195,7 +195,9 @@ export function AccountsTable({
               <th scope="col">归属邮箱</th>
               <th scope="col">更新时间</th>
               {includeDeleted ? <th scope="col">删除时间</th> : null}
-              <th scope="col">操作</th>
+              <th scope="col" className="app-col-action">
+                操作
+              </th>
             </tr>
           </thead>
           <tbody ref={tbodyRef}>
@@ -286,7 +288,7 @@ export function AccountsTable({
                         {formatDateTime(account.deleted_at)}
                       </td>
                     ) : null}
-                    <td className="app-account-col-actions">
+                    <td className="app-account-col-actions app-col-action">
                       <div className="data-cell-actions app-account-actions">
                         <AccountRowMenu
                           account={account}
@@ -403,7 +405,7 @@ export function AccountsTable({
                   {includeDeleted ? (
                     <td className="data-cell-mono app-account-col-time">—</td>
                   ) : null}
-                  <td className="app-account-col-actions">
+                  <td className="app-account-col-actions app-col-action">
                     <div className="data-cell-actions app-account-actions">
                       {mobileCards ? (
                         <>

@@ -184,6 +184,17 @@ export function AnnouncementSection({ canWrite, readOnlyReason }: AnnouncementSe
                 {submitError && !confirmingClear ? <Alert tone="danger">{submitError}</Alert> : null}
 
                 <div className="sys-card-actions">
+                  {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
+                  <Button
+                    type="button"
+                    variant="outline-danger"
+                    size="sm"
+                    disabled={!canWrite || mutation.isPending || query.data.text === ''}
+                    title={readOnlyReason ?? undefined}
+                    onClick={(event) => handleClear(event.currentTarget)}
+                  >
+                    清空公告
+                  </Button>
                   <BusyButton
                     type="submit"
                     variant="primary"
@@ -195,17 +206,6 @@ export function AnnouncementSection({ canWrite, readOnlyReason }: AnnouncementSe
                   >
                     发布公告
                   </BusyButton>
-                  <Button
-                    type="button"
-                    variant="outline-danger"
-                    size="sm"
-                    disabled={!canWrite || mutation.isPending || query.data.text === ''}
-                    title={readOnlyReason ?? undefined}
-                    onClick={(event) => handleClear(event.currentTarget)}
-                  >
-                    清空公告
-                  </Button>
-                  {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
                 </div>
               </form>
             </>

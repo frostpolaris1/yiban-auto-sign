@@ -75,7 +75,9 @@ export function SchoolsTable({
               <th scope="col">状态</th>
               <th scope="col">时区</th>
               <th scope="col">更新时间</th>
-              <th scope="col">操作</th>
+              <th scope="col" className="app-col-action">
+                操作
+              </th>
             </tr>
           </thead>
           <tbody ref={tbodyRef}>
@@ -144,7 +146,7 @@ export function SchoolsTable({
                 </td>
                 <td className="data-cell-mono">{school.timezone}</td>
                 <td className="data-cell-mono">{formatDateTime(school.updated_at)}</td>
-                <td>
+                <td className="app-col-action">
                   <div className="data-cell-actions app-row-actions">
                     <SchoolRowMenu
                       school={school}

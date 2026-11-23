@@ -115,6 +115,7 @@ export function ChannelsSection({ canWrite, readOnlyReason }: ChannelsSectionPro
             </div>
             <div className="sys-channel-controls">
               <div className="sys-card-actions">
+                {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
                 <Button
                   type="button"
                   variant="outline-primary"
@@ -130,7 +131,6 @@ export function ChannelsSection({ canWrite, readOnlyReason }: ChannelsSectionPro
                 >
                   测试邮件
                 </Button>
-                {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
               </div>
               {mailResult ? <Alert tone={mailResult.tone}>{mailResult.text}</Alert> : null}
             </div>
@@ -145,6 +145,7 @@ export function ChannelsSection({ canWrite, readOnlyReason }: ChannelsSectionPro
             </div>
             <div className="sys-channel-controls">
               <div className="sys-card-actions">
+                {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
                 <BusyButton
                   type="button"
                   variant="outline-primary"
@@ -161,7 +162,6 @@ export function ChannelsSection({ canWrite, readOnlyReason }: ChannelsSectionPro
                 >
                   测试 Webhook
                 </BusyButton>
-                {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
               </div>
               {webhookResult ? (
                 <Alert tone={webhookResult.tone}>{webhookResult.text}</Alert>

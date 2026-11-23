@@ -989,7 +989,7 @@ body {
 }
 
 .app-design-grid .textarea {
-  min-height: 64px;
+  min-height: var(--ctrl-h-textarea);
 }
 
 .app-token-groups {
@@ -1056,6 +1056,14 @@ body {
 
 .app-row-table tbody tr:hover {
   background: var(--bg-hover);
+}
+
+/* 空/载/错单格行的高度与三行标准表行（3 × 48px）对齐，切换筛选时列表不跳高。 */
+.app-row-table tbody td[colspan],
+.app-failure-table tbody td[colspan] {
+  height: 144px;
+  text-align: center;
+  vertical-align: middle;
 }
 
 .app-row-table tbody tr:focus-visible {
@@ -1159,19 +1167,56 @@ body {
   line-height: var(--leading-base);
 }
 
+/* 筛选栏复选框与按钮同处一行：16px 是 4 的倍数，也给 .app-filter-check 一个
+ * 明确的可点方块（浏览器 UA 默认 13px 会与 36px 的控件基线错阶）。 */
+.app-filter-check input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
 .app-filter-q {
   flex: 1;
   min-width: 240px;
   max-width: 360px;
 }
 
+/* 操作列：表头与按钮同向右贴。用户口径「操作统一在右侧」，
+ * 桌面端行内动作贴单元格右边缘，表头「操作」随内容同向；
+ * 行卡模式（≤640px）沿用同一右贴，见下方移动端规则。 */
+.data-table th.app-col-action,
+.data-table td.app-col-action,
+.table th.app-col-action,
+.table td.app-col-action,
+.a-table th.app-col-action,
+.a-table td.app-col-action {
+  text-align: right;
+}
+
+/* /users「账号」是数量列（Adminator 的 .cell-price 口径右对齐，时间与编码仍左）。
+ * 倒数第 5 列：末列操作 + 上次登录/创建时间/需要改密 四列之后，首列复选框显隐不影响。 */
+.app-users-table thead th:nth-last-child(5),
+.app-users-table tbody td:nth-last-child(5) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-users-table tbody td:nth-last-child(5) .app-name-cell {
+  justify-content: flex-end;
+}
+
 .app-row-actions {
+  display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-1);
 }
 
 .app-account-actions {
+  display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-1);
 }
 
@@ -1185,7 +1230,7 @@ body {
 .app-page-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -1330,7 +1375,7 @@ body {
   flex: none;
   width: 36px;
   height: 36px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--warning-soft);
   color: var(--warning);
 }
@@ -1346,7 +1391,7 @@ body {
 .app-denied-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 /* ---------- 学校管理员模态 ----------
@@ -1357,7 +1402,7 @@ body {
 .app-admin-add {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2);
   margin-top: 12px;
 }
 
@@ -1498,6 +1543,8 @@ body {
   margin: 0;
   color: var(--t-base);
   word-break: break-all;
+  /* 左键右值：与 /audit、/queue、/logs 的键值列表统一。 */
+  text-align: right;
 }
 
 /* ---------- 用户管理抽屉的动作区 ----------
@@ -2644,7 +2691,7 @@ body {
   height: 136px;
   padding: 8px;
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--bg-muted);
 }
 
@@ -2712,7 +2759,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 10px;
+  gap: var(--space-2);
   margin-top: 16px;
 }
 
@@ -2760,7 +2807,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .app-capacity-hint code {
@@ -2799,7 +2846,9 @@ body {
 .app-async-state {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-2);
+  min-height: 96px;
   padding: var(--space-2) 0;
   color: var(--t-muted);
   font-size: var(--text-base);
@@ -2810,8 +2859,11 @@ body {
 .app-async-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 8px 0;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 96px;
+  padding: var(--space-2) 0;
+  box-sizing: border-box;
 }
 
 .app-skeleton-line {
@@ -2853,7 +2905,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 10px;
+  gap: var(--space-2);
   padding: 6px 0;
 }
 
@@ -2897,6 +2949,18 @@ body {
 .run-table th:last-child,
 .run-table td:last-child {
   padding-right: 0;
+}
+
+/* 运行表与全站数据表同向：诊断在尾列贴右；两页签第 4 列是数量/时长
+ * （在飞表「租约剩余」、待重试表「已试」），按 .cell-price 口径右对齐。 */
+.run-table:not(.engine-table) th:last-child,
+.run-table:not(.engine-table) td:last-child,
+.engine-inflight-table th:nth-child(4),
+.engine-inflight-table td:nth-child(4),
+.engine-table:not(.engine-inflight-table) th:nth-child(4),
+.engine-table:not(.engine-inflight-table) td:nth-child(4) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .run-summary {
@@ -3004,7 +3068,7 @@ body {
   display: flex;
   gap: var(--space-2);
   justify-content: flex-end;
-  padding-top: var(--space-2);
+  padding-top: 0;
 }
 
 .run-export-error,
@@ -3783,7 +3847,7 @@ html {
   }
 }
 
-.app-health-sub { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.app-health-sub { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 @media (max-width: 1100px) {
   .app-health-sub { flex-basis: 100%; }
   .app-health-zone--grow { flex: 1 1 auto; }
@@ -3832,7 +3896,7 @@ html {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-2);
   padding: var(--space-1) var(--space-3);
   border-radius: var(--radius-sm);
   color: var(--t-base);
@@ -4318,11 +4382,11 @@ html {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   margin-bottom: 12px;
   padding: 10px 12px;
   border: 1px solid var(--warning);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--warning-soft);
   color: var(--t-base);
   font-size: 12.5px;
@@ -4508,7 +4572,7 @@ html {
 .app-inbox-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -4517,7 +4581,7 @@ html {
 .app-inbox-item {
   position: relative;
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   transition: background-color 150ms ease, border-color 150ms ease;
 }
@@ -4548,7 +4612,7 @@ html {
 
 .app-inbox-article {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: var(--ctrl-h-sm) minmax(0, 1fr);
   gap: 12px;
   align-items: start;
   padding: 12px 14px;
@@ -4557,9 +4621,9 @@ html {
 .app-inbox-icon {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
   flex-shrink: 0;
 }
@@ -4760,7 +4824,7 @@ html {
 .app-search-option {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: var(--space-2);
   min-height: var(--ctrl-h-lg);
   padding: var(--space-2);
   border-radius: var(--radius-md);
@@ -4856,7 +4920,7 @@ html[data-density="compact"] .card {
 .pw-strength {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
 }
 .pw-bar {
   display: flex;
@@ -5005,10 +5069,18 @@ html[data-density="compact"] .card {
 .app-failure-table th:nth-child(3),
 .app-failure-table td:nth-child(3) {
   white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 640px) {
   /* 列头只对表格布局有意义；堆叠后视觉隐藏，仍留在无障碍树与文本检索里。 */
+  .app-failure-table th:nth-child(2),
+  .app-failure-table th:nth-child(3) {
+    /* 堆叠态列头视觉隐藏，跟随单元格取左，避免「表头右/单元格左」的假分裂。 */
+    text-align: left;
+  }
+
   .app-failure-table thead {
     position: absolute;
     width: 1px;
@@ -5049,6 +5121,8 @@ html[data-density="compact"] .card {
     display: inline-block;
     margin-top: 2px;
     color: var(--t-muted);
+    /* 堆叠态两个数值同行内联，右对齐会把「2 条 · 50.0%」推离结果标签。 */
+    text-align: left;
   }
 
   /* 占比前的分隔点。纯装饰；单位已在单元格内，读屏按标点朗读。 */
@@ -5246,7 +5320,7 @@ html[data-density="compact"] .card {
   }
 
   .app-design-grid .textarea {
-    min-height: 48px;
+    min-height: 64px;
   }
 
   .app-design-grid .field-help {
@@ -5325,8 +5399,8 @@ html[data-density="compact"] .card {
   }
 
   .app-swatch-chip {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
   }
 
   .app-swatch {
@@ -5493,6 +5567,7 @@ html[data-density="compact"] .card {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
+    justify-content: flex-end;
     gap: var(--space-1);
     width: 100%;
   }
@@ -5505,6 +5580,7 @@ html[data-density="compact"] .card {
   .app-mobile-cards .app-deny-note {
     flex: 1 0 100%;
     white-space: normal;
+    text-align: right;
   }
 
   .app-accounts-table tbody td.app-selection-cell,

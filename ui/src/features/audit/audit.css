@@ -72,7 +72,8 @@
   justify-content: space-between;
   gap: var(--space-2) var(--space-4);
   padding: var(--card-pad-sm) var(--card-pad);
-  background: color-mix(in srgb, var(--bg-hover) 65%, var(--bg-card));
+  /* 卡头不用灰底：灰底留给列表列头带（.a-list-head），卡头层次由标题字重承担。 */
+  background: var(--bg-card);
   border-bottom: 1px solid var(--border-soft);
 }
 
@@ -262,6 +263,12 @@
   background: color-mix(in srgb, var(--bg-hover) 70%, var(--bg-card));
 }
 
+.a-list-head > th:last-child,
+.a-row > :last-child {
+  /* 详情列表头落在按钮上沿，随尾列按钮贴右；预览文本自身仍左对齐。 */
+  text-align: right;
+}
+
 .a-list-head > th {
   padding: 0;
   border: 0;
@@ -434,7 +441,7 @@
   gap: var(--space-2) var(--space-3);
   padding: var(--space-2) var(--card-pad);
   border-top: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--bg-hover) 60%, var(--bg-card));
+  background: var(--bg-card);
 }
 
 .a-pager-info {

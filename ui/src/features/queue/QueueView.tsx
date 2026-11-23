@@ -618,23 +618,22 @@ export function QueueView() {
                 </div>
 
                 <div className="q-row-actions">
-                  {account.status === 'pending' ? (
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      className="q-action-btn"
-                      disabled={busy || SHOWCASE}
-                      title={SHOWCASE ? READ_ONLY_REASON : undefined}
-                      aria-label={`通过 ${account.phone_masked}`}
-                      onClick={(event) => {
-                        setApproveReturnFocus(event.currentTarget)
-                        setApproveTarget(account)
-                      }}
-                    >
-                      <Icon name="check" size={14} />
-                      {approvingThis ? '处理中…' : '通过'}
-                    </Button>
-                  ) : null}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="q-action-btn"
+                    aria-label={`详情 ${account.phone_masked}`}
+                    onClick={(event) => {
+                      setDiagReturnFocus(event.currentTarget)
+                      setDiagTarget({
+                        accountId: account.id,
+                        title: account.phone_masked,
+                        subtitle: `${schoolName} · ${account.display_name || account.phone_masked}`,
+                      })
+                    }}
+                  >
+                    详情
+                  </Button>
 
                   <Button
                     variant="ghost"
@@ -652,22 +651,23 @@ export function QueueView() {
                     驳回
                   </Button>
 
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="q-action-btn"
-                    aria-label={`详情 ${account.phone_masked}`}
-                    onClick={(event) => {
-                      setDiagReturnFocus(event.currentTarget)
-                      setDiagTarget({
-                        accountId: account.id,
-                        title: account.phone_masked,
-                        subtitle: `${schoolName} · ${account.display_name || account.phone_masked}`,
-                      })
-                    }}
-                  >
-                    详情
-                  </Button>
+                  {account.status === 'pending' ? (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      className="q-action-btn"
+                      disabled={busy || SHOWCASE}
+                      title={SHOWCASE ? READ_ONLY_REASON : undefined}
+                      aria-label={`通过 ${account.phone_masked}`}
+                      onClick={(event) => {
+                        setApproveReturnFocus(event.currentTarget)
+                        setApproveTarget(account)
+                      }}
+                    >
+                      <Icon name="check" size={14} />
+                      {approvingThis ? '处理中…' : '通过'}
+                    </Button>
+                  ) : null}
                 </div>
               </div>
 
@@ -770,23 +770,6 @@ export function QueueView() {
 
                 <div className="q-row-actions">
                   <Button
-                    variant="soft-primary"
-                    size="sm"
-                    className="q-action-btn"
-                    disabled={retryingThis || SHOWCASE}
-                    title={SHOWCASE ? READ_ONLY_REASON : undefined}
-                    aria-label={`重试 ${task.account_phone_masked}`}
-                    onClick={() => retryMutation.mutate(task)}
-                  >
-                    <Icon
-                      name="rotateCcw"
-                      size={14}
-                      className={retryingThis ? 'q-spin' : undefined}
-                    />
-                    {retryingThis ? '重试中…' : '重试'}
-                  </Button>
-
-                  <Button
                     variant="ghost"
                     size="sm"
                     className="q-action-btn"
@@ -801,6 +784,23 @@ export function QueueView() {
                     }}
                   >
                     详情
+                  </Button>
+
+                  <Button
+                    variant="soft-primary"
+                    size="sm"
+                    className="q-action-btn"
+                    disabled={retryingThis || SHOWCASE}
+                    title={SHOWCASE ? READ_ONLY_REASON : undefined}
+                    aria-label={`重试 ${task.account_phone_masked}`}
+                    onClick={() => retryMutation.mutate(task)}
+                  >
+                    <Icon
+                      name="rotateCcw"
+                      size={14}
+                      className={retryingThis ? 'q-spin' : undefined}
+                    />
+                    {retryingThis ? '重试中…' : '重试'}
                   </Button>
                 </div>
               </div>

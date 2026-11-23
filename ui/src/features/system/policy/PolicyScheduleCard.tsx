@@ -377,6 +377,22 @@ export function PolicyScheduleCard({ canWrite, readOnlyReason }: PolicyCardAcces
             ) : null}
 
             <div className="sys-card-actions">
+              {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
+              {canWrite && isDirty && !mutation.isPending ? (
+                <span className="sys-dirty-note" role="status">
+                  有未保存变更
+                </span>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={!canWrite || mutation.isPending || !hasDbOverride}
+                title={readOnlyReason ?? undefined}
+                onClick={handleReset}
+              >
+                恢复调度默认
+              </Button>
               <BusyButton
                 type="submit"
                 variant="primary"
@@ -388,22 +404,6 @@ export function PolicyScheduleCard({ canWrite, readOnlyReason }: PolicyCardAcces
               >
                 保存调度策略
               </BusyButton>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={!canWrite || mutation.isPending || !hasDbOverride}
-                title={readOnlyReason ?? undefined}
-                onClick={handleReset}
-              >
-                恢复调度默认
-              </Button>
-              {canWrite && isDirty && !mutation.isPending ? (
-                <span className="sys-dirty-note" role="status">
-                  有未保存变更
-                </span>
-              ) : null}
-              {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
             </div>
           </form>
         ) : null}

@@ -10,6 +10,7 @@
  * 最小宽度缺省 900px。窄屏在 `.table-scroll` 内横向滚动。
  * 页码窗口最多 5 个。
  * 排序列由调用方用 `sorted` 标记视觉态；表头据此写 `aria-sort`（ascending/descending）。
+ * `align` 同时作用于 `<th>` 与 `<td>`：表头与单元格不同向，数值列与「操作」列就会错位。
  * 没有排序标记的列**不写**该属性：本表没有列头排序交互，逐列声明排序状态只会让读屏
  * 在每个表头上多念一句，也把「可排序」这件事说成了真的。只加属性不改视觉。
  * 读屏播报点：页脚条数带 `aria-live="polite"`，翻页后整条重读。
@@ -23,7 +24,7 @@ export type DataTableColumn<T> = {
   header: ReactNode
   render: (row: T) => ReactNode
   width?: string
-  align?: 'left' | 'right'
+  align?: 'left' | 'right' | 'center'
   sorted?: 'asc' | 'desc'
 }
 
@@ -66,6 +67,9 @@ export function DataTable<T>({
   const windowSize = Math.min(5, pageCount)
   const start = Math.max(1, Math.min(page - Math.floor(windowSize / 2), pageCount - windowSize + 1))
   const pageNumbers = Array.from({ length: windowSize }, (_, index) => start + index)
+  // 表头必须与单元格同向：右对齐列的表头也右对齐，否则数值与「操作」列在表头下错位。
+  const alignStyle = (column: DataTableColumn<T>) =>
+    column.align ? { textAlign: column.align } : undefined
 
   return (
     <>
@@ -80,7 +84,7 @@ export function DataTable<T>({
                 <th
                   key={column.key}
                   className={column.sorted ? `sorted-${column.sorted}` : undefined}
-                  style={column.width ? { width: column.width } : undefined}
+                  style={{ ...(column.width ? { width: column.width } : {}), ...alignStyle(column) }}
                   scope="col"
                   aria-sort={
                     column.sorted === 'asc'
@@ -113,7 +117,7 @@ export function DataTable<T>({
                   {columns.map((column) => (
                     <td
                       key={column.key}
-                      style={column.align === 'right' ? { textAlign: 'right' } : undefined}
+                      style={alignStyle(column)}
                     >
                       {column.render(row)}
                     </td>

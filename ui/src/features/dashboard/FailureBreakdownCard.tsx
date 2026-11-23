@@ -56,8 +56,12 @@ export function FailureBreakdownCard({
           <thead>
             <tr>
               <th scope="col">失败结果</th>
-              <th scope="col">条数</th>
-              <th scope="col">占比</th>
+              <th scope="col" className="app-col-num">
+                条数
+              </th>
+              <th scope="col" className="app-col-num">
+                占比
+              </th>
               <th scope="col">处置建议</th>
             </tr>
           </thead>
@@ -96,8 +100,8 @@ export function FailureBreakdownCard({
                   {row.label}{' '}
                   <span className="data-cell-mono">{row.code === '' ? 'unknown' : row.code}</span>
                 </td>
-                <td className="data-cell-mono">{row.count} 条</td>
-                <td className="data-cell-mono">{row.share}</td>
+                <td className="data-cell-mono app-col-num">{row.count} 条</td>
+                <td className="data-cell-mono app-col-num">{row.share}</td>
                 <td>{row.hint}</td>
               </tr>
             ))}
