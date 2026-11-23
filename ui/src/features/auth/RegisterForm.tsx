@@ -8,6 +8,7 @@
  * **口径**
  * 开关、协议、字段任一不合法都**零请求**。
  * 请求体只含契约 `RegisterRequest` 的六个字段；确认口径只在前端比对。
+ * 人机验证由 `TurnstileSlot` 预留版面，尚未接入，不参与校验。
  * 协议一个勾选同时置位 `agree_terms` 与 `agree_privacy`。
  * 409 先重拉注册状态：版本变了才算「条款已更新」，否则落到邮箱重复。
  * 成功即建会话：写 `['me']` 缓存后交给页面导航。
@@ -45,6 +46,7 @@ import {
   type RegisterErrors,
   type RegisterField,
 } from './register'
+import { TurnstileSlot } from './TurnstileSlot'
 import { REGISTRATION_QUERY_KEY } from './useRegistrationStatus'
 
 type RegisterFormProps = {
@@ -378,6 +380,8 @@ export function RegisterForm({
             <Alert tone="danger">{problem}</Alert>
           </div>
         ) : null}
+
+        <TurnstileSlot />
 
           <button
             className="btn btn--primary auth-submit"

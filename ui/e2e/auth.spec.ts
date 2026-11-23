@@ -259,6 +259,154 @@ test('login: the public page keeps the brand and the theme toggle on mobile', as
   await expect(html).not.toHaveAttribute('data-theme', initial ?? '')
 })
 
+test('login: portrait turns the sky into a page-wide backdrop and centers the panel', async ({
+  page,
+}) => {
+  await mockAccountsApi(page, { role: null })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/login')
+
+  // 天空画布铺满视口当背景板；左栏文字层收起，避免与表单抢视线。
+  const aside = page.locator('.auth-aside')
+  await expect(aside).toBeVisible()
+  await expect(aside.locator('.auth-brand')).toBeHidden()
+  await expect(aside.locator('.auth-aside-body')).toBeHidden()
+  await expect(aside.locator('.auth-aside-footer')).toBeHidden()
+  const asideBox = await aside.boundingBox()
+  const skyBox = await page.locator('.auth-sky').boundingBox()
+  expect(asideBox).not.toBeNull()
+  expect(asideBox!.width).toBeCloseTo(390, 0)
+  expect(asideBox!.height).toBeCloseTo(844, 0)
+  expect(skyBox).not.toBeNull()
+  expect(skyBox!.width).toBeCloseTo(390, 0)
+  expect(skyBox!.height).toBeCloseTo(844, 0)
+
+  // 表单卡整块落在首屏内、上下留白大致相等，页脚仍在卡片下方。
+  const card = await page.locator('.auth-card').boundingBox()
+  expect(card).not.toBeNull()
+  expect(card!.y).toBeGreaterThanOrEqual(0)
+  expect(card!.y + card!.height).toBeLessThanOrEqual(844)
+  expect(Math.abs(card!.y + card!.height / 2 - 844 / 2)).toBeLessThan(48)
+  const footer = await page.locator('.auth-main-bottom').boundingBox()
+  expect(footer).not.toBeNull()
+  expect(footer!.y).toBeGreaterThan(card!.y + card!.height)
+})
+
+test('register: a short viewport scrolls to the submit button instead of clipping it', async ({
+  page,
+}) => {
+  // 矮屏（390×520）放不下注册表单：卡片顺排、整页可滚，提交按钮初始在折下但滚得到。
+  // 520 是实测挑的高度——640 时按钮已经落在折内（刻度在 586..634），测不出「滚动」这件事。
+  await mockAccountsApi(page, { role: null })
+  await page.setViewportSize({ width: 390, height: 520 })
+  await page.goto('/register')
+  await expect(page.getByRole('heading', { name: '创建账号' })).toBeVisible()
+
+  const metrics = await page.evaluate(() => ({
+    scrollH: document.documentElement.scrollHeight,
+    viewH: window.innerHeight,
+    overflowX: document.documentElement.scrollWidth - window.innerWidth,
+  }))
+  expect(metrics.scrollH).toBeGreaterThan(metrics.viewH)
+  expect(metrics.overflowX).toBeLessThanOrEqual(0)
+
+  const submit = page.getByRole('button', { name: '创建账号' })
+  // 断言「滚得到」而不是「量到 586px」：表单压紧一档也会让写死的坐标变红，但那不是缺陷。
+  await expect(submit).not.toBeInViewport()
+  await submit.scrollIntoViewIfNeeded()
+  await expect(submit).toBeInViewport()
+  // 走的是窗口滚动，不是某个内部滚动容器把按钮转进来。
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+})
+
+test('auth: the portrait backdrop hands over to the desktop split at 901', async ({ page }) => {
+  // 竖屏背景板与桌面分栏在 900/901 交接：900 仍铺满整块视口、露出窄屏品牌；
+  // 901 回到左栏一列，桌面品牌接管。遍历式截图抓不到这条缝，所以钉在这里。
+  await mockAccountsApi(page, { role: null })
+  await page.setViewportSize({ width: 900, height: 800 })
+  await page.goto('/login')
+  await expect(page.getByRole('heading', { name: '欢迎回来' })).toBeVisible()
+
+  const portrait = await page.locator('.auth-aside').boundingBox()
+  expect(portrait).not.toBeNull()
+  expect(portrait!.width).toBeCloseTo(900, 0)
+  expect(portrait!.height).toBeCloseTo(800, 0)
+  const portraitSky = await page.locator('.auth-sky').boundingBox()
+  expect(portraitSky).not.toBeNull()
+  expect(portraitSky!.width).toBeCloseTo(900, 0)
+  await expect(page.locator('.auth-mobile-brand')).toBeVisible()
+
+  await page.setViewportSize({ width: 901, height: 800 })
+  await expect(page.locator('.auth-mobile-brand')).toBeHidden()
+  await expect(page.locator('.auth-aside .auth-brand')).toBeVisible()
+  const split = await page.locator('.auth-aside').boundingBox()
+  expect(split).not.toBeNull()
+  // 桌面分栏：左栏占屏约三成（实测 436/901=0.48），天空退进这一列，不再铺满视口。
+  expect(split!.width / 901).toBeGreaterThan(0.25)
+  expect(split!.width / 901).toBeLessThan(0.55)
+  const splitSky = await page.locator('.auth-sky').boundingBox()
+  expect(splitSky).not.toBeNull()
+  expect(splitSky!.width).toBeLessThan(901 * 0.55)
+})
+
+test('auth: the sky covers the viewport and nothing overflows on phones', async ({ page }) => {
+  // 竖屏背景板铺满 + 四条公开路由零横向溢出，覆盖窄中宽三档手机（320 / 390 / 430）。
+  await mockAccountsApi(page, { role: null })
+  for (const width of [320, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 })
+    for (const path of ['/login', '/register', '/forgot-password', '/reset-password']) {
+      await page.goto(path)
+      await expect(page.locator('.auth-card')).toBeVisible()
+      const sky = await page.locator('.auth-sky').boundingBox()
+      expect(sky, `${path} @${width} 天空画布缺席`).not.toBeNull()
+      expect(sky!.width, `${path} @${width} 天空未铺满`).toBeCloseTo(width, 0)
+      const overflowX = await page.evaluate(
+        () => document.documentElement.scrollWidth - window.innerWidth,
+      )
+      expect(overflowX, `${path} @${width} 横向溢出`).toBeLessThanOrEqual(0)
+    }
+  }
+})
+
+test('register: the verification placeholder keeps its text above AA contrast', async ({ page }) => {
+  // 占位提示是表单里真实可读的文字，混色配方一动就可能跌破 4.5：这里按计算色算一遍 WCAG。
+  await mockAccountsApi(page, { role: null })
+  await page.setViewportSize({ width: 390, height: 844 })
+  const ratio = (a: number[], b: number[]) => {
+    const lin = (c: number) => {
+      const v = c / 255
+      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+    }
+    const lum = (rgb: number[]) => 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
+    const [la, lb] = [lum(a), lum(b)]
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+  }
+  // 计算色可能是 rgb()/rgba()，也可能是 color(srgb 0.35 …) 这种 0..1 浮点，两种都认。
+  const parse = (value: string): number[] => {
+    const inner = value.replace(/^color\(/, '').replace(/\)$/, '')
+    if (value.startsWith('color(')) {
+      const parts = inner.split(/\s+/).filter((p) => p !== 'srgb')
+      return parts.slice(0, 3).map((p) => Math.round(Number(p) * 255))
+    }
+    return (inner.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
+  }
+
+  for (const theme of ['light', 'dark'] as const) {
+    // 主题靠 localStorage 首屏读取，所以先写再 reload：不用把两轮压成两个 init script。
+    await page.goto('/register')
+    await page.evaluate((value) => window.localStorage.setItem('dash26-theme', value), theme)
+    await page.reload()
+    await expect(page.locator('.app-turnstile-slot-hint')).toBeVisible()
+    const colors = await page.evaluate(() => {
+      const hint = document.querySelector('.app-turnstile-slot-hint') as HTMLElement
+      const slot = document.querySelector('.app-turnstile-slot-placeholder') as HTMLElement
+      return { text: getComputedStyle(hint).color, bg: getComputedStyle(slot).backgroundColor }
+    })
+    const value = ratio(parse(colors.text), parse(colors.bg))
+    expect(value, `${theme} 下占位提示对比度 ${value.toFixed(2)}`).toBeGreaterThanOrEqual(4.5)
+  }
+})
+
 test('login: the footer and the no-account hint are reachable', async ({ page }) => {
   await mockAccountsApi(page, { role: null })
   await page.goto('/login')
@@ -523,6 +671,16 @@ test('register: pre-login meter uses the local user tier, not the session policy
   await submit.click()
   await expect(page.locator('#register-password')).toBeFocused()
   await expect(page).toHaveURL(/\/register$/)
+})
+
+test('register: keeps the Turnstile mount point inside the form', async ({ page }) => {
+  // 人机验证接入点：接入前只有占位，但挂载点必须一直在表单里，
+  // token 才能随注册请求一起提交。
+  await mockAccountsApi(page, { role: null })
+  await page.goto('/register')
+
+  await expect(page.getByRole('heading', { name: '创建账号' })).toBeVisible()
+  await expect(page.locator('form [data-turnstile-slot="register"]')).toHaveCount(1)
 })
 
 test('register: the local fallback governs the meter when the policy endpoint fails', async ({

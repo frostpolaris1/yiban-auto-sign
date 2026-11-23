@@ -12,6 +12,7 @@
  * 噪声纹理与颗粒用固定种子伪随机生成——视觉基线截图必须逐帧可复现。
  * `prefers-reduced-motion: reduce` 时只画 START_T 单帧不跑 rAF（同源判据在 shader 外层）。
  * 不可见（Intersection/visibilitychange）与 WebGL 上下文丢失都停表；恢复后重建资源。
+ * 手机竖屏（视口 ≤900，天空铺满整屏）把画布 dpr 上限收到 2，省一半像素；桌面分栏照旧。
  * 颜色只进 GLSL uniform 浮点数组与 CSS 变量；TSX 内不写字面色（token 门会红）。
  */
 
@@ -29,6 +30,10 @@ const DIRECTION = 0
 const GRAIN = 7
 const MAX_WIDTH = 2560
 const NOISE_SEED = 0x5bf0b3
+/** 与 app.css 竖屏块同一条媒体查询（max-width: 900.98px）：命中即天空铺满整屏。 */
+const PORTRAIT_QUERY = '(max-width: 900.98px)'
+/** 手机竖屏画布 dpr 上限。dpr3 的 390×844 是 296 万像素/帧，收到 2 只剩 132 万。 */
+const PHONE_DPR_CAP = 2
 
 type Resources = {
   program: WebGLProgram
@@ -232,7 +237,12 @@ export function SkyGradient({
 
     const resize = () => {
       const rect = canvas.getBoundingClientRect()
-      const dpr = Math.min(3, window.devicePixelRatio || 1)
+      // 竖屏背景板要把整块视口铺满：dpr 3 的 390×844 是 1170×2532 ≈ 296 万像素/帧，
+      // 收到 dpr 2 只剩 780×1688 ≈ 132 万，与桌面 1440×900 的 130 万同量级——那边本来就满帧跑，
+      // 所以只压 dpr，不再叠隔帧。判据走与 CSS 同一条媒体查询，既不吃「视口宽取整」的亏，
+      // 也不能用画布宽：桌面分栏时天空只占一列（1440 下 502px），按画布宽会误把它当手机降档。
+      const cap = window.matchMedia(PORTRAIT_QUERY).matches ? PHONE_DPR_CAP : 3
+      const dpr = Math.min(cap, window.devicePixelRatio || 1)
       const scale = Math.min(1, MAX_WIDTH / Math.max(1, rect.width * dpr))
       const width = Math.max(1, Math.round(rect.width * dpr * scale))
       const height = Math.max(1, Math.round(rect.height * dpr * scale))
