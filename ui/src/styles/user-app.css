@@ -2649,7 +2649,7 @@ a.uapp-row:hover {
   gap: var(--space-2);
 }
 
-/* 身份卡：高频三字段，行 hover 有反馈，编辑按钮随端型切换 36/44。 */
+/* 身份卡：高频三字段，行 hover 有反馈，编辑按钮随端型切换 40/48。 */
 .uapp-identity {
   display: flex;
   flex-direction: column;
@@ -2816,7 +2816,7 @@ a.uapp-row:hover {
   color: var(--uapp-danger-ink);
 }
 
-/* 开关按钮盒按端型对齐 32px（桌面）/ 44px（移动），视觉轨道由 ::before 画 40×24 胶囊。 */
+/* 开关按钮盒按端型对齐 32px（桌面）/ 48px（移动），视觉轨道由 ::before 画 40×24 胶囊。 */
 .uapp-switch {
   position: relative;
   display: inline-flex;
