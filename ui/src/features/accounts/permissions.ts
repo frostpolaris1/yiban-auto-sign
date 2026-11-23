@@ -15,6 +15,8 @@
  * 行菜单里的彻底删除（purge）与恢复同归 master/admin；它只对已软删除的行可用。
  * 展示构建（`VITE_SHOWCASE=1`）只读：全部写动作返回同一条原因，
  * 该原因优先于角色与状态判断；读动作（schoolFilter）不受影响。
+ * 桌面端操作列只露一条主操作，由 `primaryRowAction` 按状态挑最直接可执行的动作，
+ * 其余写动作收进「更多」菜单；`rowActionReason` 统一收口五类行动作的置灰原因。
  */
 
 import type { AccountStatus } from '../../lib/api/account'
@@ -97,6 +99,36 @@ export function pauseDenyReason(
   if (!role) return '会话角色未识别'
   if (pauseDirection(status) === 'resume') return '该暂停种类只能由对应角色恢复'
   return '仅正常状态可暂停'
+}
+
+/**
+ * 桌面端操作列保留的单条主操作：
+ * 待审核先评审、正常态可暂停、已暂停可恢复、驳回/凭据异常先验证；其余三项收进更多菜单。
+ */
+export function primaryRowAction(status: AccountStatus): AccountActionKind {
+  if (status === 'pending') return 'review'
+  if (status === 'active') return 'pause'
+  if (status === 'paused_admin' || status === 'paused_user') return 'resume'
+  return 'verify'
+}
+
+/** 行内五类写动作的统一置灰原因：返回 null 表示可执行。 */
+export function rowActionReason(
+  role: Role | null | undefined,
+  status: AccountStatus,
+  kind: AccountActionKind,
+): string | null {
+  switch (kind) {
+    case 'pause':
+    case 'resume':
+      return pauseDenyReason(role, status)
+    case 'sign':
+      return denyReason(role, 'sign') ?? (status === 'active' ? null : '仅正常状态的账号可签到')
+    case 'verify':
+      return denyReason(role, 'verify')
+    case 'review':
+      return denyReason(role, 'review') ?? (status === 'pending' ? null : '仅待审核账号可评审')
+  }
 }
 
 export type RowMenuItem = 'edit' | 'location' | 'delete' | 'restore' | 'purge'

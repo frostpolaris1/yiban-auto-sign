@@ -5,6 +5,7 @@ import { SCHEDULE_DAY, mockScheduleApi, overrideCalls, planCalls } from './suppo
 import { createSchoolCalls, mockSchoolsApi } from './support/fake-schools-api'
 import { installFakeEventSource, mockLogsApi } from './support/fake-logs-api'
 import { visibleText } from './support/visible-text'
+import { clickRowMenuItem } from './support/row-actions'
 
 /** 在带二次口令的弹窗里填操作者本人登录口令。 */
 async function fillReauth(dialog: Locator, password = SESSION_PASSWORD) {
@@ -50,7 +51,7 @@ test('invariant 1: a successful account write toasts and leaves no in-page notic
   await openAccounts(page)
 
   // 先签再暂停：active 账号只有 139****9000，暂停后同一条行就不能再签。
-  await page.getByRole('button', { name: '签到 139****9000' }).click()
+  await clickRowMenuItem(page, '139****9000', /^签到/)
   await page.getByRole('dialog', { name: '立即签到？' }).getByRole('button', { name: '确认签到' }).click()
   await expect(toast(page).filter({ hasText: '已受理 139****9000 的签到任务' })).toBeVisible()
   // 等签到 toast 退场，再触发暂停：否则两条 toast 同时在场，计数断言不再有判别力。
@@ -90,7 +91,7 @@ test('invariant 1: a failed sign keeps its error in the dialog and sends no toas
   })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '签到 139****9000' }).click()
+  await clickRowMenuItem(page, '139****9000', /^签到/)
   const dialog = page.getByRole('dialog', { name: '立即签到？' })
   await dialog.getByRole('button', { name: '确认签到' }).click()
   await expect(dialog).toContainText('签到窗口已关闭')
@@ -107,7 +108,7 @@ test('invariant 1: a failed verify keeps its result in the dialog and sends no t
   })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '验证 138****8000' }).click()
+  await clickRowMenuItem(page, '138****8000', /^验证/)
   const dialog = page.getByRole('dialog', { name: '验证凭据？' })
   await dialog.getByRole('button', { name: '确认验证' }).click()
   await expect(dialog).toContainText('平台不可达')
@@ -123,7 +124,7 @@ test('invariant 1: a platform rejection is a conclusion, not a success toast', a
   })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '验证 138****8000' }).click()
+  await clickRowMenuItem(page, '138****8000', /^验证/)
   const dialog = page.getByRole('dialog', { name: '验证凭据？' })
   await dialog.getByRole('button', { name: '确认验证' }).click()
   await expect(dialog).toContainText('验证失败：credential_invalid')
@@ -136,7 +137,7 @@ test('invariant 1: a successful verify toasts and keeps the conclusion panel', a
   await mockAccountsApi(page, { role: 'admin' })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '验证 138****8000' }).click()
+  await clickRowMenuItem(page, '138****8000', /^验证/)
   const dialog = page.getByRole('dialog', { name: '验证凭据？' })
   await dialog.getByRole('button', { name: '确认验证' }).click()
   await expect(toast(page).filter({ hasText: '已验证 138****8000' })).toBeVisible()

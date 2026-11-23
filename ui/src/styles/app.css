@@ -1202,6 +1202,97 @@ body {
   white-space: nowrap;
 }
 
+/* ---------- 账号表桌面端收窄（1440 ≤ 1118px / 1280 ≤ 958px） ----------
+ * 桌面端操作列收为「主操作 + 更多菜单」，置灰原因移到行级 title 与表下提示条；
+ * 仅收窄账号表单元格水平内边距，并允许长备注/机型/学校/邮箱在列内换行，不隐藏信息。
+ * 640px 以下行卡模式不受本段规则影响。
+ */
+
+@media (min-width: 641px) {
+  .app-accounts-table thead th,
+  .app-accounts-table tbody td {
+    padding-left: var(--space-2);
+    padding-right: var(--space-2);
+  }
+
+  .app-accounts-table thead th.app-selection-cell,
+  .app-accounts-table tbody td.app-selection-cell {
+    width: 32px;
+    min-width: 32px;
+    padding-left: var(--space-2);
+    padding-right: var(--space-1);
+  }
+
+  .app-accounts-table tbody td.app-account-col-name,
+  .app-accounts-table tbody td.app-account-col-wrap,
+  .app-accounts-table tbody td.app-account-col-email {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .app-accounts-table tbody td.app-account-col-name .app-name-cell {
+    flex-wrap: wrap;
+    gap: var(--space-1);
+  }
+
+  .app-accounts-table tbody td.app-account-col-name .badge,
+  .app-accounts-table tbody td.app-account-col-status .badge {
+    margin-left: 0;
+  }
+
+  .app-accounts-table tbody td.app-account-col-actions {
+    width: 1%;
+    white-space: nowrap;
+  }
+
+  .app-accounts-table .app-account-actions .btn--sm {
+    padding: 0 var(--space-2);
+  }
+}
+
+@media (min-width: 641px) and (max-width: 1360px) {
+  .app-accounts-table thead th,
+  .app-accounts-table tbody td {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  .app-accounts-table thead th.app-selection-cell,
+  .app-accounts-table tbody td.app-selection-cell {
+    width: 28px;
+    min-width: 28px;
+    padding-left: 6px;
+    padding-right: 2px;
+  }
+
+  .app-accounts-table tbody td.app-account-col-time {
+    white-space: normal;
+  }
+}
+
+.app-table-deny-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg-muted);
+  color: var(--t-muted);
+}
+
+.app-table-deny-bar > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--t-muted);
+}
+
+.app-table-deny-bar .app-deny-note {
+  white-space: normal;
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+}
+
 .app-form-stack {
   display: flex;
   flex-direction: column;

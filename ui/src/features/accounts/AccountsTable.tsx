@@ -11,7 +11,8 @@
  * 未勾选时整列不出现，活行保持 8 列不变宽。
  * 机型来自凭据明文，空值（未设置或不可读）显示「—」。
  * 有筛选的空态给「清除筛选」出路；无筛选的空态保持纯文案。
- * 行高固定 48px；表格最小宽度由内容决定，窄屏在 `.table-scroll` 内滚动。
+ * 行高固定 48px；桌面端（>640px）操作列收成「主操作 + 更多菜单」，置灰原因移到
+ * 行级 `title` 与表下提示条，确保 1440/1280 零横向滚动；640px 以下行卡模式保持现状。
  * 无权限与不可评审一律置灰，并给一句可见原因。
  * 置灰判据只取原因：原因非空即可用性为假，二者不会分叉。
  * 展示构建只读时原因统一为 `展示模式只读`，不再追加状态类说明。
@@ -24,6 +25,7 @@
  * 自渲染的错误行用 `role="alert"`，与 `Alert` 同口径。
  */
 
+import { useEffect, useState } from 'react'
 import { useAutoAnimate } from '@formkit/auto-animate/react'
 import type { Account } from '@/lib/api/account'
 import type { Role } from '@/lib/api/auth'
@@ -33,14 +35,54 @@ import { Icon } from '@/components/ui/Icon'
 import { formatDateTime } from '@/lib/format'
 import { SHOWCASE } from '@/lib/showcase-mode'
 import { isPending, statusLabel, statusTone } from './display'
-import { AccountRowMenu } from './AccountRowMenu'
+import { AccountRowMenu, type SecondaryRowAction } from './AccountRowMenu'
 import {
   can,
   denyReason,
   pauseDenyReason,
   pauseDirection,
+  primaryRowAction,
+  rowActionReason,
   type AccountActionKind,
 } from './permissions'
+
+/** 与 app.css 的 `@media (max-width: 640px)` 行卡断点保持同源。 */
+const MOBILE_CARDS_QUERY = '(max-width: 640px)'
+
+function useMobileCards(): boolean {
+  const [mobile, setMobile] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(MOBILE_CARDS_QUERY).matches
+      : false,
+  )
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia(MOBILE_CARDS_QUERY)
+    const onChange = (event: MediaQueryListEvent) => setMobile(event.matches)
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
+  }, [])
+  return mobile
+}
+
+/** 汇总单条活行的全部置灰原因，文案与展示构建口径与历史一致。 */
+function collectRowDenyNotes(role: Role | null, account: Account): string[] {
+  const notes = new Set<string>()
+  for (const action of ['sign', 'verify', 'review'] as const) {
+    const reason = denyReason(role, action)
+    if (reason) notes.add(reason)
+  }
+  const pauseReason = pauseDenyReason(role, account.status)
+  if (pauseReason) notes.add(pauseReason)
+  // 展示构建只读时状态类说明是噪声：写动作都不可用。
+  if (!SHOWCASE && can(role, 'review') && !isPending(account.status)) {
+    notes.add('仅待审核账号可评审')
+  }
+  if (!SHOWCASE && can(role, 'sign') && account.status !== 'active') {
+    notes.add('仅正常状态的账号可签到')
+  }
+  return [...notes]
+}
 
 type AccountsTableProps = {
   rows: Account[]
@@ -106,11 +148,25 @@ export function AccountsTable({
     duration: 180,
     disrespectUserMotionPreference: false,
   })
+  const mobileCards = useMobileCards()
   // 删除时间列只随「含已删除」出现：占位列会把行菜单挤出窄视口。
   const colSpan = (includeDeleted ? 9 : 8) + (selectable ? 1 : 0)
   const visibleIds = rows.map((row) => row.id)
   const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id))
   const someSelected = visibleIds.some((id) => selectedIds.has(id))
+
+  // 桌面端把置灰说明移到表下提示条与行级 title，避免把操作列撑宽出视口。
+  const tableNotes = (() => {
+    const merged = new Set<string>()
+    for (const account of rows) {
+      if (account.deleted_at != null) continue
+      for (const note of collectRowDenyNotes(role, account)) {
+        merged.add(note)
+      }
+    }
+    return [...merged]
+  })()
+
   return (
     <>
       <div className="table-scroll">
@@ -201,7 +257,7 @@ export function AccountsTable({
                         />
                       </td>
                     ) : null}
-                    <td>
+                    <td className="app-account-col-name">
                       <div className="app-name-cell">
                         <span>{account.display_name}</span>
                         {exact ? <Badge tone="info">精确匹配</Badge> : null}
@@ -210,19 +266,27 @@ export function AccountsTable({
                     <td>
                       <span className="data-cell-mono">{account.phone_masked}</span>
                     </td>
-                    <td className="data-cell-mono">{account.phone_model || '—'}</td>
-                    <td className="data-cell-mono">{account.school_id}</td>
-                    <td>
+                    <td className="data-cell-mono app-account-col-wrap">
+                      {account.phone_model || '—'}
+                    </td>
+                    <td className="data-cell-mono app-account-col-wrap">{account.school_id}</td>
+                    <td className="app-account-col-status">
                       <Badge tone="danger" dot>
                         已删除
                       </Badge>
                     </td>
-                    <td className="data-cell-mono">{account.owner_email_masked}</td>
-                    <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
+                    <td className="data-cell-mono app-account-col-email">
+                      {account.owner_email_masked}
+                    </td>
+                    <td className="data-cell-mono app-account-col-time">
+                      {formatDateTime(account.updated_at)}
+                    </td>
                     {includeDeleted ? (
-                      <td className="data-cell-mono">{formatDateTime(account.deleted_at)}</td>
+                      <td className="data-cell-mono app-account-col-time">
+                        {formatDateTime(account.deleted_at)}
+                      </td>
                     ) : null}
-                    <td>
+                    <td className="app-account-col-actions">
                       <div className="data-cell-actions app-account-actions">
                         <AccountRowMenu
                           account={account}
@@ -240,32 +304,47 @@ export function AccountsTable({
               }
               const pauseKind: AccountActionKind = pauseDirection(account.status)
               const pauseLabel = pauseKind === 'pause' ? '暂停' : '恢复'
-              const pauseReason = pauseDenyReason(role, account.status)
-              const reviewBlockedByStatus = can(role, 'review') && !isPending(account.status)
+              const rowNotes = collectRowDenyNotes(role, account)
+              const rowNoteText = rowNotes.join('；')
 
-              const notes = new Set<string>()
-              for (const action of ['sign', 'verify', 'review'] as const) {
-                const reason = denyReason(role, action)
-                if (reason) notes.add(reason)
-              }
-              if (pauseReason) notes.add(pauseReason)
-              // 展示构建只读时状态类说明是噪声：写动作都不可用。
-              if (!SHOWCASE && reviewBlockedByStatus) notes.add('仅待审核账号可评审')
-              if (!SHOWCASE && can(role, 'sign') && account.status !== 'active') {
-                notes.add('仅正常状态的账号可签到')
-              }
+              const rowActions: SecondaryRowAction[] = [
+                {
+                  kind: pauseKind,
+                  label: pauseLabel,
+                  icon: pauseKind === 'pause' ? 'pause' : 'rotateCcw',
+                  reason: rowActionReason(role, account.status, pauseKind),
+                },
+                {
+                  kind: 'sign',
+                  label: '签到',
+                  icon: 'checkCircle',
+                  reason: rowActionReason(role, account.status, 'sign'),
+                },
+                {
+                  kind: 'verify',
+                  label: '验证',
+                  icon: 'shield',
+                  reason: rowActionReason(role, account.status, 'verify'),
+                },
+                {
+                  kind: 'review',
+                  label: '评审',
+                  icon: 'checkCheck',
+                  reason: rowActionReason(role, account.status, 'review'),
+                },
+              ]
 
-              const signReason =
-                denyReason(role, 'sign') ??
-                (account.status === 'active' ? null : '仅正常状态的账号可签到')
-              const verifyReason = denyReason(role, 'verify')
-              const reviewReason = denyReason(role, 'review') ?? (isPending(account.status) ? null : '仅待审核账号可评审')
+              const primaryKind = primaryRowAction(account.status)
+              const primaryAction =
+                rowActions.find((item) => item.kind === primaryKind) ?? rowActions[0]
+              const secondaryActions = rowActions.filter((item) => item.kind !== primaryAction.kind)
 
               return (
                 <tr
                   key={account.id}
                   className={`app-account-row${exact ? ' app-account-row-exact' : ''}`}
                   data-exact-match={exact ? 'true' : undefined}
+                  title={!mobileCards && rowNoteText ? rowNoteText : undefined}
                   tabIndex={0}
                   onClick={(event) => onOpenDetail(account, event.currentTarget)}
                   onKeyDown={(event) => {
@@ -287,7 +366,7 @@ export function AccountsTable({
                       />
                     </td>
                   ) : null}
-                  <td>
+                  <td className="app-account-col-name">
                     <div className="app-name-cell">
                       <span>{account.display_name}</span>
                       {exact ? <Badge tone="info">精确匹配</Badge> : null}
@@ -306,82 +385,83 @@ export function AccountsTable({
                       {account.phone_masked}
                     </button>
                   </td>
-                  <td className="data-cell-mono">{account.phone_model || '—'}</td>
-                  <td className="data-cell-mono">{account.school_id}</td>
-                  <td>
+                  <td className="data-cell-mono app-account-col-wrap">
+                    {account.phone_model || '—'}
+                  </td>
+                  <td className="data-cell-mono app-account-col-wrap">{account.school_id}</td>
+                  <td className="app-account-col-status">
                     <Badge tone={statusTone(account.status)} dot>
                       {statusLabel(account.status)}
                     </Badge>
                   </td>
-                  <td className="data-cell-mono">{account.owner_email_masked}</td>
-                  <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
-                  {includeDeleted ? <td className="data-cell-mono">—</td> : null}
-                  <td>
+                  <td className="data-cell-mono app-account-col-email">
+                    {account.owner_email_masked}
+                  </td>
+                  <td className="data-cell-mono app-account-col-time">
+                    {formatDateTime(account.updated_at)}
+                  </td>
+                  {includeDeleted ? (
+                    <td className="data-cell-mono app-account-col-time">—</td>
+                  ) : null}
+                  <td className="app-account-col-actions">
                     <div className="data-cell-actions app-account-actions">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`${pauseLabel} ${account.phone_masked}`}
-                        title={pauseReason ?? undefined}
-                        disabled={pauseReason !== null}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onAction(account, pauseKind, event.currentTarget)
-                        }}
-                      >
-                        {pauseLabel}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`签到 ${account.phone_masked}`}
-                        title={signReason ?? undefined}
-                        disabled={signReason !== null}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onAction(account, 'sign', event.currentTarget)
-                        }}
-                      >
-                        签到
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`验证 ${account.phone_masked}`}
-                        title={verifyReason ?? undefined}
-                        disabled={verifyReason !== null}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onAction(account, 'verify', event.currentTarget)
-                        }}
-                      >
-                        验证
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`评审 ${account.phone_masked}`}
-                        title={reviewReason ?? undefined}
-                        disabled={reviewReason !== null}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onAction(account, 'review', event.currentTarget)
-                        }}
-                      >
-                        评审
-                      </Button>
-                      <AccountRowMenu
-                        account={account}
-                        role={role}
-                        onEdit={onEdit}
-                        onLocation={onLocation}
-                        onDelete={onDelete}
-                        onRestore={onRestore}
-                        onPurge={onPurge}
-                      />
-                      {notes.size > 0 ? (
-                        <span className="app-deny-note">{[...notes].join('；')}</span>
-                      ) : null}
+                      {mobileCards ? (
+                        <>
+                          {rowActions.map((item) => (
+                            <Button
+                              key={item.kind}
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`${item.label} ${account.phone_masked}`}
+                              title={item.reason ?? undefined}
+                              disabled={item.reason !== null}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                onAction(account, item.kind, event.currentTarget)
+                              }}
+                            >
+                              {item.label}
+                            </Button>
+                          ))}
+                          <AccountRowMenu
+                            account={account}
+                            role={role}
+                            onEdit={onEdit}
+                            onLocation={onLocation}
+                            onDelete={onDelete}
+                            onRestore={onRestore}
+                            onPurge={onPurge}
+                          />
+                          {rowNoteText ? <span className="app-deny-note">{rowNoteText}</span> : null}
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`${primaryAction.label} ${account.phone_masked}`}
+                            title={primaryAction.reason ?? undefined}
+                            disabled={primaryAction.reason !== null}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              onAction(account, primaryAction.kind, event.currentTarget)
+                            }}
+                          >
+                            {primaryAction.label}
+                          </Button>
+                          <AccountRowMenu
+                            account={account}
+                            role={role}
+                            secondaryActions={secondaryActions}
+                            onAction={onAction}
+                            onEdit={onEdit}
+                            onLocation={onLocation}
+                            onDelete={onDelete}
+                            onRestore={onRestore}
+                            onPurge={onPurge}
+                          />
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -390,6 +470,13 @@ export function AccountsTable({
           </tbody>
         </table>
       </div>
+
+      {!mobileCards && tableNotes.length > 0 ? (
+        <div className="app-table-deny-bar">
+          <Icon name="info" size={14} />
+          <span className="app-deny-note">{tableNotes.join('；')}</span>
+        </div>
+      ) : null}
 
       <div className="data-foot">
         <div className="data-foot-info" aria-live="polite" aria-atomic="true">
