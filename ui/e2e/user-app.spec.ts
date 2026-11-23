@@ -61,7 +61,9 @@ test('home success shows the hero, big time and 7-day strip', async ({ page }) =
   await expect(page.locator('.uapp-hero-title')).toHaveText('今天签到成功')
   await expect(page.locator('.uapp-status')).toContainText('正常')
   await expect(page.locator('.uapp-week')).toContainText('近 7 天')
-  await expect(page.locator('.uapp-week-link')).toContainText('查看历史')
+  // 历史入口只留 Hero 脚部那一个（周卡不再挂第二个「查看历史」）。
+  await expect(page.locator('.uapp-hero-actions')).toContainText('查看记录')
+  await expect(page.locator('.uapp-week-link')).toHaveCount(0)
   await expect(page.locator('.uapp-window')).toContainText('可签到窗口')
   await expect(page.locator('.uapp-window')).toContainText('06:30 – 07:50')
   await expect(page.locator('.uapp-window-scale')).toContainText('07:00')

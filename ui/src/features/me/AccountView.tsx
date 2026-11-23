@@ -560,7 +560,7 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
 
   if (accountsQuery.isPending) {
     return (
-      <div className="uapp-page uapp-page--form" aria-busy="true">
+      <div className="uapp-page" aria-busy="true">
         <div className="uapp-skeleton" style={{ width: 120, height: 34 }} />
         <div
           className="uapp-skeleton"
@@ -578,8 +578,13 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
 
   if (accountsQuery.isError) {
     return (
-      <div className="uapp-page uapp-page--form">
-        <h1 className="uapp-greeting">账号</h1>
+      <div className="uapp-page">
+        <div className="uapp-account-head">
+          <div className="uapp-account-title">
+            <div className="uapp-home-eyebrow">签到账号与设备</div>
+            <h1 className="uapp-greeting">账号</h1>
+          </div>
+        </div>
         <section className="uapp-card">
           <Alert tone="danger" title="账号读取失败">
             请检查网络后重试；这不是「没有账号」。
@@ -604,8 +609,13 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
 
   if (!account) {
     return (
-      <div className="uapp-page uapp-page--form">
-        <h1 className="uapp-greeting">账号</h1>
+      <div className="uapp-page">
+        <div className="uapp-account-head">
+          <div className="uapp-account-title">
+            <div className="uapp-home-eyebrow">签到账号与设备</div>
+            <h1 className="uapp-greeting">账号</h1>
+          </div>
+        </div>
         <section className="uapp-hero uapp-hero--info uapp-enter" aria-label="还没有账号">
           <div className="uapp-hero-identity">
             <div className="uapp-hero-photo">
@@ -645,9 +655,12 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
   const canPause = !isDeleted && (account.status === 'active' || isPaused)
 
   return (
-    <div className="uapp-page uapp-page--form uapp-page--account">
+    <div className="uapp-page uapp-page--account">
       <div className="uapp-account-head">
-        <h1 className="uapp-greeting">签到账号</h1>
+        <div className="uapp-account-title">
+          <div className="uapp-home-eyebrow">签到账号与设备</div>
+          <h1 className="uapp-greeting">签到账号</h1>
+        </div>
         <Link className="uapp-hero-link uapp-back-link" to="/app">
           ‹ 返回主页
         </Link>
