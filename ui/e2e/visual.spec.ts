@@ -220,19 +220,6 @@ async function expectData(page: Page, path: string) {
  * 无限循环的装饰动画（骨架脉冲等）不算未落定。
  */
 async function waitForAnimations(page: Page) {
-  // 截图取的是文档坐标 (0,0) 起的视口。弹层按钮若在页面下方，点开时浏览器会把文档滚下去，
-  // 固定定位的弹层于是在成图里整体下移（system-preview 曾因此差 27 万像素、页脚被裁）。
-  // 基线一律在顶部口径拍，故截图前先回顶。
-  await page.evaluate(() => window.scrollTo({ top: 0, left: 0, behavior: 'instant' }))
-  // 固定定位的弹层在独立合成层上：scroll 跳变后要几帧才跟上，紧接着截图会拍到旧图层，
-  // 于是出现「文档已在顶部、弹层却整体低 278px」的错位帧（system-preview 撞过两次）。
-  await page.evaluate(
-    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-  )
-  await page.waitForTimeout(150)
-  // 先拍一张丢弃：固定定位层若仍按旧滚动位合成，第一张会错位，第二张就已是最终状态。
-  // （Chromium 的 Page.captureScreenshot 以文档原点为剪辑，与滚动位置无关，故固定层会整体偏移。）
-  await page.screenshot({ animations: 'disabled', caret: 'hide' })
   await page.waitForFunction(() =>
     document
       .getAnimations()
@@ -277,6 +264,35 @@ async function waitForAnimations(page: Page) {
     const after = await page.evaluate(() => document.documentElement.scrollHeight)
     if (before === after) break
   }
+  await settleWindowTop(page)
+}
+
+/** 把窗口滚回文档原点并等合成层跟上。
+ *
+ * Playwright 点击前会把触发器滚进视口，文档就停在下方；Chromium 的
+ * `Page.captureScreenshot` 以**文档原点**为剪辑、与滚动位置无关，于是固定定位的弹层
+ * 会在成图里整体下移 scrollY（system-preview 曾差 27 万像素、页脚被裁）。
+ * 这段必须放在全部等待之后：焦点作用域、React 重挂、Radix 焦点还原都可能在
+ * 中途把文档再滚下去，早做一遍等于没做。
+ */
+async function settleWindowTop(page: Page) {
+  // 反复归零直到真的在顶部：每次归零都可能被排在其后的 scrollIntoView 推翻。
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const offset = await page.evaluate(() => {
+      if (window.scrollY === 0 && window.scrollX === 0) return 0
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+      return 1
+    })
+    if (offset === 0) break
+    await page.waitForTimeout(50)
+  }
+  // 固定定位层在独立合成层上，scroll 跳变后要几帧才跟上。
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  )
+  await page.waitForTimeout(150)
+  // 先拍一张丢弃：旧滚动位合成出的错位帧会先出一次，第二张才是最终状态。
+  await page.screenshot({ animations: 'disabled', caret: 'hide' })
 }
 
 /** 把页面内横向滚动位归零。
