@@ -210,8 +210,6 @@ function ResultHero({
   nextTitle,
   nextNote,
   streak,
-  successDays,
-  recordedCount,
   running,
   onPrimary,
   onSecondary,
@@ -222,10 +220,8 @@ function ResultHero({
   busy: boolean
   error: string | null
   nextTitle: string
-  nextNote: string
+  nextNote: string | null
   streak: number
-  successDays: number
-  recordedCount: number
   running: boolean
   onPrimary: () => void
   onSecondary: () => void
@@ -270,14 +266,6 @@ function ResultHero({
             </span>
             <span className="uapp-stat-label">连续成功 · 天</span>
           </div>
-          <span className="uapp-stat-divider" aria-hidden="true" />
-          <div className="uapp-stat">
-            <span className="uapp-stat-value">
-              {successDays}
-              <i>/{recordedCount}</i>
-            </span>
-            <span className="uapp-stat-label">近 7 天成功</span>
-          </div>
         </div>
         <div className="uapp-result-next">
           <span className="uapp-next-icon">
@@ -285,7 +273,7 @@ function ResultHero({
           </span>
           <div className="uapp-next-main">
             <div className="uapp-next-time">{nextTitle}</div>
-            <div className="uapp-next-note">{nextNote}</div>
+            {nextNote ? <div className="uapp-next-note">{nextNote}</div> : null}
           </div>
         </div>
         {primary || secondary ? (
@@ -465,7 +453,6 @@ export function HomeView() {
   // 首屏仪表统计：只由近 7 天日历推导，不虚构月/均值。
   const calDays = calendarQuery.data?.days ?? []
   const recordedDays = calDays.filter((day) => day.total > 0)
-  const successDays = recordedDays.filter((day) => day.success > 0).length
   let streak = 0
   for (let i = calDays.length - 1; i >= 0; i--) {
     const day = calDays[i]
@@ -612,9 +599,9 @@ export function HomeView() {
         : account?.status === 'paused_admin' || account?.status === 'paused_user'
           ? '恢复后从下一次开始'
           : nextRunText(timePrefQuery.data)
-  const nextNote = timePrefQuery.data?.window
-    ? `可签到时间 ${timePrefQuery.data.window.start}–${timePrefQuery.data.window.end}`
-    : '到点会自动开始'
+  // 窗口起止已由 ResultHero 里的 WindowAxis 头部与时间轴给出，这里只在没有
+  // 窗口可画时补一句机制说明，避免同一句「可签到时间 08:00–22:00」出现两次。
+  const nextNote = timePrefQuery.data?.window ? null : '到点会自动开始'
 
   return (
     <div className="uapp-page uapp-page--home">
@@ -670,8 +657,6 @@ export function HomeView() {
               nextTitle={nextTitle}
               nextNote={nextNote}
               streak={streak}
-              successDays={successDays}
-              recordedCount={recordedDays.length}
               running={running}
               onPrimary={primaryClick}
               onSecondary={secondaryClick}
@@ -697,7 +682,7 @@ export function HomeView() {
         {account && !anomaly && recordedDays.length > 0 ? (
           <div className="uapp-home-cal">
             <section className="uapp-card uapp-home-cal-card" aria-label="签到日历">
-              <WeekStrip days={calDays} today={today} />
+              <WeekStrip days={calDays} today={today} hideLink />
             </section>
           </div>
         ) : null}
