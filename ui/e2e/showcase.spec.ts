@@ -115,13 +115,24 @@ test('invariant 8: every account write entry is disabled with the read-only reas
   await expect(create).toHaveAttribute('title', READ_ONLY_REASON)
 
   const pendingRow = page.locator('.app-account-row').filter({ hasText: '138****8000' }).first()
-  for (const name of ['签到 138****8000', '验证 138****8000', '评审 138****8000']) {
-    const button = pendingRow.getByRole('button', { name })
-    await expect(button).toBeDisabled()
-    await expect(button).toHaveAttribute('title', READ_ONLY_REASON)
-    await button.click({ force: true })
+  // 桌面端操作列只露主操作：待审核行是「评审」，其余写动作收在「更多操作」菜单里。
+  const review = pendingRow.getByRole('button', { name: '评审 138****8000' })
+  await expect(review).toBeDisabled()
+  await expect(review).toHaveAttribute('title', READ_ONLY_REASON)
+  await review.click({ force: true })
+  // 展示夹具里 138 有两行（活行 + 已删除行），触发器必须按行取，不能用页面级名字。
+  await pendingRow.getByRole('button', { name: '更多操作 138****8000' }).click()
+  const pendingMenu = page.getByRole('menu')
+  await expect(pendingMenu).toBeVisible()
+  for (const name of [/^签到/, /^验证/, /^暂停/]) {
+    const item = pendingMenu.getByRole('menuitem', { name })
+    await expect(item).toHaveAttribute('aria-disabled', 'true')
+    await expect(item.locator('.dd-item-reason')).toHaveText(READ_ONLY_REASON)
   }
-  await expect(pendingRow.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
+  await page.keyboard.press('Escape')
+  // 行内不再挂说明：只读原因汇总到表下提示条，行级 title 同样可读。
+  await expect(pendingRow).toHaveAttribute('title', READ_ONLY_REASON)
+  await expect(page.locator('.app-table-deny-bar')).toContainText(READ_ONLY_REASON)
 
   // 暂停与恢复也是写入口，与上面同族。
   const activeRow = page.locator('.app-account-row').filter({ hasText: '139****9000' }).first()
@@ -129,7 +140,7 @@ test('invariant 8: every account write entry is disabled with the read-only reas
   await expect(pause).toBeDisabled()
   await expect(pause).toHaveAttribute('title', READ_ONLY_REASON)
   await pause.click({ force: true })
-  await expect(activeRow.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
+  await expect(activeRow).toHaveAttribute('title', READ_ONLY_REASON)
 
   // 读操作照常：筛选控件可用。
   await expect(page.getByLabel('账号筛选')).toBeEnabled()

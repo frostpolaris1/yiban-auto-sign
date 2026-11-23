@@ -17,6 +17,8 @@ import {
   denyReason,
   pauseDenyReason,
   pauseDirection,
+  primaryRowAction,
+  rowActionReason,
 } from '../../src/features/accounts/permissions.ts'
 
 /**
@@ -313,4 +315,27 @@ test('the clear sentinel is the only path that sends an empty device code', () =
     buildAccountUpdate({ clear_device_code: true, phone_model: 'Pixel' }),
     { device_code: '', phone_model: 'Pixel' },
   )
+})
+
+test('primaryRowAction picks the most direct action for every account status', () => {
+  assert.equal(primaryRowAction('pending'), 'review')
+  assert.equal(primaryRowAction('active'), 'pause')
+  assert.equal(primaryRowAction('paused_admin'), 'resume')
+  assert.equal(primaryRowAction('paused_user'), 'resume')
+  assert.equal(primaryRowAction('rejected'), 'verify')
+  assert.equal(primaryRowAction('credential_error'), 'verify')
+})
+
+test('rowActionReason matches role and status gates for all five row actions', () => {
+  assert.equal(rowActionReason('admin', 'pending', 'review'), null)
+  assert.equal(rowActionReason('admin', 'active', 'review'), '仅待审核账号可评审')
+  assert.equal(rowActionReason('admin', 'active', 'sign'), null)
+  assert.equal(rowActionReason('admin', 'pending', 'sign'), '仅正常状态的账号可签到')
+  assert.equal(rowActionReason('admin', 'active', 'pause'), null)
+  assert.equal(rowActionReason('admin', 'pending', 'pause'), '仅正常状态可暂停')
+  assert.equal(rowActionReason('admin', 'paused_admin', 'resume'), null)
+  assert.equal(rowActionReason('admin', 'paused_user', 'resume'), '该暂停种类只能由对应角色恢复')
+  assert.equal(rowActionReason('admin', 'rejected', 'verify'), null)
+  assert.match(rowActionReason('user', 'rejected', 'verify'), /管理员/)
+  assert.match(rowActionReason(null, 'active', 'sign'), /会话/)
 })

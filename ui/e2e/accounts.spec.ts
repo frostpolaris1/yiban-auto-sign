@@ -16,6 +16,7 @@ import {
   restoreCalls,
   summaryCalls,
 } from './support/fake-accounts-api'
+import { clickRowMenuItem, openRowMenu } from './support/row-actions'
 
 /** 夹具 acc-1 的 updated_at；PATCH 的乐观锁基线按列表快照原样回传。 */
 const ACC1_UPDATED_AT = '2026-10-20T08:41:00Z'
@@ -227,9 +228,13 @@ for (const theme of ['light', 'dark'] as const) {
     await openAccounts(page)
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
 
-    await expect(page.getByRole('button', { name: '暂停 138****8000' })).toBeDisabled()
+    // 桌面端操作列只露主操作（待审核行是「评审」），暂停收在「更多操作」菜单并带置灰原因。
+    await expect(page.getByRole('button', { name: '评审 138****8000' })).toBeEnabled()
+    const menu = await openRowMenu(page, '138****8000')
+    const pauseItem = menu.getByRole('menuitem', { name: /^暂停/ })
+    await expect(pauseItem).toHaveAttribute('aria-disabled', 'true')
 
-    const note = rowFor(page, '138****8000').locator('.app-deny-note')
+    const note = pauseItem.locator('.dd-item-reason')
     await expect(note).toBeVisible()
     await expect(note).toContainText('仅正常状态可暂停')
     const paint = await note.evaluate((element) => {
@@ -240,6 +245,8 @@ for (const theme of ['light', 'dark'] as const) {
       'rgba(0, 0, 0, 0)',
     )
     expect(Number(paint.opacity), `reason text must stay opaque in ${theme}`).toBeGreaterThan(0)
+    // 菜单不开时，表下提示条也要给出同一条原因。
+    await expect(page.locator('.app-table-deny-bar')).toContainText('仅正常状态可暂停')
   })
 }
 
@@ -248,30 +255,39 @@ test('invariant 3: an admin may verify, review and filter by school', async ({ p
   await openAccounts(page)
 
   await expect(page.getByLabel('学校筛选')).toBeEnabled()
-  await expect(page.getByRole('button', { name: '验证 138****8000' })).toBeEnabled()
+  // 待审核行主操作是「评审」，验证收在菜单里；两处都要可用。
   await expect(page.getByRole('button', { name: '评审 138****8000' })).toBeEnabled()
+  const pendingMenu = await openRowMenu(page, '138****8000')
+  await expect(pendingMenu.getByRole('menuitem', { name: /^验证/ })).not.toHaveAttribute(
+    'aria-disabled',
+    'true',
+  )
+  await page.keyboard.press('Escape')
 
   await expect(page.getByRole('button', { name: '暂停 139****9000' })).toBeEnabled()
   await expect(page.getByRole('button', { name: '恢复 135****0001' })).toBeEnabled()
-  await expect(page.getByRole('button', { name: '暂停 138****8000' })).toBeDisabled()
-  await expect(rowFor(page, '138****8000').locator('.app-deny-note')).toContainText(
-    '仅正常状态可暂停',
-  )
+  await expect(page.locator('.app-table-deny-bar')).toContainText('仅正常状态可暂停')
 })
 
 test('invariant 12: a non-active account cannot be signed manually', async ({ page }) => {
   await mockAccountsApi(page, { role: 'admin' })
   await openAccounts(page)
 
+  // 签到是次要动作，桌面端在「更多操作」菜单里；置灰原因随条目一起给出。
   const pending = rowFor(page, '138****8000')
-  const pendingSign = pending.getByRole('button', { name: '签到 138****8000' })
-  await expect(pendingSign).toBeDisabled()
-  await expect(pendingSign).toHaveAttribute('title', '仅正常状态的账号可签到')
-  await expect(pending.locator('.app-deny-note')).toContainText('仅正常状态的账号可签到')
+  await expect(pending).toHaveAttribute('title', /仅正常状态的账号可签到/)
+  const pendingMenu = await openRowMenu(page, '138****8000')
+  const pendingSign = pendingMenu.getByRole('menuitem', { name: /^签到/ })
+  await expect(pendingSign).toHaveAttribute('aria-disabled', 'true')
+  await expect(pendingSign.locator('.dd-item-reason')).toHaveText('仅正常状态的账号可签到')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.app-table-deny-bar')).toContainText('仅正常状态的账号可签到')
 
-  const paused = rowFor(page, '135****0001')
-  const pausedSign = paused.getByRole('button', { name: '签到 135****0001' })
-  await expect(pausedSign).toBeDisabled()
+  const pausedMenu = await openRowMenu(page, '135****0001')
+  await expect(pausedMenu.getByRole('menuitem', { name: /^签到/ })).toHaveAttribute(
+    'aria-disabled',
+    'true',
+  )
 })
 
 test('invariant 4: pause waits for confirmation and sends the flag', async ({ page }) => {
@@ -329,7 +345,7 @@ test('invariant 4: sign waits for confirmation and shows the conflict envelope',
   })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '签到 139****9000' }).click()
+  await clickRowMenuItem(page, '139****9000', /^签到/)
   const dialog = page.getByRole('dialog', { name: '立即签到？' })
   await expect(dialog).toBeVisible()
   expect(postCalls(api, 'acc-2', 'sign'), 'no request before confirmation').toHaveLength(0)
@@ -344,7 +360,7 @@ test('invariant 4: verify waits for confirmation and reports the conclusion', as
   const api = await mockAccountsApi(page, { role: 'admin' })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '验证 138****8000' }).click()
+  await clickRowMenuItem(page, '138****8000', /^验证/)
   const dialog = page.getByRole('dialog', { name: '验证凭据？' })
   await expect(dialog).toBeVisible()
   expect(postCalls(api, 'acc-1', 'verify'), 'no request before confirmation').toHaveLength(0)
@@ -365,7 +381,7 @@ for (const conflict of [
     })
     await openAccounts(page)
 
-    await page.getByRole('button', { name: '签到 139****9000' }).click()
+    await clickRowMenuItem(page, '139****9000', /^签到/)
     const dialog = page.getByRole('dialog', { name: '立即签到？' })
     await dialog.getByRole('button', { name: '确认签到' }).click()
     await expect.poll(() => postCalls(api, 'acc-2', 'sign').length).toBe(1)
@@ -381,7 +397,7 @@ test('verify reports upstream_unavailable', async ({ page }) => {
   })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '验证 138****8000' }).click()
+  await clickRowMenuItem(page, '138****8000', /^验证/)
   const dialog = page.getByRole('dialog', { name: '验证凭据？' })
   await dialog.getByRole('button', { name: '确认验证' }).click()
   await expect.poll(() => postCalls(api, 'acc-1', 'verify').length).toBe(1)
@@ -396,7 +412,7 @@ test('verify reports a platform rejection without a transport error', async ({ p
   })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '验证 138****8000' }).click()
+  await clickRowMenuItem(page, '138****8000', /^验证/)
   const dialog = page.getByRole('dialog', { name: '验证凭据？' })
   await dialog.getByRole('button', { name: '确认验证' }).click()
   await expect.poll(() => postCalls(api, 'acc-1', 'verify').length).toBe(1)
@@ -570,13 +586,6 @@ test('the sidebar reaches the accounts page', async ({ page }) => {
   await expect(page).toHaveURL(/\/accounts$/)
   await expect(page.getByRole('table', { name: '账号列表' })).toBeVisible()
 })
-
-async function openRowMenu(page: Page, phone: string) {
-  await page.getByRole('button', { name: `更多操作 ${phone}` }).click()
-  const menu = page.getByRole('menu')
-  await expect(menu).toBeVisible()
-  return menu
-}
 
 test('invariant 6: PATCH sends only the filled fields', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'master' })
