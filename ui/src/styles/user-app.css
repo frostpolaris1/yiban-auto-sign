@@ -895,8 +895,18 @@
   background: var(--primary-soft);
 }
 
+/* 卡片间距只有一个来源：流式堆叠由这条兄弟外边距给 12px；
+   网格里一律由 gap 给间距，相邻卡片不叠外边距——否则右栏第一张卡会被顶下 12px，
+   左右两栏顶端就不平齐（1440 的历史页与设置页曾差 12px）。 */
 .uapp-card + .uapp-card {
-  margin-top: 12px;
+  margin-top: var(--space-3);
+}
+
+.uapp-home-bento > .uapp-card,
+.uapp-history-grid > .uapp-card,
+.uapp-settings-grid > .uapp-card,
+.uapp-account-grid > .uapp-card {
+  margin-top: 0;
 }
 
 .uapp-card-title {
@@ -1787,8 +1797,12 @@ button.uapp-row:hover:not(:disabled) {
 }
 
 /* ---------- 历史 ---------- */
+/* 单列网格从移动端就成立：卡片间距只由 gap 给，不叠兄弟外边距，
+   否则 1024 起换成双栏时右栏会被顶下 12px。 */
 .uapp-history-grid {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
   margin-top: var(--space-3);
 }
 
@@ -1918,10 +1932,6 @@ button.uapp-row:hover:not(:disabled) {
     gap: var(--space-5);
     align-items: start;
   }
-
-  .uapp-day-detail {
-    margin-top: 0;
-  }
 }
 
 /* ---------- 历史 modern（同主页语言） ---------- */
@@ -1985,10 +1995,9 @@ button.uapp-row:hover:not(:disabled) {
   box-shadow: 0 0 0 2px var(--primary-ring);
 }
 
-/* 日详情仪表：大日期数字＋状态签，行沉底。 */
+/* 日详情仪表：大日期数字＋状态签，行沉底。间距由网格 gap 给。 */
 .uapp-day-detail {
   min-height: 180px;
-  margin-top: var(--space-3);
   display: flex;
   flex-direction: column;
 }
