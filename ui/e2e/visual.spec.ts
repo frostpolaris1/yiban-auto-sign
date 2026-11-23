@@ -295,6 +295,17 @@ async function settleWindowTop(page: Page) {
   await page.screenshot({ animations: 'disabled', caret: 'hide' })
 }
 
+/** 点开首屏之外的触发器，但不让文档滚下去。
+ *
+ * Playwright 的 click 会先把触发器滚进视口，文档就停在下方；Radix 的滚动锁把这个位置
+ * 记成「打开时的位置」，之后任何一次重新加锁都会把文档滚回去 —— 快照于是在滚动位与
+ * 原点之间摇摆（system-preview 在 CI 上差 25466 像素，本地快机器上则一次都不复现）。
+ * 改用 DOM click：不滚动、不改焦点，React 侧回调与真实点击一致。
+ */
+async function clickWithoutScroll(locator: Locator) {
+  await locator.evaluate((el: HTMLElement) => el.click())
+}
+
 /** 把页面内横向滚动位归零。
  *
  * 行内按钮获焦后浏览器会把最近的可滚容器滚到按钮可见处，落点随时序（平滑滚动 + 列表重挂），
@@ -576,7 +587,9 @@ for (const theme of THEMES) {
     await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme)
     // 背景层同样要数据态：弹窗本体逐像素稳定，飘的是身后骨架→数据重排的那几帧。
     await expectData(page, '/system')
-    await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
+    // 触发器在首屏之下：真实点击会把文档滚到 278px，弹层是固定布局，截图就随滚动位漂移。
+    // 换成不滚动的点击，「文档全程在顶部」成了前置条件，不靠截图前归零去补救。
+    await clickWithoutScroll(page.getByRole('button', { name: '查看计划 合成学校甲' }))
     const dialog = page.getByRole('dialog', { name: '计划预览' })
     await expect(dialog).toBeVisible()
     await expect(dialog).toContainText('窗口版本')
@@ -592,7 +605,7 @@ for (const theme of THEMES) {
     await openWithTheme(page, `/system?day=${SCHEDULE_DAY}`, theme)
     // 背景层同样要数据态：弹窗本体逐像素稳定，飘的是身后骨架→数据重排的那几帧。
     await expectData(page, '/system')
-    await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
+    await clickWithoutScroll(page.getByRole('button', { name: '查看计划 合成学校甲' }))
     await page.getByRole('dialog', { name: '计划预览' }).getByRole('button', { name: '写入覆盖' }).click()
     const dialog = page.getByRole('dialog', { name: '写入窗口覆盖？' })
     await expect(dialog).toBeVisible()
@@ -768,3 +781,4 @@ test('no horizontal overflow at either width, in either theme', async ({ page })
     }
   }
 })
+
