@@ -41,6 +41,9 @@ type ScheduleRepo struct {
 	audits *AuditRepo
 	// lease 是每次认领写入的租约时长。零值取 2 分钟。
 	lease time.Duration
+	// reclaimGrace 是回收已过期租约后的冷却：落点 = now + grace。
+	// 零值保持旧行为（落点 = now，立即可再领）。
+	reclaimGrace time.Duration
 }
 
 // NewScheduleRepo 构造排期仓储。未注入审计仓储时，
@@ -61,6 +64,26 @@ func (r *ScheduleRepo) WithLease(d time.Duration) *ScheduleRepo {
 	if d > 0 {
 		r.lease = d
 	}
+	return r
+}
+
+// WithReclaimGrace 覆盖回收过期租约后的冷却时长。d<0 夹到 0（立即重领）。
+// 返回同一实例：装配层在构造后立刻调用，之后只读。
+//
+// 冷却解决的是租约到期那一刻的窗口：租约到期不等于持有者已死——
+// 它可能只是卡在一次慢提交上（GC 停顿、对端半开、DNS 重试）。
+// 回收已把行置回 pending，旧持有者的结算会被 claim_seq 栅栏拒掉
+// （Finish 要求 state='running' 且序号相符），终态写不进去，也不会留下结论；
+// 若落点是 now，第二个执行体下一 tick 就能领走同一账号，于是
+// "两个进程同时在一个账号上跑"真实发生——库层唯一索引只盖 state='running'
+// （旧行已被回收改成 pending），拦不住这条路径。
+// 冷却把"并发重复"降级成"串行重复"：重放最多晚 grace 秒，代价是
+// 迟到的那次提交在平台上已经发生、撤不回来。它是可观测性缓冲，不是止损。
+func (r *ScheduleRepo) WithReclaimGrace(d time.Duration) *ScheduleRepo {
+	if d < 0 {
+		d = 0
+	}
+	r.reclaimGrace = d
 	return r
 }
 
@@ -650,6 +673,9 @@ func (r *ScheduleRepo) CountRunning(ctx context.Context) (int64, error) {
 // ReclaimExpired 把租约过期的 running 行放回 pending，并写 task.reclaim 审计。
 // 每行一条审计；UPDATE 与审计同事务。上限 limit 防止一次回收过多行占住锁。
 // 没有审计仓储时有行可回收即回滚；无行可回收时不需要审计。
+// 落点是 now + reclaimGrace（见 WithReclaimGrace）：回收已经把行置回 pending，
+// 旧持有者的 Finish 会被 claim_seq 栅栏拒掉、写不进终态；冷却只推迟
+// "下一次认领"，把并发重复降级为串行重复，不会让旧持有者"先写完"。
 func (r *ScheduleRepo) ReclaimExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
 	if limit < 1 {
 		limit = 1
@@ -668,11 +694,12 @@ func (r *ScheduleRepo) ReclaimExpired(ctx context.Context, now time.Time, limit 
 			)
 			UPDATE sign_tasks t
 			   SET state = 'pending', claimed_at = NULL,
-			       lease_expires_at = NULL, run_at = $1
+			       lease_expires_at = NULL,
+			       run_at = $1::timestamptz + make_interval(secs => $3::double precision)
 			 WHERE t.id IN (SELECT id FROM expired)
 			RETURNING t.id::text,
 			          (SELECT st.school_id::text FROM school_tasks st
-			            WHERE st.id = t.school_task_id)`, now, limit)
+			            WHERE st.id = t.school_task_id)`, now, limit, r.reclaimGrace.Seconds())
 		if err != nil {
 			return mapError(err)
 		}
@@ -703,7 +730,12 @@ func (r *ScheduleRepo) ReclaimExpired(ctx context.Context, now time.Time, limit 
 				Action:     coreaudit.ActionTaskReclaim,
 				TargetType: "task",
 				TargetID:   it.id,
-				Detail:     map[string]any{"reason": "lease_expired"},
+				Detail: map[string]any{
+					"reason": "lease_expired",
+					// 冷却秒数入审计：事后判"这次回收之后多久被重领"
+					// 要用当时的冷却值，配置会变。
+					"grace_sec": int64(r.reclaimGrace.Seconds()),
+				},
 			}); err != nil {
 				return err
 			}

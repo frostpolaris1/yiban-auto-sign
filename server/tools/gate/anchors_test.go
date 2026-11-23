@@ -166,7 +166,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// （容量缩容/回升、覆盖原子性与名册几何的用例层 e2e 需要真实 PG 适配器）。
 	// sfr：新增 fs.os.impl forbid 规则：app 层不得实现 OS 文件系统
 	// （os.CreateTemp 原子写），实现由 cmd/cli 注入（P2-b，2026-11-11）。
-	const want = "1b27cc70d31c276ab1252c8b6770f2c8820683925d76223abd9efc81ded1c3a2"
+	// lease：env.get allow 增列 cmd/server/lease_double_e2e_test.go
+	// （租约双跑矩阵实验沿用 loop/p12/engine_pause 的 os.Getenv 读测试 DSN 口径）。
+	const want = "420e656c9987a9e6973564b1bea5e141cc9d96cfae4646749c060967daddb6fd"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

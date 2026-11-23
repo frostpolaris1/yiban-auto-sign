@@ -34,7 +34,7 @@ const (
 
 // BudgetFor 把一次失败结论翻译成分级预算。
 //   - transient/pending_upstream/unknown：最多 3 次（1 初始 + 2 重试）；
-//   - challenge/credential_invalid：仅 1 次，且清会话；
+//   - challenge/credential_invalid：仅 1 次，并标记会话不可信；
 //   - blocked/device_unbound/invalid_target/rejected/photo_rejected：
 //     仅 1 次——确定类失败重试只会重发同一死请求；
 //     blocked 是风控拦截，重发还会加深账号标记；
@@ -42,20 +42,20 @@ const (
 //   - no_position（Position 空）：0 次——它走 worker 的等待型重扫曲线
 //     （独立 base 与上限），不进业务退避预算；漏出结算分支时零预算
 //     保证它不会被业务退避放大；
-//   - 词表外的结论：按最保守档（1 次＋清会话）——未知结论绝不按可重试处理，
+//   - 词表外的结论：按最保守档（1 次＋标记会话不可信）——未知结论绝不按可重试处理，
 //     也绝不清空预算（unknown 与 success 必须保持区分）。
 func BudgetFor(outcome string) Policy {
 	switch outcome {
 	case "transient", "pending_upstream", "unknown":
-		return Policy{MaxAttempts: 3, After: DefaultAfter, ClearSession: false}
+		return Policy{MaxAttempts: 3, After: DefaultAfter}
 	case "challenge", "credential_invalid":
-		return Policy{MaxAttempts: 1, After: DefaultAfter, ClearSession: true}
+		return Policy{MaxAttempts: 1, After: DefaultAfter, SessionTainted: true}
 	case "blocked", "device_unbound", "invalid_target", "rejected", "photo_rejected":
-		return Policy{MaxAttempts: 1, After: DefaultAfter, ClearSession: false}
+		return Policy{MaxAttempts: 1, After: DefaultAfter}
 	case "success", "already_done", "no_target", "no_position", "photo_missing":
-		return Policy{MaxAttempts: 0, After: 0, ClearSession: false}
+		return Policy{MaxAttempts: 0}
 	default:
-		return Policy{MaxAttempts: 1, After: DefaultAfter, ClearSession: true}
+		return Policy{MaxAttempts: 1, After: DefaultAfter, SessionTainted: true}
 	}
 }
 

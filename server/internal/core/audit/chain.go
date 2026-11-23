@@ -360,6 +360,10 @@ var detailKeys = map[string]bool{
 	"retryable": true,
 	// 平台大学投影自动建校：值来自平台身份信封，是公开院校标识而非个人数据。
 	"university_id": true,
+	// 租约回收到期行时当时生效的冷却秒数（YIBAN_RECLAIM_GRACE_SEC，0..3600）。
+	// 配置会变：事后判"回收后多久被重领"必须看当时的值，不是现值。
+	// 整数、四位数以内，无自由文本容量，不构成隐私面。
+	"grace_sec": true,
 	// 设置写回（sett2/3b/3c 调度、r4r 配额、smtp4 SMTP）：changes 是
 	// 键→[旧,新]对。键限 settings 键形状；值限 nil/布尔/整数标量、
 	// 状态词形状字符串（调度域 [0,300]/[0,1439]/true-false/front-uniform，

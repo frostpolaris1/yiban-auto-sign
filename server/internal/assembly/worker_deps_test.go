@@ -76,6 +76,8 @@ func TestWorkerDepsPassesEveryFieldThrough(t *testing.T) {
 		logger:    logger,
 		paused:    pauseGateSentinel,
 		limiter:   corerate.NewLimiter(1, 1),
+		// 哨兵取非零：0 在端口语义里是"不设限"，用它测不出搬运。
+		attemptBudget: 7 * time.Second,
 	}
 	got := buildWorkerDeps(&config.Config{}, want)
 

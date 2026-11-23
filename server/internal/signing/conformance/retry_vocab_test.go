@@ -29,12 +29,12 @@ func TestRetryBudgetCoversContractOutcomes(t *testing.T) {
 		contract.OutcomePhotoRejected,
 		contract.OutcomeUnknown,
 	}
-	// default 档形状（未知词分支）：1 次＋清会话。任何已知词落到它都算漂移——
+	// default 档形状（未知词分支）：1 次＋会话不可信标记。任何已知词落到它都算漂移——
 	// 每个词都必须有自己的显式分支。
 	for _, o := range outcomes {
 		p := retry.BudgetFor(string(o))
-		if p.MaxAttempts == 1 && p.ClearSession {
-			// challenge 与 credential_invalid 是**合法**的 1 次＋清会话；
+		if p.MaxAttempts == 1 && p.SessionTainted {
+			// challenge 与 credential_invalid 是**合法**的 1 次＋标记；
 			// 其余词落到该形状只能是 default 档（词缺分支）。
 			if o != contract.OutcomeChallenge && o != contract.OutcomeCredentialBad {
 				t.Fatalf("Outcome %q 落进 default 档：BudgetFor 缺该词分支", o)
@@ -50,10 +50,10 @@ func TestRetryBudgetCoversContractOutcomes(t *testing.T) {
 				t.Fatalf("Outcome %q 应零预算, got %+v", o, p)
 			}
 		}
-		// 确定类必须清会话：会话已不可信。
+		// 确定类必须标记会话不可信（分类标记：清会话归提供方执行）。
 		if o == contract.OutcomeChallenge || o == contract.OutcomeCredentialBad {
-			if !p.ClearSession {
-				t.Fatalf("Outcome %q 应清会话, got %+v", o, p)
+			if !p.SessionTainted {
+				t.Fatalf("Outcome %q 应标记会话不可信, got %+v", o, p)
 			}
 		}
 		// 瞬时类必须 3 次：给网络抖动留重试空间。
