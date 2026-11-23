@@ -38,28 +38,29 @@ func TestBudgetFor(t *testing.T) {
 	}
 }
 
-func TestBudgetForClearsSession(t *testing.T) {
-	// 会话已不可信的结论必须清会话：challenge 与凭据错。
-	if !BudgetFor("challenge").ClearSession {
-		t.Fatal("challenge 应清会话")
+func TestBudgetForMarksTaintedSession(t *testing.T) {
+	// 会话已不可信的结论必须打标记：challenge 与凭据错。
+	// 标记是分类，不是动作——宿主这侧没有会话句柄，清会话归提供方。
+	if !BudgetFor("challenge").SessionTainted {
+		t.Fatal("challenge 应标记会话不可信")
 	}
-	if !BudgetFor("credential_invalid").ClearSession {
-		t.Fatal("credential_invalid 应清会话")
+	if !BudgetFor("credential_invalid").SessionTainted {
+		t.Fatal("credential_invalid 应标记会话不可信")
 	}
-	if BudgetFor("transient").ClearSession {
-		t.Fatal("transient 不清会话")
+	if BudgetFor("transient").SessionTainted {
+		t.Fatal("transient 不标记")
 	}
-	// 风控拦截不代表会话失效：1 次即终态，但不改会话。
-	if BudgetFor("blocked").ClearSession {
-		t.Fatal("blocked 不清会话")
+	// 风控拦截不代表会话失效：1 次即终态，但不打标记。
+	if BudgetFor("blocked").SessionTainted {
+		t.Fatal("blocked 不标记")
 	}
 }
 
 func TestBudgetForUnknownWord(t *testing.T) {
-	// 未知 outcome 不可能是 success：按最保守档（1 次、清会话）。
+	// 未知 outcome 不可能是 success：按最保守档（1 次、标记会话不可信）。
 	got := BudgetFor("made_up_word")
-	if got.MaxAttempts != 1 || !got.ClearSession {
-		t.Fatalf("未知词档 = %#v, want 1 次＋清会话", got)
+	if got.MaxAttempts != 1 || !got.SessionTainted {
+		t.Fatalf("未知词档 = %#v, want 1 次＋标记会话不可信", got)
 	}
 }
 

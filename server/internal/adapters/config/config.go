@@ -113,6 +113,13 @@ type Config struct {
 	TimePrefCooldown time.Duration
 	// TaskLease 是执行任务的租约时长。过期的 running 由回收器放回队列。
 	TaskLease time.Duration
+	// ReclaimGrace 是回收过期租约后的冷却：回收落点 = now + ReclaimGrace。
+	// 0 表示回收即可重领（旧行为）。
+	ReclaimGrace time.Duration
+	// AttemptBudget 是一次真实尝试（发现＋提交）的总截止时间。
+	// 0 表示按租约派生（装配层取 0.8×TaskLease）；显式值必须小于 TaskLease，
+	// 否则预算还没到期租约就先失效，回收器会在持有者仍活着时把行放回队列。
+	AttemptBudget time.Duration
 
 	// PhotoDir 是图片 blob 存储根目录。
 	PhotoDir string
@@ -347,6 +354,11 @@ var (
 	keyWindowEdgeBack   = intKey{"YIBAN_WINDOW_EDGE_BACK_SEC", 60, 0, 300}
 	keyTimePrefCooldown = intKey{"YIBAN_TIME_PREF_COOLDOWN_SEC", 30, 0, 3600}
 	keyTaskLeaseSec     = intKey{"YIBAN_TASK_LEASE_SEC", 120, 30, 3600}
+	// 回收冷却：租约到期后先等一段再重领（见 pg.ScheduleRepo.WithReclaimGrace）。
+	keyReclaimGraceSec = intKey{"YIBAN_RECLAIM_GRACE_SEC", 60, 0, 3600}
+	// 一次尝试的总截止时间：0 表示按 0.8×租约派生（见 assembly.workerAttemptBudget），
+	// 不是"不设限"——派生值永远小于租约，这是默认开启的行为收紧。
+	keyAttemptBudgetSec = intKey{"YIBAN_ATTEMPT_BUDGET_SEC", 0, 0, 3600}
 	keyEgressRate       = floatKey{"YIBAN_EGRESS_RATE", corerate.DefaultRate, corerate.RateMin, corerate.RateMax}
 	keyAllowTimePref    = boolKey{"YIBAN_ALLOW_TIME_PREF", false}
 	keyHTTPAddr         = stringKey{"YIBAN_HTTP_ADDR", DefaultHTTPAddr}
@@ -400,6 +412,8 @@ func configSpecs() []keySpec {
 		keyWindowEdgeBack.spec(),
 		keyTimePrefCooldown.spec(),
 		keyTaskLeaseSec.spec(),
+		keyReclaimGraceSec.spec(),
+		keyAttemptBudgetSec.spec(),
 		keyEgressRate.spec(),
 		keyAllowTimePref.spec(),
 		keyHTTPAddr.spec(),
@@ -545,6 +559,23 @@ func LoadFrom(src Source) (*Config, error) {
 		return nil, err
 	}
 	cfg.TaskLease = time.Duration(lease) * time.Second
+	grace, err := keyReclaimGraceSec.read(src)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ReclaimGrace = time.Duration(grace) * time.Second
+	budget, err := keyAttemptBudgetSec.read(src)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AttemptBudget = time.Duration(budget) * time.Second
+	// 预算必须落在租约之内：预算晚于租约到期，等于没有预算——
+	// 回收器会在持有者还在跑的时候把行放回队列，同账号双跑照旧。
+	// 0 是显式的"不设限"，不参与这条校验。
+	if cfg.AttemptBudget > 0 && cfg.AttemptBudget >= cfg.TaskLease {
+		return nil, fmt.Errorf("config: YIBAN_ATTEMPT_BUDGET_SEC (%ds) must be less than YIBAN_TASK_LEASE_SEC (%ds)",
+			int(cfg.AttemptBudget.Seconds()), int(cfg.TaskLease.Seconds()))
+	}
 
 	if cfg.RateLimitEnabled, err = keyRateLimitEnabled.read(src); err != nil {
 		return nil, err

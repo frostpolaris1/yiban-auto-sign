@@ -773,7 +773,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		// 排期仓储同时是 worker 的 Store：凭据错结算要写账号状态与引擎审计，
 		// 故注入审计仓储。缺它时结算报错（不静默跳过审计）。
-		scheduleRepo := pg.NewScheduleRepoWithAudit(db, audits).WithLease(cfg.TaskLease)
+		scheduleRepo := pg.NewScheduleRepoWithAudit(db, audits).
+			WithLease(cfg.TaskLease).
+			// 回收冷却：租约到期不等于持有者已死。落点=now+grace 让慢提交
+			// 先写完终态，否则回收来的行下一 tick 就被第二个执行体领走。
+			WithReclaimGrace(cfg.ReclaimGrace)
 		workerSvc, err = appworker.NewService(buildWorkerDeps(cfg, workerDeps{
 			store:    scheduleRepo,
 			creds:    workerCredentials{svc: accountSvc, kid: cipher.KID()},
@@ -798,6 +802,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			paused: pausedGate,
 			// 与交互面共用同一限速器实例：同闸同预算（批 abs R1 / F2）。
 			limiter: egressLimiter,
+			// 一次尝试的总截止：配置显式值优先，否则派生 0.8×租约。
+			// 必须早于租约到期，否则回收器会在持有者还在提交时把它放回去。
+			attemptBudget: workerAttemptBudget(cfg),
 		}))
 		if err != nil {
 			closeFn()
@@ -1199,6 +1206,10 @@ type workerDeps struct {
 	logger    *slog.Logger
 	paused    func(ctx context.Context) (bool, error)
 	limiter   *corerate.Limiter
+	// attemptBudget 是一次尝试的总截止（0=不设限）。
+	// 由 workerAttemptBudget 从配置派生后注入，不在这里再算一遍：
+	// 派生规则只有一处，镜像判据只校验搬运（OCR C2 P3 口径）。
+	attemptBudget time.Duration
 }
 
 // buildWorkerDeps 装配执行循环的依赖，限速器默认由 buildEgressGate 派生。
@@ -1211,21 +1222,35 @@ func buildWorkerDeps(cfg *config.Config, d workerDeps) appworker.Deps {
 		limiter = buildEgressGate(cfg)
 	}
 	return appworker.Deps{
-		Store:     d.store,
-		Creds:     d.creds,
-		Signer:    d.signer,
-		Egress:    d.egress,
-		Limiter:   limiter,
-		Clock:     d.clock,
-		Location:  d.location,
-		Locations: d.locations,
-		Photos:    d.photos,
-		Notifier:  d.notifier,
-		Alerts:    d.alerts,
-		Picker:    d.picker,
-		Logger:    d.logger,
-		Paused:    d.paused,
+		Store:         d.store,
+		Creds:         d.creds,
+		Signer:        d.signer,
+		Egress:        d.egress,
+		Limiter:       limiter,
+		Clock:         d.clock,
+		Location:      d.location,
+		Locations:     d.locations,
+		Photos:        d.photos,
+		Notifier:      d.notifier,
+		Alerts:        d.alerts,
+		Picker:        d.picker,
+		Logger:        d.logger,
+		Paused:        d.paused,
+		AttemptBudget: d.attemptBudget,
 	}
+}
+
+// workerAttemptBudget 返回一次真实尝试的总截止时间。
+//
+// 配置为 0 时按租约派生：0.8×租约，留 20% 给结算与调度抖动。
+// 派生值恒小于租约，故预算先于回收触发——本次尝试由自己结算，
+// 回收器找不到过期行，同账号双跑不会出现（配置的显式值由
+// config 校验必须小于租约）。
+func workerAttemptBudget(cfg *config.Config) time.Duration {
+	if cfg.AttemptBudget > 0 {
+		return cfg.AttemptBudget
+	}
+	return cfg.TaskLease * 8 / 10
 }
 
 // buildEgressGate 构造执行面的每出口限速器。
