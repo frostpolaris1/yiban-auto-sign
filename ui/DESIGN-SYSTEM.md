@@ -12,8 +12,8 @@
 - **同一表面语言**：纸面卡片统一使用 `var(--bg-card)` + `1px solid var(--border)` + `var(--shadow-card)` + `var(--radius-lg)`（`12px`），画布底统一使用 `var(--bg-body)`。
 - **同一语义色体系**：严禁在任何非豁免文件写入颜色字面量，全部消费 `tokens.css` 的 36 浅 + 36 深令牌及 `color-mix(in srgb, ...)` 派生。
 - **密度分档而不换骨**：
-  - **管理端（桌面）**：默认控件高度 `36px`，行内/分页/紧凑操作 `32px`，表格标准行高 `48px`（紧凑模式 `40px`），追求高信息吞吐与首屏直达。
-  - **移动端（`<= 720px`）与用户端（`/app`）**：所有交互控件统一抬至 `44px` 触控下限，留白更松弛，保持清晰的视觉焦点与单手可达性。
+  - **管理端（桌面）**：默认控件高度 `40px`（对齐 Adminator 原生实测 `40.1px`），行内/分页/紧凑操作 `32px`，表格标准行高 `48px`（紧凑模式 `40px`），追求高信息吞吐与首屏直达。
+  - **移动端（`<= 720px`）与用户端（`/app`）**：所有交互控件统一抬至 `48px`（原生 `.btn--lg` 实测 `47.7px`，同时高于 `44px` 触控下限），留白更松弛，保持清晰的视觉焦点与单手可达性。
 
 ---
 
@@ -42,14 +42,32 @@
 
 | 令牌 | 像素值 | 适用组件（桌面 `> 720px`） | 移动端（`<= 720px`） |
 |---|---:|---|---|
-| `--ctrl-h-sm` | `32px` | `.btn--sm`、表内操作键、行内更多图标键、`.app-cell-link`、`.pager-btn`、`.alert .close`、`.app-card-tabs button`、`.tabs.pills .tab` | 统一抬升至 `44px` |
-| `--ctrl-h-md` | `36px` | `.btn`（默认）、`.input`、`.select`、`.app-select-trigger`、顶栏 `.cmd` / `.icon-btn` / `.avatar`、侧栏 `.nav-link`、`.tab`、`.dd-menu-item` | 统一抬升至 `44px` |
-| `--ctrl-h-lg` | `44px` | `.btn--lg`、用户端全部按钮（`.uapp-button` / `.uapp-icon-btn` / `.uapp-avatar` / `.uapp-hero-link` / `.uapp-seg-item` / `.uapp-announcement-close`）与 `.uapp-input` | 全部可点控件基准 |
+| `--ctrl-h-sm` | `32px` | `.btn--sm`、表内操作键、行内更多图标键、`.app-cell-link`、`.pager-btn`、`.alert .close`、`.app-card-tabs button`、`.tabs.pills .tab` | 统一抬升至 `48px` |
+| `--ctrl-h-md` | `40px` | `.btn`（默认）、`.input`、`.select`、`.app-select-trigger`、顶栏 `.cmd` / `.icon-btn` / `.avatar`、侧栏 `.nav-link`、`.tab`、`.dd-menu-item` | 统一抬升至 `48px` |
+| `--ctrl-h-lg` | `48px` | `.btn--lg`、用户端全部按钮（`.uapp-button` / `.uapp-icon-btn` / `.uapp-avatar` / `.uapp-hero-link` / `.uapp-seg-item` / `.uapp-announcement-close`）与 `.uapp-input` | 移动端全部可点控件基准 |
 | `--ctrl-h-textarea` | `96px` | `.textarea` 多行文本域最小高度 | `96px` |
 
 > **例外契约**：弹窗/抽屉右上关闭键 `.mail-tool` 按既有行为测试保留 `24×24` 视觉盒，并通过 `::after { inset: -10px; }` 扩展至 `44×44` 触控热区。
 
-### 2.3 字号与行高音阶（六档整数）
+### 2.3 高度契约（Adminator 原生实测反推）
+
+> 口径：把 `web/static/vendor/adminator/adminator.css` 单文件渲染进 Chromium（原生 body `14px/1.55`）逐选择器量 `getBoundingClientRect().height`，不按字号估算。复跑探针 `/home/ubuntu/agy-runs/vendor-probe.js`（本地取证，不入库）。
+
+| 原生选择器 | 原生实测 | 我们的落地 | 取整依据 |
+|---|---:|---|---|
+| `.btn` | `40.1px` | `--ctrl-h-md: 40px` | `9px 14px` 内边距 + 13px 字继承 21.7px 行高；向 4px 网格取整 |
+| `.btn--sm` | `31.8px` | `--ctrl-h-sm: 32px` | 原本即对齐，不动 |
+| `.btn--lg` | `47.7px` | `--ctrl-h-lg: 48px` | `12px 18px` + 14px 字 |
+| `.input` | `40.1px` | `40px`（同 `md` 档） | 与 `.btn` 等高的工具栏混排才齐平 |
+| `.select` | `35px` | `40px`（同 `md` 档） | 原生 `line-height: normal` 导致的自身不一致，不复制；输入与下拉必须同高 |
+| `.table thead th` | `38px` | 竖向 `10px / 12px`（新令牌，实测 `39px`） | 我们表头 `12px/16px` 字高于原生 `10px/15.5px`，只对齐内边距、不强推总高 |
+| `.table tbody td` | `43.1px` | 行高 `48px`（`--table-row-h`，刻意高于原生） | 单元格带 `32px` 行内操作键 + 上下 `8px` 内边距时行天然为 `48px`，且 `accounts/schools` 行为用例把「行高 48px」钉成布局契约，不为对齐原生把行挤回 `44px` |
+| `.badge` | `20.7px` | `20px`（既有） | 不动 |
+| `.nav-link` | `33.6px` | `40px`（`--ctrl-h-md`） | 侧栏点击区按控件基准给足，不复制原生的紧凑内边距 |
+
+**判定规则**（`scripts/consistency-check.mjs` 的 `badH` 项）：显式高度必须落在 4px 网格；新控件只能取 `32 / 40 / 48` 三档；`<= 720px` 一律 `48px`。
+
+### 2.4 字号与行高音阶（六档整数）
 
 全站禁用小于 `12px` 的可读文字，禁用非整数（11.5 / 12.5 / 12.8 / 13.5px），禁用随视口漂移的 `clamp()` 标题字号。
 
@@ -64,7 +82,7 @@
 
 > 数字类指标与表格编码统一开启 `font-variant-numeric: tabular-nums`，避免刷新跳动。
 
-### 2.4 圆角四档
+### 2.5 圆角四档
 
 以 `999px`（`--radius-full`）统一表达胶囊与正圆，**禁止再写 `50%`**，消除两套圆形计算值。
 
@@ -75,7 +93,7 @@
 | `--radius-lg` | `12px` | 主容器与浮层：`.card`、`.kpi-card`、`.app-health-strip`、`.modal-demo`、`.dd-menu`、`.app-select-content`、`.app-search-panel`、用户端 `.uapp-hero`/`.uapp-card` |
 | `--radius-full` | `999px` | 胶囊与正圆：`.badge`、`.tag`、`.kpi-pill`、`.avatar`、`.workspace-avatar`、`.uapp-avatar`、`.uapp-top-link`、`.uapp-status`、`.switch .track`、`.progress`、`.app-card-tabs button`、状态圆点 |
 
-### 2.5 卡片内边距（两档）
+### 2.6 卡片内边距（两档）
 
 | 令牌 | 像素值 | 适用容器 |
 |---|---:|---|
@@ -84,7 +102,7 @@
 
 > 显式切换到紧凑密度（`html[data-density="compact"]`）时，桌面 `.card` 按契约收缩为 `14px`，行高 `48px → 40px`。
 
-### 2.6 外壳与容器尺寸
+### 2.7 外壳与容器尺寸
 
 - 管理台侧栏：`--sidebar-w: 240px`（平板 `721–1100px` 收窄为 `--sidebar-w-rail: 68px`；移动 `<= 720px` 抽屉化）
 - 管理台顶栏：`--topbar-h: 52px`（桌面）、`48px`（移动 `<= 720px`）
@@ -97,10 +115,10 @@
 ## 3. 基础组件规格（`ui/src/components/ui/`）
 
 1. **Button / BusyButton**
-   - 默认 `md`（`36px`）、紧凑 `sm`（`32px`）、大号 `lg`（`44px`）、图标 `icon`（方框与档位同高）；`<= 720px` 统一 `44px`。
+   - 默认 `md`（`40px`）、紧凑 `sm`（`32px`）、大号 `lg`（`48px`）、图标 `icon`（方框与档位同高）；`<= 720px` 统一 `48px`。
    - **交互态**：`hover` 仅动底色与边框；`focus-visible` 统一 `2px solid var(--primary)` + `2px` 外偏；`disabled` 统一 `opacity: 0.45; cursor: not-allowed`（与全站 e2e 禁用降级契约一致）；`danger` 浅色走 `color-mix(in srgb, var(--danger) 75%, var(--t-base))` 保 WCAG AA，暗色走 `var(--danger)` 配 `var(--t-inverse)`。
 2. **Input / Select / TextArea / FilterField / Switch / Checkbox**
-   - 单行输入与原生/Radix 下拉统一 `36px`（桌面）/ `44px`（移动与用户端），`--radius-md`，`14px` 正文字号。
+   - 单行输入与原生/Radix 下拉统一 `40px`（桌面）/ `48px`（移动与用户端），`--radius-md`，`14px` 正文字号。
    - 聚焦态统一 `border-color: var(--primary)` + `box-shadow: 0 0 0 3px var(--primary-ring)`；错误态统一 `border-color: var(--danger)` + `12px` 错误提示。
    - 字段壳（`FieldShell` / `FilterField`）间距 `--space-1`（`4px`），标签与帮助文字统一 `12px`。
 3. **Badge / Tag**
@@ -112,10 +130,10 @@
    - 普通内联 `Alert` 采用 `12px 16px` 内边距与 `8px` 圆角；顶部系统横幅（`.app-alert-block` / `.app-announcement-banner`）采用 `8px 12px` 单行流式排布，避免多行横幅挤掉首屏核心区。
 6. **DataTable / SelectionBar / Pager**
    - 表头 `th` 统一 `12px`、行体 `td` 统一 `14px`、等宽编号/时间 `.data-cell-mono` 统一 `12px`。
-   - 行高 `48px`（紧凑 `40px`），窄屏由 `.table-scroll` 内部横向滚动，页面本身零横向溢出。
-   - 分页按钮 `.pager-btn` 桌面 `32px` / 移动 `44px`，圆角 `8px`。
+   - 行高 `48px`（紧凑 `40px`），表头竖向内边距取原生 `10px / 12px`（实测 `39px`），窄屏由 `.table-scroll` 内部横向滚动，页面本身零横向溢出。
+   - 分页按钮 `.pager-btn` 桌面 `32px` / 移动 `48px`，圆角 `8px`。
 7. **Tabs / Menu / Modal / Drawer / Hint**
-   - 浮层统一 `--radius-lg`（`12px`）+ `var(--shadow-lg)` + `1px solid var(--border)`；菜单项与下拉项桌面 `36px`、圆角 `6px`。
+   - 浮层统一 `--radius-lg`（`12px`）+ `var(--shadow-lg)` + `1px solid var(--border)`；菜单项与下拉项桌面 `40px`、圆角 `6px`。
    - 弹窗与抽屉头/体/脚内边距统一 `16px`，标题 `16px`，正文 `14px`。
 
 ---
@@ -141,13 +159,13 @@
 | 核心功能区顶部位置 | `<= 300px` | `<= 260px` | 首屏可见 |
 | 页面总长 | 紧凑无大段空洞 | 列表页 `<= 2.2` 屏；总览 `<= 2.6` 屏；用户端主页 `<= 1.6` 屏 | 零横向溢出 |
 | 横向溢出 `scrollWidth - clientWidth` | `0px` | `0px` | `0px` |
-| 可点控件最小尺寸 | 同类统一 `32 / 36 / 44px` | `>= 44×44px` | `>= 44×44px` |
+| 可点控件最小尺寸 | 同类统一 `32 / 40 / 48px` | `>= 44×44px` | `>= 44×44px` |
 
 ### 4.3 基准页布局决策
 
 - **总览（`/`）**：压缩顶栏、横幅与页头后，4 张 KPI 卡直接落于首屏上半区；中段两栏（容量体检 + 拥挤度）与 30 天趋势/失败明细收紧图表与内边距；底部系统健康与审计状态条用 `12px 16px` 沉底。移动 `390×844` 下 KPI 保持 2×2 网格、图表降高至 `152/168px`、失败明细堆叠展示，整页控制在 `2.2` 屏以内。
-- **账号（`/accounts`）**：页头主按钮与只读提示垂直居中对齐；卡内待审提示条与筛选栏紧凑排布（桌面全部控件精确 `36px` 基线对齐，移动搜索通栏 + 状态/学校 2 列并排 + 含已删除 44px 行）；桌面保持 48px 行高数据表，移动（`<= 720px`）自动转为 `.app-mobile-cards` 行卡式（每行一卡：姓名/手机/状态/元数据 + 44px 常驻操作按钮区，无需横滑）。桌面操作列只留一条状态主操作（待审→评审、正常→暂停、已暂停→恢复、驳回/凭据异常→验证），其余写动作收进「更多操作」菜单并逐条带置灰原因；置灰说明不再挂行内，改为表下 `.app-table-deny-bar` 汇总条（行级 `title` 同步可读），1440/1280 下表格零横向滚动。
-- **用户端主页（`/app`）**：共享管理端纸面卡（`12px` 圆角、`16px` 内边距、统一边框阴影）与 6 档字号音阶（`12/14/16/20/28px`），全部交互按钮统一 `44px` 触控高度；桌面采用非对称双栏（左：今日 Hero + 近 7 天条，右：账号身份卡），移动单列紧凑直出，总长约 `1.2` 屏。
+- **账号（`/accounts`）**：页头主按钮与只读提示垂直居中对齐；卡内待审提示条与筛选栏紧凑排布（桌面全部控件精确 `40px` 基线对齐，移动搜索通栏 + 状态/学校 2 列并排 + 含已删除 48px 行）；桌面保持 48px 行高数据表，移动（`<= 720px`）自动转为 `.app-mobile-cards` 行卡式（每行一卡：姓名/手机/状态/元数据 + 48px 常驻操作按钮区，无需横滑）。桌面操作列只留一条状态主操作（待审→评审、正常→暂停、已暂停→恢复、驳回/凭据异常→验证），其余写动作收进「更多操作」菜单并逐条带置灰原因；置灰说明不再挂行内，改为表下 `.app-table-deny-bar` 汇总条（行级 `title` 同步可读），1440/1280 下表格零横向滚动。
+- **用户端主页（`/app`）**：共享管理端纸面卡（`12px` 圆角、`16px` 内边距、统一边框阴影）与 6 档字号音阶（`12/14/16/20/28px`），全部交互按钮统一 `48px` 触控高度；桌面采用非对称双栏（左：今日 Hero + 近 7 天条，右：账号身份卡），移动单列紧凑直出，总长约 `1.2` 屏。
 
 ### 4.4 第 2 期管理端全页面骨架差异表
 
@@ -155,12 +173,12 @@
 
 | 页面 | 路由 | 桌面列数 / 主体结构 | 筛选栏 | 移动端（`<= 720px`）降级形态 |
 |---|---|---|---|---|
-| 待办 | `/queue` | 5 格顶部遥测条 + 三组独立分页队列卡（5 列栅格列表） | 每组自带分段切换 + 学校下拉 + 关键字搜索（36px/44px） | 遥测条 6 列双排（2+3）；队列行按 `@container (max-width: 760px)` 切为行卡式，操作键 44px 满行可达 |
-| 签到台账 | `/logs` | 双页签（`签到事件` / `运行巡检`）：5 格/4 格摘要 + 学校泳道 + 折叠历史检索表 | 历史检索展开后为业务日/状态/学校/检索 + 导出 CSV | 摘要 2 列网格；泳道任务行流式排布，44px `诊断` 键与 `暂停引擎` 首屏直达 |
-| 用户 | `/users` | 分组计数切换 + 8/9 列数据表（48px 行高） | 邮箱前缀 + 角色 + 状态 + 含已删除（`.app-filters`） | 搜索通栏 + 角色/状态双列；表格转 `.app-mobile-cards` 行卡式，邮箱加粗与 44px `管理` 键常驻 |
-| 学校 | `/schools` | 6 列数据表（48px 行高）+ 详情抽屉 | 无 | 表格转 `.app-mobile-cards` 行卡式，学校名/状态与 44px `更多` 键常驻，单屏直出 |
-| 审计日志 | `/audit` | 页头链状态结论 + 5 列语义表（48px 行高）+ 详情抽屉 | 动作 + 操作者 + 起止日期 + 清除（36px/44px） | 筛选单列堆叠（满足日期纵序契约）；表体 `.a-table-scroll` 内横滚，尾列 sticky 44px `详情` 键常驻视口 |
-| 账号设置 | `/settings` | 2 列顶卡（账号信息 + 修改密码）+ 全宽通知订阅 4×3 矩阵 + 全宽 SMTP 3 列网格 | 无 | 通知矩阵每类切为标题 + 3 渠道横排 44px 开关；SMTP 切为 2 列紧凑表单（320px 退为 1 列） |
+| 待办 | `/queue` | 5 格顶部遥测条 + 三组独立分页队列卡（5 列栅格列表） | 每组自带分段切换 + 学校下拉 + 关键字搜索（40px/48px） | 遥测条 6 列双排（2+3）；队列行按 `@container (max-width: 760px)` 切为行卡式，操作键 48px 满行可达 |
+| 签到台账 | `/logs` | 双页签（`签到事件` / `运行巡检`）：5 格/4 格摘要 + 学校泳道 + 折叠历史检索表 | 历史检索展开后为业务日/状态/学校/检索 + 导出 CSV | 摘要 2 列网格；泳道任务行流式排布，48px `诊断` 键与 `暂停引擎` 首屏直达 |
+| 用户 | `/users` | 分组计数切换 + 8/9 列数据表（48px 行高） | 邮箱前缀 + 角色 + 状态 + 含已删除（`.app-filters`） | 搜索通栏 + 角色/状态双列；表格转 `.app-mobile-cards` 行卡式，邮箱加粗与 48px `管理` 键常驻 |
+| 学校 | `/schools` | 6 列数据表（48px 行高）+ 详情抽屉 | 无 | 表格转 `.app-mobile-cards` 行卡式，学校名/状态与 48px `更多` 键常驻，单屏直出 |
+| 审计日志 | `/audit` | 页头链状态结论 + 5 列语义表（48px 行高）+ 详情抽屉 | 动作 + 操作者 + 起止日期 + 清除（40px/48px） | 筛选单列堆叠（满足日期纵序契约）；表体 `.a-table-scroll` 内横滚，尾列 sticky 48px `详情` 键常驻视口 |
+| 账号设置 | `/settings` | 2 列顶卡（账号信息 + 修改密码）+ 全宽通知订阅 4×3 矩阵 + 全宽 SMTP 3 列网格 | 无 | 通知矩阵每类切为标题 + 3 渠道横排 48px 开关；SMTP 切为 2 列紧凑表单（320px 退为 1 列） |
 | 系统设置 | `/system` | 6 锚链导航 + 6 分区（计划表 / 策略 3+1 卡 / 公告与渠道并排 / 名册双列 / 版本自检） | 计划分区带日期输入 + 重新发现 | 计划表转行卡式；策略成对字段/开关维持 2 列（320px 退 1 列）；名册与版本紧致堆叠 |
 | 组件画廊 | `/design` | 9 卡编排（按钮/表格/色板全宽，其余 6 卡两两配对无空洞） | 表格示例内置工具栏 | 表单与进度条 2 列排布（320px 退 1 列）；色板流式芯片排布；分页器自动折行零溢出 |
 
@@ -180,6 +198,8 @@
 | `/system` | `248px` | `3.09` | `216px` | `5.77`（六分区全展开；单分区 0.38–2.05 屏） | `0px` |
 | `/design` | `207px` | `2.95` | `201px` | `4.00`（`3375px`） | `0px` |
 
+> **高度对齐（§2.3）后同口径复测**（`scripts/consistency-check.mjs`，Showcase 构建，2026-11-23）：桌面 `/@ 1.77`、`/accounts 1.03`、`/users 1.00`、`/schools 1.00`、`/queue 1.12`、`/logs 1.19`、`/audit 1.00`、`/settings 1.79`、`/system 2.90`；移动 `390×844` 依次 `2.41 / 2.23 / 1.60 / 1.00 / 1.91 / 1.48 / 1.43 / 2.19 / 5.91`；18 行 `badH` 全 0，9 视口横向溢出仍 `0px`。
+
 ---
 
 ## 5. 用户端与门户规范（第 3 期收口）
@@ -192,26 +212,26 @@
 桌面 (>= 901px)：居中分栏舞台 .auth-stage（max-width: 984px，12px 圆角，纸面卡边框与阴影）
 ┌──────────────────────────────────┬──────────────────────────────────┐
 │ .auth-aside（品牌 + 天空画布）    │ .auth-main（--bg-card 表面）      │
-│  ├── 品牌标识 (32px, 8px 圆角)    │  ├── 顶栏：右侧主题开关 (36×36)   │
+│  ├── 品牌标识 (32px, 8px 圆角)    │  ├── 顶栏：右侧主题开关 (40×40)   │
 │  ├── H1 (28/36) + 导语 (14/20)    │  ├── 表单区 .auth-card            │
-│  ├── 能力清单 / 注册三步引导      │  │     ├── 登录/注册分段 (36px)   │
+│  ├── 能力清单 / 注册三步引导      │  │     ├── 登录/注册分段 (40px)   │
 │  └── 开源与加密脚注 (12/16)       │  │     ├── H2 (20/24) + 说明      │
-│                                  │  │     ├── 字段 (36px) + 主按钮   │
+│                                  │  │     ├── 字段 (40px) + 主按钮   │
 │                                  │  │     └── 切换提示 (32px 按钮)  │
 │                                  │  └── 页脚：版本键 (32px) + 链接   │
 └──────────────────────────────────┴──────────────────────────────────┘
 
 移动 (<= 900px，min-height: 100svh)：
-[ 顶栏：品牌标识 + 主题开关 (44×44) ]
-  └── 表单卡 .auth-card（12px 圆角、16px 内边距、所有控件 44px）
-        └── 沉底页脚（版本键 44px + 协议链接）
+[ 顶栏：品牌标识 + 主题开关 (48×48) ]
+  └── 表单卡 .auth-card（12px 圆角、16px 内边距、所有控件 48px）
+        └── 沉底页脚（版本键 48px + 协议链接）
 
 404（NotFoundPage）：
 [ .error-shell（min-height: 100svh）→ .error-main（max-width: 560px）→ .error-card（12px 圆角、16px 顶距） ]
   ├── 品牌徽标 (36×36, 8px 圆角)
   ├── 404 展示码（--text-display: 44px / 44px，禁止 96/160px）
   ├── 标题 (20/24) + 说明 (14/20)
-  └── 返回入口按钮（桌面 36px / 移动 44px）
+  └── 返回入口按钮（桌面 40px / 移动 48px）
 ```
 
 - **四页门户复用同一外壳 `AuthLayout`**：登录与注册共用双签面板；忘记密码与重置密码经 `PublicAuthPage` 复用同一 `AuthLayout`，视觉与状态反馈完全一致。
@@ -235,19 +255,19 @@
 | `/app/history` | `1120px` | 双栏 `1fr : 380px`（左：月历；右：当天明细，日期 `44px` 展示字） | 单列堆叠；`<=360px` 日格自适应去 `min-width` 保 `320px` 零溢出；总长 `1.00` 屏 |
 | `/app/settings` | `984px` | 等高双栏（左：偏好；右：账号与安全），DOM 与视觉同序 | 单列堆叠（偏好在前、账号与安全在后），`coreTop = 120px`，总长 `1.00` 屏 |
 | `/app/account` | `1120px`（`1024–1279px` 为 `984px`） | 通栏身份 Hero + 等宽双栏（左：资料/设备/照片；右：签到概览/控制） | 标题与返回同行；设备只读双列与工具键双列紧致排布，总长 `<= 1.49` 屏 |
-| `/app/account/new` | `1120px` + 宽弹窗 | 账号页 + `AccountWizard` 三步向导弹窗（`scrollBody`） | 同向导弹窗，全控件 `44px` |
-| `/app/settings/time-pref` | `984px` + 宽弹窗 | 设置页 + `TimePrefDialog` 横滑 5 分钟刻度尺（`44px` 档高） | 同弹窗，方向键/横滑可达，关闭归位 `/app/settings` |
-| `/app/settings/password` | `984px` + 标准弹窗 | 设置页 + `PasswordDialog`（实时策略校验 + 会话过期回跳 `/login`） | 同弹窗，全控件 `44px`，关闭归位 `/app/settings` |
+| `/app/account/new` | `1120px` + 宽弹窗 | 账号页 + `AccountWizard` 三步向导弹窗（`scrollBody`） | 同向导弹窗，全控件 `48px` |
+| `/app/settings/time-pref` | `984px` + 宽弹窗 | 设置页 + `TimePrefDialog` 横滑 5 分钟刻度尺（`48px` 档高） | 同弹窗，方向键/横滑可达，关闭归位 `/app/settings` |
+| `/app/settings/password` | `984px` + 标准弹窗 | 设置页 + `PasswordDialog`（实时策略校验 + 会话过期回跳 `/login`） | 同弹窗，全控件 `48px`，关闭归位 `/app/settings` |
 
 ### 5.3 门户与用户端令牌映射（桌面 vs 移动）
 
 | 控件类别 | 桌面（`>= 721px`） | 移动（`<= 720px`） | 圆角 | 字号 / 行高 |
 |---|---|---|---|---|
-| 顶栏图标键 / 头像 / 主题开关 / 导航胶囊 | `36px`（`--ctrl-h-md`） | `44px`（`--ctrl-h-lg`） | `8px` / `999px` | `14px / 20px` |
-| 标准按钮（`.btn` / `.uapp-button` / 分段签） | `36px`（`--ctrl-h-md`）；主提交 CTA 可取 `44px` | `44px`（`--ctrl-h-lg`） | `8px` / `6px` | `14px / 20px` |
-| 紧凑操作键 / 行内链接键 / 开关 / 页脚版本键 | `32px`（`--ctrl-h-sm`，`::after` 外扩至 `>=44px` 热区） | `44px`（`--ctrl-h-lg`） | `6px` / `8px` / `999px` | `12px / 16px` |
-| 双行列表行按钮 / 月历日格 / 时间片刻度 | `44px`（`--ctrl-h-lg`） | `44px`（`--ctrl-h-lg`） | `8px` / `6px` | `14px / 20px` + `12px / 16px` |
-| 文本 / 密码输入框（`.input` / `.uapp-input`） | `36px`（`--ctrl-h-md`） | `44px`（`--ctrl-h-lg`） | `8px`（`--radius-md`） | `14px / 20px` |
+| 顶栏图标键 / 头像 / 主题开关 / 导航胶囊 | `40px`（`--ctrl-h-md`） | `48px`（`--ctrl-h-lg`） | `8px` / `999px` | `14px / 20px` |
+| 标准按钮（`.btn` / `.uapp-button` / 分段签） | `40px`（`--ctrl-h-md`）；主提交 CTA 可取 `48px` | `48px`（`--ctrl-h-lg`） | `8px` / `6px` | `14px / 20px` |
+| 紧凑操作键 / 行内链接键 / 开关 / 页脚版本键 | `32px`（`--ctrl-h-sm`，`::after` 外扩至 `>=44px` 热区） | `48px`（`--ctrl-h-lg`） | `6px` / `8px` / `999px` | `12px / 16px` |
+| 双行列表行按钮 / 月历日格 / 时间片刻度 | `48px`（`--ctrl-h-lg`） | `48px`（`--ctrl-h-lg`） | `8px` / `6px` | `14px / 20px` + `12px / 16px` |
+| 文本 / 密码输入框（`.input` / `.uapp-input`） | `40px`（`--ctrl-h-md`） | `48px`（`--ctrl-h-lg`） | `8px`（`--radius-md`） | `14px / 20px` |
 | 卡片与门户舞台表面 | 顶内距 `16px`（`--card-pad`） | 顶内距 `16px`（`--card-pad`） | `12px`（`--radius-lg`） | 标题 `16/24` 或 `20/24` |
 | 键盘焦点环（`:focus-visible`） | `2px solid var(--primary)` + `0 0 0 3px var(--primary-soft)` | 同桌面 | 继承控件 | — |
 | 禁用态（`:disabled`） | `opacity: 0.45; cursor: not-allowed` | 同桌面 | — | — |
@@ -315,18 +335,20 @@ Adminator 的原生分工是**价格/数量右、日期/编码左**。逐表落�
 
 | 页面类型 | 预算 | 当前 |
 |---|---:|---:|
-| 列表（accounts/users/schools/audit） | ≤ 1.15 | 1.00–1.02 |
-| 工作台（queue/logs） | ≤ 1.25 | 1.11–1.18 |
-| 看板（dashboard） | ≤ 1.76 | 1.76 |
-| 设置（settings） | ≤ 1.60 | 1.76（四卡 + 通知矩阵，超 0.16） |
-| 多分区（system） | ≤ 1.80 | 2.88（六分区，三处分区已内滚/三列化） |
-| 移动（390×844） | ≤ 2.60 | 列表 1.0–2.15、工作台 1.45–1.86、system 5.81（单列后撤销内滚，见下） |
+| 列表（accounts/users/schools/audit） | ≤ 1.15 | 1.00–1.03 |
+| 工作台（queue/logs） | ≤ 1.25 | 1.12–1.19 |
+| 看板（dashboard） | ≤ 1.80 | 1.77 |
+| 设置（settings） | ≤ 1.60 | 1.79（四卡 + 通知矩阵，超 0.19） |
+| 多分区（system） | ≤ 1.80 | 2.90（六分区，三处分区已内滚/三列化） |
+| 移动（390×844） | ≤ 2.60 | 列表 1.00–2.23、工作台 1.48–1.91、system 5.91（单列后撤销内滚，见下） |
 
 **例外说明**：`/system` 是六个独立分区的设置中枢（计划/策略/公告/渠道/名册/版本），
 每分区自身 ≤ 0.5 屏且页顶锚链可达；`.sys-roster-groups`（260px 内滚）、
 `#plans .table-scroll`（240px 内滚）已把名册与窗口表收紧；`<= 1024px` 两者一起撤销限高，
 窄屏交给页面滚动（行卡变高时内滚会切在行中间，触控也不该出现嵌套滚动）。要继续压到 1.8 屏只能折叠分区，
 与 `system-roster.spec.ts` 的「三组同时可见、零按钮」守卫冲突，故不做。
+
+**看板预算自 `1.76` 放宽至 `1.80`**：控件基准抬到 `40px` 后同一版式实测 `1.77` 屏，是 4px 网格对齐的确定性增量（§2.3 / §8），不是版式回退；再压只能删 KPI 卡或砍趋势图高度，均与首屏信息完备性冲突。
 
 ### 7.5 复跑与判定
 
@@ -356,6 +378,8 @@ node scripts/consistency-check.mjs     # 输出 /tmp/ui-consistency.json + 逐�
 
 | 文件 | 改动 |
 |---|---|
+| `ui/src/styles/scale.css` | 控件基准对齐 Adminator 原生实测（§2.3）：`--ctrl-h-md` 36→40、`--ctrl-h-lg` 44→48，新增表头内边距令牌 `--table-head-pad-top/bottom` 10/12px（`--table-row-h` 保持 48px） |
+| `ui/src/styles/app.css` + `features/{audit,queue,system}/*.css` | 表头内边距改用新令牌；注释里的 36/44 同步为 40/48 |
 | `ui/src/styles/app.css` | 操作尾列 `.app-col-action` 右贴；`.app-row-actions/.app-account-actions` flex-end；users 账号列右；失败表数值右（窄屏复位）；运行表数值/诊断右；抽屉 `dd` 右；三态 144/96px；筛选复选框 16px；`gap:10px`/`radius:10px` 归令牌 |
 | `ui/src/features/{accounts,user,schools,logs,system/plans}/` | 表头/单元格补 `app-col-action`；页头原因前置 |
 | `ui/src/features/queue/QueueView.tsx` | 待审 `[详情][驳回][通过]`、失败 `[详情][重试]` |

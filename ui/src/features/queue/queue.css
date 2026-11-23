@@ -9,8 +9,8 @@
  * `features/queue` 专属样式：仅消费 `scale.css` 与 `tokens.css` 变量，零颜色字面量（满足 token-gate）。
  *
  * **口径**
- * 尺寸严格遵循 Design System v1：控件 32/36/44px、字号 12/14/16/20/28px、圆角 6/8/12/999px、
- * 间距 4px 基准阶、禁用态透明度 0.45；窄屏全部可点控件抬至 44px 且零横向溢出。
+ * 尺寸严格遵循 Design System v1：控件 32/40/48px、字号 12/14/16/20/28px、圆角 6/8/12/999px、
+ * 间距 4px 基准阶、禁用态透明度 0.45；窄屏全部可点控件抬至 48px 且零横向溢出。
  */
 
 .q-page {
@@ -355,7 +355,7 @@
   gap: var(--space-2);
 }
 
-/* 组内筛选：桌面严格对齐 --ctrl-h-md（36px）与 14px 正文 */
+/* 组内筛选：桌面严格对齐 --ctrl-h-md（40px，Adminator 原生控件高度）与 14px 正文 */
 .q-card-controls .q-filter-select {
   width: auto;
   min-width: 140px;
@@ -455,7 +455,7 @@
   }
 }
 
-/* ---------- 组内分段控制器（桌面 32px / 移动 44px） ---------- */
+/* ---------- 组内分段控制器（桌面 32px / 移动 48px） ---------- */
 
 .q-seg {
   display: inline-flex;
@@ -527,7 +527,7 @@
   color: var(--primary);
 }
 
-/* ---------- 游标分页器（桌面 32px / 移动 44px） ---------- */
+/* ---------- 游标分页器（桌面 32px / 移动 48px） ---------- */
 
 .q-pager {
   display: inline-flex;

@@ -27,10 +27,14 @@
   --space-10: 40px;
   --space-12: 48px;
 
-  /* ---------- 控件高度三档（桌面紧凑 / 桌面标准 / 触控与用户端） ---------- */
+  /* ---------- 控件高度三档（桌面紧凑 / 桌面标准 / 触控与用户端） ----------
+   * 取值对齐 Adminator 原生组件实测高度（vendor CSS 真渲染量取，非估算）：
+   * .btn/.input 40.1 → 40（--ctrl-h-md）、.btn--lg 47.7 → 48（--ctrl-h-lg）、
+   * .btn--sm 31.8 → 32（--ctrl-h-sm，原生已是 4px 整数，不动）。
+   * 取整规则见 DESIGN-SYSTEM.md「高度契约」。 */
   --ctrl-h-sm: 32px;
-  --ctrl-h-md: 36px;
-  --ctrl-h-lg: 44px;
+  --ctrl-h-md: 40px;
+  --ctrl-h-lg: 48px;
   --ctrl-h-textarea: 96px;
 
   /* ---------- 圆角四档（999px 统一覆盖胶囊与正圆，不再混用 50%） ---------- */
@@ -71,9 +75,14 @@
   --section-gap: 16px;
   --grid-gap: 16px;
 
-  /* ---------- 数据表行高（标准 / 紧凑） ---------- */
+  /* ---------- 数据表行高与表头（标准 / 紧凑） ---------- */
+  /* 原生 .table tbody td 实测 43.1、表头 padding 10px 0 12px（高 38）；
+   * 行高仍留 48：单元格里带 32px 行内操作键 + 上下 8px 内边距时行天然就是 48，
+   * 且 accounts/schools 的行为用例把「行高 48px」钉成布局契约，不为对齐原生把行挤回 44。 */
   --table-row-h: 48px;
   --table-row-h-compact: 40px;
+  --table-head-pad-top: 10px;
+  --table-head-pad-bottom: 12px;
 
   /* ---------- 容器最大宽度 ---------- */
   --container-form: 560px;

@@ -2132,7 +2132,7 @@ body {
   color: var(--t-muted);
 }
 
-/* 字段：统一走 scale.css 控件高度（桌面 36px / 移动 44px），不再自定义 38/42px。 */
+/* 字段：统一走 scale.css 控件高度（桌面 40px / 移动 48px），不再自定义 38/42px。 */
 .auth-form {
   gap: var(--space-3);
 }
@@ -2160,7 +2160,7 @@ body {
   color: var(--t-inverse);
 }
 
-/* 密码显隐：桌面 36×36（::after 外扩至 44×44 触控热区），移动 44×44。 */
+/* 密码显隐：桌面 40×40（::after 外扩至 44×44 触控热区），移动 48×48。 */
 .input-affix {
   position: relative;
 }
@@ -2235,7 +2235,7 @@ body {
   cursor: pointer;
 }
 
-/* 页脚：事实与出口。版本按钮按 --ctrl-h-sm（桌面 32px / 移动 44px）对齐按钮阶。 */
+/* 页脚：事实与出口。版本按钮按 --ctrl-h-sm（桌面 32px / 移动 48px）对齐按钮阶。 */
 .auth-main-bottom {
   margin-top: var(--space-3);
   font-size: var(--text-xs);
@@ -3532,7 +3532,7 @@ html {
 
 .data-table thead th {
   color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
-  padding: var(--space-2) var(--space-3);
+  padding: var(--table-head-pad-top) var(--space-3) var(--table-head-pad-bottom);
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
   letter-spacing: 0.06em;
@@ -3540,7 +3540,7 @@ html {
 
 .table thead th {
   color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
-  padding: var(--space-2) var(--space-3);
+  padding: var(--table-head-pad-top) var(--space-3) var(--table-head-pad-bottom);
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
   letter-spacing: 0.06em;
@@ -4873,8 +4873,8 @@ html {
   }
 
   .d-topbar .app-density-btn {
-    width: 44px;
-    height: 44px;
+    width: var(--ctrl-h-lg);
+    height: var(--ctrl-h-lg);
   }
 }
 

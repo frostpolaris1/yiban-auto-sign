@@ -9,7 +9,7 @@
  * `features/system` 专属样式：仅消费 `scale.css` 与 `tokens.css` 变量，零颜色字面量（满足 token-gate）。
  *
  * **口径**
- * 严格遵循 Design System v1：控件 32/36/44px、字号 12/14/16px、圆角 6/8/12/999px、
+ * 严格遵循 Design System v1：控件 32/40/48px、字号 12/14/16px、圆角 6/8/12/999px、
  * 间距 4px 基准阶、禁用态透明度 0.45；宽屏合理双栏并行压缩总屏数，窄屏双列成对字段并排并保持 0 横向溢出。
  */
 
@@ -308,7 +308,7 @@
   gap: var(--space-2);
 }
 
-/* 单选/复选圆点与筛选栏同阶：UA 默认 13px 与 36px 控件基线错阶。 */
+/* 单选/复选圆点与筛选栏同阶：UA 默认 13px 与 40px 控件基线错阶。 */
 .sys-radio-group input[type='radio'],
 .sys-fieldset input[type='radio'],
 .sys-fieldset input[type='checkbox'] {
