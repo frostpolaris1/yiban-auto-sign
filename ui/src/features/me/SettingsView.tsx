@@ -159,6 +159,86 @@ export function SettingsView({
       ) : null}
 
       <div className="uapp-settings-grid">
+      <section className="uapp-card uapp-set-pref">
+        <h2 className="uapp-card-title">偏好</h2>
+        <div className="uapp-rows">
+          <button
+            type="button"
+            className="uapp-row"
+            onClick={(event) => {
+              setTimeReturnFocus(event.currentTarget)
+              setTimeOpen(true)
+            }}
+          >
+            <span className="uapp-row-icon">
+              <Icon name="clock" size={16} />
+            </span>
+            <span className="uapp-row-main">
+              <span className="uapp-row-label">签到时间</span>
+              <span className="uapp-row-sub">
+                {timePrefQuery.isError
+                  ? '读取失败'
+                  : pref?.window
+                    ? `有效窗口 ${pref.window.start}–${pref.window.end}`
+                    : '读取中…'}
+              </span>
+            </span>
+            <span className="uapp-row-value">
+              {timePrefQuery.isError ? '—' : offsetClock(pref)}
+            </span>
+            <span className="uapp-row-chevron">›</span>
+          </button>
+
+          <div className="uapp-row">
+            <span className="uapp-row-icon">
+              <Icon name="bell" size={16} />
+            </span>
+            <span className="uapp-row-main">
+              <span className="uapp-row-label">签到失败邮件</span>
+              <span className="uapp-row-sub">只发给你，不含易班口令</span>
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={mailEnabled}
+              aria-label="签到失败邮件"
+              className={mailEnabled ? 'uapp-switch is-on' : 'uapp-switch'}
+              disabled={mailQuery.isPending || mailMutation.isPending}
+              onClick={() => {
+                setInlineError(null)
+                mailMutation.mutate(!mailEnabled)
+              }}
+            >
+              <span className="uapp-switch-knob" />
+            </button>
+          </div>
+
+          <button
+            type="button"
+            className="uapp-row"
+            disabled={retentionQuery.isPending}
+            onClick={(event) => {
+              setRetentionReturnFocus(event.currentTarget)
+              setInlineError(null)
+              setRetentionError(null)
+              setRetentionOpen(true)
+            }}
+          >
+            <span className="uapp-row-icon">
+              <Icon name="shield" size={16} />
+            </span>
+            <span className="uapp-row-main">
+              <span className="uapp-row-label">照片保留期</span>
+              <span className="uapp-row-sub">过期照片自动删除</span>
+            </span>
+            <span className="uapp-row-value">{retention} 天</span>
+            <span className="uapp-row-chevron">›</span>
+          </button>
+
+        </div>
+        <p className="uapp-card-sub uapp-set-note">现场照片仅你和管理员可见，用于签到审核。</p>
+      </section>
+
       <section className="uapp-card uapp-set-account">
         <h2 className="uapp-card-title">账号与安全</h2>
         <div className="uapp-rows">
@@ -245,86 +325,6 @@ export function SettingsView({
             </span>
           </button>
         </div>
-      </section>
-
-      <section className="uapp-card uapp-set-pref">
-        <h2 className="uapp-card-title">偏好</h2>
-        <div className="uapp-rows">
-          <button
-            type="button"
-            className="uapp-row"
-            onClick={(event) => {
-              setTimeReturnFocus(event.currentTarget)
-              setTimeOpen(true)
-            }}
-          >
-            <span className="uapp-row-icon">
-              <Icon name="clock" size={16} />
-            </span>
-            <span className="uapp-row-main">
-              <span className="uapp-row-label">签到时间</span>
-              <span className="uapp-row-sub">
-                {timePrefQuery.isError
-                  ? '读取失败'
-                  : pref?.window
-                    ? `有效窗口 ${pref.window.start}–${pref.window.end}`
-                    : '读取中…'}
-              </span>
-            </span>
-            <span className="uapp-row-value">
-              {timePrefQuery.isError ? '—' : offsetClock(pref)}
-            </span>
-            <span className="uapp-row-chevron">›</span>
-          </button>
-
-          <div className="uapp-row">
-            <span className="uapp-row-icon">
-              <Icon name="bell" size={16} />
-            </span>
-            <span className="uapp-row-main">
-              <span className="uapp-row-label">签到失败邮件</span>
-              <span className="uapp-row-sub">只发给你，不含易班口令</span>
-            </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={mailEnabled}
-              aria-label="签到失败邮件"
-              className={mailEnabled ? 'uapp-switch is-on' : 'uapp-switch'}
-              disabled={mailQuery.isPending || mailMutation.isPending}
-              onClick={() => {
-                setInlineError(null)
-                mailMutation.mutate(!mailEnabled)
-              }}
-            >
-              <span className="uapp-switch-knob" />
-            </button>
-          </div>
-
-          <button
-            type="button"
-            className="uapp-row"
-            disabled={retentionQuery.isPending}
-            onClick={(event) => {
-              setRetentionReturnFocus(event.currentTarget)
-              setInlineError(null)
-              setRetentionError(null)
-              setRetentionOpen(true)
-            }}
-          >
-            <span className="uapp-row-icon">
-              <Icon name="shield" size={16} />
-            </span>
-            <span className="uapp-row-main">
-              <span className="uapp-row-label">照片保留期</span>
-              <span className="uapp-row-sub">过期照片自动删除</span>
-            </span>
-            <span className="uapp-row-value">{retention} 天</span>
-            <span className="uapp-row-chevron">›</span>
-          </button>
-
-        </div>
-        <p className="uapp-card-sub uapp-set-note">现场照片仅你和管理员可见，用于签到审核。</p>
       </section>
 
       </div>

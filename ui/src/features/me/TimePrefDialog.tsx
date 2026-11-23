@@ -167,7 +167,7 @@ export function TimePrefDialog({
         {prefQuery.isPending ? (
           <div aria-busy="true">
             <div className="uapp-skeleton" style={{ width: 120, height: 34 }} />
-            <div className="uapp-skeleton" style={{ width: '100%', height: 96, marginTop: 16, borderRadius: 12 }} />
+            <div className="uapp-skeleton" style={{ width: '100%', height: 96, marginTop: 16, borderRadius: 'var(--radius-lg)' }} />
           </div>
         ) : prefQuery.isError ? (
           <div className="uapp-alert-block">

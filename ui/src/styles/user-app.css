@@ -32,7 +32,7 @@
 }
 
 .uapp {
-  min-height: 100dvh;
+  min-height: 100svh;
   background: var(--bg-body);
   color: var(--t-base);
 }
@@ -46,9 +46,17 @@
   padding: env(safe-area-inset-top, 0px) var(--space-4) 0;
   display: flex;
   align-items: center;
-  gap: var(--space-4);
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
+}
+
+.uapp-bar-inner {
+  width: 100%;
+  max-width: var(--container-wide);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
 }
 
 .uapp-brand {
@@ -133,8 +141,8 @@
 .uapp-icon-btn {
   display: grid;
   place-items: center;
-  width: var(--ctrl-h-lg);
-  height: var(--ctrl-h-lg);
+  width: var(--ctrl-h-md);
+  height: var(--ctrl-h-md);
   padding: 0;
   border: 0;
   border-radius: var(--radius-md);
@@ -157,10 +165,10 @@
   position: relative;
   display: grid;
   place-items: center;
-  width: var(--ctrl-h-lg);
-  height: var(--ctrl-h-lg);
+  width: var(--ctrl-h-md);
+  height: var(--ctrl-h-md);
   padding: 0;
-  border: 4px solid transparent;
+  border: 0;
   border-radius: var(--radius-full);
   background: var(--primary-soft);
   color: var(--primary);
@@ -171,13 +179,13 @@
 .uapp-avatar::after {
   content: '';
   position: absolute;
-  inset: -5px;
+  inset: -4px;
 }
 
 /* ---------- 内容 ---------- */
 .uapp-main {
   padding-top: calc(var(--uapp-bar-h) + env(safe-area-inset-top, 0px));
-  padding-bottom: calc(var(--uapp-bottom-h) + env(safe-area-inset-bottom, 0px) + var(--space-4));
+  padding-bottom: calc(var(--uapp-bottom-h) + env(safe-area-inset-bottom, 0px) + var(--space-3));
 }
 
 .uapp-content {
@@ -339,9 +347,9 @@
   position: relative;
   display: inline-grid;
   place-items: center;
-  min-width: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-3)) calc(-1 * var(--space-2)) auto;
+  min-width: var(--ctrl-h-sm);
+  min-height: var(--ctrl-h-sm);
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-2)) calc(-1 * var(--space-1)) auto;
   padding: 0;
   border: 0;
   border-radius: var(--radius-md);
@@ -350,8 +358,8 @@
   font-size: var(--text-lg);
   line-height: 1;
   cursor: pointer;
-  width: var(--ctrl-h-lg);
-  height: var(--ctrl-h-lg);
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
 }
 
 /* Hero=纸面凸起的唯一主角（Admin KPI 卡直译）：
@@ -514,8 +522,9 @@
 }
 
 .uapp-hero-time--small {
-  font-size: 34px;
-  letter-spacing: -0.8px;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-2xl);
+  letter-spacing: -0.02em;
 }
 
 .uapp-hero-title {
@@ -641,10 +650,10 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  min-width: 44px;
-  min-height: var(--ctrl-h-lg);
-  gap: 4px;
-  margin-top: 12px;
+  min-width: var(--ctrl-h-md);
+  min-height: var(--ctrl-h-sm);
+  gap: var(--space-1);
+  margin-top: var(--space-3);
   padding: 0 var(--space-2);
   border: 0;
   border-radius: var(--radius-md);
@@ -654,13 +663,13 @@
   font-weight: 600;
   text-decoration: none;
   cursor: pointer;
-  height: var(--ctrl-h-lg);
+  height: var(--ctrl-h-sm);
   line-height: 1;
 }
 .uapp-hero-link::after {
   content: '';
   position: absolute;
-  inset: -4px;
+  inset: -6px -4px;
 }
 
 .uapp-hero-link--danger {
@@ -671,9 +680,9 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  margin: 18px -20px -20px;
-  padding: 14px 20px;
+  gap: var(--space-3);
+  margin: var(--space-4) calc(-1 * var(--card-pad)) calc(-1 * var(--card-pad));
+  padding: var(--space-3) var(--card-pad);
   border-top: 1px dashed var(--border);
 }
 
@@ -687,14 +696,14 @@
 
 /* 桌面右栏：一块面板、发丝分隔两段（下一次/帮助），不是三张同形卡。 */
 .uapp-rail-card {
-  padding: 4px 16px;
+  padding: var(--space-1) var(--card-pad);
   border: 1px solid var(--border-soft);
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
   background: var(--bg-card);
 }
 
 .uapp-rail-block {
-  padding: 14px 0;
+  padding: var(--space-3) 0;
   border-bottom: 1px solid var(--border-soft);
 }
 
@@ -705,33 +714,36 @@
 .uapp-rail-label {
   margin: 0;
   color: var(--t-muted);
-  font-size: 10px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-weight: 600;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.04em;
 }
 
 .uapp-rail-value {
-  margin: 6px 0 0;
+  margin: var(--space-1) 0 0;
   color: var(--t-base);
-  font-size: 14px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .uapp-rail-note {
-  margin: 4px 0 0;
+  margin: var(--space-1) 0 0;
   color: var(--t-muted);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-rail-link {
-  margin-top: 8px;
+  margin-top: var(--space-2);
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--primary);
-  font-size: 11.5px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-weight: 600;
   cursor: pointer;
 }
@@ -933,9 +945,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-  padding: 0 8px;
+  min-width: var(--ctrl-h-sm);
+  min-height: var(--ctrl-h-sm);
+  padding: 0 var(--space-2);
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
@@ -944,13 +956,13 @@
   font-weight: 600;
   text-decoration: none;
   cursor: pointer;
-  height: var(--ctrl-h-lg);
+  height: var(--ctrl-h-sm);
   line-height: var(--leading-xs);
 }
 .uapp-card-action::after {
   content: '';
   position: absolute;
-  inset: -4px;
+  inset: -6px -4px;
 }
 
 .uapp-rows {
@@ -962,14 +974,29 @@
 .uapp-kv-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 56px;
-  padding: 8px 0;
+  gap: var(--space-3);
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  padding: var(--space-1) 0;
   border-bottom: 1px solid var(--border-soft);
+  min-width: 0;
 }
 
 .uapp-row:last-child,
 .uapp-kv-row:last-child {
+  border-bottom: 0;
+}
+
+.uapp-kv-pair,
+.uapp-row-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.uapp-kv-pair .uapp-kv-row,
+.uapp-row-pair .uapp-row {
   border-bottom: 0;
 }
 
@@ -1001,19 +1028,21 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: var(--leading-xs);
+  white-space: nowrap;
 }
 
 .uapp-row-chevron {
   color: var(--uapp-ink-quiet);
-  font-size: 15px;
+  font-size: var(--text-base);
+  line-height: 1;
 }
 
 /* ---------- 表单 ---------- */
 .uapp-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 16px;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
 }
 
 .uapp-field-label {
@@ -1025,7 +1054,7 @@
 
 .uapp-input {
   width: 100%;
-  min-height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-md);
   padding: 0 var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -1033,7 +1062,7 @@
   color: var(--t-base);
   font-size: var(--text-base);
   outline: none;
-  height: var(--ctrl-h-lg);
+  height: var(--ctrl-h-md);
   line-height: var(--leading-base);
 }
 
@@ -1044,14 +1073,15 @@
 .uapp-input:focus {
   border-color: var(--primary);
   background: var(--bg-card);
-  box-shadow: 0 0 0 3px var(--primary-ring);
+  box-shadow: 0 0 0 3px var(--primary-soft);
 }
 
 /* 上面 .uapp-input 的 outline:none（0,1,0）会压过全局 :where() 兜底（0,0,1），
    键盘用户看不到焦点环，这里补回同等口径。 */
 .uapp-input:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
 }
 
 .uapp-input--error {
@@ -1111,7 +1141,7 @@
 }
 
 .uapp-button:disabled {
-  opacity: 0.55;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -1126,7 +1156,7 @@
 
 .uapp-seg-item {
   flex: 1;
-  min-height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-md);
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -1134,7 +1164,7 @@
   font-size: var(--text-xs);
   font-weight: 500;
   cursor: pointer;
-  height: var(--ctrl-h-lg);
+  height: var(--ctrl-h-md);
   line-height: var(--leading-xs);
 }
 
@@ -1157,10 +1187,10 @@
   position: fixed;
   inset: auto 0 0;
   z-index: 51;
-  max-height: 90dvh;
-  padding: 12px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+  max-height: 90svh;
+  padding: var(--space-3) var(--space-5) calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
-  border-radius: 24px 24px 0 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   background: var(--bg-card);
   box-shadow: var(--shadow-lg);
   overflow-y: auto;
@@ -1170,8 +1200,8 @@
 .uapp-sheet-grabber {
   width: 36px;
   height: 4px;
-  margin: 0 auto 16px;
-  border-radius: 999px;
+  margin: 0 auto var(--space-4);
+  border-radius: var(--radius-full);
   background: var(--border);
 }
 
@@ -1188,9 +1218,21 @@
 
 /* ---------- 骨架 ---------- */
 .uapp-skeleton {
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--bg-muted);
   animation: uapp-skeleton-fade 1.4s ease-in-out infinite alternate;
+}
+
+.uapp-skeleton-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.uapp-skeleton-row {
+  height: var(--ctrl-h-lg);
+  border-radius: var(--radius-md);
 }
 
 @keyframes uapp-skeleton-fade {
@@ -1293,15 +1335,18 @@
 
 button.uapp-row:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.45;
 }
 
 .uapp-row-sub {
-  margin-top: 2px;
+  margin-top: 0;
   color: var(--uapp-ink-sub);
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .uapp-row-label {
@@ -1310,6 +1355,9 @@ button.uapp-row:disabled {
   font-weight: 500;
   display: block;
   line-height: var(--leading-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .uapp-row--danger .uapp-row-label {
@@ -1324,20 +1372,20 @@ button.uapp-row:disabled {
 /* 步骤进度：圆点=未做/已做，长条=当前；形状+文字双载体。 */
 .uapp-steps {
   display: flex;
-  gap: 14px;
-  margin: 16px 0 20px;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 var(--space-5);
 }
 
 .uapp-step {
   display: inline-flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1);
 }
 
 .uapp-step-bar {
   width: 8px;
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--border);
   transition: width var(--uapp-base) var(--uapp-spring),
     background var(--uapp-fast) var(--uapp-ease-out);
@@ -1354,7 +1402,8 @@ button.uapp-row:disabled {
 
 .uapp-step-label {
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-weight: 500;
 }
 
@@ -1373,8 +1422,8 @@ button.uapp-row:disabled {
 
 .uapp-form-actions {
   display: flex;
-  gap: 12px;
-  margin-top: 18px;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
 }
 
 .uapp-form-actions .uapp-button--grow,
@@ -1386,25 +1435,27 @@ button.uapp-row:disabled {
   display: flex;
   flex-direction: column;
   max-height: 260px;
-  margin-top: 10px;
+  margin-top: var(--space-2);
   overflow-y: auto;
   border: 1px solid var(--border-soft);
-  border-radius: 14px;
+  border-radius: var(--radius-md);
 }
 
 .uapp-school-option {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--space-2);
   width: 100%;
-  min-height: 52px;
-  padding: 10px 14px;
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  padding: var(--space-1) var(--space-3);
   border: 0;
   border-bottom: 1px solid var(--border-soft);
   background: transparent;
   color: var(--t-base);
-  font-size: 12.5px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -1418,7 +1469,7 @@ button.uapp-row:disabled {
 .uapp-school-option-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   min-width: 0;
 }
 
@@ -1441,21 +1492,22 @@ button.uapp-row:disabled {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1);
   width: 100%;
-  min-height: 150px;
-  padding: 18px;
+  min-height: 140px;
+  padding: var(--card-pad);
   border: 1.5px dashed var(--border);
-  border-radius: 18px;
+  border-radius: var(--radius-lg);
   background: var(--bg-muted);
   color: var(--t-muted);
-  font-size: 12.5px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 500;
   cursor: pointer;
 }
 
 .uapp-photo-picker.has-photo {
-  min-height: 56px;
+  min-height: var(--ctrl-h-lg);
   border-style: solid;
   background: var(--primary-soft);
   color: var(--primary);
@@ -1464,15 +1516,15 @@ button.uapp-row:disabled {
 /* 定宽缩略图＋auto-fill：张数不足时不拉伸出空洞，节奏恒定。 */
 .uapp-photo-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 120px);
-  gap: 8px;
-  margin-top: 8px;
+  grid-template-columns: repeat(auto-fill, 96px);
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 .uapp-photo-tile {
   position: relative;
   aspect-ratio: 1;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--bg-muted);
 }
 
@@ -1480,7 +1532,7 @@ button.uapp-row:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
 }
 
 .uapp-photo-delete {
@@ -1489,8 +1541,8 @@ button.uapp-row:disabled {
   right: 0;
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
   padding: 0;
   border: 0;
   background: transparent;
@@ -1499,13 +1551,13 @@ button.uapp-row:disabled {
 .uapp-photo-delete-pill {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-card);
   color: var(--uapp-danger-ink);
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1;
   box-shadow: var(--shadow-sm);
 }
@@ -1519,13 +1571,13 @@ button.uapp-row:disabled {
 .uapp-photo-preview {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .uapp-photo-preview img {
   width: 56px;
   height: 56px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   object-fit: cover;
 }
 
@@ -1533,24 +1585,42 @@ button.uapp-row:disabled {
   display: grid;
   place-items: center;
   flex: none;
-  width: 44px;
-  height: 44px;
-  border-radius: 999px;
+  width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
+  border-radius: var(--radius-full);
   background: var(--success-soft);
   color: var(--success);
 }
 
 /* ---------- 账号页布局与入场 ---------- */
+.uapp-account-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.uapp-account-head .uapp-back-link {
+  margin-top: 0;
+}
+
+.uapp-person-value {
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+}
+
 .uapp-page--form .uapp-greeting {
-  margin-top: 8px;
-  font-size: 26px;
-  letter-spacing: -0.5px;
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+  letter-spacing: -0.02em;
 }
 
 .uapp-hero-stats {
-  margin: 6px 0 0;
+  margin: var(--space-1) 0 0;
   color: var(--uapp-ink-quiet);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1562,22 +1632,23 @@ button.uapp-row:disabled {
 .uapp-overview-today {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .uapp-overview .uapp-week {
-  margin-top: 12px;
+  margin-top: var(--space-2);
 }
 
 .uapp-overview-next {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 12px;
-  padding-top: 12px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border-soft);
   color: var(--t-base);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -1586,9 +1657,9 @@ button.uapp-row:disabled {
   color: var(--t-muted);
 }
 
-/* 模态内链接触达 ≥44（菲茨），页内小链接保持紧凑。 */
+/* 模态内链接与桌面按钮同源。 */
 .app-modal .uapp-hero-link {
-  min-height: 44px;
+  min-height: var(--ctrl-h-sm);
 }
 
 .uapp-overview-next .uapp-row-sub {
@@ -1598,13 +1669,13 @@ button.uapp-row:disabled {
 
 /* 向导模态内紧凑化：模态已是纸面，内部不再重复大留白。 */
 .app-modal .uapp-steps {
-  margin: 4px 0 14px;
+  margin: var(--space-1) 0 var(--space-3);
 }
 
 .app-modal .uapp-hero {
-  margin-top: 12px;
-  padding: 16px;
-  border-radius: 20px;
+  margin-top: var(--space-3);
+  padding: var(--card-pad);
+  border-radius: var(--radius-lg);
 }
 
 .app-modal .uapp-photo-picker {
@@ -1612,34 +1683,34 @@ button.uapp-row:disabled {
 }
 
 .uapp-wizard-head {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 
 .uapp-wizard-success {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 16px 0 8px;
+  gap: var(--space-3);
+  padding: var(--space-4) 0 var(--space-2);
   text-align: center;
 }
 
 .uapp-wizard-success .uapp-pending-check {
-  width: 52px;
-  height: 52px;
+  width: var(--space-12);
+  height: var(--space-12);
 }
 
 .uapp-wizard-success p {
   margin: 0;
   color: var(--t-muted);
-  font-size: 12px;
-  line-height: 1.7;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-card-head-side {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 button.uapp-row {
@@ -1650,7 +1721,7 @@ button.uapp-row {
   font: inherit;
   text-align: left;
   cursor: pointer;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   transition: background var(--uapp-fast) var(--uapp-ease-out);
 }
 
@@ -1694,8 +1765,8 @@ button.uapp-row:hover:not(:disabled) {
 .uapp-account-grid {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  margin-top: 20px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
 }
 .uapp-account-hero {
   margin-top: 0;
@@ -1703,7 +1774,7 @@ button.uapp-row:hover:not(:disabled) {
 .uapp-account-main {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-3);
   min-width: 0;
 }
 .uapp-account-main > .uapp-card + .uapp-card {
@@ -1713,7 +1784,7 @@ button.uapp-row:hover:not(:disabled) {
 .uapp-account-rail {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-3);
 }
 
 .uapp-account-rail .uapp-card + .uapp-card {
@@ -1733,10 +1804,14 @@ button.uapp-row:hover:not(:disabled) {
     max-width: var(--uapp-home-max);
   }
 
+  .uapp-page--settings {
+    max-width: var(--uapp-home-max);
+  }
+
   .uapp-account-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 20px;
+    gap: var(--space-4);
     align-items: start;
   }
   .uapp-account-hero {
@@ -1744,25 +1819,25 @@ button.uapp-row:hover:not(:disabled) {
   }
   .uapp-account-rail {
     position: sticky;
-    top: calc(var(--uapp-bar-h-wide) + 24px);
+    top: calc(var(--uapp-bar-h-wide) + var(--space-6));
   }
 }
 
 /* ---------- 历史 ---------- */
 .uapp-history-grid {
   display: block;
-  margin-top: 16px;
+  margin-top: var(--space-3);
 }
 
 .uapp-calendar {
-  padding: 16px 10px;
+  padding: var(--card-pad) var(--space-3);
 }
 
 .uapp-cal-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .uapp-cal-title {
@@ -1774,21 +1849,24 @@ button.uapp-row:hover:not(:disabled) {
 
 .uapp-cal-title strong {
   color: var(--t-base);
-  font-size: 14px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 600;
 }
 
 .uapp-cal-title span {
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-cal-weekdays {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  margin-top: 16px;
+  margin-top: var(--space-3);
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-weight: 500;
   text-align: center;
 }
@@ -1797,7 +1875,7 @@ button.uapp-row:hover:not(:disabled) {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 2px;
-  margin-top: 6px;
+  margin-top: var(--space-1);
 }
 
 .uapp-cal-cell.is-outside {
@@ -1813,8 +1891,9 @@ button.uapp-row:hover:not(:disabled) {
 /* 今日格自带的 outline（0,2,0）压过全局兜底（0,0,1）。焦点态要能区分
    「今天」和「键盘停在今天」两件事，所以焦点环改成外扩 2px。 */
 .uapp-cal-cell.is-today:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
 }
 
 .uapp-cal-cell:disabled,
@@ -1829,9 +1908,9 @@ button.uapp-row:hover:not(:disabled) {
 }
 
 .uapp-cal-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
   background: var(--success);
 }
 
@@ -1851,23 +1930,24 @@ button.uapp-row:hover:not(:disabled) {
 .uapp-cal-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
-  margin-top: 14px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-cal-legend > span {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
 }
 
 @media (min-width: 1024px) {
   .uapp-history-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 360px;
-    gap: 24px;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    gap: var(--space-5);
     align-items: start;
   }
 
@@ -1881,13 +1961,13 @@ button.uapp-row:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
-  padding-left: 4px;
+  gap: var(--space-1);
 }
 
 .uapp-history-head .uapp-greeting {
   margin: 0;
-  font-size: 32px;
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
 }
 
 .uapp-history-grid > * {
@@ -1908,15 +1988,17 @@ button.uapp-row:hover:not(:disabled) {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  min-width: 44px;
-  min-height: 48px;
+  gap: var(--space-1);
+  min-width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
   padding: 2px;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--t-base);
-  font-size: 13px;
+  font-size: var(--text-base);
+  line-height: 1;
   font-weight: 600;
   cursor: pointer;
   transition: transform var(--uapp-fast) var(--uapp-ease-out),
@@ -1937,8 +2019,8 @@ button.uapp-row:hover:not(:disabled) {
 
 /* 日详情仪表：大日期数字＋状态签，行沉底。 */
 .uapp-day-detail {
-  min-height: 220px;
-  margin-top: 12px;
+  min-height: 180px;
+  margin-top: var(--space-3);
   display: flex;
   flex-direction: column;
 }
@@ -1946,18 +2028,18 @@ button.uapp-row:hover:not(:disabled) {
 .uapp-day-hero {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding-bottom: 12px;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--border-soft);
 }
 
 .uapp-day-big {
   color: var(--t-base);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 40px;
-  font-weight: 600;
-  letter-spacing: -1px;
-  line-height: 1;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-2xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1969,7 +2051,7 @@ button.uapp-row:hover:not(:disabled) {
 .uapp-day-hero-side {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex: none;
 }
 
@@ -1978,14 +2060,15 @@ button.uapp-row:hover:not(:disabled) {
 }
 
 .uapp-day-detail .uapp-rows {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .uapp-history-grid :focus-visible,
 .uapp-history-head :focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-  border-radius: 6px;
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+  border-radius: var(--radius-sm);
 }
 
 /* ---------- 设置 modern（同主页语言） ---------- */
@@ -1993,18 +2076,19 @@ button.uapp-row:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 .uapp-settings-head .uapp-greeting {
   margin: 0;
-  font-size: 32px;
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
 }
 
 .uapp-settings-grid {
   display: grid;
-  gap: 16px;
-  margin-top: 20px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -2022,7 +2106,19 @@ button.uapp-row:hover:not(:disabled) {
 
 @media (min-width: 768px) {
   .uapp-calendar {
-    padding: 20px;
+    padding: var(--card-pad);
+  }
+
+  .uapp-day-big {
+    font-size: var(--text-display);
+    line-height: var(--leading-display);
+  }
+
+  .uapp-history-head .uapp-greeting,
+  .uapp-settings-head .uapp-greeting,
+  .uapp-page--form .uapp-greeting {
+    font-size: var(--text-2xl);
+    line-height: var(--leading-2xl);
   }
 
   .uapp-settings-grid {
@@ -2030,6 +2126,8 @@ button.uapp-row:hover:not(:disabled) {
     grid-template-areas:
       "pref account";
     align-items: stretch;
+    gap: var(--space-4);
+    margin-top: var(--space-4);
   }
 
   .uapp-settings-grid > section {
@@ -2051,9 +2149,9 @@ button.uapp-row:hover:not(:disabled) {
   }
 }
 
-/* 返回链接触达≥44。 */
+/* 返回链接与页面头部动作对齐。 */
 .uapp-page > .uapp-hero-link {
-  min-height: 44px;
+  min-height: var(--ctrl-h-sm);
   align-items: center;
 }
 
@@ -2068,23 +2166,24 @@ a.uapp-row:hover {
 
 /* 悬停遮罩圆角内缩，与卡片圆角语言一致，不出现方角满铺块。 */
 .uapp-settings-grid .uapp-row {
-  border-radius: 10px;
-  margin: 0 -8px;
-  padding: 8px;
+  border-radius: var(--radius-md);
+  margin: 0 calc(-1 * var(--space-2));
+  padding: var(--space-1) var(--space-2);
 }
 
 /* 纯说明降级为脚注，不与可操作行同级抢注意力。 */
 .uapp-set-note {
-  margin: 10px 0 0;
-  padding-top: 10px;
+  margin: var(--space-3) 0 0;
+  padding-top: var(--space-3);
   border-top: 1px solid var(--border-soft);
 }
 
 .uapp-settings-grid :focus-visible,
 .uapp-settings-head :focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-  border-radius: 6px;
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+  border-radius: var(--radius-sm);
 }
 
 /* ---------- 设置 ---------- */
@@ -2092,8 +2191,8 @@ a.uapp-row:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: var(--ctrl-h-lg);
+  gap: var(--space-2);
+  min-height: var(--ctrl-h-md);
   padding: 0 var(--space-4);
   border: 1px solid transparent;
   border-radius: var(--radius-md);
@@ -2103,21 +2202,21 @@ a.uapp-row:hover {
   transition: transform var(--uapp-fast) var(--uapp-ease-out),
     background var(--uapp-fast) var(--uapp-ease-out);
   text-decoration: none;
-  height: var(--ctrl-h-lg);
+  height: var(--ctrl-h-md);
   line-height: 1;
 }
 
-.uapp-switch.is-on {
+.uapp-switch.is-on::before {
   background: var(--primary);
 }
 
 .uapp-switch-knob {
-  position: absolute;
-  top: 3px;
+  position: relative;
+  z-index: 1;
   left: 3px;
   width: 18px;
   height: 18px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-card);
   transition: transform var(--uapp-base) var(--uapp-spring);
 }
@@ -2127,23 +2226,25 @@ a.uapp-row:hover {
 }
 
 .uapp-switch:disabled {
-  opacity: 0.55;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .uapp-retention-options {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .uapp-retention-option {
-  min-height: 44px;
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   color: var(--t-base);
-  font-size: 13px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 500;
   cursor: pointer;
 }
@@ -2157,12 +2258,12 @@ a.uapp-row:hover {
 /* ---------- 时间偏好 ---------- */
 .uapp-ruler {
   display: flex;
-  gap: 6px;
-  margin-top: 14px;
-  padding: 10px 14px;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   overflow-x: auto;
   scroll-snap-type: x proximity;
-  border-radius: 14px;
+  border-radius: var(--radius-md);
   background: var(--bg-muted);
   -webkit-mask-image: linear-gradient(
     to right,
@@ -2182,20 +2283,22 @@ a.uapp-row:hover {
 
 .uapp-ruler-tick {
   display: flex;
-  flex: 0 0 54px;
-  min-width: 54px;
+  flex: 0 0 56px;
+  min-width: 56px;
   scroll-snap-align: center;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  min-height: 64px;
-  padding: 6px 4px;
+  gap: 2px;
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  padding: 2px var(--space-1);
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: 1;
   font-weight: 500;
   cursor: pointer;
   transition: background var(--uapp-fast) var(--uapp-ease-out),
@@ -2217,9 +2320,9 @@ a.uapp-row:hover {
 }
 
 .uapp-ruler-bar {
-  width: 2px;
-  height: 14px;
-  border-radius: 999px;
+  width: 14px;
+  height: 3px;
+  border-radius: var(--radius-full);
   background: var(--border);
 }
 
@@ -2238,20 +2341,23 @@ a.uapp-row:hover {
 .uapp-ruler-label {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  line-height: var(--leading-xs);
 }
 
 .uapp-ruler-note {
   color: var(--uapp-ink-quiet);
-  font-size: 11px;
+  font-size: var(--text-xs);
+  line-height: 1;
 }
 
 .uapp-pw-meter {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  margin-top: 12px;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-3);
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-pw-meter .is-ok {
@@ -2270,6 +2376,8 @@ a.uapp-row:hover {
 
 .uapp-home-identity .uapp-card,
 .uapp-home-cal .uapp-card {
+  width: 100%;
+  flex: 1;
   height: 100%;
 }
 
@@ -2289,7 +2397,7 @@ a.uapp-row:hover {
 }
 
 @media (min-width: 1024px) {
-    .uapp-home-bento {
+  .uapp-home-bento {
     grid-template-columns: minmax(0, 1.72fr) minmax(296px, 1fr);
     grid-template-areas: "result identity"
       "cal identity";
@@ -2313,6 +2421,23 @@ a.uapp-row:hover {
 
   .uapp-home-cal {
     grid-area: cal;
+  }
+
+  .uapp-result-body {
+    margin: var(--space-5) 0;
+    gap: var(--space-5);
+  }
+
+  .uapp-result-foot {
+    padding-top: var(--space-4);
+  }
+
+  .uapp-identity-fields {
+    margin: var(--space-4) 0;
+  }
+
+  .uapp-identity-row {
+    padding: var(--space-3) var(--space-2);
   }
 }
 
@@ -2490,14 +2615,14 @@ a.uapp-row:hover {
 /* 脚行内链接去掉基础上 margin，垂直居中于框。 */
 .uapp-result-foot .uapp-hero-link {
   margin-top: 0;
-  min-height: 44px;
+  min-height: var(--ctrl-h-sm);
   align-items: center;
 }
 
 .uapp-result-side {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .uapp-result-side .uapp-window {
@@ -2524,10 +2649,11 @@ a.uapp-row:hover {
   gap: var(--space-2);
 }
 
-/* 身份卡：高频三字段，行 hover 有反馈，编辑触达≥44。 */
+/* 身份卡：高频三字段，行 hover 有反馈，编辑按钮随端型切换 36/44。 */
 .uapp-identity {
   display: flex;
   flex-direction: column;
+  width: 100%;
 }
 
 .uapp-identity-fields {
@@ -2575,8 +2701,8 @@ a.uapp-row:hover {
 .uapp-identity-edit {
   margin-top: 0;
   width: 100%;
-  min-height: var(--ctrl-h-lg);
-  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-md);
+  height: var(--ctrl-h-md);
 }
 
 .uapp-identity-sub-link {
@@ -2607,16 +2733,28 @@ a.uapp-row:hover {
   box-shadow: 0 0 0 2px var(--primary-ring);
 }
 
-/* 焦点可见性（vercel web-design-guidelines）：键盘环不被裁。 */
+/* 焦点可见性：统一 2px 主色轮廓 + 3px primary-soft 光环。 */
 .uapp-home-head :focus-visible {
   outline: var(--focus-ring-w) solid var(--primary);
   outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
   border-radius: var(--radius-sm);
 }
 
 .uapp-home-bento :focus-visible {
   outline: var(--focus-ring-w) solid var(--primary);
   outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+  border-radius: var(--radius-sm);
+}
+
+.uapp-bar :focus-visible,
+.uapp-bottom :focus-visible,
+.uapp-account-head :focus-visible,
+.uapp-account-grid :focus-visible {
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
   border-radius: var(--radius-sm);
 }
 
@@ -2626,8 +2764,8 @@ a.uapp-row:hover {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 12px;
+  gap: var(--space-4);
+  padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--border-soft);
 }
 
@@ -2652,19 +2790,19 @@ a.uapp-row:hover {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
-  margin-top: 14px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
 }
 
 .uapp-set-dialog .uapp-ruler {
-  margin-top: 10px;
+  margin-top: var(--space-2);
 }
 
 @media (max-width: 480px) {
   .uapp-set-dialog-readout {
     flex-direction: column;
     align-items: flex-start;
-    gap: 6px;
+    gap: var(--space-1);
   }
 
   .uapp-set-dialog-readout-notes {
@@ -2678,33 +2816,39 @@ a.uapp-row:hover {
   color: var(--uapp-danger-ink);
 }
 
-/* 开关使用透明伪元素扩热区到 ≥44px；照片删除按钮本身已是 44×44。 */
+/* 开关按钮盒按端型对齐 32px（桌面）/ 44px（移动），视觉轨道由 ::before 画 40×24 胶囊。 */
 .uapp-switch {
   position: relative;
+  display: inline-flex;
+  align-items: center;
   flex: none;
+  width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-sm);
+  padding: 0 2px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  cursor: pointer;
+}
+.uapp-switch::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 40px;
   height: 24px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--border);
-  cursor: pointer;
   transition: background var(--uapp-fast) var(--uapp-ease-out);
 }
 .uapp-switch::after {
   content: '';
   position: absolute;
-  inset: -10px -2px;
+  inset: -6px 0;
 }
 .uapp-switch:disabled::after {
   content: none;
-}
-
-/* 移动单列：偏好在前，破坏性行不占首屏顶部（桌面 grid-areas 不受影响）。 */
-@media (max-width: 1023px) {
-  .uapp-set-pref {
-    order: -1;
-  }
 }
 
 /* 深色表面顶部 1px 高光描边 + 自然微按压回弹（尊重减弱动效）。 */
@@ -2722,6 +2866,13 @@ a.uapp-row:hover {
   }
 }
 
+@media (min-width: 1280px) {
+  .uapp-page--home,
+  .uapp-page--account {
+    max-width: var(--container-wide);
+  }
+}
+
 @media (min-width: 768px) {
   .uapp-home-bento {
     gap: var(--space-4);
@@ -2735,9 +2886,84 @@ a.uapp-row:hover {
   }
 }
 
+@media (max-width: 720px) {
+  .uapp-icon-btn,
+  .uapp-avatar,
+  .uapp-announcement-close {
+    width: var(--ctrl-h-lg);
+    min-width: var(--ctrl-h-lg);
+    height: var(--ctrl-h-lg);
+    min-height: var(--ctrl-h-lg);
+  }
+
+  .uapp-button,
+  .uapp-input,
+  .uapp-seg-item,
+  .uapp-card-action,
+  .uapp-hero-link,
+  .uapp-identity-edit,
+  .uapp-switch {
+    height: var(--ctrl-h-lg);
+    min-height: var(--ctrl-h-lg);
+  }
+
+  .uapp-result-foot .uapp-hero-link,
+  .app-modal .uapp-hero-link,
+  .uapp-page > .uapp-hero-link {
+    min-height: var(--ctrl-h-lg);
+  }
+
+  .uapp-card-head {
+    margin-bottom: var(--space-2);
+  }
+
+  .uapp-account-grid {
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  .uapp-account-main,
+  .uapp-account-rail {
+    gap: var(--space-2);
+  }
+
+  .uapp-account-hero {
+    padding: var(--card-pad-sm) var(--card-pad);
+  }
+
+  .uapp-account-hero .uapp-hero-photo {
+    width: var(--space-10);
+    height: var(--space-10);
+  }
+
+  .uapp-photo-grid {
+    grid-template-columns: repeat(auto-fill, 84px);
+  }
+}
+
 @media (max-width: 360px) {
   .uapp-content {
     padding: var(--space-3);
+  }
+
+  .uapp-calendar {
+    padding: var(--card-pad) var(--space-2);
+  }
+
+  .uapp-cal-cell {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .uapp-kv-pair,
+  .uapp-row-pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .uapp-kv-pair .uapp-kv-row:first-child,
+  .uapp-row-pair .uapp-row:first-child {
+    border-bottom: 1px solid var(--border-soft);
   }
 
   .uapp-day-cell {

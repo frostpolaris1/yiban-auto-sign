@@ -562,7 +562,10 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
     return (
       <div className="uapp-page uapp-page--form" aria-busy="true">
         <div className="uapp-skeleton" style={{ width: 120, height: 34 }} />
-        <div className="uapp-skeleton" style={{ width: '100%', height: 200, marginTop: 20, borderRadius: 24 }} />
+        <div
+          className="uapp-skeleton"
+          style={{ width: '100%', height: 200, marginTop: 20, borderRadius: 'var(--radius-lg)' }}
+        />
         <AccountWizard
           key={wizardSession}
           open={wizardOpen}
@@ -643,10 +646,12 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
 
   return (
     <div className="uapp-page uapp-page--form uapp-page--account">
-      <Link className="uapp-hero-link uapp-back-link" to="/app">
-        ‹ 返回主页
-      </Link>
-      <h1 className="uapp-greeting">签到账号</h1>
+      <div className="uapp-account-head">
+        <h1 className="uapp-greeting">签到账号</h1>
+        <Link className="uapp-hero-link uapp-back-link" to="/app">
+          ‹ 返回主页
+        </Link>
+      </div>
 
       <div className="uapp-account-grid">
       <section
@@ -745,21 +750,23 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
           <span className="uapp-row-value">只读</span>
         </div>
         <div className="uapp-rows">
-          <div className="uapp-kv-row">
-            <span className="uapp-row-icon"><Icon name="camera" size={16} /></span>
-            <span className="uapp-row-main">
-              <span className="uapp-row-label">机型</span>
-              <span className="uapp-row-sub">{account.phone_model || '未知'}</span>
-            </span>
-          </div>
-          <div className="uapp-kv-row">
-            <span className="uapp-row-icon"><Icon name="shield" size={16} /></span>
-            <span className="uapp-row-main">
-              <span className="uapp-row-label">设备码</span>
-              <span className="uapp-row-sub">
-                {deviceMasked ?? '只能通过刷新设备读取'}
+          <div className="uapp-kv-pair">
+            <div className="uapp-kv-row">
+              <span className="uapp-row-icon"><Icon name="camera" size={16} /></span>
+              <span className="uapp-row-main">
+                <span className="uapp-row-label">机型</span>
+                <span className="uapp-row-sub">{account.phone_model || '未知'}</span>
               </span>
-            </span>
+            </div>
+            <div className="uapp-kv-row">
+              <span className="uapp-row-icon"><Icon name="shield" size={16} /></span>
+              <span className="uapp-row-main">
+                <span className="uapp-row-label">设备码</span>
+                <span className="uapp-row-sub">
+                  {deviceMasked ?? '只能通过刷新设备读取'}
+                </span>
+              </span>
+            </div>
           </div>
           <button
             type="button"
@@ -913,38 +920,40 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
               </span>
             </span>
           </button>
-          <button
-            type="button"
-            className="uapp-row"
-            disabled={isDeleted || verifyMutation.isPending}
-            onClick={(event) => {
-              setVerifyReturnFocus(event.currentTarget)
-              setActionError(null)
-              verifyMutation.mutate()
-            }}
-          >
-            <span className="uapp-row-icon"><Icon name="shield" size={16} /></span>
-            <span className="uapp-row-main">
-              <span className="uapp-row-label">验证易班凭据</span>
-              <span className="uapp-row-sub">只读验证，不修改账号</span>
-            </span>
-          </button>
-          <button
-            type="button"
-            className="uapp-row"
-            disabled={isDeleted || personMutation.isPending}
-            onClick={(event) => {
-              setPersonReturnFocus(event.currentTarget)
-              setActionError(null)
-              personMutation.mutate()
-            }}
-          >
-            <span className="uapp-row-icon"><Icon name="user" size={16} /></span>
-            <span className="uapp-row-main">
-              <span className="uapp-row-label">查看平台姓名</span>
-              <span className="uapp-row-sub">按需读取，不保存</span>
-            </span>
-          </button>
+          <div className="uapp-row-pair">
+            <button
+              type="button"
+              className="uapp-row"
+              disabled={isDeleted || verifyMutation.isPending}
+              onClick={(event) => {
+                setVerifyReturnFocus(event.currentTarget)
+                setActionError(null)
+                verifyMutation.mutate()
+              }}
+            >
+              <span className="uapp-row-icon"><Icon name="shield" size={16} /></span>
+              <span className="uapp-row-main">
+                <span className="uapp-row-label">验证易班凭据</span>
+                <span className="uapp-row-sub">只读验证，不修改账号</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="uapp-row"
+              disabled={isDeleted || personMutation.isPending}
+              onClick={(event) => {
+                setPersonReturnFocus(event.currentTarget)
+                setActionError(null)
+                personMutation.mutate()
+              }}
+            >
+              <span className="uapp-row-icon"><Icon name="user" size={16} /></span>
+              <span className="uapp-row-main">
+                <span className="uapp-row-label">查看平台姓名</span>
+                <span className="uapp-row-sub">按需读取，不保存</span>
+              </span>
+            </button>
+          </div>
           <div className="uapp-kv-row">
             <span className="uapp-row-icon"><Icon name="mapPin" size={16} /></span>
             <span className="uapp-row-main">
@@ -1069,7 +1078,7 @@ export function AccountView({ initialWizardOpen = false }: { initialWizardOpen?:
           </button>
         }
       >
-        <p className="uapp-hero-title" style={{ fontSize: 20 }}>
+        <p className="uapp-hero-title uapp-person-value">
           {personName && personName.trim() !== '' ? personName : '平台没有返回姓名'}
         </p>
       </Modal>

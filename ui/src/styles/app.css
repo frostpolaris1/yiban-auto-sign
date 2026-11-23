@@ -1575,19 +1575,37 @@ body {
 
 .app-auth-notice {
   width: 100%;
-  max-width: 400px;
-  margin: 0 auto 16px;
+  margin: 0 auto var(--space-3);
 }
 
-/* ---------- 公开认证页 ----------
- * 登录 / 注册 / 忘记密码 / 重置密码共用 AuthLayout。
- * 左栏白面 + 天空画布（SkyGradient，WebGL；失败静默退化）。
- * 表单卡补表面与边界；输入框边界抬到 1.4.11 的 3:1 附近。
- * 颜色只用 token 与 color-mix，不写字面量（token 门会红）。
+/* ---------- 公开认证页与 404 门户 ----------
+ * 登录 / 注册 / 忘记密码 / 重置密码共用 AuthLayout；404 共用同一表面与尺寸体系。
+ * 桌面（>=901px）收进 <=984px 居中分栏舞台（左：品牌与天空画布，右：表单卡），消除悬空留白；
+ * 移动（<=900px）隐去左栏、顶栏补品牌与主题开关，min-height: 100svh 保首屏与键盘安全。
+ * 字号/圆角/控件高度严格取自 scale.css；颜色只用 token 与 color-mix，不写字面量。
  */
-.auth-shell,
+.auth-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100svh;
+  background: var(--bg-body);
+}
+
+.auth-stage {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  min-height: 100svh;
+}
+
 .auth-main {
-  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 100svh;
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  background: var(--bg-body);
 }
 
 .auth-aside {
@@ -1596,6 +1614,7 @@ body {
   color: var(--t-base);
   border-right: 1px solid var(--border);
   background: var(--bg-card);
+  padding: var(--space-8);
 }
 .auth-aside::before,
 .auth-aside::after {
@@ -1702,37 +1721,44 @@ body {
 }
 
 .auth-brand .logo {
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-md);
   background: var(--primary);
+  color: var(--t-inverse);
   border: 0;
+  box-shadow: 0 0 0 3px var(--primary-soft);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
 .auth-aside-eyebrow,
 .auth-aside-footer {
   color: var(--t-base);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 /* 品牌名：由当前 sky 的 data-on-dark 取向决定浅/深字，并在浅 sky 下叠加顶部可读衬底，确保白昼云层也过 AA。 */
 .auth-brand .name {
   color: var(--t-base);
-  font-size: 12px;
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
 }
 :root[data-theme='dark'] .auth-brand .name {
   color: var(--t-base);
 }
 .auth-aside h1 {
   color: var(--t-base);
-  font-size: clamp(30px, 3.2vw, 40px);
-  line-height: 1.15;
-  letter-spacing: -0.025em;
-  margin: 0 0 14px;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-2xl);
+  letter-spacing: -0.02em;
+  margin: 0 0 var(--space-3);
 }
 .auth-aside .auth-aside-lead {
   color: var(--t-base);
-  font-size: 14px;
+  font-size: var(--text-base);
   max-width: 360px;
-  margin: 0 0 24px;
-  line-height: 1.6;
+  margin: 0 0 var(--space-5);
+  line-height: var(--leading-base);
 }
 
 .auth-aside-body {
@@ -1742,10 +1768,10 @@ body {
 .auth-aside-copy {
   grid-area: 1 / 1;
   min-width: 0;
-  transition: opacity 120ms linear;
+  transition: opacity var(--motion-fast) linear;
 }
 .auth-aside-copy[data-active='true'] {
-  transition: opacity 160ms ease-out 100ms;
+  transition: opacity var(--motion-fast) var(--ease-out) 80ms;
 }
 .auth-aside-copy:not([data-active='true']) {
   position: absolute;
@@ -1763,7 +1789,7 @@ body {
 .auth-points {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1771,9 +1797,9 @@ body {
 .auth-points li {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  font-size: 13px;
-  line-height: 1.5;
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   color: var(--t-base);
 }
 .auth-points li svg {
@@ -1786,7 +1812,7 @@ body {
 .auth-steps {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-3);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1794,7 +1820,7 @@ body {
 .auth-steps li {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: var(--space-3);
   color: var(--t-base);
 }
 .auth-step-no {
@@ -1803,10 +1829,10 @@ body {
   height: 24px;
   display: grid;
   place-items: center;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--primary) 14%, var(--bg-card));
   color: var(--primary);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 700;
   line-height: 1;
 }
@@ -1814,14 +1840,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
 }
 .auth-step-text b {
-  font-weight: 700;
+  font-weight: 600;
 }
 .auth-step-text span {
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: color-mix(in srgb, var(--t-base) 85%, var(--t-muted));
 }
 .auth-aside[data-on-dark="true"] .auth-step-text b {
@@ -1841,28 +1868,32 @@ body {
 
 /* 顶栏：窄屏补品牌；桌面只留主题开关，靠右。 */
 .auth-main-top {
-  min-height: 36px;
+  min-height: var(--ctrl-h-md);
   justify-content: flex-end;
 }
 .auth-mobile-brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-right: auto;
   color: var(--t-base);
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
   font-weight: 700;
 }
 .auth-mobile-brand .logo {
-  width: 30px;
-  height: 30px;
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
   display: grid;
   place-items: center;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--primary);
+  color: var(--t-inverse);
+  box-shadow: 0 0 0 3px var(--primary-soft);
 }
 .auth-mobile-brand .logo svg {
-  width: 17px;
-  height: 17px;
+  width: 18px;
+  height: 18px;
 }
 @media (min-width: 901px) {
   .auth-mobile-brand {
@@ -1871,16 +1902,18 @@ body {
 }
 .app-theme-toggle {
   position: relative;
-  width: 36px;
-  height: 36px;
+  width: var(--ctrl-h-md);
+  height: var(--ctrl-h-md);
   display: grid;
   place-items: center;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   color: var(--t-muted);
   cursor: pointer;
-  transition: background-color 160ms, color 160ms, border-color 160ms;
+  transition: background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
 }
 .app-theme-toggle::after {
   content: '';
@@ -1894,12 +1927,12 @@ body {
   }
 }
 
-/* 表单卡：有表面、有边界、有阴影，不再浮在背景上。 */
+/* 表单卡：与管理端/用户端共享同一纸面卡表面语言（12px 圆角、16px 顶距、统一阴影）。 */
 .auth-main-center {
   width: 100%;
-  max-width: 400px;
+  max-width: 420px;
   margin: auto;
-  padding: 16px 0;
+  padding: var(--space-2) 0;
 }
 .auth-main-center > .auth-card {
   max-width: none;
@@ -1908,27 +1941,33 @@ body {
 .auth-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 34px 30px;
-  box-shadow: none;
+  border-radius: var(--radius-lg);
+  padding: var(--card-pad);
+  box-shadow: var(--shadow-card);
 }
 
 .auth-mode-seg {
-  margin: 4px 0 20px;
+  margin: 0 0 var(--space-3);
+}
+.auth-mode-seg .uapp-seg-item {
+  height: var(--ctrl-h-md);
+  min-height: var(--ctrl-h-md);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
 }
 .auth-mode-viewport {
   display: grid;
   align-items: start;
   position: relative;
-  transition: height 220ms ease-out;
+  transition: height var(--motion-base) var(--ease-out);
 }
 .auth-mode-pane {
   grid-area: 1 / 1;
   min-width: 0;
-  transition: opacity 120ms linear;
+  transition: opacity var(--motion-fast) linear;
 }
 .auth-mode-pane[data-active='true'] {
-  transition: opacity 160ms ease-out 100ms;
+  transition: opacity var(--motion-fast) var(--ease-out) 80ms;
 }
 .auth-mode-pane:not([data-active='true']) {
   position: absolute;
@@ -1944,23 +1983,22 @@ body {
   }
 }
 .auth-card h2 {
-  margin: 0 0 6px;
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+  margin: 0 0 var(--space-1);
 }
 .auth-card .sub {
-  margin: 0 0 22px;
-  font-size: 13px;
-  line-height: 1.55;
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   color: var(--t-muted);
 }
 
-/* 字段：组间 16，标签行里的恢复入口保证 24px 点击区。 */
+/* 字段：统一走 scale.css 控件高度（桌面 36px / 移动 44px），不再自定义 38/42px。 */
 .auth-form {
-  gap: 16px;
+  gap: var(--space-3);
 }
-.auth-main .input {
-  min-height: 42px;
-}
-/* 只在默认态抬边界；聚焦与出错态交回 vendor 的 --primary / --danger 规则。 */
+/* 只在默认态抬边界；聚焦与出错态交回 --primary / --danger 规则。 */
 .auth-main .input:not(:focus):not(.is-invalid) {
   border-color: color-mix(in srgb, var(--t-muted) 75%, var(--border));
 }
@@ -1972,21 +2010,24 @@ body {
 }
 
 .auth-submit {
-  min-height: 44px;
-  margin-top: 4px;
+  width: 100%;
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  margin-top: var(--space-1);
+  padding: 0 var(--space-4);
   justify-content: center;
 }
-/* 暗色下 --primary 是浅蓝：白字只有 2.54:1。反色字 7.41:1，亮色不变。 */
+/* 暗色下 --primary 是浅蓝：白字对比不足，反色字保持 AA，亮色不变。 */
 .auth-main .btn--primary {
   color: var(--t-inverse);
 }
 
-/* 密码显隐：36×36 热区，图标用 --t-muted（--t-light 在浅底不足 3:1）。 */
+/* 密码显隐：桌面 36×36（::after 外扩至 44×44 触控热区），移动 44×44。 */
 .input-affix {
   position: relative;
 }
 .input-affix .input {
-  padding-right: 44px;
+  padding-right: var(--ctrl-h-lg);
 }
 .input-affix .affix-btn {
   position: absolute;
@@ -2002,7 +2043,8 @@ body {
   background: none;
   color: var(--t-muted);
   cursor: pointer;
-  transition: background-color 160ms, color 160ms;
+  transition: background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 .input-affix .affix-btn::after {
   content: '';
@@ -2023,10 +2065,10 @@ body {
 .app-caps-hint {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1);
   margin: 0;
-  font-size: 11.5px;
-  line-height: 1.45;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--t-muted);
 }
 .app-caps-hint svg {
@@ -2036,18 +2078,30 @@ body {
 
 /* 卡片内的导航与帮助：文字在 --bg-card 上，向正文提一档到 AA。 */
 .auth-switch-hint {
-  margin: 16px 0 0;
+  margin: var(--space-3) 0 0;
   text-align: center;
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: color-mix(in srgb, var(--t-muted) 45%, var(--t-base));
 }
+.auth-switch-hint button.app-inline-link {
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctrl-h-sm);
+  min-height: var(--ctrl-h-sm);
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
 
-/* 页脚：事实与出口。 */
+/* 页脚：事实与出口。版本按钮按 --ctrl-h-sm（桌面 32px / 移动 44px）对齐按钮阶。 */
 .auth-main-bottom {
-  margin-top: 20px;
-  font-size: 12px;
-  line-height: 1.5;
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   text-align: center;
   color: color-mix(in srgb, var(--t-muted) 75%, var(--t-base));
 }
@@ -2056,8 +2110,14 @@ body {
 }
 .app-auth-version {
   position: relative;
-  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--ctrl-h-sm);
+  min-height: var(--ctrl-h-sm);
+  padding: 0 var(--space-2);
   border: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
   font: inherit;
   font-weight: 600;
@@ -2067,33 +2127,35 @@ body {
 .app-auth-version::after {
   content: '';
   position: absolute;
-  inset: -12px -4px;
+  inset: -6px -4px;
 }
 .auth-main .app-auth-version:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
 }
 .app-auth-links {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  margin-top: 6px;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
 }
 .app-auth-links a {
   position: relative;
   display: inline-flex;
   align-items: center;
-  min-height: 28px;
-  padding: 2px 4px;
+  min-height: var(--ctrl-h-sm);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
   color: var(--primary);
   font-weight: 600;
 }
 .app-auth-links a::after {
   content: '';
   position: absolute;
-  inset: -8px -4px;
+  inset: -6px -4px;
 }
 
 /* 触达扩区：伪元素必须锚在链接自身。缺 position 时会以最近的定位祖先
@@ -2110,19 +2172,19 @@ body {
 .auth-switch-hint button::after {
   content: '';
   position: absolute;
-  inset: -10px -4px;
+  inset: -6px -4px;
 }
 
 /* Skip link：桌面/移动键盘首按 Tab 出现，跳转主体内容。 */
 .uapp-skip {
   position: fixed;
   top: -80px;
-  left: 16px;
+  left: var(--space-4);
   z-index: 90;
   display: inline-flex;
   align-items: center;
   min-height: var(--ctrl-h-lg);
-  padding: 8px 16px;
+  padding: var(--space-2) var(--space-4);
   border-radius: var(--radius-md);
   background: var(--primary);
   color: var(--t-inverse);
@@ -2130,13 +2192,14 @@ body {
   font-weight: 600;
   text-decoration: none;
   box-shadow: var(--shadow-lg);
-  transition: top 140ms ease-out;
+  transition: top var(--motion-fast) var(--ease-out);
   line-height: var(--leading-base);
 }
 .uapp-skip:focus-visible {
-  top: 12px;
-  outline: 2px solid var(--bg-card);
-  outline-offset: 2px;
+  top: var(--space-3);
+  outline: var(--focus-ring-w) solid var(--bg-card);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
 }
 /* 对比度复测：裸 --t-muted 对 --bg-card 仅 4.31，88% 混基色后 4.91 达标（深色主题本就达标）。 */
 .app-auth-links span {
@@ -2154,78 +2217,164 @@ body {
 .app-changelog-text {
   margin: 0;
   font-family: inherit;
-  font-size: 12.5px;
-  line-height: 1.7;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--t-base);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-/* 键盘焦点：vendor 只给链接一层软阴影，按钮没有可见环。 */
+/* 键盘焦点：统一 2px 主色轮廓 + 3px primary-soft 光环。 */
 .auth-main .input:focus-visible,
 .auth-main .btn:focus-visible,
 .auth-main .affix-btn:focus-visible,
 .auth-main .app-theme-toggle:focus-visible,
 .auth-main .auth-switch-hint a:focus-visible,
 .auth-main .auth-switch-hint button:focus-visible,
-.auth-main .app-auth-links a:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
+.auth-main .app-auth-links a:focus-visible,
+.auth-main .uapp-seg-item:focus-visible,
+.error-card .btn:focus-visible {
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+/* ---------- 404 门户页（与认证页共享纸面语言与 6 档字号/4 档圆角） ---------- */
+.error-shell {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6) var(--space-4) 16vh;
+  background: var(--bg-body);
+}
+.error-shell::before,
+.error-shell::after {
+  display: none;
+}
+.error-main {
+  width: 100%;
+  max-width: var(--container-form);
+  margin: 0 auto;
+}
+.error-card {
+  padding: var(--card-pad) var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+  max-width: none;
+  text-align: center;
+}
+.error-brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--space-3);
+}
+.error-brand-logo {
+  display: grid;
+  place-items: center;
+  width: var(--ctrl-h-md);
+  height: var(--ctrl-h-md);
+  border-radius: var(--radius-md);
+  background: var(--primary);
+  color: var(--t-inverse);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.error-brand-logo svg {
+  width: 18px;
+  height: 18px;
+}
+.error-code {
+  font-size: var(--text-display);
+  line-height: var(--leading-display);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  margin: 0 0 var(--space-2);
+}
+.error-title {
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+  margin: 0 0 var(--space-2);
+}
+.error-sub {
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+  margin: 0 auto var(--space-5);
+}
+.error-actions {
+  gap: var(--space-3);
 }
 
 @media (min-width: 901px) {
   .auth-shell {
-    height: 100dvh;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    place-items: center;
+    padding: var(--space-6) var(--space-6) 8vh;
+  }
+  .auth-stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    width: 100%;
+    max-width: var(--container-home);
+    min-height: 540px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg-card);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
   }
   .auth-main {
-    height: 100%;
+    height: auto;
     min-height: 0;
     overflow: hidden;
-    padding: 16px 40px;
+    padding: var(--space-4) var(--space-6);
+    background: var(--bg-card);
   }
   .auth-aside {
-    padding: 32px 48px;
+    padding: var(--space-8);
   }
   .auth-main-center {
-    padding: 8px 0;
+    max-width: none;
+    padding: var(--space-2) 0;
   }
   .auth-card {
-    padding: 24px 28px;
+    padding: var(--card-pad) var(--space-4);
+    border: 0;
+    box-shadow: none;
   }
   .auth-mode-seg {
-    margin: 0 0 12px;
+    margin: 0 0 var(--space-3);
   }
   .auth-card h2 {
-    margin: 0 0 4px;
+    margin: 0 0 var(--space-1);
   }
   .auth-card .sub {
-    margin: 0 0 12px;
+    margin: 0 0 var(--space-3);
   }
   .auth-form {
-    gap: 10px;
-  }
-  .auth-main .input {
-    min-height: 38px;
+    gap: var(--space-3);
   }
   .auth-submit {
-    min-height: 44px;
-    margin-top: 2px;
+    margin-top: var(--space-1);
   }
   .auth-switch-hint {
-    margin: 12px 0 0;
+    margin: var(--space-3) 0 0;
   }
   .auth-main-bottom {
-    margin-top: 12px;
+    margin-top: var(--space-2);
   }
 }
 
 @media (max-width: 900px) {
   .auth-main {
     justify-content: flex-start;
+    padding: var(--space-2) var(--space-4) var(--space-3);
   }
   .auth-main-center {
     margin: 0 auto;
-    padding: 12px 0;
+    padding: var(--space-2) 0;
   }
   .auth-main-bottom {
     margin-top: auto;
@@ -2234,8 +2383,8 @@ body {
     scroll-margin-top: 72px;
   }
   .auth-card {
-    padding: 24px 20px;
-    border-radius: 14px;
+    padding: var(--card-pad);
+    border-radius: var(--radius-lg);
   }
 }
 
@@ -4626,15 +4775,15 @@ html[data-density="compact"] .card {
 .pw-seg {
   flex: 1;
   height: 4px;
-  border-radius: 2px;
+  border-radius: var(--radius-full);
   background: var(--border);
-  transition: background-color 160ms ease;
+  transition: background-color var(--motion-fast) var(--ease-out);
 }
 .pw-word {
   min-width: 2.6em;
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 700;
-  line-height: 1.4;
+  line-height: var(--leading-xs);
   text-align: right;
   color: var(--t-muted);
 }
@@ -4671,20 +4820,22 @@ html[data-density="compact"] .card {
 .pw-reqs {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: var(--space-1);
 }
 .pw-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-body);
-  font-size: 11.5px;
-  line-height: 1.5;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: color-mix(in srgb, var(--t-muted) 80%, var(--t-base));
-  transition: color 160ms, background-color 160ms, border-color 160ms;
+  transition: color var(--motion-fast) var(--ease-out),
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
 }
 .pw-chip svg {
   flex-shrink: 0;
@@ -4736,12 +4887,12 @@ html[data-density="compact"] .card {
 
 .app-skeleton-lines {
   display: grid;
-  gap: 10px;
-  margin-top: 18px;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
 }
 .app-skeleton-lines span {
-  height: 42px;
-  border-radius: 8px;
+  height: var(--ctrl-h-md);
+  border-radius: var(--radius-md);
   background: var(--bg-muted);
 }
 
@@ -4936,6 +5087,49 @@ html[data-density="compact"] .card {
   .input-affix .affix-btn {
     width: var(--ctrl-h-lg);
     height: var(--ctrl-h-lg);
+  }
+
+  .app-theme-toggle {
+    width: var(--ctrl-h-lg);
+    height: var(--ctrl-h-lg);
+  }
+
+  .auth-main-top {
+    min-height: var(--ctrl-h-lg);
+  }
+
+  .auth-mode-seg .uapp-seg-item {
+    height: var(--ctrl-h-lg);
+    min-height: var(--ctrl-h-lg);
+  }
+
+  .auth-card .sub {
+    font-size: var(--text-xs);
+    line-height: var(--leading-xs);
+    margin: 0 0 var(--space-2);
+  }
+
+  .auth-form {
+    gap: var(--space-2);
+  }
+
+  .app-auth-version {
+    height: var(--ctrl-h-lg);
+    min-height: var(--ctrl-h-lg);
+  }
+
+  .auth-switch-hint button.app-inline-link {
+    height: var(--ctrl-h-lg);
+    min-height: var(--ctrl-h-lg);
+  }
+
+  .error-shell {
+    align-content: start;
+    padding: var(--space-12) var(--space-4) var(--space-6);
+  }
+
+  .error-card {
+    padding: var(--card-pad);
   }
 
   .app-design-grid {

@@ -1,7 +1,7 @@
 # 易班自动签到 · 新线设计系统规范（Design System v1）
 
 > 归属：前端视觉与交互唯一基准（与 `ui/src/styles/scale.css`、`ui/src/styles/tokens.css`、`ui/DESIGN-CONTRACT.md` 配套）。
-> 适用范围：第 1 期（基准阶、共用组件、外壳、`/` 总览、`/accounts` 账号、`/app` 用户端主页）与第 2 期（覆盖层收编、`/accounts` 移动端行卡化、`/queue`、`/logs`、`/users`、`/schools`、`/audit`、`/settings`、`/system`、`/design` 全部管理端页面），并作为第 3 期用户端其余页面改造的执行准绳。
+> 适用范围：第 1 期（基准阶、共用组件、外壳、`/` 总览、`/accounts` 账号、`/app` 用户端主页）、第 2 期（覆盖层收编、`/accounts` 移动端行卡化、`/queue`、`/logs`、`/users`、`/schools`、`/audit`、`/settings`、`/system`、`/design` 全部管理端页面）与第 3 期（门户五页 `/login`、`/register`、`/forgot-password`、`/reset-password`、404 与用户端七页 `/app/*` 全量收口）。
 
 ---
 
@@ -182,10 +182,83 @@
 
 ---
 
-## 5. 第 3 期执行约束
+## 5. 用户端与门户规范（第 3 期收口）
 
-后续改造用户端其余页面（`/app/history`、`/app/account`、`/app/settings` 等）时，必须遵守：
+> 第 3 期未新增 `scale.css` 令牌，全部消费既有七组令牌（含 `--text-display: 44px` 承载 404 展示码），且两张主样式表（`app.css`、`user-app.css`）同上下文选择器重复数保持为 `0`。
+
+### 5.1 门户五页共用结构（`/login`、`/register`、`/forgot-password`、`/reset-password`、404）
+
+```text
+桌面 (>= 901px)：居中分栏舞台 .auth-stage（max-width: 984px，12px 圆角，纸面卡边框与阴影）
+┌──────────────────────────────────┬──────────────────────────────────┐
+│ .auth-aside（品牌 + 天空画布）    │ .auth-main（--bg-card 表面）      │
+│  ├── 品牌标识 (32px, 8px 圆角)    │  ├── 顶栏：右侧主题开关 (36×36)   │
+│  ├── H1 (28/36) + 导语 (14/20)    │  ├── 表单区 .auth-card            │
+│  ├── 能力清单 / 注册三步引导      │  │     ├── 登录/注册分段 (36px)   │
+│  └── 开源与加密脚注 (12/16)       │  │     ├── H2 (20/24) + 说明      │
+│                                  │  │     ├── 字段 (36px) + 主按钮   │
+│                                  │  │     └── 切换提示 (32px 按钮)  │
+│                                  │  └── 页脚：版本键 (32px) + 链接   │
+└──────────────────────────────────┴──────────────────────────────────┘
+
+移动 (<= 900px，min-height: 100svh)：
+[ 顶栏：品牌标识 + 主题开关 (44×44) ]
+  └── 表单卡 .auth-card（12px 圆角、16px 内边距、所有控件 44px）
+        └── 沉底页脚（版本键 44px + 协议链接）
+
+404（NotFoundPage）：
+[ .error-shell（min-height: 100svh）→ .error-main（max-width: 560px）→ .error-card（12px 圆角、16px 顶距） ]
+  ├── 品牌徽标 (36×36, 8px 圆角)
+  ├── 404 展示码（--text-display: 44px / 44px，禁止 96/160px）
+  ├── 标题 (20/24) + 说明 (14/20)
+  └── 返回入口按钮（桌面 36px / 移动 44px）
+```
+
+- **四页门户复用同一外壳 `AuthLayout`**：登录与注册共用双签面板；忘记密码与重置密码经 `PublicAuthPage` 复用同一 `AuthLayout`，视觉与状态反馈完全一致。
+- **四态一致性**：字段错误使用 `border-color: var(--danger)` + `12px` 说明；加载态采用骨架行 `.app-skeleton-lines`；提交中按钮展示进行中文案并禁用；所有禁用态统一 `opacity: 0.45`。
+- **暗色天空画布**：暗色主题下 `AuthAside` 自动切入 `SKY_PALETTES.night`（`data-on-dark="true"`），配深底渐变衬底与高对比文字；`prefers-reduced-motion: reduce` 下冻结单帧不跑 `rAF`。
+
+### 5.2 用户端七页骨架（`/app/*`）
+
+```text
+[ 固定顶栏 .uapp-bar（52px 移动 / 56px >=768px） ]
+  └── .uapp-bar-inner（max-width: 1120px 居中：品牌 + 主页/历史/设置 + 主题键 + 头像菜单）
+[ 主内容 .uapp-main → .uapp-content → .uapp-page（居中 margin: 0 auto，左右留白差 0px） ]
+  ├── 页头（眉标 12/16 + H1 20/24 移动 / 28/36 桌面）
+  └── 核心内容网格（桌面双栏填充全宽；移动单列紧致堆叠，coreTop <= 130px）
+[ 移动底栏 .uapp-bottom（< 768px 显示，60px，主页 / 历史 / 设置三签） ]
+```
+
+| 路由 | 容器宽度（桌面 `1440×900`） | 桌面形态（`>= 1024px`） | 移动形态（`<= 720px`） |
+|---|---|---|---|
+| `/app` | `1120px`（`1024–1279px` 为 `984px`） | 非对称双栏 `1.72fr : 1fr`（左：今日 Hero + 近 7 天；右：账号身份卡 `width: 100%` 满栏填充） | 单列紧致堆叠，总长约 `1.21` 屏 |
+| `/app/history` | `1120px` | 双栏 `1fr : 380px`（左：月历；右：当天明细，日期 `44px` 展示字） | 单列堆叠；`<=360px` 日格自适应去 `min-width` 保 `320px` 零溢出；总长 `1.00` 屏 |
+| `/app/settings` | `984px` | 等高双栏（左：偏好；右：账号与安全），DOM 与视觉同序 | 单列堆叠（偏好在前、账号与安全在后），`coreTop = 120px`，总长 `1.00` 屏 |
+| `/app/account` | `1120px`（`1024–1279px` 为 `984px`） | 通栏身份 Hero + 等宽双栏（左：资料/设备/照片；右：签到概览/控制） | 标题与返回同行；设备只读双列与工具键双列紧致排布，总长 `<= 1.49` 屏 |
+| `/app/account/new` | `1120px` + 宽弹窗 | 账号页 + `AccountWizard` 三步向导弹窗（`scrollBody`） | 同向导弹窗，全控件 `44px` |
+| `/app/settings/time-pref` | `984px` + 宽弹窗 | 设置页 + `TimePrefDialog` 横滑 5 分钟刻度尺（`44px` 档高） | 同弹窗，方向键/横滑可达，关闭归位 `/app/settings` |
+| `/app/settings/password` | `984px` + 标准弹窗 | 设置页 + `PasswordDialog`（实时策略校验 + 会话过期回跳 `/login`） | 同弹窗，全控件 `44px`，关闭归位 `/app/settings` |
+
+### 5.3 门户与用户端令牌映射（桌面 vs 移动）
+
+| 控件类别 | 桌面（`>= 721px`） | 移动（`<= 720px`） | 圆角 | 字号 / 行高 |
+|---|---|---|---|---|
+| 顶栏图标键 / 头像 / 主题开关 / 导航胶囊 | `36px`（`--ctrl-h-md`） | `44px`（`--ctrl-h-lg`） | `8px` / `999px` | `14px / 20px` |
+| 标准按钮（`.btn` / `.uapp-button` / 分段签） | `36px`（`--ctrl-h-md`）；主提交 CTA 可取 `44px` | `44px`（`--ctrl-h-lg`） | `8px` / `6px` | `14px / 20px` |
+| 紧凑操作键 / 行内链接键 / 开关 / 页脚版本键 | `32px`（`--ctrl-h-sm`，`::after` 外扩至 `>=44px` 热区） | `44px`（`--ctrl-h-lg`） | `6px` / `8px` / `999px` | `12px / 16px` |
+| 双行列表行按钮 / 月历日格 / 时间片刻度 | `44px`（`--ctrl-h-lg`） | `44px`（`--ctrl-h-lg`） | `8px` / `6px` | `14px / 20px` + `12px / 16px` |
+| 文本 / 密码输入框（`.input` / `.uapp-input`） | `36px`（`--ctrl-h-md`） | `44px`（`--ctrl-h-lg`） | `8px`（`--radius-md`） | `14px / 20px` |
+| 卡片与门户舞台表面 | 顶内距 `16px`（`--card-pad`） | 顶内距 `16px`（`--card-pad`） | `12px`（`--radius-lg`） | 标题 `16/24` 或 `20/24` |
+| 键盘焦点环（`:focus-visible`） | `2px solid var(--primary)` + `0 0 0 3px var(--primary-soft)` | 同桌面 | 继承控件 | — |
+| 禁用态（`:disabled`） | `opacity: 0.45; cursor: not-allowed` | 同桌面 | — | — |
+
+---
+
+## 6. 持续维护约束
+
+后续迭代管理端、用户端或门户任何页面时，必须遵守：
 
 1. **禁止引入新尺寸阶**：只消费 `scale.css` 变量，不新增字号、圆角、按钮高度或卡片内边距档位。
 2. **禁止新增颜色字面量**：所有色值走 `tokens.css` 与 `color-mix`，改完必跑 `npm run gate:tokens`。
 3. **不破坏契约与测试**：保留文案、`aria-label`、`data-testid`、路由与行高/密度契约，每次修改后执行 `npm run verify` 与对应 behavior spec。
+4. **零重复选择器**：`app.css` 与 `user-app.css` 同一媒体上下文下不得出现重复选择器。

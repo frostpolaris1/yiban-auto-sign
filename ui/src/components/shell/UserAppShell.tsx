@@ -110,58 +110,60 @@ export function UserAppShell() {
         跳转到正文
       </a>
       <header className="uapp-bar">
-        <Link to="/app" className="uapp-brand" aria-label="签到助手主页">
-          <span className="uapp-brand-mark">
-            <BrandMark />
-          </span>
-          <span className="uapp-brand-text">签到助手</span>
-        </Link>
+        <div className="uapp-bar-inner">
+          <Link to="/app" className="uapp-brand" aria-label="签到助手主页">
+            <span className="uapp-brand-mark">
+              <BrandMark />
+            </span>
+            <span className="uapp-brand-text">签到助手</span>
+          </Link>
 
-        <nav className="uapp-top-nav" aria-label="主导航">
-          {USER_NAV.map((item) => (
-            <Link
-              key={item.to}
-              to={item.to}
-              className={cx(
-                'uapp-top-link',
-                item.to === '/app' && homeActive && 'active',
-              )}
-              activeOptions={{ exact: item.to === '/app' }}
-              aria-current={item.to === '/app' && homeActive ? 'page' : undefined}
+          <nav className="uapp-top-nav" aria-label="主导航">
+            {USER_NAV.map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                className={cx(
+                  'uapp-top-link',
+                  item.to === '/app' && homeActive && 'active',
+                )}
+                activeOptions={{ exact: item.to === '/app' }}
+                aria-current={item.to === '/app' && homeActive ? 'page' : undefined}
+              >
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+
+          <div className="uapp-bar-actions">
+            <button
+              type="button"
+              className="uapp-icon-btn"
+              aria-label={`切换到${nextTheme}主题`}
+              title={`切换到${nextTheme}主题`}
+              onClick={(event) => toggleTheme(originFromEvent(event))}
             >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
+              <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={18} />
+            </button>
 
-        <div className="uapp-bar-actions">
-          <button
-            type="button"
-            className="uapp-icon-btn"
-            aria-label={`切换到${nextTheme}主题`}
-            title={`切换到${nextTheme}主题`}
-            onClick={(event) => toggleTheme(originFromEvent(event))}
-          >
-            <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={18} />
-          </button>
-
-          <Menu
-            profile
-            trigger={
-              <button type="button" className="uapp-avatar" aria-label="账号菜单">
-                <Icon name="user" size={16} />
-              </button>
-            }
-          >
-            <MenuItem onSelect={() => void navigate({ to: '/app/settings' })}>
-              <Icon name="settings" size={15} />
-              账号设置
-            </MenuItem>
-            <MenuItem danger onSelect={() => logoutMutation.mutate()}>
-              <Icon name="logout" size={15} />
-              退出登录
-            </MenuItem>
-          </Menu>
+            <Menu
+              profile
+              trigger={
+                <button type="button" className="uapp-avatar" aria-label="账号菜单">
+                  <Icon name="user" size={16} />
+                </button>
+              }
+            >
+              <MenuItem onSelect={() => void navigate({ to: '/app/settings' })}>
+                <Icon name="settings" size={15} />
+                账号设置
+              </MenuItem>
+              <MenuItem danger onSelect={() => logoutMutation.mutate()}>
+                <Icon name="logout" size={15} />
+                退出登录
+              </MenuItem>
+            </Menu>
+          </div>
         </div>
       </header>
 

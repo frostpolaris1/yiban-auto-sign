@@ -317,7 +317,10 @@ export function HistoryView({
           </div>
 
           {dayQuery.isPending ? (
-            <p className="uapp-card-sub">加载中…</p>
+            <div className="uapp-skeleton-stack" aria-busy="true" aria-label="加载中">
+              <div className="uapp-skeleton uapp-skeleton-row" />
+              <div className="uapp-skeleton uapp-skeleton-row" />
+            </div>
           ) : dayQuery.isError ? (
             <div>
               <p className="uapp-card-sub">当天记录读取失败。</p>
