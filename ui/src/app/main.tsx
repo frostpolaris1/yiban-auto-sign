@@ -1,7 +1,7 @@
 /**
  * **功能**
  * 应用入口。挂载 React 根节点，注册全局 401 处置。
- * 样式表按 vendor、令牌、项目覆盖三层加载。
+ * 样式表按 vendor、颜色令牌、尺寸基准、项目覆盖、用户端五层加载。
  *
  * **归属**
  * `app` 装配层：只组合，不承载域逻辑。
@@ -24,6 +24,7 @@ import { setUnauthorizedHandler } from '@/lib/api/client'
 import { expireSession } from '@/lib/session'
 import '@/styles/adminator.css'
 import '@/styles/tokens.css'
+import '@/styles/scale.css'
 import '@/styles/app.css'
 import '@/styles/user-app.css'
 

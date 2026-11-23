@@ -35,22 +35,24 @@ export function IndicatorsSection() {
   return (
     <Card className="col-6" eyebrow="Status" title="进度、加载与头像">
       <div className="app-demo-stack">
-        {PROGRESS_ROWS.map((row) => (
-          <div key={row.label}>
-            <div className="app-progress-row" style={{ justifyContent: 'space-between' }}>
-              <span className="app-muted">{row.label}</span>
-              <span className="app-caption mono">{row.value}</span>
+        <div className="app-demo-progress-grid">
+          {PROGRESS_ROWS.map((row) => (
+            <div key={row.label}>
+              <div className="app-progress-row" style={{ justifyContent: 'space-between' }}>
+                <span className="app-muted">{row.label}</span>
+                <span className="app-caption mono">{row.value}</span>
+              </div>
+              <div className={row.thin ? 'progress thin' : 'progress'}>
+                <div
+                  className={`progress-fill ${row.fill}`.trim()}
+                  style={{ width: `${row.percent}%`, minWidth: row.percent < 6 ? 8 : undefined }}
+                />
+              </div>
             </div>
-            <div className={row.thin ? 'progress thin' : 'progress'}>
-              <div
-                className={`progress-fill ${row.fill}`.trim()}
-                style={{ width: `${row.percent}%`, minWidth: row.percent < 6 ? 8 : undefined }}
-              />
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
 
-        <div className="demo-row" style={{ gap: 24, padding: '8px 0' }}>
+        <div className="demo-row app-demo-spinners">
           <span className="spinner sm" role="status" aria-label="加载中（小）" />
           <span className="spinner" role="status" aria-label="加载中" />
           <span className="spinner lg" role="status" aria-label="加载中（大）" />
@@ -79,7 +81,7 @@ export function IndicatorsSection() {
           </div>
         </div>
 
-        <div className="demo-row" style={{ padding: '18px 0 6px' }}>
+        <div className="demo-row">
           <Hint label="签到窗口 06:30">
             <Button variant="ghost">悬停查看提示</Button>
           </Hint>

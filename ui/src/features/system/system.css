@@ -1,18 +1,24 @@
 /*
  * system.css — 系统设置页分区与页顶锚链样式层。
  *
+ * **功能**
+ * 统一系统设置六分区（计划 / 策略 / 公告 / 渠道 / 名册 / 版本）与页顶锚链排版、
+ * 表单网格、名册只读列表与版本自检行样式。
+ *
  * **归属**
- * `features/system` 专属样式：仅消费 `tokens.css` 变量，零颜色字面量（满足 token-gate）。
- * 布局为单列分区卡；锚链在窄屏自动折行，触控指针目标高度 >= 44px，
- * 锚点滚动留足顶栏偏移，不遮挡分区标题。
+ * `features/system` 专属样式：仅消费 `scale.css` 与 `tokens.css` 变量，零颜色字面量（满足 token-gate）。
+ *
+ * **口径**
+ * 严格遵循 Design System v1：控件 32/36/44px、字号 12/14/16px、圆角 6/8/12/999px、
+ * 间距 4px 基准阶、禁用态透明度 0.45；宽屏合理双栏并行压缩总屏数，窄屏双列成对字段并排并保持 0 横向溢出。
  */
 
 .sys-anchors {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 20px;
+  gap: var(--space-1) var(--space-2);
+  margin-bottom: var(--space-3);
   scroll-target-group: auto;
 }
 
@@ -20,24 +26,28 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  min-block-size: 36px;
-  padding: 6px 14px;
+  justify-content: center;
+  height: var(--ctrl-h-sm);
+  min-block-size: var(--ctrl-h-sm);
+  padding: 0 var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-card);
   color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
-  font-size: 13px;
+  font-size: var(--text-xs);
   font-weight: 500;
-  line-height: 1.2;
+  line-height: var(--leading-xs);
   text-decoration: none;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  transition:
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 
-/* 锚链 pill 视觉保持 36，::before 补 ±4 ⇒ 触控 44；横向不扩，行间距 8 不互叠。 */
 .sys-anchor::before {
   content: "";
   position: absolute;
-  inset: -4px 0;
+  inset: -6px 0;
 }
 
 .sys-anchor:hover {
@@ -56,24 +66,34 @@
 }
 
 .sys-anchor:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
 }
 
 @media (pointer: coarse) {
   .sys-anchor {
-    min-block-size: 44px;
+    height: var(--ctrl-h-lg);
+    min-block-size: var(--ctrl-h-lg);
   }
 }
 
+/* 桌面六分区编排：计划/策略/名册/版本全宽，公告与渠道并排两列以压低页面总高 */
 .sys-sections {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--section-gap);
+  align-items: start;
 }
 
 .sys-section {
-  scroll-margin-top: 84px;
+  grid-column: 1 / -1;
+  scroll-margin-top: calc(var(--topbar-h) + var(--space-4));
+  min-width: 0;
+}
+
+#announcement.sys-section,
+#channels.sys-section {
+  grid-column: span 1;
 }
 
 .sys-section:focus:not(:focus-visible) {
@@ -81,22 +101,29 @@
 }
 
 .sys-section:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 4px;
-  border-radius: 12px;
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--space-1);
+  border-radius: var(--radius-lg);
 }
 
 .sys-section-desc {
-  margin: 0 0 16px;
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .sys-section-head {
-  margin-bottom: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .sys-section-title {
-  margin: 0 0 4px;
-  font-size: 18px;
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
   font-weight: 700;
   color: var(--t-base);
 }
@@ -104,13 +131,29 @@
 .sys-section-head .sys-section-desc {
   margin: 0;
   color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
-  font-size: 13px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .sys-policy-grid {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--grid-gap);
+}
+
+#policy-quota-card.sys-policy-card-wide {
+  grid-column: span 1;
+}
+
+.sys-schedule-fieldsets {
+  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.sys-schedule-fieldsets > .sys-fieldset:last-child {
+  grid-column: 1 / -1;
 }
 
 .sys-policy-card {
@@ -121,6 +164,7 @@
 
 .sys-policy-card .app-form-stack {
   flex: 1;
+  gap: var(--space-3);
 }
 
 .sys-policy-card .sys-card-actions {
@@ -132,30 +176,30 @@
 }
 
 .sys-policy-desc {
-  margin: 0;
+  margin: 0 0 var(--space-2);
   color: var(--t-muted);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .sys-switch-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
 .sys-control-hint {
   margin: 0;
   color: var(--t-muted);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .sys-field-block {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -164,32 +208,34 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .sys-source-key {
   color: var(--t-muted);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .sys-fieldset {
   margin: 0;
-  padding: 14px;
+  padding: var(--space-3);
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--bg-hover);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .sys-legend {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 6px;
-  font-size: 13px;
+  gap: var(--space-2);
+  padding: 0 var(--space-1);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-weight: 600;
   color: var(--t-base);
 }
@@ -199,23 +245,23 @@
 .sys-schedule-switches {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .sys-radio-group {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .sys-radio-option {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  min-block-size: 44px;
-  padding: 10px 12px;
+  gap: var(--space-2);
+  min-block-size: var(--ctrl-h-lg);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   cursor: pointer;
 }
@@ -234,13 +280,15 @@
 }
 
 .sys-radio-title {
-  font-size: 13px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 600;
   color: var(--t-base);
 }
 
 .sys-radio-detail {
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--t-muted);
 }
 
@@ -248,56 +296,47 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .sys-card-actions .app-deny-note {
   white-space: normal;
 }
 
-/* vendor 没有通用的 `.btn:disabled` 规则：禁用动作必须看得出来。
-   透明度与光标照 app.css 既有补丁的 0.45 档，不引新令牌。 */
+/* 禁用态透明度统一对齐 0.45 契约 */
 .sys-card-actions .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-/* 触达口径照队列页：动作按钮视觉高度 34，::before 补 ±5 ⇒ 触控 44。
-   禁用态去掉热区扩展，与 queue.css 的 `:disabled::before` 处理一致。 */
 .sys-card-actions .btn {
   position: relative;
-  min-block-size: 34px;
 }
 
 .sys-card-actions .btn::before {
   content: "";
   position: absolute;
-  inset: -5px 0;
+  inset: -6px 0;
 }
 
 .sys-card-actions .btn:disabled::before {
   content: none;
 }
 
-@media (pointer: coarse) {
-  .sys-card-actions .btn {
-    min-block-size: 44px;
-  }
-}
-
-/* 策略卡开关行：轨道视觉不变，行触控高度抬到 44（同队列页表单档）。 */
 .sys-switch-field .app-switch {
-  min-block-size: 44px;
+  min-block-size: var(--ctrl-h-sm);
 }
 
 .sys-status-note {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--t-muted);
 }
 
 .sys-dirty-note {
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-weight: 600;
   color: color-mix(in srgb, var(--warning) 55%, var(--t-base));
 }
@@ -309,10 +348,11 @@
 .sys-announcement-preview {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--bg-muted);
 }
 
@@ -320,14 +360,16 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--t-muted);
 }
 
 .sys-announcement-current {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   color: var(--t-base);
   overflow-wrap: anywhere;
 }
@@ -335,14 +377,14 @@
 .sys-channel-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-3);
 }
 
 .sys-channel-row {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-bottom: 16px;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--border-soft);
 }
 
@@ -354,12 +396,13 @@
 .sys-channel-info {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .sys-channel-name {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 600;
   color: var(--t-base);
 }
@@ -367,29 +410,29 @@
 .sys-channel-controls {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .sys-modal-footer {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 4px;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
 }
 
-/* 名册分区：组→键→值/来源三列网格；键与值允许任意折行，窄屏堆叠为单列。 */
+/* 名册分区：桌面双列分组展示，窄屏单列紧致行 */
 .sys-roster-groups {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-4);
   min-width: 0;
 }
 
 .sys-roster-group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -397,14 +440,16 @@
   margin: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 14px;
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 600;
   color: var(--t-base);
 }
 
 .sys-roster-group-count {
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   font-weight: 500;
   color: var(--t-muted);
 }
@@ -414,24 +459,25 @@
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 6px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
 .sys-roster-item {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr) auto;
   align-items: center;
-  gap: 8px 12px;
-  padding: 8px 10px;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-2);
   border: 1px solid var(--border-soft);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   min-width: 0;
 }
 
 .sys-roster-key {
-  font-size: 12.5px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--t-base);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -440,8 +486,9 @@
 .sys-roster-value {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--t-muted);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -453,19 +500,19 @@
   color: var(--t-base);
 }
 
-/* 版本与自检分区：标签/值/注三行式；注释列跟随值列。 */
+/* 版本与自检分区 */
 .sys-version-rows {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .sys-version-row {
   display: grid;
-  grid-template-columns: 128px minmax(0, 1fr);
-  gap: 4px 12px;
-  padding-bottom: 12px;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  padding-bottom: var(--space-2);
   border-bottom: 1px solid var(--border-soft);
   min-width: 0;
 }
@@ -476,12 +523,14 @@
 }
 
 .sys-version-label {
-  font-size: 12.5px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--t-muted);
 }
 
 .sys-version-value {
-  font-size: 13px;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
   font-weight: 600;
   color: var(--t-base);
   overflow-wrap: anywhere;
@@ -489,7 +538,8 @@
 
 .sys-version-note {
   grid-column: 2;
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--t-muted);
   overflow-wrap: anywhere;
 }
@@ -498,31 +548,115 @@
   grid-column: 2;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: flex-start;
+  gap: var(--space-1);
   min-width: 0;
+}
+
+@media (max-width: 1180px) {
+  .sys-policy-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #policy-quota-card.sys-policy-card-wide {
+    grid-column: 1 / -1;
+  }
+
+  .sys-schedule-fieldsets {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .sys-sections {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #announcement.sys-section,
+  #channels.sys-section {
+    grid-column: 1 / -1;
+  }
+
+  .sys-roster-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 900px) {
   .sys-policy-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 720px) {
+  .sys-anchors {
+    gap: var(--space-1);
+    margin-bottom: var(--space-2);
+  }
+
+  .sys-anchor {
+    height: var(--ctrl-h-lg);
+    min-block-size: var(--ctrl-h-lg);
+    padding: 0 var(--space-3);
+  }
+
+  .sys-switch-field .app-switch {
+    min-block-size: var(--ctrl-h-lg);
+  }
+
+  .sys-policy-card .app-form-stack {
+    gap: var(--space-2);
+  }
+
+  .sys-fieldset {
+    padding: var(--space-2);
+    gap: var(--space-1);
+  }
+
   .sys-quota-fields,
   .sys-schedule-fields,
   .sys-schedule-switches,
   .sys-radio-group {
-    grid-template-columns: 1fr;
+    gap: var(--space-2);
   }
 
-  .sys-roster-item,
+  .sys-field-block .field-help {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .sys-roster-groups {
+    gap: var(--space-2);
+  }
+
+  .sys-roster-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px var(--space-2);
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .sys-roster-value {
+    grid-column: 1 / -1;
+  }
+
   .sys-version-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 2px var(--space-2);
   }
 
-  .sys-version-note,
-  .sys-version-check {
-    grid-column: 1;
+  .sys-version-note {
+    grid-column: 1 / -1;
+  }
+}
+
+/* 仅 320px 极窄视口才把双列成对字段退为单列 */
+@media (max-width: 359px) {
+  .sys-quota-fields,
+  .sys-schedule-fields,
+  .sys-schedule-switches,
+  .sys-radio-group {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

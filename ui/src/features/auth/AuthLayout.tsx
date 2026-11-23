@@ -94,19 +94,21 @@ type AuthLayoutProps = {
 export function AuthLayout({ children, asideMode = 'login' }: AuthLayoutProps) {
   return (
     <div className="auth-shell">
-      <AuthAside mode={asideMode} />
-      <main className="auth-main">
-        <a className="uapp-skip" href="#auth-main-card">
-          跳转到表单
-        </a>
-        <AuthTopBar />
-        <div className="auth-main-center">
-          <div className="auth-card" id="auth-main-card" tabIndex={-1}>
-            {children}
+      <div className="auth-stage">
+        <AuthAside mode={asideMode} />
+        <main className="auth-main">
+          <a className="uapp-skip" href="#auth-main-card">
+            跳转到表单
+          </a>
+          <AuthTopBar />
+          <div className="auth-main-center">
+            <section className="auth-card" id="auth-main-card" tabIndex={-1}>
+              {children}
+            </section>
           </div>
-        </div>
-        <AuthFooter />
-      </main>
+          <AuthFooter />
+        </main>
+      </div>
     </div>
   )
 }

@@ -37,23 +37,25 @@ const GROUPS = [
 
 export function TokensSection() {
   return (
-    <Card className="col-6" eyebrow="Tokens" title="色板">
+    <Card className="col-12" eyebrow="Tokens" title="色板">
       <div className="app-demo-stack">
-        {GROUPS.map((group) => (
-          <div key={group.label}>
-            <div className="section-h" style={{ marginBottom: 8, fontSize: 12 }}>
-              {group.label}
+        <div className="app-token-groups">
+          {GROUPS.map((group) => (
+            <div key={group.label} className="app-token-group">
+              <div className="section-h app-demo-token-head">
+                {group.label}
+              </div>
+              <div className="app-swatch-grid">
+                {group.tokens.map((token) => (
+                  <div className="app-swatch" key={token}>
+                    <span className="app-swatch-chip" style={{ background: `var(${token})` }} />
+                    <span className="mono">{token}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="app-swatch-grid">
-              {group.tokens.map((token) => (
-                <div className="app-swatch" key={token}>
-                  <span className="app-swatch-chip" style={{ background: `var(${token})` }} />
-                  <span className="mono">{token}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
         <hr className="app-rule" />
         <p className="app-muted">
           色板只读取 `var(--token)`。除 tokens.css 与 verbatim 的 adminator.css 外，本仓不允许颜色字面量。

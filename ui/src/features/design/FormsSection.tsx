@@ -72,7 +72,7 @@ export function FormsSection() {
               短信通知（未开放）
             </label>
           </div>
-          <div className="section-h" style={{ margin: '18px 0 10px', fontSize: 13 }}>
+          <div className="section-h app-demo-subhead">
             计划 <span className="num">03</span>
           </div>
           <div className="demo-row">

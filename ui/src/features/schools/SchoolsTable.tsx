@@ -66,7 +66,7 @@ export function SchoolsTable({
   return (
     <>
       <div className="table-scroll">
-        <table className="data-table app-row-table">
+        <table className="data-table app-row-table app-mobile-cards app-schools-table">
           <caption className="app-visually-hidden">学校列表</caption>
           <thead>
             <tr>

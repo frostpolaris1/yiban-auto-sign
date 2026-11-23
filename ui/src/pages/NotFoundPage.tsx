@@ -11,6 +11,7 @@
  */
 
 import { Link } from '@tanstack/react-router'
+import { BrandMark } from '@/components/ui/BrandMark'
 import { landingForRole } from '@/lib/landing'
 import { useMe } from '@/lib/session'
 
@@ -21,16 +22,23 @@ export function NotFoundPage() {
 
   return (
     <div className="error-shell">
-      <section className="error-card">
-        <div className="error-code">404</div>
-        <div className="error-title">页面不存在</div>
-        <div className="error-sub">该路径没有对应页面，请检查地址是否正确。</div>
-        <div className="error-actions">
-          <Link className="btn btn--primary" to={homeTo}>
-            返回仪表盘
-          </Link>
-        </div>
-      </section>
+      <main className="error-main">
+        <section className="error-card">
+          <div className="error-brand" aria-hidden="true">
+            <span className="error-brand-logo">
+              <BrandMark />
+            </span>
+          </div>
+          <div className="error-code">404</div>
+          <div className="error-title">页面不存在</div>
+          <div className="error-sub">该路径没有对应页面，请检查地址是否正确。</div>
+          <div className="error-actions">
+            <Link className="btn btn--primary" to={homeTo}>
+              返回仪表盘
+            </Link>
+          </div>
+        </section>
+      </main>
     </div>
   )
 }

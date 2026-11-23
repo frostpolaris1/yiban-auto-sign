@@ -1,0 +1,105 @@
+/*
+ * scale.css — 全站尺寸、排版、圆角与布局基准阶。
+ *
+ * **功能**
+ * 定义 4px 间距阶、三档控件高度、四档圆角、六档整数字号音阶、
+ * 卡片内边距、外壳几何、交互焦点环与动效时长令牌。
+ * 管理端与用户端共享同一份尺寸真值，只按视口/端型选择不同档位。
+ *
+ * **归属**
+ * `styles` 样式层：位于 `tokens.css` 之后、`app.css` 与 `user-app.css` 之前。
+ *
+ * **口径**
+ * 本文件只允许声明尺寸、排版、布局、层级与动效自定义属性，严禁出现任何颜色字面量。
+ * 组件样式只消费本文件与 `tokens.css` 的令牌，不得再引入散落的魔数像素。
+ */
+
+:root {
+  /* ---------- 间距阶（4px 基准） ---------- */
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ---------- 控件高度三档（桌面紧凑 / 桌面标准 / 触控与用户端） ---------- */
+  --ctrl-h-sm: 32px;
+  --ctrl-h-md: 36px;
+  --ctrl-h-lg: 44px;
+  --ctrl-h-textarea: 96px;
+
+  /* ---------- 圆角四档（999px 统一覆盖胶囊与正圆，不再混用 50%） ---------- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* ---------- 字号与行高六档整数音阶 ---------- */
+  --text-xs: 12px;
+  --leading-xs: 16px;
+
+  --text-base: 14px;
+  --leading-base: 20px;
+
+  --text-lg: 16px;
+  --leading-lg: 24px;
+
+  --text-xl: 20px;
+  --leading-xl: 24px;
+
+  --text-2xl: 28px;
+  --leading-2xl: 36px;
+
+  --text-display: 44px;
+  --leading-display: 44px;
+
+  /* ---------- 卡片内边距（两档） ---------- */
+  --card-pad-sm: 12px;
+  --card-pad: 16px;
+
+  /* ---------- 外壳与内容区几何 ---------- */
+  --sidebar-w: 240px;
+  --sidebar-w-rail: 68px;
+  --topbar-h: 52px;
+  --page-pad-x: 24px;
+  --page-pad-y: 16px;
+  --section-gap: 16px;
+  --grid-gap: 16px;
+
+  /* ---------- 数据表行高（标准 / 紧凑） ---------- */
+  --table-row-h: 48px;
+  --table-row-h-compact: 40px;
+
+  /* ---------- 容器最大宽度 ---------- */
+  --container-form: 560px;
+  --container-settings: 760px;
+  --container-home: 984px;
+  --container-wide: 1120px;
+
+  /* ---------- 用户端壳尺寸 ---------- */
+  --uapp-bar-h: 52px;
+  --uapp-bar-h-wide: 56px;
+  --uapp-bottom-h: 60px;
+
+  /* ---------- 交互焦点环与动效 ---------- */
+  --focus-ring-w: 2px;
+  --focus-ring-offset: 2px;
+  --motion-fast: 150ms;
+  --motion-base: 220ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (max-width: 720px) {
+  :root {
+    --topbar-h: 48px;
+    --page-pad-x: 12px;
+    --page-pad-y: 8px;
+    --section-gap: 12px;
+    --grid-gap: 12px;
+  }
+}

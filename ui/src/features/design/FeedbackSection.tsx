@@ -34,7 +34,7 @@ export function FeedbackSection() {
         <Badge solid>草稿</Badge>
       </div>
 
-      <div className="demo-row" style={{ marginTop: 14 }}>
+      <div className="demo-row app-demo-gap-top">
         <Tag tone="t-active">启用</Tag>
         <Tag tone="t-new">新建</Tag>
         <Tag tone="t-used">已用</Tag>
@@ -43,7 +43,7 @@ export function FeedbackSection() {
         <Tag tone="t-info">信息</Tag>
       </div>
 
-      <div style={{ marginTop: 18 }}>
+      <div className="app-demo-alerts">
         <Alert tone="primary" title="新版本 · v0.1.0" dismissible>
           前端骨架与设计令牌已就绪。
         </Alert>

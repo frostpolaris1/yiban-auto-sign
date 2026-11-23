@@ -189,86 +189,90 @@ export function MailSettingsCard({ canWrite, className }: MailSettingsCardProps)
               submit()
             }}
           >
-            <TextInput
-              id="mail-host"
-              label="SMTP 主机"
-              hint={`必填。${sourceNote(report, 'host')}`}
-              value={form.host}
-              error={fieldErrors.host}
-              disabled={readOnlyReason !== null}
-              autoComplete="off"
-              onChange={(event) => patch({ host: event.target.value })}
-            />
+            <div className="s-mail-grid">
+              <TextInput
+                id="mail-host"
+                label="SMTP 主机"
+                hint={`必填。${sourceNote(report, 'host')}`}
+                value={form.host}
+                error={fieldErrors.host}
+                disabled={readOnlyReason !== null}
+                autoComplete="off"
+                onChange={(event) => patch({ host: event.target.value })}
+              />
 
-            <TextInput
-              id="mail-port"
-              label="端口"
-              inputMode="numeric"
-              hint={`1 到 65535。${sourceNote(report, 'port')}`}
-              value={form.port}
-              error={fieldErrors.port}
-              disabled={readOnlyReason !== null}
-              autoComplete="off"
-              onChange={(event) => patch({ port: event.target.value })}
-            />
+              <TextInput
+                id="mail-port"
+                label="端口"
+                inputMode="numeric"
+                hint={`1 到 65535。${sourceNote(report, 'port')}`}
+                value={form.port}
+                error={fieldErrors.port}
+                disabled={readOnlyReason !== null}
+                autoComplete="off"
+                onChange={(event) => patch({ port: event.target.value })}
+              />
 
-            <SelectInput
-              id="mail-tls"
-              label="加密方式"
-              hint={`契约只接受小写枚举值。${sourceNote(report, 'tls_mode')}`}
-              options={MAIL_TLS_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
-              value={form.tlsMode}
-              disabled={readOnlyReason !== null}
-              onChange={(event) => patch({ tlsMode: event.target.value })}
-            />
+              <SelectInput
+                id="mail-tls"
+                label="加密方式"
+                hint={`契约只接受小写枚举值。${sourceNote(report, 'tls_mode')}`}
+                options={MAIL_TLS_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+                value={form.tlsMode}
+                disabled={readOnlyReason !== null}
+                onChange={(event) => patch({ tlsMode: event.target.value })}
+              />
 
-            <TextInput
-              id="mail-from"
-              label="发件人地址"
-              hint={`服务端不回显原值，留空＝不修改。当前 ${mailSensitiveText(report.from)}；${sourceNote(report, 'from')}`}
-              placeholder="留空＝不修改"
-              value={form.from}
-              error={fieldErrors.from}
-              disabled={readOnlyReason !== null}
-              autoComplete="off"
-              onChange={(event) => patch({ from: event.target.value })}
-            />
+              <TextInput
+                id="mail-from"
+                label="发件人地址"
+                hint={`服务端不回显原值，留空＝不修改。当前 ${mailSensitiveText(report.from)}；${sourceNote(report, 'from')}`}
+                placeholder="留空＝不修改"
+                value={form.from}
+                error={fieldErrors.from}
+                disabled={readOnlyReason !== null}
+                autoComplete="off"
+                onChange={(event) => patch({ from: event.target.value })}
+              />
 
-            <TextInput
-              id="mail-user"
-              label="SMTP 账号"
-              hint={`服务端不回显原值，留空＝不修改。当前 ${mailSensitiveText(report.user)}；${sourceNote(report, 'user')}`}
-              placeholder="留空＝不修改"
-              value={form.user}
-              error={fieldErrors.user}
-              disabled={readOnlyReason !== null}
-              autoComplete="off"
-              onChange={(event) => patch({ user: event.target.value })}
-            />
+              <TextInput
+                id="mail-user"
+                label="SMTP 账号"
+                hint={`服务端不回显原值，留空＝不修改。当前 ${mailSensitiveText(report.user)}；${sourceNote(report, 'user')}`}
+                placeholder="留空＝不修改"
+                value={form.user}
+                error={fieldErrors.user}
+                disabled={readOnlyReason !== null}
+                autoComplete="off"
+                onChange={(event) => patch({ user: event.target.value })}
+              />
 
-            <PasswordInput
-              id="mail-pass"
-              label="SMTP 密码"
-              hint={`加密存储且永不回显，留空＝不修改。当前 ${mailPasswordText(report.pass)}；${sourceNote(report, 'pass')}`}
-              placeholder="留空＝不修改"
-              value={form.pass}
-              error={fieldErrors.pass}
-              disabled={readOnlyReason !== null}
-              autoComplete="new-password"
-              onChange={(event) => patch({ pass: event.target.value })}
-            />
+              <PasswordInput
+                id="mail-pass"
+                label="SMTP 密码"
+                hint={`加密存储且永不回显，留空＝不修改。当前 ${mailPasswordText(report.pass)}；${sourceNote(report, 'pass')}`}
+                placeholder="留空＝不修改"
+                value={form.pass}
+                error={fieldErrors.pass}
+                disabled={readOnlyReason !== null}
+                autoComplete="new-password"
+                onChange={(event) => patch({ pass: event.target.value })}
+              />
 
-            <PasswordInput
-              id="mail-current-password"
-              label="你的登录口令"
-              hint="用于本次保存或测试邮件的二次确认；口令不会保存，也不会出现在任何记录里。"
-              name="current_password"
-              autoComplete="current-password"
-              value={form.currentPassword}
-              error={fieldErrors.currentPassword}
-              disabled={readOnlyReason !== null}
-              onChange={(event) => patch({ currentPassword: event.target.value })}
-            />
+              <div className="s-mail-grid-wide">
+                <PasswordInput
+                  id="mail-current-password"
+                  label="你的登录口令"
+                  hint="用于本次保存或测试邮件的二次确认；口令不会保存，也不会出现在任何记录里。"
+                  name="current_password"
+                  autoComplete="current-password"
+                  value={form.currentPassword}
+                  error={fieldErrors.currentPassword}
+                  disabled={readOnlyReason !== null}
+                  onChange={(event) => patch({ currentPassword: event.target.value })}
+                />
+              </div>
+            </div>
 
             <div className="app-page-actions">
               <BusyButton

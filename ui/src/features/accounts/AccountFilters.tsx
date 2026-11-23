@@ -108,7 +108,7 @@ export function AccountFilters({
 
       {/* 含已删除开关只对 master/admin 显示：与其列表可见面与恢复入口一致。 */}
       {can(role, 'restore') ? (
-        <div className="app-filter">
+        <div className="app-filter app-filter--check">
           <label className="app-filter-check">
             <input
               type="checkbox"

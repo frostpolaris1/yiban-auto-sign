@@ -163,7 +163,10 @@ async function expectData(page: Page, path: string) {
   } else if (path.startsWith('/schedule')) {
     await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
   } else if (path.startsWith('/system')) {
-    await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
+    // 系统设置要等四张策略卡 + 时间片表各自取数；4 worker 抢 CPU 时 5s 会不够（曾误报成加载中）。
+    await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲', {
+      timeout: 15000,
+    })
     await expect(page.locator('#policy-registration-card')).toContainText('允许新用户公开注册')
     await expect(page.locator('#policy-auto-approve-card')).toContainText('开启新号自动审核')
     await expect(page.locator('#policy-quota-card')).toContainText('全站活跃用户上限')
@@ -217,6 +220,19 @@ async function expectData(page: Page, path: string) {
  * 无限循环的装饰动画（骨架脉冲等）不算未落定。
  */
 async function waitForAnimations(page: Page) {
+  // 截图取的是文档坐标 (0,0) 起的视口。弹层按钮若在页面下方，点开时浏览器会把文档滚下去，
+  // 固定定位的弹层于是在成图里整体下移（system-preview 曾因此差 27 万像素、页脚被裁）。
+  // 基线一律在顶部口径拍，故截图前先回顶。
+  await page.evaluate(() => window.scrollTo({ top: 0, left: 0, behavior: 'instant' }))
+  // 固定定位的弹层在独立合成层上：scroll 跳变后要几帧才跟上，紧接着截图会拍到旧图层，
+  // 于是出现「文档已在顶部、弹层却整体低 278px」的错位帧（system-preview 撞过两次）。
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  )
+  await page.waitForTimeout(150)
+  // 先拍一张丢弃：固定定位层若仍按旧滚动位合成，第一张会错位，第二张就已是最终状态。
+  // （Chromium 的 Page.captureScreenshot 以文档原点为剪辑，与滚动位置无关，故固定层会整体偏移。）
+  await page.screenshot({ animations: 'disabled', caret: 'hide' })
   await page.waitForFunction(() =>
     document
       .getAnimations()
@@ -226,6 +242,64 @@ async function waitForAnimations(page: Page) {
           animation.effect?.getTiming().iterations === Infinity,
       ),
   )
+  // React 可能在上面的放行之后才挂上入场动画（弹层 mount 晚于内容断言），再盯两眼。
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const busy = await page.evaluate(() =>
+      document.getAnimations().some((animation) => animation.playState === 'running'),
+    )
+    if (!busy) break
+    await page.waitForTimeout(50)
+  }
+  // 半透明中间帧：弹层/菜单必须真的画到 opacity 1 才算落地（学校新建弹窗曾拍到叠影）。
+  await page
+    .waitForFunction(
+      () =>
+        Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '[role="dialog"],[role="alertdialog"],[role="menu"]',
+          ),
+        ).every((el) => getComputedStyle(el).opacity === '1'),
+      undefined,
+      { timeout: 2000 },
+    )
+    .catch(() => undefined)
+  // 动画落定后再抹平横向滚动位：按钮获焦会让 .table-scroll 自己滚一小段，
+  // 弹层背后那半屏表格就此左右错开（曾让 accounts 的 5 张快照随机差几十像素）。
+  await settleScroll(page)
+  // fullPage 截图以 document scrollHeight 为准。页面总高带亚像素（设计页实测 2606.90625）
+  // 时高度会在 2607/2608 之间翻，Playwright 把这 1px 记成「两张截图不稳定」。等两次采样
+  // 一致再放行；连续 20 次都不一致说明真的在抖，交给断言照常报错。
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const before = await page.evaluate(() => document.documentElement.scrollHeight)
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    )
+    const after = await page.evaluate(() => document.documentElement.scrollHeight)
+    if (before === after) break
+  }
+}
+
+/** 把页面内横向滚动位归零。
+ *
+ * 行内按钮获焦后浏览器会把最近的可滚容器滚到按钮可见处，落点随时序（平滑滚动 + 列表重挂），
+ * 弹层背后的表格列会因此左右错开几十像素 —— 快照就随机差一截。弹层已把背景置为 inert，
+ * 用户看不到这次归零，故截图前统一抹平。
+ */
+async function settleScroll(page: Page) {
+  await page.evaluate(async () => {
+    const zero = () => {
+      for (const el of Array.from(document.querySelectorAll<HTMLElement>('.table-scroll'))) {
+        if (el.scrollLeft !== 0) el.scrollLeft = 0
+      }
+    }
+    zero()
+    // 归零会被排在其后的 scrollIntoView 推翻（焦点环、Radix 焦点作用域都走 rAF），
+    // 故连抹若干帧；不改 overflow —— 那会连横向滚动条一起吞掉，基线就不再是产品实况。
+    for (let frame = 0; frame < 12; frame += 1) {
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      zero()
+    }
+  })
 }
 
 /** 等一组滚动数字全部落定：逐个断言可见终值，避免拍到中间帧。 */
