@@ -85,6 +85,12 @@
   align-items: start;
 }
 
+/* 计划表最多 5 行（5 × 48px = 240px），多出的窗口在表内滚动。 */
+#plans .table-scroll {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
 .sys-section {
   grid-column: 1 / -1;
   scroll-margin-top: calc(var(--topbar-h) + var(--space-4));
@@ -147,13 +153,14 @@
 
 .sys-schedule-fieldsets {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-3);
   align-items: start;
 }
 
-.sys-schedule-fieldsets > .sys-fieldset:last-child {
-  grid-column: 1 / -1;
+/* 第三组（默认窗口）不再独占整行：三组同排，390/1180 以下退回单列。 */
+.sys-schedule-fieldsets > .sys-fieldset:last-child .sys-radio-group {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .sys-policy-card {
@@ -296,10 +303,25 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  /* 卡脚与弹窗页脚同向：次要动作与说明在左，主按钮贴右。 */
+  justify-content: flex-end;
   gap: var(--space-2);
 }
 
+/* 单选/复选圆点与筛选栏同阶：UA 默认 13px 与 36px 控件基线错阶。 */
+.sys-radio-group input[type='radio'],
+.sys-fieldset input[type='radio'],
+.sys-fieldset input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.sys-card-actions .sys-dirty-note,
 .sys-card-actions .app-deny-note {
+  /* 说明类文案吃掉左侧余量，主按钮恒贴右锚点。 */
+  margin-right: auto;
   white-space: normal;
 }
 
@@ -424,8 +446,13 @@
 /* 名册分区：桌面双列分组展示，窄屏单列紧致行 */
 .sys-roster-groups {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3) var(--space-4);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  /* 名册只读、条目多：桌面三列并排 + 260px 内滚，把整页从 3.1 屏压到 1.8 屏内；
+   * 内滚不影响读屏（DOM 顺序仍是分组顺序），也不新增按钮（名册零编辑控件）。 */
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: var(--space-1);
   min-width: 0;
 }
 
@@ -467,8 +494,8 @@
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr) auto;
   align-items: center;
-  gap: var(--space-1) var(--space-2);
-  padding: var(--space-2);
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
   background: var(--bg-card);
@@ -502,18 +529,18 @@
 
 /* 版本与自检分区 */
 .sys-version-rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
   min-width: 0;
 }
 
 .sys-version-row {
   display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-  gap: var(--space-1) var(--space-3);
-  padding-bottom: var(--space-2);
-  border-bottom: 1px solid var(--border-soft);
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+  padding-bottom: 0;
+  border-bottom: 0;
   min-width: 0;
 }
 
@@ -579,6 +606,15 @@
 
   .sys-roster-groups {
     grid-template-columns: minmax(0, 1fr);
+    /* 单列后内容本身就是一列长表：撤掉桌面内滚，避免触控里出现嵌套滚动区。 */
+    max-height: none;
+    overflow-y: visible;
+    padding-right: 0;
+  }
+
+  #plans .table-scroll {
+    /* 窄屏计划表行卡变高，240px 会切在行中间；撤限高交给页面滚动。 */
+    max-height: none;
   }
 }
 
@@ -641,9 +677,21 @@
     grid-column: 1 / -1;
   }
 
+  .sys-version-rows {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+
   .sys-version-row {
     grid-template-columns: 76px minmax(0, 1fr);
     gap: 2px var(--space-2);
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .sys-version-row:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
   }
 
   .sys-version-note {

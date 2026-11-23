@@ -336,7 +336,7 @@ export function EventsTab({
                       <th scope="col">学校</th>
                       <th scope="col">任务</th>
                       <th scope="col">结果</th>
-                      <th scope="col">
+                      <th scope="col" className="app-col-action">
                         <span className="app-visually-hidden">操作</span>
                       </th>
                     </tr>
@@ -354,7 +354,7 @@ export function EventsTab({
                         <td>{row.school_name}</td>
                         <td>{row.task_name}</td>
                         <td className="run-table-result">{row.result || '—'}</td>
-                        <td>
+                        <td className="app-col-action">
                           <Button
                             variant="outline-primary"
                             size="sm"
@@ -368,7 +368,14 @@ export function EventsTab({
                   </tbody>
                 </table>
               </div>
-              <div className="run-pager">
+              <div className="data-foot">
+                <div className="data-foot-info">
+                  <span>
+                    第 <strong>{stack.index + 1}</strong> 页
+                  </span>
+                  <span className="app-toolbar-note">本页 {rows.length} 条</span>
+                </div>
+                <div className="run-pager">
                 <Button
                   variant="secondary"
                   size="sm"
@@ -399,6 +406,7 @@ export function EventsTab({
                 >
                   下一页
                 </Button>
+                </div>
               </div>
             </AsyncState>
           </>

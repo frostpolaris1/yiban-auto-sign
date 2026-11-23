@@ -57,7 +57,9 @@ export function ScheduleWindowsTable({
             <th scope="col">状态</th>
             <th scope="col">窗口</th>
             <th scope="col">来源</th>
-            <th scope="col">操作</th>
+            <th scope="col" className="app-col-action">
+              操作
+            </th>
           </tr>
         </thead>
         <tbody ref={tbodyRef}>
@@ -117,7 +119,7 @@ export function ScheduleWindowsTable({
                     <Badge tone={sourceTone(row.source)}>{sourceLabel(row.source)}</Badge>
                   )}
                 </td>
-                <td>
+                <td className="app-col-action">
                   <div className="data-cell-actions app-row-actions">
                     <Button
                       variant="secondary"

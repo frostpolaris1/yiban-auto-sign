@@ -262,3 +262,105 @@
 2. **禁止新增颜色字面量**：所有色值走 `tokens.css` 与 `color-mix`，改完必跑 `npm run gate:tokens`。
 3. **不破坏契约与测试**：保留文案、`aria-label`、`data-testid`、路由与行高/密度契约，每次修改后执行 `npm run verify` 与对应 behavior spec。
 4. **零重复选择器**：`app.css` 与 `user-app.css` 同一媒体上下文下不得出现重复选择器。
+
+---
+
+## 7. 一致性契约（对齐矩阵 / 交互范式 / 密度预算）
+
+> 本节把 Adminator 的原生排版规则翻译成可执行判据，是跨页「看起来一样」的判定依据。
+> 机器复跑：`node scripts/consistency-check.mjs`（见 §7.5）。
+
+### 7.1 列对齐矩阵（表头与单元格必须同向）
+
+Adminator 的原生分工是**价格/数量右、日期/编码左**。逐表落地：
+
+| 表 | 左对齐列 | 右对齐列 |
+|---|---|---|
+| `/` 今日失败明细 | 失败结果、处置建议 | 条数、占比（`tabular-nums`；`<= 640px` 堆叠态恢复左） |
+| `/accounts` 账号表 | 备注名、手机号、机型、学校、状态、邮箱、更新时间、删除时间 | 操作 |
+| `/users` 用户表 | 邮箱、角色、状态、需要改密、创建时间、上次登录 | 「账号」数量列（倒数第 5 列，首列复选框显隐不影响）、操作 |
+| `/schools` 学校表 | 学校、代码、状态、时区、更新时间 | 操作 |
+| `/queue` 待办三组 | 全部业务列 | 操作 |
+| `/logs` 签到事件 / 在飞 / 待重试 | 时间、状态、账号、学校、任务、结果 | 在飞表「租约剩余」、待重试表「已试」、事件表「诊断」尾列 |
+| `/audit` 审计表 | 时间、动作、操作者、对象、详情预览 | 「详情」表头（按钮贴右，预览文本自身仍左） |
+| `/system` 计划表 | 学校、任务、状态、窗口、来源 | 操作 |
+| `/settings` 通知矩阵 | 通知项名称 | 2–4 列开关居中（矩阵语义，不套左右对齐） |
+
+**规则**：新增数值/计数/时长列 → 右对齐 + `font-variant-numeric: tabular-nums`；
+新增时间戳、手机号、定长编码 → 左对齐，禁止为了「看起来齐」把时间右推。
+
+### 7.2 交互范式（同一类动作同一落位）
+
+1. **主按钮永远最右**。动作组统一 `display:flex; flex-wrap:wrap; justify-content:flex-end`；
+   说明/置灰原因/未保存提示在左，且 `margin-right:auto` 吃余量，不得把主按钮顶离右锚点。
+2. **表格行内动作**：`[详情(ghost)] → [次要(ghost)] → [主操作(primary)]`；
+   行卡（`<= 640px`）同一右贴，原因文案 `text-align:right`。
+3. **卡脚 = 弹窗页脚**：`[状态说明][次要][主按钮]`；`/system` 四张策略卡、公告卡、渠道卡全部同向。
+4. **页头动作**：`[置灰原因][主按钮]`，主按钮贴右；`/accounts`、`/users`、`/schools` 三页同构。
+5. **键值列表**：左键右值（`dd { text-align:right }`），覆盖账号抽屉、审计详情、队列诊断、日志诊断。
+
+### 7.3 形态契约（表面层次）
+
+| 层 | 底色 | 说明 |
+|---|---|---|
+| 卡头 `.card-head` / `.q-card-head` / `.a-card-head` | `var(--bg-card)` | 卡头不铺灰；层次靠标题字重与 `border-bottom` |
+| 列表列头带 `.q-list-head` / `.a-list-head` | `--bg-hover` 混色 | 灰底只留给列头带，语义唯一 |
+| 分页脚 `.q-pager-foot` / `.a-pager-foot` | `var(--bg-card)` | 与 `.data-foot` 同表面 |
+
+**三态高度**：表内空/载/错单格行 `height:144px; text-align:center`（= 3 × 48px 表行）；
+卡内 `.app-async-state/.app-async-skeleton` `min-height:96px` 且内容垂直居中；
+`.q-empty` 与 `.a-empty` 统一 `144px`——切换筛选时不塌、不跳。
+
+### 7.4 密度预算（1440×900，屏数 = 文档高 ÷ 视口高）
+
+| 页面类型 | 预算 | 当前 |
+|---|---:|---:|
+| 列表（accounts/users/schools/audit） | ≤ 1.15 | 1.00–1.02 |
+| 工作台（queue/logs） | ≤ 1.25 | 1.11–1.18 |
+| 看板（dashboard） | ≤ 1.76 | 1.76 |
+| 设置（settings） | ≤ 1.60 | 1.76（四卡 + 通知矩阵，超 0.16） |
+| 多分区（system） | ≤ 1.80 | 2.88（六分区，三处分区已内滚/三列化） |
+| 移动（390×844） | ≤ 2.60 | 列表 1.0–2.15、工作台 1.45–1.86、system 5.81（单列后撤销内滚，见下） |
+
+**例外说明**：`/system` 是六个独立分区的设置中枢（计划/策略/公告/渠道/名册/版本），
+每分区自身 ≤ 0.5 屏且页顶锚链可达；`.sys-roster-groups`（260px 内滚）、
+`#plans .table-scroll`（240px 内滚）已把名册与窗口表收紧；`<= 1024px` 两者一起撤销限高，
+窄屏交给页面滚动（行卡变高时内滚会切在行中间，触控也不该出现嵌套滚动）。要继续压到 1.8 屏只能折叠分区，
+与 `system-roster.spec.ts` 的「三组同时可见、零按钮」守卫冲突，故不做。
+
+### 7.5 复跑与判定
+
+```bash
+cd ui
+npm run build:showcase                 # 产出 dist-showcase
+npm run preview:showcase &             # 4174
+node scripts/consistency-check.mjs     # 输出 /tmp/ui-consistency.json + 逐行判定
+```
+
+判定项：`mismatch`（表头/单元格同向）、`actionLeft`（操作尾列右贴）、
+`numLeft`（数值列右对齐）、`primNotLast`（主按钮最右 + 动作组右贴）、
+`badH`（控件高度 % 4）、`screens`（屏数）。**验收线：前四项为 0**；
+`badH` 仅允许原生 checkbox/radio 在未显式设尺寸时出现（现已全部归 16px）；
+移动端失败明细堆叠态的「左对齐数值」与 `/queue`、`/audit` 的列表列头灰底属**白名单**，
+断言器会各计一次，不视为违规。
+
+### 7.6 间距/圆角归位
+
+- 横向组间距 `10px` → `var(--space-2)`；非标圆角 `10px` → `var(--radius-md)`。
+- 功能性小值豁免：`1px` 描边、`2px/3px` 徽章点与内胆、`6px` 分段容器内距、月历日格内距。
+- 收件箱图标盒与移动端色板等一律取 `--ctrl-h-sm` / 4 的倍数（如 14px → 16px）。
+
+---
+
+## 8. 本轮一致性收口的改动索引
+
+| 文件 | 改动 |
+|---|---|
+| `ui/src/styles/app.css` | 操作尾列 `.app-col-action` 右贴；`.app-row-actions/.app-account-actions` flex-end；users 账号列右；失败表数值右（窄屏复位）；运行表数值/诊断右；抽屉 `dd` 右；三态 144/96px；筛选复选框 16px；`gap:10px`/`radius:10px` 归令牌 |
+| `ui/src/features/{accounts,user,schools,logs,system/plans}/` | 表头/单元格补 `app-col-action`；页头原因前置 |
+| `ui/src/features/queue/QueueView.tsx` | 待审 `[详情][驳回][通过]`、失败 `[详情][重试]` |
+| `ui/src/features/queue/queue.css` + `features/audit/audit.css` | 卡头/分页脚白底；`.q-empty` 144px；审计尾列表头右 |
+| `ui/src/features/system/` | 四卡脚 [原因][未保存][次][主]；渠道卡原因前置；名册三列 260px 内滚；计划表 240px 内滚；调度三列；版本三列；单选 16px |
+| `ui/src/features/logs/EventsTab.tsx` | 页脚升级 `.data-foot`（第 X 页 · 本页 Y 条） |
+| `ui/scripts/consistency-check.mjs` | 一致性断言器（新增） |
+

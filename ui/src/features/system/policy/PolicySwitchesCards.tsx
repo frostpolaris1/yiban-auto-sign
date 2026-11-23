@@ -127,6 +127,12 @@ function PolicyToggleCard({
           </div>
           {error ? <Alert tone="danger">{error}</Alert> : null}
           <div className="sys-card-actions">
+            {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
+            {canWrite && isDirty && !mutation.isPending ? (
+              <span className="sys-dirty-note" role="status">
+                有未保存变更
+              </span>
+            ) : null}
             <BusyButton
               type="submit"
               variant="primary"
@@ -138,12 +144,6 @@ function PolicyToggleCard({
             >
               保存设置
             </BusyButton>
-            {canWrite && isDirty && !mutation.isPending ? (
-              <span className="sys-dirty-note" role="status">
-                有未保存变更
-              </span>
-            ) : null}
-            {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
           </div>
         </form>
       </AsyncState>

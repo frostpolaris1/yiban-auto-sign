@@ -257,7 +257,8 @@
   justify-content: space-between;
   gap: var(--space-2) var(--space-3);
   padding: var(--card-pad-sm) var(--card-pad);
-  background: color-mix(in srgb, var(--bg-hover) 65%, var(--bg-card));
+  /* 与 /audit 一致：卡头白底，灰底只留给列表列头带（.q-list-head）。 */
+  background: var(--bg-card);
   border-bottom: 1px solid var(--border-soft);
 }
 
@@ -588,7 +589,7 @@
   gap: var(--space-2) var(--space-3);
   padding: var(--space-2) var(--card-pad);
   border-top: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--bg-hover) 60%, var(--bg-card));
+  background: var(--bg-card);
 }
 
 .q-pager-info {
@@ -888,7 +889,8 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-1);
-  min-height: 120px;
+  /* 三行标准表行：与 .a-empty 的 144px 取齐，切组时不塌。 */
+  min-height: 144px;
   padding: var(--space-6) var(--card-pad);
   text-align: center;
 }

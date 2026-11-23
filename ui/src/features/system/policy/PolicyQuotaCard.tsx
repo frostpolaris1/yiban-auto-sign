@@ -206,6 +206,22 @@ export function PolicyQuotaCard({ canWrite, readOnlyReason }: PolicyCardAccessPr
             ) : null}
 
             <div className="sys-card-actions">
+              {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
+              {canWrite && isDirty && !mutation.isPending ? (
+                <span className="sys-dirty-note" role="status">
+                  有未保存变更
+                </span>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={!canWrite || mutation.isPending || !hasDbOverride}
+                title={readOnlyReason ?? undefined}
+                onClick={handleReset}
+              >
+                恢复默认 (1)
+              </Button>
               <BusyButton
                 type="submit"
                 variant="primary"
@@ -217,22 +233,6 @@ export function PolicyQuotaCard({ canWrite, readOnlyReason }: PolicyCardAccessPr
               >
                 保存配额
               </BusyButton>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={!canWrite || mutation.isPending || !hasDbOverride}
-                title={readOnlyReason ?? undefined}
-                onClick={handleReset}
-              >
-                恢复默认 (1)
-              </Button>
-              {canWrite && isDirty && !mutation.isPending ? (
-                <span className="sys-dirty-note" role="status">
-                  有未保存变更
-                </span>
-              ) : null}
-              {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
             </div>
           </form>
         ) : null}

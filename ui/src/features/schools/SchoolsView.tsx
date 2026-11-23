@@ -206,6 +206,8 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
         subtitle="master 看全部学校；admin 只看绑定学校。点击学校名查看只读详情。"
         actions={
           <div className="app-page-actions">
+            {/* 说明在左、主按钮在右：与 /accounts 的页头同一落位，主按钮永远贴右锚点。 */}
+            {createReason ? <span className="app-deny-note">{createReason}</span> : null}
             <Button
               variant="primary"
               disabled={createReason !== null}
@@ -214,7 +216,6 @@ export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
             >
               新建学校
             </Button>
-            {createReason ? <span className="app-deny-note">{createReason}</span> : null}
           </div>
         }
       />

@@ -88,7 +88,9 @@ export function UsersTable({
               <th scope="col">需要改密</th>
               <th scope="col">创建时间</th>
               <th scope="col">上次登录</th>
-              <th scope="col">操作</th>
+              <th scope="col" className="app-col-action">
+                操作
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -129,7 +131,7 @@ export function UsersTable({
                 </td>
                 <td className="data-cell-mono">{formatDateTime(user.created_at)}</td>
                 <td className="data-cell-mono">{formatDateTime(user.last_login_at)}</td>
-                <td>
+                <td className="app-col-action">
                   <div className="data-cell-actions app-row-actions">
                     <BusyButton
                       size="sm"

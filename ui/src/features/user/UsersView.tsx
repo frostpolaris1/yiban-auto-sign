@@ -343,6 +343,8 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
         subtitle="按待处理/正式/空用户分组；分组计数不随筛选变化。"
         actions={
           <div className="app-page-actions">
+            {/* 说明在左、主按钮在右：与 /accounts 的页头同一落位，主按钮永远贴右锚点。 */}
+            {createReason ? <span className="app-deny-note">{createReason}</span> : null}
             <BusyButton
               variant="primary"
               disabled={createReason !== null}
@@ -354,7 +356,6 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
             >
               新建用户
             </BusyButton>
-            {createReason ? <span className="app-deny-note">{createReason}</span> : null}
           </div>
         }
       />
