@@ -403,7 +403,7 @@ function SkeletonHome() {
       <div className="uapp-skeleton" style={{ width: 160, height: 14, marginTop: 12 }} />
       <div
         className="uapp-skeleton"
-        style={{ width: '100%', height: 330, marginTop: 24, borderRadius: 28 }}
+        style={{ width: '100%', height: 320, marginTop: 16, borderRadius: 'var(--radius-lg)' }}
       />
       <div className="uapp-skeleton" style={{ width: '100%', height: 96, marginTop: 20 }} />
     </div>

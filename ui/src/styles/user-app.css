@@ -7,18 +7,15 @@
  */
 
 :root {
-  --uapp-bar-h: 56px;
-  --uapp-bar-h-wide: 64px;
-  --uapp-bottom-h: 60px;
   --uapp-content-max: 1040px;
-  --uapp-home-max: 984px;
-  --uapp-history-max: 1120px;
-  --uapp-settings-max: 760px;
-  --uapp-form-max: 560px;
-  --uapp-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --uapp-home-max: var(--container-home);
+  --uapp-history-max: var(--container-wide);
+  --uapp-settings-max: var(--container-settings);
+  --uapp-form-max: var(--container-form);
+  --uapp-ease-out: var(--ease-out);
   --uapp-spring: cubic-bezier(0.24, 1.34, 0.38, 1);
-  --uapp-fast: 160ms;
-  --uapp-base: 240ms;
+  --uapp-fast: var(--motion-fast);
+  --uapp-base: var(--motion-base);
   --uapp-slow: 320ms;
   /* 衍生 AA 语义色：严禁字面量，仅 mix 现有 tokens。 */
   --uapp-ink-sub: color-mix(in srgb, var(--t-muted) 80%, var(--t-base));
@@ -2677,3 +2674,517 @@ a.uapp-row:hover {
     transform: scale(0.992);
   }
 }
+
+/* ==========================================================================
+ * 统一设计系统层（第 1 期：用户端壳 × 主页 /app × 共享控件）
+ *
+ * **口径**
+ * 1. 与管理端共用 `scale.css` 全部基准：4px 间距阶、44px 触控控件高、
+ *    6 / 8 / 12 / 999px 四档圆角、12 / 14 / 16 / 20 / 28px 字号音阶、16px 卡片内边距。
+ * 2. 移动优先，保持更松弛的触控与呼吸感，同时在 390×844 下总长 ≤ 1.6 屏、核心区首屏直出。
+ * 3. 与管理端同表面语言（--bg-card + 1px var(--border) + --shadow-card + --radius-lg），
+ *    消除「管理端与用户端像两个不同产品」的割裂感。
+ * ========================================================================== */
+
+/* ---------- 用户端壳：顶栏 / 底栏 / 主区 ---------- */
+
+.uapp-bar {
+  padding: env(safe-area-inset-top, 0px) var(--space-4) 0;
+  gap: var(--space-4);
+}
+
+.uapp-brand {
+  gap: var(--space-2);
+  min-width: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+}
+
+.uapp-brand-mark {
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+.uapp-brand-text {
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
+  font-weight: 700;
+}
+
+.uapp-top-nav {
+  gap: var(--space-1);
+  margin-left: var(--space-4);
+}
+
+.uapp-top-link {
+  min-height: var(--ctrl-h-md);
+  height: var(--ctrl-h-md);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-full);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+}
+
+.uapp-bar-actions {
+  gap: var(--space-1);
+}
+
+.uapp-icon-btn {
+  width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
+  border-radius: var(--radius-md);
+}
+
+.uapp-avatar {
+  width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
+  border: 4px solid transparent;
+  background-origin: padding-box;
+  background-clip: padding-box;
+  border-radius: var(--radius-full);
+}
+
+.uapp-main {
+  padding-bottom: calc(var(--uapp-bottom-h) + env(safe-area-inset-bottom, 0px) + var(--space-4));
+}
+
+.uapp-content {
+  padding: var(--space-3) var(--space-4);
+}
+
+.uapp-notice {
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-bottom {
+  padding: 0 var(--space-3) env(safe-area-inset-bottom, 0px);
+}
+
+.uapp-tab {
+  min-height: var(--ctrl-h-lg);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-tab-icon {
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-full);
+}
+
+/* ---------- 用户端共享基础件 ---------- */
+
+.uapp-card {
+  padding: var(--card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.uapp-card--hero {
+  border-radius: var(--radius-lg);
+}
+
+.uapp-card-title {
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
+}
+
+.uapp-card-sub,
+.uapp-field-label,
+.uapp-field-error,
+.uapp-field-hint,
+.uapp-row-sub,
+.uapp-row-value {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-row-label {
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+}
+
+.uapp-row-icon {
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-md);
+}
+
+.uapp-card-action {
+  min-width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-input {
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+}
+
+.uapp-button {
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  line-height: 1;
+}
+
+.uapp-seg {
+  padding: var(--space-1);
+  gap: var(--space-1);
+  border-radius: var(--radius-md);
+}
+
+.uapp-seg-item {
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-status {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+}
+
+/* ---------- 用户端主页（/app） ---------- */
+
+.uapp-home-head {
+  gap: var(--space-1);
+  padding-left: 0;
+}
+
+.uapp-home-eyebrow,
+.uapp-date-row {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  color: var(--uapp-ink-sub);
+}
+
+.uapp-home-head .uapp-greeting,
+.uapp-greeting {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.uapp-announcement {
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius-md);
+  background: var(--info-soft);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-announcement-dot {
+  margin-top: 0;
+  border-radius: var(--radius-full);
+}
+
+.uapp-announcement-close {
+  width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
+  min-width: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-3)) calc(-1 * var(--space-2)) auto;
+  border-radius: var(--radius-md);
+  font-size: var(--text-lg);
+}
+
+.uapp-home-bento {
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.uapp-hero,
+.uapp-result {
+  margin-top: 0;
+  padding: var(--card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.uapp-result-head {
+  gap: var(--space-3);
+}
+
+.uapp-result-eyebrow {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-result-body {
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.uapp-result .uapp-hero-title,
+.uapp-hero-title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-2xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.uapp-result-when {
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.uapp-result .uapp-hero-time,
+.uapp-hero-time {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.uapp-hero-note {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+}
+
+.uapp-result-when .uapp-hero-note {
+  margin: 0;
+}
+
+.uapp-window-head,
+.uapp-window-scale,
+.uapp-window-legend {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-window-track,
+.uapp-window-band,
+.uapp-window-chosen,
+.uapp-window-dot,
+.uapp-window-swatch {
+  border-radius: var(--radius-full);
+}
+
+.uapp-window-track {
+  margin-top: var(--space-2);
+}
+
+.uapp-window-scale,
+.uapp-window-legend {
+  margin-top: var(--space-2);
+  gap: var(--space-3);
+}
+
+.uapp-result-foot {
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+}
+
+.uapp-result-stats {
+  gap: var(--space-4);
+}
+
+.uapp-stat-value {
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+  font-weight: 700;
+}
+
+.uapp-stat-value i,
+.uapp-stat-label {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-result-next {
+  gap: var(--space-2);
+}
+
+.uapp-next-icon {
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-md);
+}
+
+.uapp-next-time {
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
+}
+
+.uapp-next-note {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-hero-link {
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  line-height: 1;
+}
+
+/* 账号身份卡 */
+.uapp-hero-identity {
+  gap: var(--space-3);
+}
+
+.uapp-hero-photo {
+  width: var(--space-12);
+  height: var(--space-12);
+  border-radius: var(--radius-md);
+}
+
+.uapp-hero-photo img {
+  border-radius: var(--radius-md);
+}
+
+.uapp-hero-name {
+  font-size: var(--text-lg);
+  line-height: var(--leading-lg);
+}
+
+.uapp-hero-meta {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-identity-fields {
+  margin: var(--space-3) 0;
+}
+
+.uapp-identity-row {
+  gap: var(--space-3);
+  padding: var(--space-2);
+  margin: 0 calc(-1 * var(--space-2));
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-identity-actions {
+  gap: var(--space-1);
+}
+
+.uapp-identity-edit {
+  height: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+}
+
+/* 近 7 天条 */
+.uapp-week-head,
+.uapp-week-link,
+.uapp-day-label {
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+}
+
+.uapp-week-days {
+  margin-top: var(--space-3);
+  gap: var(--space-1);
+}
+
+.uapp-day {
+  gap: var(--space-1);
+}
+
+.uapp-day-cell,
+.uapp-home-cal-card .uapp-day-cell {
+  width: var(--ctrl-h-md);
+  height: var(--ctrl-h-md);
+  border-radius: var(--radius-md);
+}
+
+.uapp-day-pending-dot {
+  border-radius: var(--radius-full);
+}
+
+.uapp-home-bento :focus-visible,
+.uapp-home-head :focus-visible {
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-sm);
+}
+
+@media (min-width: 768px) {
+  .uapp-bar {
+    padding: env(safe-area-inset-top, 0px) var(--space-6) 0;
+  }
+
+  .uapp-content {
+    padding: var(--space-5) var(--space-6) var(--space-6);
+  }
+
+  .uapp-home-bento {
+    gap: var(--space-4);
+    margin-top: var(--space-4);
+  }
+
+  .uapp-home-cal-card .uapp-day-cell {
+    width: var(--space-10);
+    height: var(--space-10);
+    border-radius: var(--radius-md);
+  }
+}
+
+@media (min-width: 1024px) {
+  .uapp-home-bento {
+    grid-template-columns: minmax(0, 1.72fr) minmax(296px, 1fr);
+    gap: var(--space-4);
+  }
+}
+
+/* 320px 极窄视口兜底：7 天日历格自适应宽度，确保零横向溢出 */
+@media (max-width: 360px) {
+  .uapp-content {
+    padding: var(--space-3);
+  }
+
+  .uapp-day-cell,
+  .uapp-home-cal-card .uapp-day-cell {
+    width: var(--ctrl-h-sm);
+    height: var(--ctrl-h-sm);
+  }
+}
+
