@@ -37,15 +37,15 @@ export function DesignPage() {
         actions={<Badge tone="success">token gate 已启用</Badge>}
       />
 
-      <div className="grid">
+      <div className="grid app-design-grid">
         <ButtonsSection />
         <FormsSection />
         <FeedbackSection />
         <SharedSection />
         <IndicatorsSection />
         <OverlaysSection />
-        <TableSection />
         <NavigationSection />
+        <TableSection />
         <TokensSection />
       </div>
     </>

@@ -169,7 +169,7 @@ export function TableSection() {
         toolbar={
           <>
             <div className="data-toolbar-left">
-              <div className="input-icon" style={{ flex: 1, maxWidth: 320 }}>
+              <div className="input-icon app-demo-search">
                 <span className="ico">
                   <Icon name="search" />
                 </span>
@@ -183,17 +183,16 @@ export function TableSection() {
               <button type="button" className="btn btn--ghost">
                 <Icon name="filter" />
                 筛选
-                <span className="badge primary" style={{ marginLeft: 4 }}>
+                <span className="badge primary">
                   2
                 </span>
               </button>
             </div>
             <div className="data-toolbar-right">
               <select
-                className="select"
+                className="select app-demo-select"
                 aria-label="角色筛选"
                 defaultValue="all"
-                style={{ width: 'auto', padding: '7px 28px 7px 10px', fontSize: 12 }}
               >
                 <option value="all">全部角色</option>
                 <option value="master">master</option>
@@ -201,10 +200,9 @@ export function TableSection() {
                 <option value="user">user</option>
               </select>
               <select
-                className="select"
+                className="select app-demo-select"
                 aria-label="状态筛选"
                 defaultValue="all"
-                style={{ width: 'auto', padding: '7px 28px 7px 10px', fontSize: 12 }}
               >
                 <option value="all">全部状态</option>
                 <option value="done">已签到</option>

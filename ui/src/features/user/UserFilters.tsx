@@ -42,58 +42,64 @@ export function UserFilters({
 }: UserFiltersProps) {
   return (
     <div className="app-filters">
-      <FilterField id="user-filter-q" label="邮箱前缀筛选">
-        <input
-          className="input"
-          type="search"
-          placeholder="邮箱前缀，回车立即查询"
-          value={qInput}
-          onChange={(event) => onQInputChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter') return
-            event.preventDefault()
-            onQCommit()
-          }}
-        />
-      </FilterField>
-
-      <FilterField id="user-filter-role" label="角色筛选">
-        <select
-          className="select"
-          value={values.role ?? ''}
-          onChange={(event) => {
-            const value = event.target.value
-            onRoleChange(value === '' ? undefined : (value as UserRole))
-          }}
-        >
-          <option value="">全部角色</option>
-          {USER_ROLE_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </FilterField>
-
-      <FilterField id="user-filter-status" label="状态筛选">
-        <select
-          className="select"
-          value={values.status ?? ''}
-          onChange={(event) => {
-            const value = event.target.value
-            onStatusChange(value === '' ? undefined : (value as UserStatus))
-          }}
-        >
-          <option value="">全部状态</option>
-          {USER_STATUS_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </FilterField>
+      <div className="app-filter app-filter-q">
+        <FilterField id="user-filter-q" label="邮箱前缀筛选">
+          <input
+            className="input"
+            type="search"
+            placeholder="邮箱前缀，回车立即查询"
+            value={qInput}
+            onChange={(event) => onQInputChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return
+              event.preventDefault()
+              onQCommit()
+            }}
+          />
+        </FilterField>
+      </div>
 
       <div className="app-filter">
+        <FilterField id="user-filter-role" label="角色筛选">
+          <select
+            className="select"
+            value={values.role ?? ''}
+            onChange={(event) => {
+              const value = event.target.value
+              onRoleChange(value === '' ? undefined : (value as UserRole))
+            }}
+          >
+            <option value="">全部角色</option>
+            {USER_ROLE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </FilterField>
+      </div>
+
+      <div className="app-filter">
+        <FilterField id="user-filter-status" label="状态筛选">
+          <select
+            className="select"
+            value={values.status ?? ''}
+            onChange={(event) => {
+              const value = event.target.value
+              onStatusChange(value === '' ? undefined : (value as UserStatus))
+            }}
+          >
+            <option value="">全部状态</option>
+            {USER_STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </FilterField>
+      </div>
+
+      <div className="app-filter app-filter--check">
         <label className="app-filter-check">
           <input
             type="checkbox"

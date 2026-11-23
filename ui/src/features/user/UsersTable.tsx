@@ -64,7 +64,7 @@ export function UsersTable({
   return (
     <>
       <div className="table-scroll">
-        <table className="data-table app-row-table">
+        <table className="data-table app-row-table app-mobile-cards app-users-table">
           <caption className="app-visually-hidden">用户列表</caption>
           <thead>
             <tr>

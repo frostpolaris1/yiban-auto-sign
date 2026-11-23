@@ -138,39 +138,43 @@ export function ChangePasswordCard({ className }: ChangePasswordCardProps) {
           mutation.mutate()
         }}
       >
-        <PasswordInput
-          id={CURRENT_ID}
-          label="当前密码"
-          placeholder="••••••••"
-          autoComplete="current-password"
-          required
-          value={current}
-          error={errors.current}
-          onChange={(event) => setCurrent(event.target.value)}
-        />
+        <div className="s-password-grid">
+          <div className="s-password-wide">
+            <PasswordInput
+              id={CURRENT_ID}
+              label="当前密码"
+              placeholder="••••••••"
+              autoComplete="current-password"
+              required
+              value={current}
+              error={errors.current}
+              onChange={(event) => setCurrent(event.target.value)}
+            />
+          </div>
 
-        <PasswordInput
-          id={NEXT_ID}
-          label="新密码"
-          placeholder="••••••••"
-          autoComplete="new-password"
-          required
-          hint="至少 10 位，且包含大小写字母、数字、符号中的至少两类"
-          value={next}
-          error={errors.next}
-          onChange={(event) => setNext(event.target.value)}
-        />
+          <PasswordInput
+            id={NEXT_ID}
+            label="新密码"
+            placeholder="••••••••"
+            autoComplete="new-password"
+            required
+            hint="至少 10 位，且包含大小写字母、数字、符号中的至少两类"
+            value={next}
+            error={errors.next}
+            onChange={(event) => setNext(event.target.value)}
+          />
 
-        <PasswordInput
-          id={CONFIRM_ID}
-          label="确认新密码"
-          placeholder="••••••••"
-          autoComplete="new-password"
-          required
-          value={confirm}
-          error={errors.confirm}
-          onChange={(event) => setConfirm(event.target.value)}
-        />
+          <PasswordInput
+            id={CONFIRM_ID}
+            label="确认新密码"
+            placeholder="••••••••"
+            autoComplete="new-password"
+            required
+            value={confirm}
+            error={errors.confirm}
+            onChange={(event) => setConfirm(event.target.value)}
+          />
+        </div>
 
         {generalError ? (
           <div className="app-alert-block" ref={alertRef} tabIndex={-1}>

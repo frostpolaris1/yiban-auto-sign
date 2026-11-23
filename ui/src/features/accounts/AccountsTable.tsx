@@ -114,7 +114,7 @@ export function AccountsTable({
   return (
     <>
       <div className="table-scroll">
-        <table className="data-table app-row-table">
+        <table className="data-table app-row-table app-mobile-cards app-accounts-table">
           <caption className="app-visually-hidden">账号列表</caption>
           <thead>
             <tr>

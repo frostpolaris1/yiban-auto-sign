@@ -82,7 +82,7 @@ export function SharedSection() {
           <span className="app-muted">已保存 {saves} 次</span>
         </div>
 
-        <div style={{ maxWidth: 320 }}>
+        <div className="app-demo-filter-box">
           <FilterField
             id="demo-filter-keyword"
             label="关键字"
@@ -99,7 +99,7 @@ export function SharedSection() {
               }}
             />
           </FilterField>
-          <div className="demo-row" style={{ marginTop: 12 }}>
+          <div className="demo-row app-demo-gap-top">
             <Button variant="secondary" onClick={submitFilter}>
               提交筛选
             </Button>

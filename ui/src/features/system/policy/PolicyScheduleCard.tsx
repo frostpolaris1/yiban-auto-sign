@@ -195,6 +195,7 @@ export function PolicyScheduleCard({ canWrite, readOnlyReason }: PolicyCardAcces
               调度与窗口策略
             </span>
 
+            <div className="sys-schedule-fieldsets">
             <fieldset className="sys-fieldset">
               <legend className="sys-legend">窗口边界与自选偏好</legend>
               <div className="sys-schedule-fields">
@@ -366,6 +367,7 @@ export function PolicyScheduleCard({ canWrite, readOnlyReason }: PolicyCardAcces
                 })}
               </div>
             </fieldset>
+            </div>
 
             {submitError ? <Alert tone="danger">{submitError}</Alert> : null}
             {statusNote ? (

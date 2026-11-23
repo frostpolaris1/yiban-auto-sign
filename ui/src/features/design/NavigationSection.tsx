@@ -62,7 +62,7 @@ export function NavigationSection() {
           <p className="app-caption">药丸变体：`.tabs.pills`。</p>
         </div>
 
-        <div className="app-demo-stack" style={{ gap: 12 }}>
+        <div className="app-demo-switches">
           <SwitchControl label="启用双因子认证" />
           <SwitchControl label="窗口开始前提醒" defaultChecked />
           <SwitchControl label="自动保存草稿" defaultChecked />

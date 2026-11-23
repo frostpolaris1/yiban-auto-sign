@@ -48,7 +48,7 @@ export function ScheduleWindowsTable({
   })
   return (
     <div className="table-scroll">
-      <table className="data-table app-row-table">
+      <table className="data-table app-row-table app-mobile-cards app-schedule-table">
         <caption className="app-visually-hidden">时间片窗口</caption>
         <thead>
           <tr>

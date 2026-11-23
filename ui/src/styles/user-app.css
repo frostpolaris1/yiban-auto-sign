@@ -43,10 +43,10 @@
   inset: 0 0 auto;
   z-index: 30;
   height: calc(var(--uapp-bar-h) + env(safe-area-inset-top, 0px));
-  padding: env(safe-area-inset-top, 0px) 20px 0;
+  padding: env(safe-area-inset-top, 0px) var(--space-4) 0;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
 }
@@ -55,9 +55,9 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 44px;
-  min-height: 44px;
+  gap: var(--space-2);
+  min-width: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
   flex: none;
   text-decoration: none;
   color: var(--t-base);
@@ -71,25 +71,27 @@
 .uapp-brand-mark {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-md);
   background: var(--primary);
   color: var(--t-inverse);
+  box-shadow: 0 0 0 3px var(--primary-soft);
 }
 
 .uapp-brand-text {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--text-lg);
+  font-weight: 700;
   letter-spacing: -0.01em;
   white-space: nowrap;
+  line-height: var(--leading-lg);
 }
 
 .uapp-top-nav {
   display: none;
   align-items: center;
-  gap: 4px;
-  margin-left: 24px;
+  gap: var(--space-1);
+  margin-left: var(--space-4);
 }
 
 .uapp-top-link {
@@ -98,15 +100,17 @@
   align-items: center;
   justify-content: center;
   min-width: 48px;
-  min-height: 44px;
-  padding: 0 14px;
-  border-radius: 999px;
+  min-height: var(--ctrl-h-md);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-full);
   color: var(--uapp-ink-sub);
-  font-size: 13.5px;
+  font-size: var(--text-base);
   font-weight: 500;
   text-decoration: none;
   transition: background var(--uapp-fast) var(--uapp-ease-out),
     color var(--uapp-fast) var(--uapp-ease-out);
+  height: var(--ctrl-h-md);
+  line-height: var(--leading-base);
 }
 
 .uapp-top-link:hover {
@@ -122,18 +126,18 @@
 .uapp-bar-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1);
   margin-left: auto;
 }
 
 .uapp-icon-btn {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
   padding: 0;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--t-muted);
   cursor: pointer;
@@ -153,14 +157,16 @@
   position: relative;
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
   padding: 0;
-  border: 1px solid var(--border-soft);
-  border-radius: 999px;
+  border: 4px solid transparent;
+  border-radius: var(--radius-full);
   background: var(--primary-soft);
   color: var(--primary);
   cursor: pointer;
+  background-origin: padding-box;
+  background-clip: padding-box;
 }
 .uapp-avatar::after {
   content: '';
@@ -171,12 +177,12 @@
 /* ---------- 内容 ---------- */
 .uapp-main {
   padding-top: calc(var(--uapp-bar-h) + env(safe-area-inset-top, 0px));
-  padding-bottom: calc(var(--uapp-bottom-h) + env(safe-area-inset-bottom, 0px) + 28px);
+  padding-bottom: calc(var(--uapp-bottom-h) + env(safe-area-inset-bottom, 0px) + var(--space-4));
 }
 
 .uapp-content {
   width: 100%;
-  padding: 20px;
+  padding: var(--space-3) var(--space-4);
 }
 
 .uapp-page {
@@ -208,14 +214,15 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  padding: 12px 14px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-md);
   background: var(--warning-soft);
   color: var(--t-base);
-  font-size: 12.5px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-notice a {
@@ -239,7 +246,7 @@
   inset: auto 0 0;
   z-index: 30;
   height: calc(var(--uapp-bottom-h) + env(safe-area-inset-bottom, 0px));
-  padding: 0 12px env(safe-area-inset-bottom, 0px);
+  padding: 0 var(--space-3) env(safe-area-inset-bottom, 0px);
   display: flex;
   align-items: stretch;
   background: color-mix(in srgb, var(--bg-card) 92%, transparent);
@@ -251,25 +258,26 @@
 
 .uapp-tab {
   flex: 1;
-  min-height: 44px;
+  min-height: var(--ctrl-h-lg);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 2px;
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 500;
   text-decoration: none;
   transition: color var(--uapp-fast) var(--uapp-ease-out);
+  line-height: var(--leading-xs);
 }
 
 .uapp-tab-icon {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-full);
   transition: background var(--uapp-base) var(--uapp-spring),
     color var(--uapp-fast) var(--uapp-ease-out);
 }
@@ -286,10 +294,10 @@
 /* ---------- 首页 ---------- */
 .uapp-greeting {
   margin: 0;
-  font-size: 34px;
-  font-weight: 600;
-  letter-spacing: -0.8px;
-  line-height: 1.15;
+  font-size: var(--text-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: var(--leading-xl);
   color: var(--t-base);
 }
 
@@ -297,27 +305,33 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
-  color: var(--t-base);
-  font-size: 12px;
+  color: var(--uapp-ink-sub);
+  font-size: var(--text-xs);
+  margin: 0;
+  line-height: var(--leading-xs);
 }
 
 .uapp-announcement {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 20px;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
   color: var(--t-base);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius-md);
+  background: var(--info-soft);
 }
 
 .uapp-announcement-dot {
   flex: none;
   width: 6px;
   height: 6px;
-  margin-top: 6px;
-  border-radius: 999px;
+  margin-top: 0;
+  border-radius: var(--radius-full);
   background: var(--info);
 }
 
@@ -325,17 +339,19 @@
   position: relative;
   display: inline-grid;
   place-items: center;
-  min-width: 44px;
-  min-height: 44px;
-  margin: -12px -12px -12px auto;
+  min-width: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
+  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-3)) calc(-1 * var(--space-2)) auto;
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--uapp-ink-sub);
-  font-size: 16px;
+  font-size: var(--text-lg);
   line-height: 1;
   cursor: pointer;
+  width: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
 }
 
 /* Hero=纸面凸起的唯一主角（Admin KPI 卡直译）：
@@ -344,10 +360,10 @@
 .uapp-hero {
   position: relative;
   overflow: hidden;
-  margin-top: 24px;
-  padding: 20px;
+  margin-top: 0;
+  padding: var(--card-pad);
   border: 1px solid var(--border);
-  border-radius: 28px;
+  border-radius: var(--radius-lg);
   background: var(--bg-card);
   box-shadow: var(--shadow-card);
 }
@@ -383,7 +399,7 @@
 .uapp-hero-identity {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
@@ -391,11 +407,11 @@
   flex: none;
   display: grid;
   place-items: center;
-  width: 56px;
-  height: 56px;
+  width: var(--space-12);
+  height: var(--space-12);
   overflow: hidden;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--radius-md);
   background: var(--primary-soft);
   color: var(--primary);
 }
@@ -404,7 +420,7 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  border-radius: 13px;
+  border-radius: var(--radius-md);
 }
 
 .uapp-hero-photo--empty {
@@ -420,21 +436,24 @@
 
 .uapp-hero-name {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--t-base);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: var(--leading-lg);
 }
 
 .uapp-hero-meta {
   margin: 4px 0 0;
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  margin-top: 2px;
+  line-height: var(--leading-xs);
 }
 
 .uapp-status {
@@ -443,18 +462,19 @@
   gap: 5px;
   flex: none;
   min-height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
   background: var(--bg-muted);
   color: var(--t-base);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 500;
+  line-height: var(--leading-xs);
 }
 
 .uapp-status-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
   background: var(--t-muted);
 }
 
@@ -484,11 +504,11 @@
 }
 
 .uapp-hero-time {
-  margin: 28px 0 0;
-  font-size: 56px;
-  font-weight: 600;
-  letter-spacing: -2px;
-  line-height: 1;
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: var(--leading-xl);
   color: var(--t-base);
   font-variant-numeric: tabular-nums;
 }
@@ -499,17 +519,19 @@
 }
 
 .uapp-hero-title {
-  margin: 8px 0 0;
-  font-size: 24px;
-  font-weight: 600;
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: 700;
   color: color-mix(in srgb, currentColor 55%, var(--t-base));
+  line-height: var(--leading-2xl);
+  letter-spacing: -0.02em;
 }
 
 .uapp-hero-note {
-  margin: 8px 0 0;
+  margin: var(--space-1) 0 0;
   color: var(--uapp-ink-sub);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: var(--text-base);
+  line-height: var(--leading-base);
 }
 
 /* 窗口轴：band 画整段可签到窗口；空心点=用户选的 5 分钟档；实心点=实际执行。
@@ -522,16 +544,17 @@
   display: flex;
   justify-content: space-between;
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
+  line-height: var(--leading-xs);
 }
 
 .uapp-window-track {
   position: relative;
   height: 4px;
-  margin-top: 12px;
-  border-radius: 999px;
+  margin-top: var(--space-2);
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--primary) 16%, var(--bg-card));
 }
 
@@ -539,7 +562,7 @@
   position: absolute;
   top: 0;
   height: 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--primary) 45%, var(--bg-card));
 }
 
@@ -550,7 +573,7 @@
   height: 12px;
   margin-left: -6px;
   border: 2px solid var(--primary);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-card);
 }
 
@@ -561,7 +584,7 @@
   height: 12px;
   margin-left: -6px;
   border: 2px solid var(--bg-card);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--success);
 }
 
@@ -572,18 +595,21 @@
 .uapp-window-scale {
   display: flex;
   justify-content: space-between;
-  margin-top: 8px;
+  margin-top: var(--space-2);
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
+  line-height: var(--leading-xs);
+  gap: var(--space-3);
 }
 
 .uapp-window-legend {
   display: flex;
-  gap: 14px;
-  margin-top: 8px;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-window-legend-item {
@@ -596,7 +622,7 @@
 .uapp-window-swatch {
   width: 8px;
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .uapp-window-swatch--chosen {
@@ -616,18 +642,20 @@
   display: inline-flex;
   align-items: center;
   min-width: 44px;
-  min-height: 44px;
+  min-height: var(--ctrl-h-lg);
   gap: 4px;
   margin-top: 12px;
-  padding: 6px 8px;
+  padding: 0 var(--space-2);
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--primary);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   text-decoration: none;
   cursor: pointer;
+  height: var(--ctrl-h-lg);
+  line-height: 1;
 }
 .uapp-hero-link::after {
   content: '';
@@ -723,9 +751,9 @@
 .uapp-next-icon {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-md);
   background: var(--bg-muted);
   color: var(--t-muted);
 }
@@ -736,15 +764,17 @@
 }
 
 .uapp-next-time {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
   color: var(--t-base);
+  line-height: var(--leading-base);
 }
 
 .uapp-next-note {
   margin-top: 2px;
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-week {
@@ -757,8 +787,9 @@
   justify-content: space-between;
   gap: 12px;
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 500;
+  line-height: var(--leading-xs);
 }
 .uapp-week-meta {
   display: inline-flex;
@@ -769,7 +800,8 @@
 .uapp-week-days {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  margin-top: 18px;
+  margin-top: var(--space-3);
+  gap: var(--space-1);
 }
 
 /* 7 天带：格子按状态给「形状 + 文字标签」（✓ ✕ － ○ 空），今天用填充高亮，
@@ -778,16 +810,16 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 7px;
+  gap: var(--space-1);
 }
 
 .uapp-day-cell {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: var(--ctrl-h-md);
+  height: var(--ctrl-h-md);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--bg-card);
   color: var(--t-muted);
 }
@@ -808,7 +840,7 @@
   width: 8px;
   height: 8px;
   border: 1.5px solid currentColor;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .uapp-day-cell--none {
@@ -831,7 +863,8 @@
 
 .uapp-day-label {
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-week-link {
@@ -842,9 +875,10 @@
   min-height: 28px;
   margin-top: 0;
   color: var(--primary);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 600;
   text-decoration: none;
+  line-height: var(--leading-xs);
 }
 .uapp-week-link::after {
   content: '';
@@ -854,15 +888,16 @@
 
 /* ---------- 卡片与行 ---------- */
 .uapp-card {
-  padding: 16px;
-  border: 1px solid var(--border-soft);
-  border-radius: 20px;
+  padding: var(--card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   background: var(--bg-card);
+  box-shadow: var(--shadow-card);
 }
 
 .uapp-card--hero {
   border-color: var(--primary-ring);
-  border-radius: 24px;
+  border-radius: var(--radius-lg);
   background: var(--primary-soft);
 }
 
@@ -873,15 +908,16 @@
 .uapp-card-title {
   margin: 0;
   color: var(--t-base);
-  font-size: 14px;
+  font-size: var(--text-lg);
   font-weight: 600;
+  line-height: var(--leading-lg);
 }
 
 .uapp-card-sub {
   margin: 4px 0 0;
   color: var(--uapp-ink-sub);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-card-head {
@@ -897,17 +933,19 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--ctrl-h-lg);
+  min-height: var(--ctrl-h-lg);
   padding: 0 8px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--primary);
-  font-size: 12.5px;
+  font-size: var(--text-xs);
   font-weight: 600;
   text-decoration: none;
   cursor: pointer;
+  height: var(--ctrl-h-lg);
+  line-height: var(--leading-xs);
 }
 .uapp-card-action::after {
   content: '';
@@ -945,9 +983,9 @@
   display: grid;
   place-items: center;
   flex: none;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
+  width: var(--ctrl-h-sm);
+  height: var(--ctrl-h-sm);
+  border-radius: var(--radius-md);
   background: var(--bg-muted);
   color: var(--uapp-ink-sub);
 }
@@ -957,24 +995,12 @@
   flex: 1;
 }
 
-.uapp-row-label {
-  color: var(--t-base);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.uapp-row-sub {
-  margin-top: 2px;
-  color: var(--uapp-ink-sub);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
 .uapp-row-value {
   color: var(--t-base);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  line-height: var(--leading-xs);
 }
 
 .uapp-row-chevron {
@@ -992,20 +1018,23 @@
 
 .uapp-field-label {
   color: var(--t-base);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 500;
+  line-height: var(--leading-xs);
 }
 
 .uapp-input {
   width: 100%;
-  min-height: 48px;
-  padding: 0 14px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  background: var(--bg-muted);
+  min-height: var(--ctrl-h-lg);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
   color: var(--t-base);
-  font-size: 14px;
+  font-size: var(--text-base);
   outline: none;
+  height: var(--ctrl-h-lg);
+  line-height: var(--leading-base);
 }
 
 .uapp-input::placeholder {
@@ -1031,28 +1060,14 @@
 
 .uapp-field-error {
   color: var(--uapp-danger-ink);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-field-hint {
   color: var(--uapp-ink-sub);
-  font-size: 12px;
-}
-
-.uapp-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 48px;
-  padding: 0 18px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: transform var(--uapp-fast) var(--uapp-ease-out),
-    background var(--uapp-fast) var(--uapp-ease-out);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-button:active {
@@ -1103,22 +1118,24 @@
 /* ---------- 分段控件 ---------- */
 .uapp-seg {
   display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 10px;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-md);
   background: var(--bg-muted);
 }
 
 .uapp-seg-item {
   flex: 1;
-  min-height: 44px;
+  min-height: var(--ctrl-h-lg);
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 500;
   cursor: pointer;
+  height: var(--ctrl-h-lg);
+  line-height: var(--leading-xs);
 }
 
 .uapp-seg-item.active {
@@ -1187,9 +1204,9 @@
 
 /* ---------- 响应式 ---------- */
 @media (min-width: 768px) {
-  .uapp-bar {
+    .uapp-bar {
     height: calc(var(--uapp-bar-h-wide) + env(safe-area-inset-top, 0px));
-    padding: env(safe-area-inset-top, 0px) 32px 0;
+    padding: env(safe-area-inset-top, 0px) var(--space-6) 0;
   }
 
   .uapp-top-nav {
@@ -1201,8 +1218,8 @@
     padding-bottom: 32px;
   }
 
-  .uapp-content {
-    padding: 28px 32px 32px;
+    .uapp-content {
+    padding: var(--space-5) var(--space-6) var(--space-6);
   }
 
   .uapp-bottom {
@@ -1273,24 +1290,26 @@
 /* ---------- 账号与新建账号 ---------- */
 /* width 用 auto：负 margin 的行（设置网格）里 100% 会比链接行窄 16，
    箭头跨行错位；块级 flex 的 auto 才与链接行同宽。 */
-button.uapp-row {
-  width: auto;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
 
 button.uapp-row:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-.uapp-row-label,
 .uapp-row-sub {
+  margin-top: 2px;
+  color: var(--uapp-ink-sub);
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   display: block;
+}
+
+.uapp-row-label {
+  color: var(--t-base);
+  font-size: var(--text-base);
+  font-weight: 500;
+  display: block;
+  line-height: var(--leading-base);
 }
 
 .uapp-row--danger .uapp-row-label {
@@ -1624,6 +1643,13 @@ button.uapp-row:disabled {
 }
 
 button.uapp-row {
+  width: auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   border-radius: 12px;
   transition: background var(--uapp-fast) var(--uapp-ease-out);
 }
@@ -1774,33 +1800,9 @@ button.uapp-row:hover:not(:disabled) {
   margin-top: 6px;
 }
 
-.uapp-cal-cell {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 2px;
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  color: var(--t-base);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
 .uapp-cal-cell.is-outside {
   color: var(--uapp-ink-quiet);
   font-weight: 400;
-}
-
-.uapp-cal-cell.is-selected {
-  background: var(--primary-soft);
-  color: var(--primary);
 }
 
 .uapp-cal-cell.is-today {
@@ -1861,11 +1863,6 @@ button.uapp-row:hover:not(:disabled) {
   gap: 5px;
 }
 
-.uapp-day-detail {
-  min-height: 220px;
-  margin-top: 12px;
-}
-
 @media (min-width: 1024px) {
   .uapp-history-grid {
     display: grid;
@@ -1906,7 +1903,22 @@ button.uapp-row:hover:not(:disabled) {
 }
 
 .uapp-cal-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 44px;
   min-height: 48px;
+  padding: 2px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--t-base);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
   transition: transform var(--uapp-fast) var(--uapp-ease-out),
     background var(--uapp-fast) var(--uapp-ease-out),
     box-shadow var(--uapp-fast) var(--uapp-ease-out);
@@ -1918,11 +1930,15 @@ button.uapp-row:hover:not(:disabled) {
 }
 
 .uapp-cal-cell.is-selected {
+  background: var(--primary-soft);
+  color: var(--primary);
   box-shadow: 0 0 0 2px var(--primary-ring);
 }
 
 /* 日详情仪表：大日期数字＋状态签，行沉底。 */
 .uapp-day-detail {
+  min-height: 220px;
+  margin-top: 12px;
   display: flex;
   flex-direction: column;
 }
@@ -2073,20 +2089,22 @@ a.uapp-row:hover {
 
 /* ---------- 设置 ---------- */
 .uapp-button {
-  text-decoration: none;
-}
-
-.uapp-switch {
-  position: relative;
-  flex: none;
-  width: 40px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: var(--ctrl-h-lg);
+  padding: 0 var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
+  font-weight: 600;
   cursor: pointer;
-  transition: background var(--uapp-fast) var(--uapp-ease-out);
+  transition: transform var(--uapp-fast) var(--uapp-ease-out),
+    background var(--uapp-fast) var(--uapp-ease-out);
+  text-decoration: none;
+  height: var(--ctrl-h-lg);
+  line-height: 1;
 }
 
 .uapp-switch.is-on {
@@ -2245,8 +2263,8 @@ a.uapp-row:hover {
 /* 三组：结果大标题（主角）／高频身份／日历。功能面，不堆装饰。 */
 .uapp-home-bento {
   display: grid;
-  gap: 16px;
-  margin-top: 20px;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -2256,27 +2274,27 @@ a.uapp-row:hover {
 }
 
 /* 入场错峰：结果→身份→日历，落定即静态（基线口径）。 */
-.uapp-home-result,
-.uapp-home-identity,
-.uapp-home-cal {
+.uapp-home-result {
   animation: uapp-rise-in 240ms var(--uapp-ease-out) both;
 }
 
 .uapp-home-identity {
+  animation: uapp-rise-in 240ms var(--uapp-ease-out) both;
   animation-delay: 60ms;
 }
 
 .uapp-home-cal {
+  animation: uapp-rise-in 240ms var(--uapp-ease-out) both;
   animation-delay: 120ms;
 }
 
 @media (min-width: 1024px) {
-  .uapp-home-bento {
-    grid-template-columns: minmax(0, 1.72fr) minmax(300px, 1fr);
-    grid-template-areas:
-      "result identity"
+    .uapp-home-bento {
+    grid-template-columns: minmax(0, 1.72fr) minmax(296px, 1fr);
+    grid-template-areas: "result identity"
       "cal identity";
     align-items: stretch;
+    gap: var(--space-4);
   }
 
   .uapp-home-bento:not(:has(.uapp-home-identity)) {
@@ -2303,39 +2321,49 @@ a.uapp-row:hover {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
-  padding-left: 4px;
+  gap: var(--space-1);
+  padding-left: 0;
 }
 
 .uapp-home-eyebrow {
   margin: 0;
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.04em;
+  line-height: var(--leading-xs);
 }
 
 .uapp-home-head .uapp-greeting {
   margin: 0;
-  font-size: 32px;
+  font-size: var(--text-xl);
+  line-height: var(--leading-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .uapp-result {
-  padding: 24px;
+  padding: var(--card-pad);
+  margin-top: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
 }
 
 .uapp-result-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .uapp-result-eyebrow {
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.04em;
+  line-height: var(--leading-xs);
 }
 
 /* 与身份卡同高：撑满行高，脚行沉底，消掉两卡高度差空白。 */
@@ -2348,9 +2376,9 @@ a.uapp-row:hover {
 
 .uapp-result-body {
   display: grid;
-  gap: 24px;
-  margin-top: 16px;
-  margin-bottom: 16px;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+  margin-bottom: var(--space-3);
 }
 
 @media (min-width: 768px) {
@@ -2363,28 +2391,29 @@ a.uapp-row:hover {
 /* 层级：状态大标题主角；时间用等宽数字当仪表读数。 */
 .uapp-result .uapp-hero-title {
   margin: 0;
-  font-size: 40px;
+  font-size: var(--text-2xl);
   font-weight: 700;
-  letter-spacing: -1px;
-  line-height: 1.15;
+  letter-spacing: -0.02em;
+  line-height: var(--leading-2xl);
 }
 
 .uapp-result .uapp-hero-time {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 30px;
-  font-weight: 600;
-  letter-spacing: -1px;
+  font-size: var(--text-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
+  line-height: var(--leading-xl);
 }
 
 /* 结束时间与描述文本中心水平齐平（不用 baseline，避免小字偏上）。 */
 .uapp-result-when {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-2);
   flex-wrap: wrap;
-  margin-top: 12px;
+  margin-top: var(--space-2);
 }
 
 .uapp-result-when .uapp-hero-note {
@@ -2395,7 +2424,7 @@ a.uapp-row:hover {
 .uapp-result-stats {
   display: flex;
   align-items: stretch;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .uapp-stat {
@@ -2410,10 +2439,10 @@ a.uapp-row:hover {
   gap: 3px;
   color: var(--t-base);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 22px;
-  font-weight: 600;
+  font-size: var(--text-xl);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  line-height: 1.25;
+  line-height: var(--leading-xl);
 }
 
 .uapp-stat-value .app-number {
@@ -2423,13 +2452,15 @@ a.uapp-row:hover {
 
 .uapp-stat-value i {
   font-style: normal;
-  font-size: 13px;
+  font-size: var(--text-xs);
   color: var(--uapp-ink-sub);
+  line-height: var(--leading-xs);
 }
 
 .uapp-stat-label {
   color: var(--uapp-ink-sub);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .uapp-stat-divider {
@@ -2442,10 +2473,10 @@ a.uapp-row:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-3);
   flex-wrap: wrap;
   margin-top: auto;
-  padding-top: 16px;
+  padding-top: var(--space-3);
   border-top: 1px solid var(--border-soft);
 }
 
@@ -2490,7 +2521,7 @@ a.uapp-row:hover {
 .uapp-result-next {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 /* 身份卡：高频三字段，行 hover 有反馈，编辑触达≥44。 */
@@ -2500,19 +2531,20 @@ a.uapp-row:hover {
 }
 
 .uapp-identity-fields {
-  margin: 12px 0;
+  margin: var(--space-3) 0;
 }
 
 .uapp-identity-row {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px;
-  margin: 0 -8px;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  margin: 0 calc(-1 * var(--space-2));
   border-bottom: 1px solid var(--border-soft);
-  border-radius: 8px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
   transition: background var(--uapp-fast) var(--uapp-ease-out);
+  line-height: var(--leading-xs);
 }
 
 .uapp-identity-row:hover {
@@ -2536,14 +2568,15 @@ a.uapp-row:hover {
 .uapp-identity-actions {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1);
   margin-top: auto;
 }
 
 .uapp-identity-edit {
   margin-top: 0;
   width: 100%;
-  min-height: 44px;
+  min-height: var(--ctrl-h-lg);
+  height: var(--ctrl-h-lg);
 }
 
 .uapp-identity-sub-link {
@@ -2558,9 +2591,9 @@ a.uapp-row:hover {
 }
 
 .uapp-home-cal-card .uapp-day-cell {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
+  width: var(--ctrl-h-md);
+  height: var(--ctrl-h-md);
+  border-radius: var(--radius-md);
   transition: transform var(--uapp-fast) var(--uapp-ease-out),
     box-shadow var(--uapp-fast) var(--uapp-ease-out);
 }
@@ -2575,11 +2608,16 @@ a.uapp-row:hover {
 }
 
 /* 焦点可见性（vercel web-design-guidelines）：键盘环不被裁。 */
-.uapp-home-bento :focus-visible,
 .uapp-home-head :focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-  border-radius: 6px;
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-sm);
+}
+
+.uapp-home-bento :focus-visible {
+  outline: var(--focus-ring-w) solid var(--primary);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-sm);
 }
 
 /* ---------- 设置子表单弹窗化（同主页语言） ---------- */
@@ -2643,6 +2681,15 @@ a.uapp-row:hover {
 /* 开关使用透明伪元素扩热区到 ≥44px；照片删除按钮本身已是 44×44。 */
 .uapp-switch {
   position: relative;
+  flex: none;
+  width: 40px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+  transition: background var(--uapp-fast) var(--uapp-ease-out);
 }
 .uapp-switch::after {
   content: '';
@@ -2675,487 +2722,7 @@ a.uapp-row:hover {
   }
 }
 
-/* ==========================================================================
- * 统一设计系统层（第 1 期：用户端壳 × 主页 /app × 共享控件）
- *
- * **口径**
- * 1. 与管理端共用 `scale.css` 全部基准：4px 间距阶、44px 触控控件高、
- *    6 / 8 / 12 / 999px 四档圆角、12 / 14 / 16 / 20 / 28px 字号音阶、16px 卡片内边距。
- * 2. 移动优先，保持更松弛的触控与呼吸感，同时在 390×844 下总长 ≤ 1.6 屏、核心区首屏直出。
- * 3. 与管理端同表面语言（--bg-card + 1px var(--border) + --shadow-card + --radius-lg），
- *    消除「管理端与用户端像两个不同产品」的割裂感。
- * ========================================================================== */
-
-/* ---------- 用户端壳：顶栏 / 底栏 / 主区 ---------- */
-
-.uapp-bar {
-  padding: env(safe-area-inset-top, 0px) var(--space-4) 0;
-  gap: var(--space-4);
-}
-
-.uapp-brand {
-  gap: var(--space-2);
-  min-width: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-}
-
-.uapp-brand-mark {
-  width: var(--ctrl-h-sm);
-  height: var(--ctrl-h-sm);
-  border-radius: var(--radius-md);
-  box-shadow: 0 0 0 3px var(--primary-soft);
-}
-
-.uapp-brand-text {
-  font-size: var(--text-lg);
-  line-height: var(--leading-lg);
-  font-weight: 700;
-}
-
-.uapp-top-nav {
-  gap: var(--space-1);
-  margin-left: var(--space-4);
-}
-
-.uapp-top-link {
-  min-height: var(--ctrl-h-md);
-  height: var(--ctrl-h-md);
-  padding: 0 var(--space-4);
-  border-radius: var(--radius-full);
-  font-size: var(--text-base);
-  line-height: var(--leading-base);
-}
-
-.uapp-bar-actions {
-  gap: var(--space-1);
-}
-
-.uapp-icon-btn {
-  width: var(--ctrl-h-lg);
-  height: var(--ctrl-h-lg);
-  border-radius: var(--radius-md);
-}
-
-.uapp-avatar {
-  width: var(--ctrl-h-lg);
-  height: var(--ctrl-h-lg);
-  border: 4px solid transparent;
-  background-origin: padding-box;
-  background-clip: padding-box;
-  border-radius: var(--radius-full);
-}
-
-.uapp-main {
-  padding-bottom: calc(var(--uapp-bottom-h) + env(safe-area-inset-bottom, 0px) + var(--space-4));
-}
-
-.uapp-content {
-  padding: var(--space-3) var(--space-4);
-}
-
-.uapp-notice {
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-  padding: var(--space-3);
-  border-radius: var(--radius-md);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-bottom {
-  padding: 0 var(--space-3) env(safe-area-inset-bottom, 0px);
-}
-
-.uapp-tab {
-  min-height: var(--ctrl-h-lg);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-tab-icon {
-  width: var(--ctrl-h-sm);
-  height: var(--ctrl-h-sm);
-  border-radius: var(--radius-full);
-}
-
-/* ---------- 用户端共享基础件 ---------- */
-
-.uapp-card {
-  padding: var(--card-pad);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-card);
-  box-shadow: var(--shadow-card);
-}
-
-.uapp-card--hero {
-  border-radius: var(--radius-lg);
-}
-
-.uapp-card-title {
-  font-size: var(--text-lg);
-  line-height: var(--leading-lg);
-}
-
-.uapp-card-sub,
-.uapp-field-label,
-.uapp-field-error,
-.uapp-field-hint,
-.uapp-row-sub,
-.uapp-row-value {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-row-label {
-  font-size: var(--text-base);
-  line-height: var(--leading-base);
-}
-
-.uapp-row-icon {
-  width: var(--ctrl-h-sm);
-  height: var(--ctrl-h-sm);
-  border-radius: var(--radius-md);
-}
-
-.uapp-card-action {
-  min-width: var(--ctrl-h-lg);
-  height: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-  border-radius: var(--radius-md);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-input {
-  height: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-card);
-  font-size: var(--text-base);
-  line-height: var(--leading-base);
-}
-
-.uapp-button {
-  height: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-  padding: 0 var(--space-4);
-  border-radius: var(--radius-md);
-  font-size: var(--text-base);
-  line-height: 1;
-}
-
-.uapp-seg {
-  padding: var(--space-1);
-  gap: var(--space-1);
-  border-radius: var(--radius-md);
-}
-
-.uapp-seg-item {
-  height: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-status {
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-}
-
-/* ---------- 用户端主页（/app） ---------- */
-
-.uapp-home-head {
-  gap: var(--space-1);
-  padding-left: 0;
-}
-
-.uapp-home-eyebrow,
-.uapp-date-row {
-  margin: 0;
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  color: var(--uapp-ink-sub);
-}
-
-.uapp-home-head .uapp-greeting,
-.uapp-greeting {
-  margin: 0;
-  font-size: var(--text-xl);
-  line-height: var(--leading-xl);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.uapp-announcement {
-  align-items: center;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--info);
-  border-radius: var(--radius-md);
-  background: var(--info-soft);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-announcement-dot {
-  margin-top: 0;
-  border-radius: var(--radius-full);
-}
-
-.uapp-announcement-close {
-  width: var(--ctrl-h-lg);
-  height: var(--ctrl-h-lg);
-  min-width: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-3)) calc(-1 * var(--space-2)) auto;
-  border-radius: var(--radius-md);
-  font-size: var(--text-lg);
-}
-
-.uapp-home-bento {
-  gap: var(--space-3);
-  margin-top: var(--space-3);
-}
-
-.uapp-hero,
-.uapp-result {
-  margin-top: 0;
-  padding: var(--card-pad);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-card);
-  box-shadow: var(--shadow-card);
-}
-
-.uapp-result-head {
-  gap: var(--space-3);
-}
-
-.uapp-result-eyebrow {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-result-body {
-  gap: var(--space-4);
-  margin-top: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-
-.uapp-result .uapp-hero-title,
-.uapp-hero-title {
-  margin: 0;
-  font-size: var(--text-2xl);
-  line-height: var(--leading-2xl);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.uapp-result-when {
-  gap: var(--space-2);
-  margin-top: var(--space-2);
-}
-
-.uapp-result .uapp-hero-time,
-.uapp-hero-time {
-  margin: 0;
-  font-size: var(--text-xl);
-  line-height: var(--leading-xl);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.uapp-hero-note {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-base);
-  line-height: var(--leading-base);
-}
-
-.uapp-result-when .uapp-hero-note {
-  margin: 0;
-}
-
-.uapp-window-head,
-.uapp-window-scale,
-.uapp-window-legend {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-window-track,
-.uapp-window-band,
-.uapp-window-chosen,
-.uapp-window-dot,
-.uapp-window-swatch {
-  border-radius: var(--radius-full);
-}
-
-.uapp-window-track {
-  margin-top: var(--space-2);
-}
-
-.uapp-window-scale,
-.uapp-window-legend {
-  margin-top: var(--space-2);
-  gap: var(--space-3);
-}
-
-.uapp-result-foot {
-  gap: var(--space-3);
-  padding-top: var(--space-3);
-}
-
-.uapp-result-stats {
-  gap: var(--space-4);
-}
-
-.uapp-stat-value {
-  font-size: var(--text-xl);
-  line-height: var(--leading-xl);
-  font-weight: 700;
-}
-
-.uapp-stat-value i,
-.uapp-stat-label {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-result-next {
-  gap: var(--space-2);
-}
-
-.uapp-next-icon {
-  width: var(--ctrl-h-sm);
-  height: var(--ctrl-h-sm);
-  border-radius: var(--radius-md);
-}
-
-.uapp-next-time {
-  font-size: var(--text-base);
-  line-height: var(--leading-base);
-}
-
-.uapp-next-note {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-hero-link {
-  height: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-md);
-  font-size: var(--text-base);
-  line-height: 1;
-}
-
-/* 账号身份卡 */
-.uapp-hero-identity {
-  gap: var(--space-3);
-}
-
-.uapp-hero-photo {
-  width: var(--space-12);
-  height: var(--space-12);
-  border-radius: var(--radius-md);
-}
-
-.uapp-hero-photo img {
-  border-radius: var(--radius-md);
-}
-
-.uapp-hero-name {
-  font-size: var(--text-lg);
-  line-height: var(--leading-lg);
-}
-
-.uapp-hero-meta {
-  margin-top: 2px;
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-identity-fields {
-  margin: var(--space-3) 0;
-}
-
-.uapp-identity-row {
-  gap: var(--space-3);
-  padding: var(--space-2);
-  margin: 0 calc(-1 * var(--space-2));
-  border-radius: var(--radius-md);
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-identity-actions {
-  gap: var(--space-1);
-}
-
-.uapp-identity-edit {
-  height: var(--ctrl-h-lg);
-  min-height: var(--ctrl-h-lg);
-}
-
-/* 近 7 天条 */
-.uapp-week-head,
-.uapp-week-link,
-.uapp-day-label {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-}
-
-.uapp-week-days {
-  margin-top: var(--space-3);
-  gap: var(--space-1);
-}
-
-.uapp-day {
-  gap: var(--space-1);
-}
-
-.uapp-day-cell,
-.uapp-home-cal-card .uapp-day-cell {
-  width: var(--ctrl-h-md);
-  height: var(--ctrl-h-md);
-  border-radius: var(--radius-md);
-}
-
-.uapp-day-pending-dot {
-  border-radius: var(--radius-full);
-}
-
-.uapp-home-bento :focus-visible,
-.uapp-home-head :focus-visible {
-  outline: var(--focus-ring-w) solid var(--primary);
-  outline-offset: var(--focus-ring-offset);
-  border-radius: var(--radius-sm);
-}
-
 @media (min-width: 768px) {
-  .uapp-bar {
-    padding: env(safe-area-inset-top, 0px) var(--space-6) 0;
-  }
-
-  .uapp-content {
-    padding: var(--space-5) var(--space-6) var(--space-6);
-  }
-
   .uapp-home-bento {
     gap: var(--space-4);
     margin-top: var(--space-4);
@@ -3168,23 +2735,18 @@ a.uapp-row:hover {
   }
 }
 
-@media (min-width: 1024px) {
-  .uapp-home-bento {
-    grid-template-columns: minmax(0, 1.72fr) minmax(296px, 1fr);
-    gap: var(--space-4);
-  }
-}
-
-/* 320px 极窄视口兜底：7 天日历格自适应宽度，确保零横向溢出 */
 @media (max-width: 360px) {
   .uapp-content {
     padding: var(--space-3);
   }
 
-  .uapp-day-cell,
+  .uapp-day-cell {
+    width: var(--ctrl-h-sm);
+    height: var(--ctrl-h-sm);
+  }
+
   .uapp-home-cal-card .uapp-day-cell {
     width: var(--ctrl-h-sm);
     height: var(--ctrl-h-sm);
   }
 }
-
