@@ -21,11 +21,15 @@
 #      共享错误码枚举例外：components/schemas/ErrorCode 是单一共享枚举，契约在
 #      它的 description 里承诺「新值只增不删」；加一个值会同时命中全部响应的
 #      error.code（含批量结果里的 items/items/code），按端点逐行豁免没有信息量，
-#      且每加一个码就要写 ~98 行。因此新增值属于 ErrorCode 枚举的
-#      `response-property-enum-value-added` 降为 SHARED 行（展示、不判红）；
-#      端点局部枚举（SettingSource、回执来源等）仍逐条走 allowlist 评审。
-#      判据由 tests/test_contract_gate_wiring.py 用 stub 双向钉住
-#      （共享码放行；局部枚举仍红；ErrorCode 解析不出来 exit 2，不静默放行）。
+#      且每加一个码就要写 ~98 行。判据要求**两件事同时成立**：
+#        ① 新增值属于 ErrorCode 的 enum 序列（散文 bullet 不算，见 §解析口径）；
+#        ② finding 的 property 路径是 error.code 链（error/code 或 items…/code），
+#           所以局部枚举（SettingSource 等）加同名词仍然判红。
+#      满足两条才降为 SHARED 行（按值聚合、不判红）；端点局部枚举的其它值仍走
+#      allowlist 逐条评审。解析不出来（块缺失、无 enum、非 UTF-8）一律 exit 2，
+#      不静默放行。判据由 tests/test_contract_gate_wiring.py 双向钉住
+#      （共享码放行、嵌套 items 放行、局部枚举加同名词仍红、散文 bullet 不算、
+#      坏 spec 走 CONTRACT_ERRORCODE_SPEC 注入后 exit 2）。
 #
 # 口径：
 #   - 缺工具 = 环境错误，exit 2（跳过 ≠ 绿）。
@@ -118,33 +122,49 @@ FINDINGS="$TMP_DIR/findings.json"
 "$OASDIFF" breaking --format json "$TMP_DIR/base.yaml" "$SPEC" > "$FINDINGS"
 ALLOWLIST="${BREAKS_ALLOWLIST:-$ROOT/server/contracts/.breaking-allowlist.tsv}"
 "$PY" - "$ALLOWLIST" "$FINDINGS" "$SPEC" <<'PYEOF'
-import datetime, json, re, sys
+import datetime, json, os, re, sys
 allow_path, findings_path, spec_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
-# ErrorCode 是共享枚举：它新增的值会同时出现在所有响应的 error.code 上。
-# 从 spec 里取出它的值集，用来判断某条 enum-added finding 是不是这个共享枚举。
+# ErrorCode 是共享枚举：新增值会同时出现在所有响应的 error.code 上（含批量结果
+# 里的 items/items/code）。判据要求两件事同时成立，缺一即回到 ERR：
+#   ① 新增值在 ErrorCode 的 enum 序列里——只认 `enum:` 子块，description 散文
+#      里的 bullet（缩进相同）不算，否则给散文加一行就能放行任意词；
+#   ② finding 的 property 路径是 error.code 那条链，否则局部枚举加个同名词
+#      （如 SettingSource 加 conflict）会被一起放过。
+ERROR_CODE_PROPERTY = re.compile(r"^(?:error|items)(?:/items)*/code$")
+ADDED_VALUE = re.compile(r"added the new `([^`]+)`")
+ADDED_PROPERTY = re.compile(r"to the `([^`]+)` response property")
+# CONTRACT_ERRORCODE_SPEC 只给测试注入坏 spec、验证 fail-closed；默认读真 spec。
+parse_path = os.environ.get("CONTRACT_ERRORCODE_SPEC") or spec_path
 shared_codes = set()
 in_block = False
+in_enum = False
 try:
-    with open(spec_path, encoding="utf-8") as fh:
+    with open(parse_path, encoding="utf-8") as fh:
         for line in fh:
             if not in_block:
-                if line.rstrip("\n") == "    ErrorCode:":
+                if line.rstrip("\r\n") == "    ErrorCode:":
                     in_block = True
                 continue
             if re.match(r"^    \S", line):
-                break
-            m = re.match(r"^\s{8}- (\S+)\s*$", line)
+                break  # 离开 ErrorCode 块
+            if not in_enum:
+                if line.rstrip("\r\n") == "      enum:":
+                    in_enum = True
+                continue
+            m = re.match(r"^        - (\S+)\s*$", line)
             if m:
                 shared_codes.add(m.group(1))
-except OSError as exc:
+                continue
+            if line.strip():
+                break  # enum 序列结束
+except (OSError, UnicodeDecodeError) as exc:
     print("ErrorCode schema unreadable: %s" % exc, file=sys.stderr)
     sys.exit(2)
 if not shared_codes:
     # 解析失败必须 exit 2：否则共享枚举判据会静默失效，变成「全都不判红」。
-    print("cannot parse ErrorCode enum from %s" % spec_path, file=sys.stderr)
+    print("cannot parse ErrorCode enum from %s" % parse_path, file=sys.stderr)
     sys.exit(2)
-ADDED_VALUE = re.compile(r"added the new `([^`]+)`")
 today = datetime.date.today()
 allow = set()
 try:
@@ -173,25 +193,40 @@ try:
 except FileNotFoundError:
     pass
 remaining = []
+shared_hits = []
 for x in json.load(open(findings_path, encoding="utf-8")):
     key = (x.get("id", ""), str(x.get("operation", "")).lower(), x.get("path", ""))
     if key in allow:
         print("ALLOWED\t[%s] %s %s" % key, file=sys.stderr)
         continue
     text = str(x.get("text", ""))
-    added = ADDED_VALUE.search(text)
-    if key[0] == "response-property-enum-value-added" and added and added.group(1) in shared_codes:
-        # 共享错误码枚举按契约声明只增不删；一个值会命中全部响应的 error.code，
-        # 逐端点豁免没有信息量。仍打印出来，便于当批审查看见新增的是哪个码。
-        print("SHARED\t[%s] %s %s\t%s" % (key[0], key[1].upper(), key[2], text),
-              file=sys.stderr)
-        continue
+    if key[0] == "response-property-enum-value-added":
+        added = ADDED_VALUE.search(text)
+        prop = ADDED_PROPERTY.search(text)
+        # 两条同时成立才算共享枚举（见文件头）：值在 ErrorCode 的 enum 序列里，
+        # 且 property 路径是 error.code 链。少任何一条都落到下面的 ERR。
+        if (added and prop and added.group(1) in shared_codes
+                and ERROR_CODE_PROPERTY.match(prop.group(1))):
+            shared_hits.append((added.group(1), prop.group(1)))
+            continue
     if int(x.get("level", 3)) < 3:
         # 非 ERR 级 findings 只展示不判红——与旧 `--fail-on ERR` 语义逐字一致。
         print("NOTE\t[%s] %s %s\t%s" % (key[0], key[1].upper(), key[2], text),
               file=sys.stderr)
         continue
     remaining.append(x)
+if shared_hits:
+    # 按「值 × property」聚合：492 条逐行打印会把门禁日志淹掉，且它们本来就是
+    # 同一个枚举行在全部响应上的投影。聚合后仍能看出新增的是哪个码、加在哪条链。
+    counts = {}
+    for value, prop in shared_hits:
+        counts.setdefault(value, {})
+        counts[value][prop] = counts[value].get(prop, 0) + 1
+    for value in sorted(counts):
+        props = ", ".join("%s ×%d" % (p, n) for p, n in sorted(counts[value].items()))
+        print("SHARED\tErrorCode 新增值 %s（%d 条 finding）：%s——契约声明新值只增不删，"
+              "共享枚举按加成放行" % (value, sum(counts[value].values()), props),
+              file=sys.stderr)
 if remaining:
     print("%d 个未获准的 ERR 级破坏性变更：" % len(remaining), file=sys.stderr)
     for x in remaining:

@@ -364,6 +364,10 @@ class EntryScriptTest(unittest.TestCase):
                       "共享枚举判据没进脚本非注释行")
         self.assertIn("ErrorCode", joined,
                       "共享枚举判据没有从 spec 取 ErrorCode 值集")
+        self.assertIn("ERROR_CODE_PROPERTY", joined,
+                      "共享枚举判据没有限死 error.code 的 property 路径")
+        self.assertIn("CONTRACT_ERRORCODE_SPEC", joined,
+                      "缺坏 spec 注入钩子，fail-closed 路径无法测")
 
     def test_missing_tool_exits_2(self):
         self.assertIn("exit 2", self.script,
@@ -563,13 +567,78 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         self.assertIn("SHARED", out)
 
     def test_scoped_enum_added_still_breaking(self):
-        # 端点局部枚举（如 SettingSource 的 db）不在 ErrorCode 里，仍必须判红：
-        # 证明共享枚举豁免没有放宽成「所有枚举新增都放行」。
+        # 负例必须用**块枚举**里的值（openapi.yaml 的 UserStatus 是块枚举，
+        # flow 风格枚举根本进不了解析器，选它会让「放宽缩进正则」这类突变存活）。
         rc, out = self._run("--base", "HEAD",
                             OASDIFF=self._write_json_oasdiff(
-                                self._enum_added("source", "db")))
+                                self._enum_added("status", "pending")))
         self.assertEqual(rc, 1, out)
         self.assertIn("ERR", out)
+
+    def test_shared_value_on_scoped_property_is_breaking(self):
+        # F1：值本身在 ErrorCode 里（conflict），但加在局部枚举 source 上——
+        # 不是 error.code 那条链，必须判红。只看值集不看 property 会误放行。
+        rc, out = self._run("--base", "HEAD",
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("source", "conflict")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("ERR", out)
+        self.assertNotIn("SHARED", out)
+
+    def _write_spec(self, body):
+        """写一份 fixture spec，返回 MSYS 友好路径。"""
+        path = os.path.join(self.tmp.name, "spec-%d.yaml" % len(os.listdir(self.tmp.name)))
+        with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(body)
+        return path.replace("\\", "/")
+
+    def test_description_bullet_is_not_an_enum_value(self):
+        # F2：description 是块标量，续行缩进与枚举项相同；只认 enum: 子块，
+        # 否则给散文加一行 `- evilword` 就能放行任意词。
+        spec = self._write_spec(
+            "components:\n"
+            "  schemas:\n"
+            "    ErrorCode:\n"
+            "      type: string\n"
+            "      description: |\n"
+            "        Stable codes.\n"
+            "        - evilword\n"
+            "      enum:\n"
+            "        - validation_failed\n")
+        rc, out = self._run("--base", "HEAD",
+                            CONTRACT_ERRORCODE_SPEC=spec,
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("error/code", "evilword")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("ERR", out)
+        self.assertNotIn("SHARED", out)
+
+    def test_non_utf8_spec_exits_2(self):
+        # F6：非 UTF-8 必须按环境错误处理（exit 2），不能被读成「发现破坏性变更」。
+        path = os.path.join(self.tmp.name, "spec-latin1.yaml")
+        with io.open(path, "wb") as fh:
+            fh.write("components:\n  schemas:\n    ErrorCode:\n      enum:\n"
+                     "        - bad\xff\n".encode("latin-1"))
+        rc, out = self._run("--base", "HEAD",
+                            CONTRACT_ERRORCODE_SPEC=path.replace("\\", "/"),
+                            OASDIFF=self._write_json_oasdiff([]))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("ErrorCode schema unreadable", out)
+
+    def test_unparsable_errorcode_spec_exits_2(self):
+        # F3：解析不出来必须 exit 2（环境错误），不是「没有破坏性变更」。
+        spec = self._write_spec(
+            "components:\n"
+            "  schemas:\n"
+            "    ErrorCode:\n"
+            "      type: string\n"
+            "      description: |\n"
+            "        no enum here\n")
+        rc, out = self._run("--base", "HEAD",
+                            CONTRACT_ERRORCODE_SPEC=spec,
+                            OASDIFF=self._write_json_oasdiff([]))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot parse ErrorCode enum", out)
 
     def test_future_allowlist_row_still_exempts(self):
         # 正向对照：未过期行仍放行，证明过期判据不是恒红。
