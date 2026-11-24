@@ -84,7 +84,7 @@ check_version() {
     top="$(grep -m1 -E '^## \[v[0-9]+\.[0-9]+\.[0-9]+\]' "$changelog" \
         | sed -E 's/^## \[(v[0-9.]+)\].*/\1/')"
     # 双行共库（2026-11-10 定稿）：旧 Python 线的 __version__ 冻结在 0.6.4，
-    # Go 线的产品版本在仓库根 VERSION（1.0.0）。两条线共用一份 CHANGELOG，
+    # Go 线的产品版本在仓库根 VERSION（当前 0.7.5）。两条线共用一份 CHANGELOG，
     # 顶部只能写一个条目，故「等于 __version__」或「等于根 VERSION」任一成立即放行；
     # 两个都不是才红——那时顶部是第三个值，说明有人手改了版本或 CHANGELOG。
     local go_v=""
