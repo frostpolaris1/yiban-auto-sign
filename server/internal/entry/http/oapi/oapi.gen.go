@@ -289,24 +289,25 @@ func (e DiagnosticsItemSuggestion) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	AlreadySigned       ErrorCode = "already_signed"
-	CapacityExceeded    ErrorCode = "capacity_exceeded"
-	CapacityShortfall   ErrorCode = "capacity_shortfall"
-	Conflict            ErrorCode = "conflict"
-	Forbidden           ErrorCode = "forbidden"
-	InternalError       ErrorCode = "internal_error"
-	LocationOutOfRange  ErrorCode = "location_out_of_range"
-	NotFound            ErrorCode = "not_found"
-	PhotoInvalid        ErrorCode = "photo_invalid"
-	PhotoMissing        ErrorCode = "photo_missing"
-	PhotoRejected       ErrorCode = "photo_rejected"
-	RateLimited         ErrorCode = "rate_limited"
-	SignRunning         ErrorCode = "sign_running"
-	TaskAmbiguous       ErrorCode = "task_ambiguous"
-	Unauthorized        ErrorCode = "unauthorized"
-	UpstreamUnavailable ErrorCode = "upstream_unavailable"
-	ValidationFailed    ErrorCode = "validation_failed"
-	WindowClosed        ErrorCode = "window_closed"
+	AlreadySigned           ErrorCode = "already_signed"
+	CapacityExceeded        ErrorCode = "capacity_exceeded"
+	CapacityShortfall       ErrorCode = "capacity_shortfall"
+	Conflict                ErrorCode = "conflict"
+	Forbidden               ErrorCode = "forbidden"
+	HumanVerificationFailed ErrorCode = "human_verification_failed"
+	InternalError           ErrorCode = "internal_error"
+	LocationOutOfRange      ErrorCode = "location_out_of_range"
+	NotFound                ErrorCode = "not_found"
+	PhotoInvalid            ErrorCode = "photo_invalid"
+	PhotoMissing            ErrorCode = "photo_missing"
+	PhotoRejected           ErrorCode = "photo_rejected"
+	RateLimited             ErrorCode = "rate_limited"
+	SignRunning             ErrorCode = "sign_running"
+	TaskAmbiguous           ErrorCode = "task_ambiguous"
+	Unauthorized            ErrorCode = "unauthorized"
+	UpstreamUnavailable     ErrorCode = "upstream_unavailable"
+	ValidationFailed        ErrorCode = "validation_failed"
+	WindowClosed            ErrorCode = "window_closed"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
@@ -321,6 +322,8 @@ func (e ErrorCode) Valid() bool {
 	case Conflict:
 		return true
 	case Forbidden:
+		return true
+	case HumanVerificationFailed:
 		return true
 	case InternalError:
 		return true
@@ -2205,6 +2208,11 @@ type RegisterRequest struct {
 
 	// TermsVersion Must equal RegistrationStatus.terms_version; a stale value is 409.
 	TermsVersion int `json:"terms_version"`
+
+	// TurnstileToken Cloudflare Turnstile response token. Required only while
+	// RegistrationStatus.turnstile_enforced is true; a longer value is
+	// 400 human_verification_failed. Never logged or stored.
+	TurnstileToken *string `json:"turnstile_token,omitempty"`
 }
 
 // RegistrationSetRequest defines model for RegistrationSetRequest.
@@ -2218,6 +2226,18 @@ type RegistrationStatus struct {
 	Enabled        bool `json:"enabled"`
 	PrivacyVersion int  `json:"privacy_version"`
 	TermsVersion   int  `json:"terms_version"`
+
+	// TurnstileEnforced True in on mode: a missing or rejected token answers 400
+	// human_verification_failed, so the client must not submit without
+	// one. False in log mode: the widget is still rendered and its
+	// token collected, but the server only logs the outcome and lets
+	// the registration through. Always false while off.
+	TurnstileEnforced bool `json:"turnstile_enforced"`
+
+	// TurnstileSiteKey Empty when human verification is off. When set, render the
+	// Cloudflare Turnstile widget with this key and send the resulting
+	// token as turnstile_token on registration.
+	TurnstileSiteKey string `json:"turnstile_site_key"`
 }
 
 // ResetPasswordRequest defines model for ResetPasswordRequest.

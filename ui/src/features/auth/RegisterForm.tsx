@@ -7,15 +7,18 @@
  *
  * **口径**
  * 开关、协议、字段任一不合法都**零请求**。
- * 请求体只含契约 `RegisterRequest` 的六个字段；确认口径只在前端比对。
- * 人机验证由 `TurnstileSlot` 预留版面，尚未接入，不参与校验。
+ * 请求体只含契约 `RegisterRequest` 的字段；确认口径只在前端比对。
+ * 人机验证：注册状态带站点密钥时由 `TurnstileSlot` 渲染控件；`turnstile_enforced`
+ * 且真的渲染了控件时，没拿到令牌不发请求（enforced 但没密钥是配置不完整，放给
+ * 服务端判，回 human_verification_failed 就重拉状态）。log 档只附带能拿到的令牌。
+ * 控件的加载态/失败态由子组件上抛，守卫据此换说法，状态一换旧提示即撤。
  * 协议一个勾选同时置位 `agree_terms` 与 `agree_privacy`。
  * 409 先重拉注册状态：版本变了才算「条款已更新」，否则落到邮箱重复。
  * 成功即建会话：写 `['me']` 缓存后交给页面导航。
  * 展示构建不发请求，走本地延时后按成功处理。
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Icon } from '@/components/ui/Icon'
@@ -46,7 +49,7 @@ import {
   type RegisterErrors,
   type RegisterField,
 } from './register'
-import { TurnstileSlot } from './TurnstileSlot'
+import { TurnstileSlot, type TurnstileStatus } from './TurnstileSlot'
 import { REGISTRATION_QUERY_KEY } from './useRegistrationStatus'
 
 type RegisterFormProps = {
@@ -61,6 +64,12 @@ type RegisterFormProps = {
 }
 
 const EMPTY: RegisterDraft = { email: '', password: '', confirm: '', agree: false }
+
+/** 人机验证三种未就绪态各自的通栏提示；都不是字段错误。 */
+const HUMAN_PENDING = '请先完成上方的人机验证'
+const HUMAN_LOADING = '人机验证还在加载，请稍候再试'
+const HUMAN_FAILED = '人机验证加载失败，请点上方「重新加载」后再试'
+const HUMAN_PROMPTS = [HUMAN_PENDING, HUMAN_LOADING, HUMAN_FAILED]
 
 export function RegisterForm({
   status,
@@ -90,6 +99,22 @@ export function RegisterForm({
   const [errors, setErrors] = useState<RegisterErrors>({})
   const [problem, setProblem] = useState<string | null>(null)
   const problemRef = useRef<HTMLDivElement>(null)
+  // 令牌只在这里过一道手：不落 localStorage、不进日志。
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null)
+  // +1 让 TurnstileSlot 换一个新控件：旧令牌已提交过，不能重投。
+  const [turnstileNonce, setTurnstileNonce] = useState(0)
+  const [turnstileState, setTurnstileState] = useState<TurnstileStatus>('idle')
+  const handleTurnstileToken = useCallback((token: string | null) => {
+    setTurnstileToken(token)
+    // 拿到令牌就把「还没验证」类提示撤掉；字段错误与请求失败不在其列。
+    if (token !== null) setProblem((prev) => (HUMAN_PROMPTS.includes(prev ?? '') ? null : prev))
+  }, [])
+  const handleTurnstileStatus = useCallback((next: TurnstileStatus) => {
+    setTurnstileState(next)
+    // 状态一变，上一条「加载中/加载失败」就过期了：重试成功后不能还挂着失败提示，
+    // 加载完成后也不该继续劝用户「稍候再试」。下一条提示由守卫按当时的态重新给。
+    setProblem((prev) => (HUMAN_PROMPTS.includes(prev ?? '') ? null : prev))
+  }, [])
   const submittedRef = useRef<{ termsVersion: number; privacyVersion: number } | null>(null)
 
   const mutation = useMutation({
@@ -110,6 +135,13 @@ export function RegisterForm({
     },
     onError: async (error) => {
       onRegisterFailed?.()
+      // Turnstile 令牌一次性，服务端在 KDF/DB 之前就消费掉了：任何失败提交
+      // （邮箱重复、参数错、网络中断）之后重投旧令牌只会换来 timeout-or-duplicate，
+      // 用户会卡在表单上直到刷新。这里立刻清令牌并换一个新控件。
+      if ((status?.turnstile_site_key ?? '') !== '') {
+        setTurnstileToken(null)
+        setTurnstileNonce((nonce) => nonce + 1)
+      }
       const submitted = submittedRef.current
       if (error instanceof ApiError && error.status === 409 && submitted) {
         // 409 有两种来源：邮箱重复、条款版本过期。重拉状态后再判。
@@ -137,7 +169,13 @@ export function RegisterForm({
           return
         }
       }
-      if (error instanceof ApiError && error.status === 403) {
+      if (
+        error instanceof ApiError &&
+        (error.status === 403 ||
+          (error.status === 400 && error.code === 'human_verification_failed'))
+      ) {
+        // 403=注册被关、400 人机验证=服务端刚启用而本地快照还是旧的：重拉状态，
+        // 让控件按新密钥出现；否则用户会被一条读不到的旧状态反复挡住。
         void queryClient.invalidateQueries({ queryKey: REGISTRATION_QUERY_KEY })
       }
       setProblem(
@@ -179,12 +217,30 @@ export function RegisterForm({
       return
     }
     if (!status) return
+    // 拦不拦看服务端档位：log 档令牌缺失也放行，让服务端只记日志。
+    // 仅当真渲染了控件才拦：「enforced 但没有站点密钥」是配置不完整，
+    // 本地拦下去会变成「上方什么都没有却让人完成上方验证」，交给服务端判定。
+    if (
+      status.turnstile_enforced &&
+      (status.turnstile_site_key ?? '') !== '' &&
+      turnstileToken === null
+    ) {
+      // 三种态给三种说法：加载中/失败时让用户刷新或重试，而不是干等「请先完成」。
+      setProblem(
+        turnstileState === 'failed'
+          ? HUMAN_FAILED
+          : turnstileState === 'loading'
+            ? HUMAN_LOADING
+            : HUMAN_PENDING,
+      )
+      return
+    }
     submittedRef.current = {
       termsVersion: status.terms_version,
       privacyVersion: status.privacy_version,
     }
     onRegisterStart?.()
-    mutation.mutate(buildRegisterBody(draft, status))
+    mutation.mutate(buildRegisterBody(draft, status, turnstileToken))
   }
 
   if (statusLoading) {
@@ -381,7 +437,12 @@ export function RegisterForm({
           </div>
         ) : null}
 
-        <TurnstileSlot />
+        <TurnstileSlot
+          siteKey={status?.turnstile_site_key ?? ''}
+          onToken={handleTurnstileToken}
+          onStatusChange={handleTurnstileStatus}
+          resetSignal={turnstileNonce}
+        />
 
           <button
             className="btn btn--primary auth-submit"

@@ -114,6 +114,9 @@ type Options struct {
 	// DocsDir 是合规文档目录（CHANGELOG.md、USER_AGREEMENT.md、PRIVACY_POLICY.md）。
 	// 空表示未提供：更新日志与协议页回退内置文案，不报错。
 	DocsDir string
+	// Turnstile 表示启用了人机验证：为 Cloudflare 控件放开 CSP 的
+	// script-src/frame-src/connect-src。关闭时 CSP 与旧基线逐字相同。
+	Turnstile bool
 }
 
 // Authorizer 把会话用户解析为作用域与审计主体。
@@ -202,7 +205,7 @@ func New(opts Options) (*gin.Engine, error) {
 		bodyLimit(requestBodyLimit),
 		accessLog(logger, clk),
 		recoverPanic(logger),
-		securityHeaders(),
+		securityHeaders(opts.Turnstile),
 		// 来源摘要在会话签发时读取；它不做任何判定。
 		srv.clientMeta(),
 		// 限流在解析会话之前：未认证洪水不得先付一次会话查询。

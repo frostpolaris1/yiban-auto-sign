@@ -289,6 +289,7 @@ import {
   passwordRuleText,
   passwordStrength,
   passwordStrengthLabel,
+  registerProblem,
   resolvePolicy,
   utf8Bytes,
   validateRegister,
@@ -343,4 +344,34 @@ test('password strength climbs with length and character classes, gated by polic
   assert.equal(passwordStrengthLabel(1), '弱')
   assert.equal(passwordStrengthLabel(3), '强')
   assert.equal(passwordStrengthLabel(4), '很强')
+})
+
+test('a human verification rejection reads as its own problem, other 400s stay generic', () => {
+  const submitted = { termsVersion: 1, privacyVersion: 1 }
+  const current = {
+    enabled: true,
+    terms_version: 1,
+    privacy_version: 1,
+    turnstile_site_key: 'site-key',
+    turnstile_enforced: true,
+  }
+  assert.deepEqual(
+    registerProblem(
+      new ApiError(400, {
+        code: 'human_verification_failed',
+        message: 'human verification failed',
+      }),
+      submitted,
+      current,
+    ),
+    { message: '人机验证未通过，请重新完成验证' },
+  )
+  assert.deepEqual(
+    registerProblem(
+      new ApiError(400, { code: 'validation_failed', message: 'password too weak' }),
+      submitted,
+      current,
+    ),
+    { message: '请求参数不符合要求，请核对后重试' },
+  )
 })

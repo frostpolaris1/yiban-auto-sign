@@ -90,7 +90,13 @@ test('system anchors render all 6 sections and navigate via hash', async ({ page
 test('registration and auto-approve cards save explicitly on button click only', async ({ page }) => {
   const api = await visitSystem(page, {
     role: 'master',
-    registration: { enabled: false, terms_version: 1, privacy_version: 1 },
+    registration: {
+      enabled: false,
+      terms_version: 1,
+      privacy_version: 1,
+      turnstile_site_key: '',
+      turnstile_enforced: false,
+    },
     autoApprove: { enabled: true },
   })
 

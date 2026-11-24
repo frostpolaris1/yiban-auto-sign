@@ -352,6 +352,13 @@ func (c *countingKDF) Verify(ctx context.Context, password, encoded string) (cor
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWith(t, nil)
+}
+
+// newHarnessWith 用标准替身建服务；tune 在 NewService 之前改 Deps，
+// 供可选端口（如人机验证）注入，避免每套用例各抄一份替身。
+func newHarnessWith(t *testing.T, tune func(*appauth.Deps)) *harness {
+	t.Helper()
 	h := &harness{
 		users:         newFakeUsers(),
 		sessions:      &fakeSessions{},
@@ -360,7 +367,7 @@ func newHarness(t *testing.T) *harness {
 		audits:        &fakeAudits{},
 		kdf:           &countingKDF{},
 	}
-	svc, err := appauth.NewService(appauth.Deps{
+	deps := appauth.Deps{
 		Users:         h.users,
 		Sessions:      h.sessions,
 		OtherSessions: h.sessions,
@@ -373,7 +380,11 @@ func newHarness(t *testing.T) *harness {
 		KDF:           h.kdf,
 		// 本套不测日志；未配置投递的警告不污染测试输出。
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+	if tune != nil {
+		tune(&deps)
+	}
+	svc, err := appauth.NewService(deps)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}

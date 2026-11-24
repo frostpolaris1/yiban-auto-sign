@@ -413,7 +413,8 @@ func TestLogoutWithoutSession(t *testing.T) {
 
 // stubAuth 是最小认证用例替身，用来让认证端点真正走到请求体绑定。
 type stubAuth struct {
-	loginErr error
+	loginErr     error
+	registration appauth.RegistrationStatus
 }
 
 func (s stubAuth) Login(context.Context, string, string) (auth.Issued, error) {
@@ -436,8 +437,8 @@ func (stubAuth) DeleteSelf(context.Context, auth.Session, string) (time.Time, er
 
 func (stubAuth) RestoreSelf(context.Context, string, string) error { return nil }
 
-func (stubAuth) Registration(context.Context) (appauth.RegistrationStatus, error) {
-	return appauth.RegistrationStatus{}, nil
+func (s stubAuth) Registration(context.Context) (appauth.RegistrationStatus, error) {
+	return s.registration, nil
 }
 
 func (stubAuth) Register(context.Context, appauth.RegisterInput) (auth.Issued, error) {

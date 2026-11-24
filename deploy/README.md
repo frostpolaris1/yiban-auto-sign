@@ -486,6 +486,7 @@ sudo systemctl restart yiban.service
 | `YIBAN_TRUSTED_PROXIES` | 可信代理 IP/CIDR，逗号分隔 | 空：不信任转发头（compose 默认 `172.16.0.0/12,127.0.0.1`） |
 | `YIBAN_PHOTO_DIR` | 照片目录 | `data/photos` |
 | `YIBAN_AUDIT_ANCHOR_FILE` | 库外审计锚点文件（append-only，0600） | 空：巡检端点不做锚点比对 |
+| `YIBAN_TURNSTILE_MODE` / `_SITE_KEY` / `_SECRET` | 公开注册的人机验证（auto/off/log/on）；两把密钥成对设置，开启时 CSP 放开 Cloudflare 源 | `auto`：缺密钥即关闭 |
 
 完整名册与每键说明见 `server/internal/configdata/registry.json`（编译期嵌入二进制）。
 
@@ -591,6 +592,29 @@ sudo systemctl restart yiban.service
 `YIBAN_BACKUP_HOST_DIR`（备份宿主目录，缺省 `./backups`）。两者都只在
 `deploy/container/compose.env` 或 shell 环境里给。
 
+### 6.2 人机验证（Cloudflare Turnstile）
+
+公开注册可接人机验证，只在配好密钥时生效；密钥属于运行配置，**不进仓库**。
+
+1. 在 Cloudflare 控制台 → Turnstile → Add widget，填站点域名，拿到
+   site key（公开）与 secret（秘密）。Cloudflare 提供恒过/恒败测试密钥，
+   本地联调可先用测试值。
+2. 只把两把密钥写进运行配置，二者要么都给、要么都不给：
+   - 裸机：`sudo sh -c "printf 'YIBAN_TURNSTILE_SITE_KEY=...\nYIBAN_TURNSTILE_SECRET=...\n' >> /etc/yiban/server.env"`
+     （`install.sh` 生成，0600 root:root；systemd 以 root 读后降权，普通用户读不到）。
+   - 容器：改 `deploy/container/compose.env`（`.gitignore` 已忽略，经
+     `--env-file` 注入；不要写进 `docker-compose.yml`）。
+   仓库里三份 `*.env.example` 只留空占位；`TestTemplatesMatchRegistry`
+   会钉住键面与「sensitive 键必须为空」，改动模板即红。
+3. `YIBAN_TURNSTILE_MODE`：缺省 `auto`（两把齐备即强制校验）；先设 `log`
+   观察几天（只记 outcome/codes，不拦注册），确认无误再设 `on`；
+   `off` 等于关闭，CSP 回到不含 Cloudflare 源的旧基线。
+4. 重启服务后验：`GET /api/auth/registration` 的 `turnstile_site_key` 非空；
+   注册页出现控件；响应头 CSP 含 `https://challenges.cloudflare.com`；
+   日志只出现校验结果与错误码，不出现令牌或私钥。
+5. 轮换：在 Cloudflare 侧 roll secret，改文件、重启即可，无需重新构建——
+   密钥不编译进二进制，也不进镜像、CI 或前端产物。
+
 ## 7. 排障
 
 | 现象 | 先查 |
@@ -598,6 +622,8 @@ sudo systemctl restart yiban.service
 | 首页 404，`/healthz` 正常 | `YIBAN_UI_DIR` 是否设置；目录里有没有 `index.html`；进程启动日志有没有 `router: YIBAN_UI_DIR` 报错 |
 | 登录回 403 | 代理是否传 `X-Forwarded-Proto`；`YIBAN_TRUSTED_PROXIES` 是否包含代理地址 |
 | 登录成功但立刻掉线 | 是否用 HTTP 访问；`production` 的 cookie 带 `Secure` |
+| 注册页没有验证控件 | 是否两把密钥成对配置；`GET /api/auth/registration` 的 `turnstile_site_key` 是否为空（空＝按设计整块不渲染） |
+| 注册回 `human verification failed` | 令牌是否 300 秒内、未重复使用；secret 与站点是否配对；`log` 档可先在日志看 outcome/codes |
 | 进程起不来 | `YIBAN_UI_DIR` 指向的目录缺 `index.html` 时服务端**拒绝启动**。这是有意行为 |
 | 上传/读取照片失败（裸机） | `server.env` 的 `YIBAN_PHOTO_DIR` 是否等于单元里 `ReadWritePaths` 的路径；改目录后重跑 `install.sh` 再 `systemctl restart` |
 

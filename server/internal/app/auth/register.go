@@ -45,6 +45,14 @@ type RegistrationStatus struct {
 	Enabled        bool
 	TermsVersion   int
 	PrivacyVersion int
+	// TurnstileSiteKey 为空表示人机验证关闭；非空时前端用它渲染控件，
+	// 并把得到的令牌作为 RegisterInput.TurnstileToken 提交。
+	// 它是公开值，可以出现在响应与页面源码里。
+	TurnstileSiteKey string
+	// TurnstileEnforced 表示服务端会真的拦：true 即 on 档，缺令牌或令牌
+	// 无效一律 400 human_verification_failed；false 即 log 档，只记日志放行。
+	// 前端据此决定「没有令牌就不许提交」，不再拿站点密钥猜档位。
+	TurnstileEnforced bool
 }
 
 // RegisterInput 是公开注册的输入。
@@ -55,6 +63,11 @@ type RegisterInput struct {
 	AgreePrivacy   bool
 	TermsVersion   int
 	PrivacyVersion int
+	// TurnstileToken 是人机验证令牌；只在档位非 off 时被读取。
+	// 不是 PII，但等同一次性凭据：不落库、不进审计与日志。
+	TurnstileToken string
+	// RemoteIP 是注册请求的客户端地址，供 siteverify 归因；可为空。
+	RemoteIP string
 }
 
 // Registration 读注册状态。
@@ -64,11 +77,19 @@ func (s *Service) Registration(ctx context.Context) (RegistrationStatus, error) 
 	if err != nil {
 		return RegistrationStatus{}, err
 	}
+	return s.registrationStatus(enabled), nil
+}
+
+// registrationStatus 组装对外状态。开关读写两个入口共用，
+// 站点密钥只在人机验证启用（Human 非 nil）时回给前端。
+func (s *Service) registrationStatus(enabled bool) RegistrationStatus {
 	return RegistrationStatus{
-		Enabled:        enabled,
-		TermsVersion:   TermsVersion,
-		PrivacyVersion: PrivacyVersion,
-	}, nil
+		Enabled:           enabled,
+		TermsVersion:      TermsVersion,
+		PrivacyVersion:    PrivacyVersion,
+		TurnstileSiteKey:  s.humanSiteKey,
+		TurnstileEnforced: s.humanEnforce,
+	}
 }
 
 // SetRegistration 打开或关闭公开注册。**只有 master 可以调用**。
@@ -103,11 +124,7 @@ func (s *Service) SetRegistration(ctx context.Context, scope corescope.Scope, ac
 	if err != nil {
 		return RegistrationStatus{}, err
 	}
-	return RegistrationStatus{
-		Enabled:        enabled,
-		TermsVersion:   TermsVersion,
-		PrivacyVersion: PrivacyVersion,
-	}, nil
+	return s.registrationStatus(enabled), nil
 }
 
 // Register 创建普通用户并签发会话。
@@ -138,6 +155,11 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (coreauth.Issu
 	}
 	if reason := coreauth.PasswordPolicyError(in.Password); reason != "" {
 		return coreauth.Issued{}, errs.New(errs.CodeValidation, reason)
+	}
+	// 人机验证排在 KDF 之前：拒绝的请求不付哈希成本。
+	// 关闭档不调用端口；log 档只记日志，不改变注册结果。
+	if err := s.verifyHuman(ctx, in.TurnstileToken, in.RemoteIP); err != nil {
+		return coreauth.Issued{}, err
 	}
 
 	hash, err := s.kdf.Hash(ctx, in.Password)

@@ -321,6 +321,9 @@ Canonical runtime files:
 | `YIBAN_WEBHOOK_SECRET` | no | empty | outlet credential: the ServerChan SendKey or the full webhook URL; never logged, audited or echoed in an error |
 | `YIBAN_WEBHOOK_COOLDOWN_SEC` | no | `60` | per-topic push throttle window in seconds (0 = no throttle); process-local, cleared on restart. The same window also throttles same-title admin mail per recipient |
 | `YIBAN_WEBHOOK_DAILY_MAX` | no | `5` | daily push quota (0 = unlimited); only truly delivered pushes occupy it, tracked in the notification ledger |
+| `YIBAN_TURNSTILE_MODE` | no | `auto` | public-registration human verification: `auto` turns it on only when both keys are set, `off` never verifies, `log` verifies and records the outcome but lets the request through, `on` rejects a missing or invalid token with `human_verification_failed` (HTTP 400), and an unreachable siteverify answers HTTP 502. Applies to `POST /api/auth/register` only. |
+| `YIBAN_TURNSTILE_SITE_KEY` | no | empty | Cloudflare Turnstile site key, returned by `GET /api/auth/registration` so the register form can render the widget. Must be set together with the secret. |
+| `YIBAN_TURNSTILE_SECRET` | no | empty | Cloudflare Turnstile secret used for `/siteverify`; never logged, audited or echoed in an error. Must be set together with the site key. |
 | `YIBAN_RATE_LIMIT_ENABLE` | no | `true` | inbound rate limiting for login, forgot/reset password, change password, verify and sign |
 | `YIBAN_RATE_IP_PER_MIN` | no | `60` | requests per minute per client IP on those routes |
 | `YIBAN_RATE_IP_BURST` | no | `20` | burst bucket per client IP |
@@ -332,6 +335,10 @@ Canonical runtime files:
 | `YIBAN_WORKERS` | no | `1` | execution concurrency (1..64). The same number is the claim batch size, the capacity channel count and the in-batch parallelism. |
 | `YIBAN_AVG_ATTEMPT_SEC` | no | `3` | average duration of one account attempt in seconds (1..300); a capacity input. |
 | `YIBAN_EGRESS_RATE` | no | `1.0` | target attempts per second per egress (0.2..4.0). It caps the capacity formula and sets the execution rate gate: both read this one field. |
+
+When human verification is active (`log` or `on`), the Content-Security-Policy
+also allows `https://challenges.cloudflare.com` for scripts, frames and
+connections; with `off` the policy is byte-for-byte the previous one.
 
 Three registry keys are CLI-scoped and never belong in a run file:
 `YIBAN_BACKUP_PASSPHRASE` (GPG passphrase for `yiban-cli backup` and

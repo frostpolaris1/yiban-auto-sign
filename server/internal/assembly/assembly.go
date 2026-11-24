@@ -44,6 +44,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
+	turnstileadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/turnstile"
 	webhookadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/webhook"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
@@ -330,6 +331,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 无数据库时保持 nil：没有循环就没有进程时刻。
 		engineState *appworker.EngineState
 		closeFn     = func() {}
+		// humanOn 在 Build 顶层定型：人机验证端口与路由的 CSP 开关都用它。
+		// 只认 log/on 是启用：Config 零值 Mode 是空串（结构体字面量的测试
+		// 夹具就是这样建的），不能把空串当成未关闭而造出空密钥的验证器。
+		humanOn = cfg.TurnstileMode == config.TurnstileModeLog || cfg.TurnstileMode == config.TurnstileModeOn
 	)
 
 	// 可信代理表同时服务登录来源判定；与限流开关解耦。
@@ -486,6 +491,21 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		// 一个 KDF 闸服务全部用例：并发上限按进程计，不是按服务计。
 		kdf := auth.NewBounded(cfg.KDFConcurrency)
+		// 人机验证：off 档不造端口，注册行为与未引入时完全一致。
+		// log 档造端口但不拦；on 档缺失或无效即拒绝注册。
+		var human appauth.HumanVerifier
+		humanSiteKey := ""
+		if humanOn {
+			verifier, verr := turnstileadapter.New(cfg.TurnstileSecret)
+			if verr != nil {
+				closeFn()
+				return nil, fmt.Errorf("assembly: turnstile verifier: %w", verr)
+			}
+			human = verifier
+			humanSiteKey = cfg.TurnstileSiteKey
+			logger.Info("auth: human verification enabled",
+				logfield.KeyReason, cfg.TurnstileMode)
+		}
 		authSvc, err = appauth.NewService(appauth.Deps{
 			Users:         pg.NewUserRepo(db),
 			Sessions:      issuer,
@@ -499,6 +519,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			KDF:           kdf,
 			Mail:          mailer,
 			MailBaseURL:   cfg.PublicBaseURL,
+			Human:         human,
+			HumanSiteKey:  humanSiteKey,
+			HumanEnforce:  cfg.TurnstileMode == config.TurnstileModeOn,
 			Logger:        logger,
 		})
 		if err != nil {
@@ -979,6 +1002,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		TrustedProxies:  trustedProxies,
 		UIDir:           cfg.UIDir,
 		DocsDir:         cfg.DocsDir,
+		// 人机验证只随认证用例存在：allow-no-db 时没有用例，也就不能放开 CSP。
+		Turnstile: humanOn && authSvc != nil,
 	})
 	if err != nil {
 		closeFn()

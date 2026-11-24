@@ -162,7 +162,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func statusFor(code errs.Code) int {
 	switch code {
-	case errs.CodeValidation:
+	case errs.CodeValidation, errs.CodeHumanVerification:
 		return http.StatusBadRequest
 	case errs.CodeUnauthorized:
 		return http.StatusUnauthorized

@@ -358,6 +358,16 @@ class EntryScriptTest(unittest.TestCase):
                       "豁免名册默认路径没进脚本非注释行")
         self.assertIn("python3 not found", joined,
                       "缺 python 解释器的 fail-closed（exit 2）路径没被钉住")
+        # 共享错误码枚举的判据必须真在链上：它是「ErrorCode 新增值不判红」的唯一依据，
+        # 删掉这段就会退回到按端点写 98 行 allowlist 的老路。
+        self.assertIn("response-property-enum-value-added", joined,
+                      "共享枚举判据没进脚本非注释行")
+        self.assertIn("ErrorCode", joined,
+                      "共享枚举判据没有从 spec 取 ErrorCode 值集")
+        self.assertIn("ERROR_CODE_PROPERTY", joined,
+                      "共享枚举判据没有限死 error.code 的 property 路径")
+        self.assertIn("CONTRACT_ERRORCODE_SPEC", joined,
+                      "缺坏 spec 注入钩子，fail-closed 路径无法测")
 
     def test_missing_tool_exits_2(self):
         self.assertIn("exit 2", self.script,
@@ -513,6 +523,140 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("EXPIRED", out)
         self.assertIn("breaking-stub", out)
+
+    def _write_json_oasdiff(self, items):
+        """写一个输出指定 findings 列表的 oasdiff stub。"""
+        tmp = self.tmp.name.replace("\\", "/")
+        data = tmp + "/findings.json"
+        with io.open(data, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(items, ensure_ascii=False))
+        path = tmp + "/oasdiff-json"
+        _write_stub(path, "#!/usr/bin/env bash\ncat '%s'\n" % data)
+        return path
+
+    def _enum_added(self, prop, value):
+        return [{
+            "id": "response-property-enum-value-added",
+            "operation": "GET",
+            "path": "/stub",
+            "level": 3,
+            "text": ("added the new `%s` enum value to the `%s` "
+                     "response property for the response status `400`"
+                     % (value, prop)),
+        }]
+
+    def test_shared_error_code_added_is_not_breaking(self):
+        # ErrorCode 是共享枚举：新增值会命中全部响应的 error.code，
+        # 按端点逐行豁免没有信息量，判据降为 SHARED 行且不判红。
+        rc, out = self._run("--base", "HEAD",
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("error/code",
+                                                 "human_verification_failed")))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("SHARED", out)
+        self.assertIn("human_verification_failed", out)
+
+    def test_shared_error_code_nested_in_items_is_not_breaking(self):
+        # 批量结果是 Error 的数组元素，property 形如 items/items/code；
+        # 判据按「新增值属于 ErrorCode」而不是按 property 字面匹配。
+        rc, out = self._run("--base", "HEAD",
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("items/items/code",
+                                                 "human_verification_failed")))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("SHARED", out)
+
+    def test_scoped_enum_added_still_breaking(self):
+        # 负例必须用**块枚举**里的值（openapi.yaml 的 UserStatus 是块枚举，
+        # flow 风格枚举根本进不了解析器，选它会让「放宽缩进正则」这类突变存活）。
+        rc, out = self._run("--base", "HEAD",
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("status", "pending")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("ERR", out)
+
+    def test_shared_value_on_scoped_property_is_breaking(self):
+        # F1：值本身在 ErrorCode 里（conflict），但加在局部枚举 source 上——
+        # 不是 error.code 那条链，必须判红。只看值集不看 property 会误放行。
+        rc, out = self._run("--base", "HEAD",
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("source", "conflict")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("ERR", out)
+        self.assertNotIn("SHARED", out)
+
+    def _write_spec(self, body):
+        """写一份 fixture spec，返回 MSYS 友好路径。"""
+        path = os.path.join(self.tmp.name, "spec-%d.yaml" % len(os.listdir(self.tmp.name)))
+        with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(body)
+        return path.replace("\\", "/")
+
+    def test_description_bullet_is_not_an_enum_value(self):
+        # F2：description 是块标量，续行缩进与枚举项相同；只认 enum: 子块，
+        # 否则给散文加一行 `- evilword` 就能放行任意词。
+        spec = self._write_spec(
+            "components:\n"
+            "  schemas:\n"
+            "    ErrorCode:\n"
+            "      type: string\n"
+            "      description: |\n"
+            "        Stable codes.\n"
+            "        - evilword\n"
+            "      enum:\n"
+            "        - validation_failed\n")
+        rc, out = self._run("--base", "HEAD",
+                            CONTRACT_ERRORCODE_SPEC=spec,
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("error/code", "evilword")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("ERR", out)
+        self.assertNotIn("SHARED", out)
+
+    def test_non_utf8_spec_exits_2(self):
+        # F6：非 UTF-8 必须按环境错误处理（exit 2），不能被读成「发现破坏性变更」。
+        path = os.path.join(self.tmp.name, "spec-latin1.yaml")
+        with io.open(path, "wb") as fh:
+            fh.write("components:\n  schemas:\n    ErrorCode:\n      enum:\n"
+                     "        - bad\xff\n".encode("latin-1"))
+        rc, out = self._run("--base", "HEAD",
+                            CONTRACT_ERRORCODE_SPEC=path.replace("\\", "/"),
+                            OASDIFF=self._write_json_oasdiff([]))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("ErrorCode schema unreadable", out)
+
+    def test_quoted_enum_item_with_inline_comment_still_counts(self):
+        # 合法 YAML 变体：引号值 + 行内注释都要照收。否则编辑器一键格式化后
+        # 值集残缺：要么 exit 2，要么某个码不再被放行（fail-closed 但噪音）。
+        spec = self._write_spec(
+            "components:\n"
+            "  schemas:\n"
+            "    ErrorCode:\n"
+            "      type: string\n"
+            "      enum:\n"
+            '        - "quoted_code"  # inline note\n')
+        rc, out = self._run("--base", "HEAD",
+                            CONTRACT_ERRORCODE_SPEC=spec,
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("error/code", "quoted_code")))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("SHARED", out)
+        self.assertIn("WARN", out)
+
+    def test_unparsable_errorcode_spec_exits_2(self):
+        # F3：解析不出来必须 exit 2（环境错误），不是「没有破坏性变更」。
+        spec = self._write_spec(
+            "components:\n"
+            "  schemas:\n"
+            "    ErrorCode:\n"
+            "      type: string\n"
+            "      description: |\n"
+            "        no enum here\n")
+        rc, out = self._run("--base", "HEAD",
+                            CONTRACT_ERRORCODE_SPEC=spec,
+                            OASDIFF=self._write_json_oasdiff([]))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot parse ErrorCode enum", out)
 
     def test_future_allowlist_row_still_exempts(self):
         # 正向对照：未过期行仍放行，证明过期判据不是恒红。

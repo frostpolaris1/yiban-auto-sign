@@ -69,6 +69,7 @@ func TestErrorValidation(t *testing.T) {
 func TestStatusForEveryCode(t *testing.T) {
 	want := map[errs.Code]int{
 		errs.CodeValidation:        http.StatusBadRequest,
+		errs.CodeHumanVerification: http.StatusBadRequest,
 		errs.CodeUnauthorized:      http.StatusUnauthorized,
 		errs.CodeForbidden:         http.StatusForbidden,
 		errs.CodeNotFound:          http.StatusNotFound,
@@ -87,8 +88,8 @@ func TestStatusForEveryCode(t *testing.T) {
 		errs.CodeUpstream:          http.StatusBadGateway,
 		errs.CodeInternal:          http.StatusInternalServerError,
 	}
-	if len(want) != 18 {
-		t.Fatalf("映射表录入 %d 个码，want 18", len(want))
+	if len(want) != 19 {
+		t.Fatalf("映射表录入 %d 个码，want 19", len(want))
 	}
 	for code, status := range want {
 		if got := statusFor(code); got != status {

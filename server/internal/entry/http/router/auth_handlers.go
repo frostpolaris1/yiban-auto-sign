@@ -326,6 +326,11 @@ func (s *server) AuthRegistration(c *gin.Context) {
 	respond.JSON(c.Writer, http.StatusOK, registrationStatusOf(status))
 }
 
+// maxTurnstileTokenLength 是契约给的令牌长度上限（openapi.yaml 的
+// RegisterRequest.turnstile_token.maxLength）。
+// 处理器先拦，避免公开未认证调用者把 1 MiB 正文转发给验证服务。
+const maxTurnstileTokenLength = 4096
+
 // AuthRegister 创建普通用户并签发会话。
 // 与登录同口径拒绝跨站浏览器提交：注册会建立会话。
 func (s *server) AuthRegister(c *gin.Context) {
@@ -347,6 +352,21 @@ func (s *server) AuthRegister(c *gin.Context) {
 	if !s.accountLimitFor(c, accountDomainRegister, coreuser.NormalizeEmail(string(req.Email))) {
 		return
 	}
+	// 人机验证令牌是可选字段；档位 off 时忽略，档位 on 时由用例层拒绝空值。
+	turnstileToken := ""
+	if req.TurnstileToken != nil {
+		turnstileToken = strings.TrimSpace(*req.TurnstileToken)
+	}
+	if len(turnstileToken) > maxTurnstileTokenLength {
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeHumanVerification, "turnstile token is too long"))
+		return
+	}
+	// 客户端 IP 取自中间件写进 context 的那一份：与限流、会话摘要同源，
+	// 不在处理器里重新解析 X-Forwarded-For。
+	remoteIP := ""
+	if meta, ok := coreauth.ClientMetaFromContext(c.Request.Context()); ok {
+		remoteIP = meta.IP
+	}
 	issued, err := s.auth.Register(c.Request.Context(), appauth.RegisterInput{
 		Email:          string(req.Email),
 		Password:       req.Password,
@@ -354,6 +374,8 @@ func (s *server) AuthRegister(c *gin.Context) {
 		AgreePrivacy:   req.AgreePrivacy,
 		TermsVersion:   req.TermsVersion,
 		PrivacyVersion: req.PrivacyVersion,
+		TurnstileToken: turnstileToken,
+		RemoteIP:       remoteIP,
 	})
 	if err != nil {
 		respond.Error(c.Writer, c.Request, err)
@@ -404,9 +426,11 @@ func (s *server) AuthRegistrationSet(c *gin.Context, _ oapi.AuthRegistrationSetP
 // registrationStatusOf 把用例结果转成契约类型。
 func registrationStatusOf(status appauth.RegistrationStatus) oapi.RegistrationStatus {
 	return oapi.RegistrationStatus{
-		Enabled:        status.Enabled,
-		TermsVersion:   status.TermsVersion,
-		PrivacyVersion: status.PrivacyVersion,
+		Enabled:           status.Enabled,
+		TermsVersion:      status.TermsVersion,
+		PrivacyVersion:    status.PrivacyVersion,
+		TurnstileSiteKey:  status.TurnstileSiteKey,
+		TurnstileEnforced: status.TurnstileEnforced,
 	}
 }
 

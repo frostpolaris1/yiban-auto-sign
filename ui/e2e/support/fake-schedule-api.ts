@@ -302,6 +302,8 @@ export async function mockScheduleApi(
     enabled: false,
     terms_version: 1,
     privacy_version: 1,
+    turnstile_site_key: '',
+    turnstile_enforced: false,
     ...(options.registration ?? {}),
   }
   let autoApprove: AutoApproveStatus = { enabled: true, ...(options.autoApprove ?? {}) }
