@@ -625,6 +625,24 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         self.assertEqual(rc, 2, out)
         self.assertIn("ErrorCode schema unreadable", out)
 
+    def test_quoted_enum_item_with_inline_comment_still_counts(self):
+        # 合法 YAML 变体：引号值 + 行内注释都要照收。否则编辑器一键格式化后
+        # 值集残缺：要么 exit 2，要么某个码不再被放行（fail-closed 但噪音）。
+        spec = self._write_spec(
+            "components:\n"
+            "  schemas:\n"
+            "    ErrorCode:\n"
+            "      type: string\n"
+            "      enum:\n"
+            '        - "quoted_code"  # inline note\n')
+        rc, out = self._run("--base", "HEAD",
+                            CONTRACT_ERRORCODE_SPEC=spec,
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("error/code", "quoted_code")))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("SHARED", out)
+        self.assertIn("WARN", out)
+
     def test_unparsable_errorcode_spec_exits_2(self):
         # F3：解析不出来必须 exit 2（环境错误），不是「没有破坏性变更」。
         spec = self._write_spec(

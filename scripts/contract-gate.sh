@@ -135,7 +135,11 @@ ERROR_CODE_PROPERTY = re.compile(r"^(?:error|items)(?:/items)*/code$")
 ADDED_VALUE = re.compile(r"added the new `([^`]+)`")
 ADDED_PROPERTY = re.compile(r"to the `([^`]+)` response property")
 # CONTRACT_ERRORCODE_SPEC 只给测试注入坏 spec、验证 fail-closed；默认读真 spec。
+# 它是测试钩子：被设上时打一行 WARN，避免本地 shell 残留 env 时无人察觉。
 parse_path = os.environ.get("CONTRACT_ERRORCODE_SPEC") or spec_path
+if os.environ.get("CONTRACT_ERRORCODE_SPEC"):
+    print("WARN\tCONTRACT_ERRORCODE_SPEC=%s（测试钩子，不是生产路径）" % parse_path,
+          file=sys.stderr)
 shared_codes = set()
 in_block = False
 in_enum = False
@@ -152,9 +156,16 @@ try:
                 if line.rstrip("\r\n") == "      enum:":
                     in_enum = True
                 continue
-            m = re.match(r"^        - (\S+)\s*$", line)
+            # 合法 YAML 变体：行内注释与引号值都要照收。只剥行内注释
+            # （" #" 起），再剥首尾成对引号；否则编辑器一键格式化会让项匹配
+            # 不上、值集残缺 → exit 2 或某个码不再放行。
+            item = line.split(" #", 1)[0].rstrip("\r\n").rstrip()
+            m = re.match(r"^        - (\S+)$", item)
             if m:
-                shared_codes.add(m.group(1))
+                value = m.group(1)
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                shared_codes.add(value)
                 continue
             if line.strip():
                 break  # enum 序列结束
