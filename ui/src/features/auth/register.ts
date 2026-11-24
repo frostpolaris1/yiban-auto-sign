@@ -6,7 +6,8 @@
  * `features/auth` 域逻辑：无 React、无网络、无 DOM。
  *
  * **口径**
- * 请求体只含契约 `RegisterRequest` 的六个字段；确认口令只在前端比对。
+ * 请求体只含契约 `RegisterRequest` 的字段；确认口令只在前端比对。
+ * 人机验证令牌只在拿到时附带，未配置验证时不出现该键。
  * 契约要求两个协议布尔都为 true、版本号等于当前 `RegistrationStatus`。
  * 开关关闭、未勾协议、字段非法时**零请求**。
  * 口令策略以服务端 `GET /api/auth/password-policy` 为权威；本地常量只是
@@ -178,8 +179,9 @@ export function confirmLiveError(draft: RegisterDraft): string | undefined {
 export function buildRegisterBody(
   draft: RegisterDraft,
   status: RegistrationStatus,
+  turnstileToken?: string | null,
 ): RegisterRequest {
-  return {
+  const body: RegisterRequest = {
     email: draft.email.trim(),
     password: draft.password,
     agree_terms: draft.agree,
@@ -187,6 +189,9 @@ export function buildRegisterBody(
     terms_version: status.terms_version,
     privacy_version: status.privacy_version,
   }
+  const token = turnstileToken?.trim()
+  if (token) body.turnstile_token = token
+  return body
 }
 
 export type RegisterProblem = {
@@ -206,6 +211,10 @@ export function registerProblem(
   current: RegistrationStatus | null | undefined,
 ): RegisterProblem {
   if (error instanceof ApiError) {
+    // 人机验证是独立结论：别让用户对着"参数不符合要求"猜哪里填错了。
+    if (error.status === 400 && error.code === 'human_verification_failed') {
+      return { message: '人机验证未通过，请重新完成验证' }
+    }
     if (error.status === 403) {
       return { message: '当前未开放自助注册' }
     }

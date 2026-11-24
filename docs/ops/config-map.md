@@ -43,6 +43,7 @@
 | 不可信代理 / 反代地址 | `YIBAN_TRUSTED_PROXIES` | 裸机写 `server.env` 后重启；容器可写 `compose.env`，也可 `export` 后 `up -d`（shell 环境 > `--env-file` > compose 缺省） |
 | 照片目录 | `YIBAN_PHOTO_DIR` | 裸机改 `server.env` 后**重跑 `install.sh`**：它按新值重写 `ReadWritePaths` 并 `restart`（目录必须在 `/var/lib/yiban/` 下且不是软链）；容器改 `compose.env` 后 `up -d`，并确认卷挂载点同步 |
 | 审计锚点 | `YIBAN_AUDIT_ANCHOR_FILE`（库外 append-only 文件，0600；空＝不做锚点比对） | 改 `server.env` / `compose.env` 后重启；写锚点用 `yiban-cli audit anchor`，裸机 systemd timer 示例见 `deploy/README.md` §6.1 |
+| 公开注册人机验证 | `YIBAN_TURNSTILE_MODE`（auto/off/log/on）、`YIBAN_TURNSTILE_SITE_KEY`、`YIBAN_TURNSTILE_SECRET` | 改 `server.env` / `compose.env` 后重启；`auto` 在缺密钥时即关闭，`log` 只记录不拦截，`on` 拒绝缺失或无效令牌；只作用于 `POST /api/auth/register`，开启时 CSP 放开 `challenges.cloudflare.com` |
 | 备份落点 | 容器 `YIBAN_BACKUP_HOST_DIR`（宿主绝对路径，缺省 `./backups`） | 下一次 `--profile backup run` 生效；不在 Go 名册 |
 | 前端产物 | 裸机 `YIBAN_UI_DIR`（安装器写；`--ui-dir` 升级会一并换页面） | 重跑 `install.sh` 或 `update.sh --ui-dir`；手改后重启 |
 | 合规文档 | `YIBAN_DOCS_DIR`（含 `CHANGELOG.md`、`USER_AGREEMENT.md`、`PRIVACY_POLICY.md`；容器镜像自带 `/srv/docs`） | 改 `server.env` / `compose.env` 后重启；更新日志在进程内首读缓存，换文件要重启 |
@@ -58,6 +59,7 @@
 - `YIBAN_CREDENTIAL_KEY`（32 字节；轮换会让既有凭据密文无法解密）
 - `YIBAN_MAIL_USER`、`YIBAN_MAIL_PASS`、`YIBAN_MAIL_FROM`
   （`YIBAN_RESET_MAIL_ENABLE` 打开时；发件账号、授权码与发件地址）
+- `YIBAN_TURNSTILE_SECRET`（公开注册人机验证；不进日志、审计与错误文本）
 - `YIBAN_WEBHOOK_SECRET`（`YIBAN_WEBHOOK_ENABLE` 打开时；
   serverchan 的 SendKey 或 custom 的完整 webhook URL）
 - `POSTGRES_PASSWORD`（容器编排层；db 初始化与 DSN 派生）

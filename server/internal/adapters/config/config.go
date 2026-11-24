@@ -176,7 +176,27 @@ type Config struct {
 	WebhookCooldownSec int
 	// WebhookDailyMax 是推送日额度（0=不限额）。
 	WebhookDailyMax int
+
+	// TurnstileSiteKey 是 Cloudflare Turnstile 的站点密钥（公开值，
+	// 随注册状态回给前端）；空表示未配置人机验证。
+	TurnstileSiteKey string
+	// TurnstileSecret 是 siteverify 的服务端私钥。敏感值：不得出现在
+	// 日志、审计与错误文本里。
+	TurnstileSecret string
+	// TurnstileMode 是定型后的档位，只取 TurnstileModeOff/Log/On。
+	// 输入键另接受 auto：两把密钥齐备即 on，否则 off。
+	TurnstileMode string
 }
+
+// Turnstile 档位。auto 只在输入侧存在，定型后不会是 auto。
+const (
+	// TurnstileModeOff 关闭人机验证：注册请求里的令牌被忽略。
+	TurnstileModeOff = "off"
+	// TurnstileModeLog 只校验并记日志，不拦注册：用于灰测通过率。
+	TurnstileModeLog = "log"
+	// TurnstileModeOn 强制校验：令牌缺失或无效即拒绝注册。
+	TurnstileModeOn = "on"
+)
 
 // knownEnvs 是闭集。
 // 未知值即启动错误：像 "prod" 这样的笔误，
@@ -213,6 +233,10 @@ var mailTLSModes = coremail.TLSModes()
 // webhookTypes 是 YIBAN_WEBHOOK_TYPE 的闭集：serverchan 与 custom
 // 是 webhook 渠道的两条出口，与 adapters/webhook 的出口词表同源。
 var webhookTypes = []string{"serverchan", "custom"}
+
+// turnstileModes 是 YIBAN_TURNSTILE_MODE 的闭集。
+// 含 auto 这一输入专有值：定型函数把它解析成 off 或 on。
+var turnstileModes = []string{"auto", TurnstileModeOff, TurnstileModeLog, TurnstileModeOn}
 
 // keySpec 是名册对照测试看到的读取规格视图。
 // domain 为 nil 表示名册不登记数值域；enum 非空表示名册登记字符串闭集。
@@ -357,6 +381,11 @@ var (
 	keyRateAccountBurst  = intKey{"YIBAN_RATE_ACCOUNT_BURST", 5, 1, 600}
 	keyTrustedProxies    = stringKey{"YIBAN_TRUSTED_PROXIES", ""}
 	keyKDFConcurrency    = intKey{"YIBAN_KDF_CONCURRENCY", 4, 1, 64}
+
+	// 人机验证三键。站点密钥是公开值；私钥只在服务端使用。
+	keyTurnstileSiteKey = stringKey{"YIBAN_TURNSTILE_SITE_KEY", ""}
+	keyTurnstileSecret  = stringKey{"YIBAN_TURNSTILE_SECRET", ""}
+	keyTurnstileMode    = enumKey{"YIBAN_TURNSTILE_MODE", "auto", turnstileModes}
 )
 
 // configSpecs 汇总静态缺省/域的读取规格。
@@ -401,6 +430,9 @@ func configSpecs() []keySpec {
 		keyRateAccountBurst.spec(),
 		keyTrustedProxies.spec(),
 		keyKDFConcurrency.spec(),
+		keyTurnstileSiteKey.spec(),
+		keyTurnstileSecret.spec(),
+		keyTurnstileMode.spec(),
 	}
 }
 
@@ -418,6 +450,7 @@ var sensitiveKeys = []string{
 	"YIBAN_MAIL_PASS",
 	"YIBAN_MAIL_FROM",
 	"YIBAN_WEBHOOK_SECRET",
+	"YIBAN_TURNSTILE_SECRET",
 }
 
 // Load 读取进程环境。
@@ -581,6 +614,18 @@ func LoadFrom(src Source) (*Config, error) {
 	if cfg.WebhookDailyMax, err = keyWebhookDailyMax.read(src); err != nil {
 		return nil, err
 	}
+
+	// 人机验证：两把密钥要么都给、要么都不给。只配一半会让前端出验证码
+	// 而服务端无从校验（或反之），启动即失败，不进入半套状态。
+	cfg.TurnstileSiteKey = strings.TrimSpace(keyTurnstileSiteKey.read(src))
+	cfg.TurnstileSecret = strings.TrimSpace(keyTurnstileSecret.read(src))
+	mode, err := keyTurnstileMode.read(src)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.TurnstileMode, err = resolveTurnstileMode(mode, cfg.TurnstileSiteKey, cfg.TurnstileSecret); err != nil {
+		return nil, err
+	}
 	if cfg.ResetMailEnabled {
 		if cfg.MailHost == "" {
 			return nil, errors.New("config: YIBAN_RESET_MAIL_ENABLE requires YIBAN_MAIL_SMTP_HOST")
@@ -609,6 +654,34 @@ func LoadFrom(src Source) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// resolveTurnstileMode 把输入档位（含 auto）定型成 off/log/on。
+//
+// 判据：
+//   - 只配一把密钥即错误：半套配置不是"关闭"，而是编辑残留。
+//   - auto 两把齐备即 on，否则 off——未配置密钥的既有部署行为不变。
+//   - log 与 on 必须两把齐备；缺密钥时失败关闭，不静默降级为 off。
+func resolveTurnstileMode(mode, siteKey, secret string) (string, error) {
+	if (siteKey == "") != (secret == "") {
+		return "", errors.New("config: YIBAN_TURNSTILE_SITE_KEY and YIBAN_TURNSTILE_SECRET must be set together")
+	}
+	switch mode {
+	case "auto":
+		if secret == "" {
+			return TurnstileModeOff, nil
+		}
+		return TurnstileModeOn, nil
+	case TurnstileModeOff:
+		return TurnstileModeOff, nil
+	case TurnstileModeLog, TurnstileModeOn:
+		if secret == "" {
+			return "", fmt.Errorf("config: YIBAN_TURNSTILE_MODE=%s requires YIBAN_TURNSTILE_SITE_KEY and YIBAN_TURNSTILE_SECRET", mode)
+		}
+		return mode, nil
+	default:
+		return "", fmt.Errorf("config: unknown turnstile mode %q", mode)
+	}
 }
 
 // checkDatabasePresence 钉住「有库才跑业务」的启动判据。

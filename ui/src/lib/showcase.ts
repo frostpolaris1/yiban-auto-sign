@@ -826,6 +826,8 @@ export function showcaseRegistrationStatus(): RegistrationStatus {
     enabled: false,
     terms_version: 1,
     privacy_version: 1,
+    turnstile_site_key: '',
+    turnstile_enforced: false,
   }
 }
 

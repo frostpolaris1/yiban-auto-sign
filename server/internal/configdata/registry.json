@@ -288,6 +288,31 @@
     "sensitive": false,
     "scope": "server"
   },
+  "YIBAN_TURNSTILE_MODE": {
+    "type": "enum",
+    "domain": ["auto", "off", "log", "on"],
+    "default": "auto",
+    "group": ["安全"],
+    "doc": "人机验证档位：auto=两把密钥齐备即强制，off=关闭，log=只校验并记日志不拦注册，on=强制校验",
+    "sensitive": false,
+    "scope": "server"
+  },
+  "YIBAN_TURNSTILE_SECRET": {
+    "type": "string",
+    "default": "",
+    "group": ["安全"],
+    "doc": "Cloudflare Turnstile 私钥，只在服务端调用 siteverify 时使用。不进日志、审计与错误文本",
+    "sensitive": true,
+    "scope": "server"
+  },
+  "YIBAN_TURNSTILE_SITE_KEY": {
+    "type": "string",
+    "default": "",
+    "group": ["安全"],
+    "doc": "Cloudflare Turnstile 站点密钥（公开值，随注册状态回给前端）。与私钥成对配置：只配一把即启动错误",
+    "sensitive": false,
+    "scope": "server"
+  },
   "YIBAN_WEBHOOK_COOLDOWN_SEC": {
     "type": "int",
     "domain": [0, 86400],

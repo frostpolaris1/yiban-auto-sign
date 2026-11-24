@@ -175,30 +175,49 @@ func accessLog(logger *slog.Logger, clk clock.Clock) gin.HandlerFunc {
 
 // contentSecurityPolicy 是全站基线 CSP。
 //
-// script-src 只有 'self'：UI 的主题引导已外置为 /theme-boot.js，
+// script-src 基线只有 'self'：UI 的主题引导已外置为 /theme-boot.js，
 // 内联脚本会被浏览器拦掉（router 包的守卫测试钉住 index.html 无内联块）。
+// 开人机验证时额外放行 Cloudflare 的脚本、iframe 与上报来源（turnstileOrigin），
+// 站点自己的脚本仍然只有 'self'；关着时策略与旧基线逐字相同。
 // style-src 保留 'unsafe-inline'：React 组件的 style 属性是行内样式，
 // 不属于脚本注入面。
 // img-src 保留 data:：样式表里的下拉箭头是 data:image/svg+xml；
 // 照片字节走同源 /api/me/photos/{id}，不需要额外来源。
 // HSTS 不在进程内下发：TLS 由反向代理终结，HSTS 由代理统一下发
 // （见 deploy/README.md §5）。
-const contentSecurityPolicy = "default-src 'self'; " +
-	"script-src 'self'; " +
-	"style-src 'self' 'unsafe-inline'; " +
-	"img-src 'self' data:; " +
-	"frame-ancestors 'none'; " +
-	"object-src 'none'; " +
-	"base-uri 'none'"
+
+// turnstileOrigin 是 Cloudflare Turnstile 的脚本、iframe 与上报来源。
+// 只在启用人机验证时写进 CSP。
+const turnstileOrigin = "https://challenges.cloudflare.com"
+
+// contentSecurityPolicy 按开关决定要不要给人机验证控件开口子。
+// 关着的时候与旧基线逐字相同（守卫测试钉住）。
+func contentSecurityPolicy(turnstile bool) string {
+	script := "script-src 'self'; "
+	extra := ""
+	if turnstile {
+		script = "script-src 'self' " + turnstileOrigin + "; "
+		// 控件是跨源 iframe，令牌与挑战结果也回到 Cloudflare，故两者都要放行。
+		extra = "connect-src 'self' " + turnstileOrigin + "; frame-src " + turnstileOrigin + "; "
+	}
+	return "default-src 'self'; " +
+		script +
+		"style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; " +
+		extra +
+		"frame-ancestors 'none'; " +
+		"object-src 'none'; " +
+		"base-uri 'none'"
+}
 
 // securityHeaders 设置不随响应变化的头。
-func securityHeaders() gin.HandlerFunc {
+func securityHeaders(turnstile bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		h := c.Writer.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("Content-Security-Policy", contentSecurityPolicy(turnstile))
 		// /api 与 /api/* 同一口径：未知 API 的 404 也不得被缓存。
 		if c.Request.URL.Path == "/api" || strings.HasPrefix(c.Request.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")

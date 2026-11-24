@@ -38,6 +38,9 @@ const (
 	CodePhotoInvalid      Code = "photo_invalid"
 	CodePhotoRejected     Code = "photo_rejected"
 	CodeLocationOutside   Code = "location_out_of_range"
+	// CodeHumanVerification 只用于公开注册的人机验证：令牌缺失、超长或被拒。
+	// 前端据此换一个新控件重试，不当成口令策略之类的参数错误。
+	CodeHumanVerification Code = "human_verification_failed"
 	CodeUpstream          Code = "upstream_unavailable"
 	CodeInternal          Code = "internal_error"
 )

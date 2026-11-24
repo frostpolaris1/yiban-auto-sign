@@ -243,7 +243,12 @@ paths:
       description: |
         Public. enabled is false by default. terms_version and
         privacy_version identify the agreement text the client must show;
-        a register request must echo the same values.
+        a register request must echo the same values. turnstile_site_key is
+        empty while human verification is off; when set, the client renders
+        the Cloudflare Turnstile widget with it and sends the resulting
+        token as turnstile_token on registration. turnstile_enforced tells
+        the client whether the server rejects registrations without a valid
+        token (on) or only logs the outcome (log).
       security: []
       x-roles: [public]
       responses:
@@ -301,7 +306,12 @@ paths:
         status active and must_change_password false. Success sets the
         session cookie. Cross-site browser submissions are rejected like
         login. Rate limited per client IP and per normalized email; a 429
-        carries Retry-After in seconds.
+        carries Retry-After in seconds. While human verification is enforced
+        (registration status reports turnstile_enforced true), a valid
+        turnstile_token is required: a missing, over-long or rejected token
+        answers 400 human_verification_failed, and an unreachable
+        verification service answers 502. In log mode any token outcome is
+        only logged. The token is never logged, audited or stored.
       security: []
       x-roles: [public]
       requestBody:
@@ -322,6 +332,7 @@ paths:
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        '502': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/me/delete:
     post:
@@ -4708,6 +4719,7 @@ components:
         capacity and succeeds.
       enum:
         - validation_failed
+        - human_verification_failed
         - unauthorized
         - forbidden
         - not_found
@@ -4816,13 +4828,28 @@ components:
         new_password: { type: string, minLength: 1 }
     RegistrationStatus:
       type: object
-      required: [enabled, terms_version, privacy_version]
+      required:
+        [enabled, terms_version, privacy_version, turnstile_site_key, turnstile_enforced]
       properties:
         enabled:
           type: boolean
           description: False by default. Only a master may change it.
         terms_version: { type: integer, minimum: 1 }
         privacy_version: { type: integer, minimum: 1 }
+        turnstile_site_key:
+          type: string
+          description: |
+            Empty when human verification is off. When set, render the
+            Cloudflare Turnstile widget with this key and send the resulting
+            token as turnstile_token on registration.
+        turnstile_enforced:
+          type: boolean
+          description: |
+            True in on mode: a missing or rejected token answers 400
+            human_verification_failed, so the client must not submit without
+            one. False in log mode: the widget is still rendered and its
+            token collected, but the server only logs the outcome and lets
+            the registration through. Always false while off.
     PasswordPolicy:
       type: object
       required: [min_chars, min_classes, max_bytes]
@@ -4910,6 +4937,13 @@ components:
           type: integer
           minimum: 1
           description: Must equal RegistrationStatus.privacy_version; a stale value is 409.
+        turnstile_token:
+          type: string
+          maxLength: 4096
+          description: |
+            Cloudflare Turnstile response token. Required only while
+            RegistrationStatus.turnstile_enforced is true; a longer value is
+            400 human_verification_failed. Never logged or stored.
     UserCreate:
       type: object
       required: [email, password, role]

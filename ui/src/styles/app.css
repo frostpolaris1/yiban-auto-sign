@@ -5097,38 +5097,48 @@ html[data-density="compact"] .card {
 .app-turnstile-slot {
   display: flex;
   justify-content: center;
-  /* Turnstile 控件的版面上限是 300×65；上限先留在挂载点上，接入后删掉占位块
-   * 也不会塌成 0 高、把提交按钮顶上去。宽度随卡片收窄，320px 屏放得下。 */
+  /* Turnstile 控件的版面是 300×65；只在启用时挂载，未启用时整块不渲染，
+   * 不会留下空位或空高度。宽度随卡片收窄，320px 屏放得下。 */
   min-height: 65px;
 }
-/* Turnstile 常规控件的版面是 300×65；接入前用虚线占位把这块版面先留出来，
- * 免得把「还没接」看成「已在防护」。接入后删除占位块，挂载点本身保留。 */
-.app-turnstile-slot-placeholder {
+/* 启用后控件是跨源 iframe：不画虚线，只留 65px 版面与加载/失败提示。
+ * 提示色与正文同源，都是正文 12px 的 AA 口径（浅 4.91 / 深 8.25）。 */
+.app-turnstile-status {
+  display: grid;
+  gap: var(--space-1);
+}
+.app-turnstile-note {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
+  text-align: center;
+  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+}
+.app-turnstile-note--error {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: var(--space-1);
-  width: 100%;
-  height: 100%;
-  padding: var(--space-3) var(--space-4);
-  border: 1px dashed color-mix(in srgb, var(--t-muted) 45%, var(--border));
-  border-radius: var(--radius-md);
-  background: var(--bg-body);
-  text-align: center;
+  gap: var(--space-2);
+  color: var(--danger);
 }
-.app-turnstile-slot-label {
+/* 控件自己的重试入口：不刷新整页，只重跑一次脚本加载。 */
+.app-turnstile-retry {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--ctrl-h-sm);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
-  font-weight: 600;
-  color: var(--t-base);
+  cursor: pointer;
 }
-/* --t-muted 落在 --bg-body 上只有 4.31:1（正文 12px 要 4.5），
- * 按同文件 2026-11-15 的对比度修法向 --t-base 混 12%：浅 4.91 / 深 8.25（e2e 有守护，阈值 4.5）。 */
-.app-turnstile-slot-hint {
-  font-size: var(--text-xs);
-  line-height: var(--leading-xs);
-  color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
+/* 裸 --danger 在浅色卡底上只有约 3.8:1（12px 正文要 4.5），按同文件 field-error /
+ * btn--soft-danger 的口径向 --t-base 混 25% 抬到 5.44:1；深色档 --danger 本就达标。 */
+:root[data-theme='light'] .app-turnstile-note--error {
+  color: color-mix(in srgb, var(--danger) 75%, var(--t-base));
 }
 
 .app-skeleton-lines {

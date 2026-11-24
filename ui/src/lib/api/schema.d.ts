@@ -195,7 +195,12 @@ export interface paths {
          * Report whether public registration is open.
          * @description Public. enabled is false by default. terms_version and
          *     privacy_version identify the agreement text the client must show;
-         *     a register request must echo the same values.
+         *     a register request must echo the same values. turnstile_site_key is
+         *     empty while human verification is off; when set, the client renders
+         *     the Cloudflare Turnstile widget with it and sends the resulting
+         *     token as turnstile_token on registration. turnstile_enforced tells
+         *     the client whether the server rejects registrations without a valid
+         *     token (on) or only logs the outcome (log).
          */
         get: operations["AuthRegistration"];
         /**
@@ -235,7 +240,12 @@ export interface paths {
          *     status active and must_change_password false. Success sets the
          *     session cookie. Cross-site browser submissions are rejected like
          *     login. Rate limited per client IP and per normalized email; a 429
-         *     carries Retry-After in seconds.
+         *     carries Retry-After in seconds. While human verification is enforced
+         *     (registration status reports turnstile_enforced true), a valid
+         *     turnstile_token is required: a missing, over-long or rejected token
+         *     answers 400 human_verification_failed, and an unreachable
+         *     verification service answers 502. In log mode any token outcome is
+         *     only logged. The token is never logged, audited or stored.
          */
         post: operations["AuthRegister"];
         delete?: never;
@@ -3214,7 +3224,7 @@ export interface components {
          *     capacity and succeeds.
          * @enum {string}
          */
-        ErrorCode: "validation_failed" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "rate_limited" | "capacity_exceeded" | "capacity_shortfall" | "window_closed" | "already_signed" | "sign_running" | "task_ambiguous" | "photo_missing" | "photo_invalid" | "photo_rejected" | "location_out_of_range" | "upstream_unavailable" | "internal_error";
+        ErrorCode: "validation_failed" | "human_verification_failed" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "rate_limited" | "capacity_exceeded" | "capacity_shortfall" | "window_closed" | "already_signed" | "sign_running" | "task_ambiguous" | "photo_missing" | "photo_invalid" | "photo_rejected" | "location_out_of_range" | "upstream_unavailable" | "internal_error";
         /** @enum {string} */
         UserRole: "master" | "admin" | "user";
         /** @enum {string} */
@@ -3278,6 +3288,20 @@ export interface components {
             enabled: boolean;
             terms_version: number;
             privacy_version: number;
+            /**
+             * @description Empty when human verification is off. When set, render the
+             *     Cloudflare Turnstile widget with this key and send the resulting
+             *     token as turnstile_token on registration.
+             */
+            turnstile_site_key: string;
+            /**
+             * @description True in on mode: a missing or rejected token answers 400
+             *     human_verification_failed, so the client must not submit without
+             *     one. False in log mode: the widget is still rendered and its
+             *     token collected, but the server only logs the outcome and lets
+             *     the registration through. Always false while off.
+             */
+            turnstile_enforced: boolean;
         };
         PasswordPolicy: {
             /**
@@ -3330,6 +3354,12 @@ export interface components {
             terms_version: number;
             /** @description Must equal RegistrationStatus.privacy_version; a stale value is 409. */
             privacy_version: number;
+            /**
+             * @description Cloudflare Turnstile response token. Required only while
+             *     RegistrationStatus.turnstile_enforced is true; a longer value is
+             *     400 human_verification_failed. Never logged or stored.
+             */
+            turnstile_token?: string;
         };
         UserCreate: {
             /**
@@ -4956,6 +4986,7 @@ export interface operations {
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
+            502: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };

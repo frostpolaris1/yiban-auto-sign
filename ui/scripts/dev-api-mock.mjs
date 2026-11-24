@@ -160,7 +160,7 @@ export function devApiMock() {
         const method = req.method ?? 'GET'
 
         if (path === '/auth/registration') {
-          return send(res, { enabled: true, terms_version: 1, privacy_version: 1 })
+          return send(res, { enabled: true, terms_version: 1, privacy_version: 1, turnstile_site_key: '', turnstile_enforced: false })
         }
         if (path === '/auth/password-policy') {
           return send(res, { min_chars: 10, min_classes: 2, max_bytes: 1024 })

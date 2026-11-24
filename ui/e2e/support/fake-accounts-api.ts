@@ -198,8 +198,15 @@ export type MockOptions = {
   loginRole?: Role
   /** 首枚 login 请求固定 401（模拟软删账号的统一凭据错误），之后恢复正常。 */
   loginFailFirst?: boolean
-  /** GET /api/auth/registration 覆盖值。缺省开放、双版本 1，与服务端初始态一致。 */
-  registration?: { enabled?: boolean; terms_version?: number; privacy_version?: number }
+  /** GET /api/auth/registration 覆盖值。缺省开放、双版本 1、未启用人机验证，与服务端初始态一致。 */
+  registration?: {
+    enabled?: boolean
+    terms_version?: number
+    privacy_version?: number
+    /** 非空即启用 Turnstile：前端会去加载 Cloudflare 脚本，用例需自行 route 脚本。 */
+    turnstile_site_key?: string
+    turnstile_enforced?: boolean
+  }
   /** GET /api/auth/password-policy 覆盖值。缺省 10/2/1024，与服务端默认策略一致。 */
   passwordPolicy?: { min_chars: number; min_classes: number; max_bytes: number }
   mustChangePassword?: boolean
@@ -568,6 +575,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         enabled: reg.enabled ?? true,
         terms_version: reg.terms_version ?? 1,
         privacy_version: reg.privacy_version ?? 1,
+        // 两键都必填：空站点密钥与 false 等价于未启用人机验证。
+        turnstile_site_key: reg.turnstile_site_key ?? '',
+        turnstile_enforced: reg.turnstile_enforced ?? Boolean(reg.turnstile_site_key),
       })
     }
 

@@ -295,8 +295,8 @@ test('login: portrait turns the sky into a page-wide backdrop and centers the pa
 test('register: a short viewport scrolls to the submit button instead of clipping it', async ({
   page,
 }) => {
-  // 矮屏（390×520）放不下注册表单：卡片顺排、整页可滚，提交按钮初始在折下但滚得到。
-  // 520 是实测挑的高度——640 时按钮已经落在折内（刻度在 586..634），测不出「滚动」这件事。
+  // 矮屏（390×520）放不下注册表单：卡片顺排、整页可滚，提交按钮初始被折线切到但滚得到。
+  // 520 是实测挑的高度——640 时按钮完整落在折内，测不出「滚动」这件事。
   await mockAccountsApi(page, { role: null })
   await page.setViewportSize({ width: 390, height: 520 })
   await page.goto('/register')
@@ -311,10 +311,14 @@ test('register: a short viewport scrolls to the submit button instead of clippin
   expect(metrics.overflowX).toBeLessThanOrEqual(0)
 
   const submit = page.getByRole('button', { name: '创建账号' })
-  // 断言「滚得到」而不是「量到 586px」：表单压紧一档也会让写死的坐标变红，但那不是缺陷。
-  await expect(submit).not.toBeInViewport()
+  // 断言「能滚到完整可见」而不是「量到某个 y」：表单高度随内容浮动，钉坐标会误报。
+  const before = await submit.boundingBox()
+  expect(before).not.toBeNull()
+  expect(before!.y + before!.height).toBeGreaterThan(metrics.viewH)
   await submit.scrollIntoViewIfNeeded()
-  await expect(submit).toBeInViewport()
+  const after = await submit.boundingBox()
+  expect(after!.y).toBeGreaterThanOrEqual(0)
+  expect(after!.y + after!.height).toBeLessThanOrEqual(metrics.viewH)
   // 走的是窗口滚动，不是某个内部滚动容器把按钮转进来。
   expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
 })
@@ -365,45 +369,6 @@ test('auth: the sky covers the viewport and nothing overflows on phones', async 
       )
       expect(overflowX, `${path} @${width} 横向溢出`).toBeLessThanOrEqual(0)
     }
-  }
-})
-
-test('register: the verification placeholder keeps its text above AA contrast', async ({ page }) => {
-  // 占位提示是表单里真实可读的文字，混色配方一动就可能跌破 4.5：这里按计算色算一遍 WCAG。
-  await mockAccountsApi(page, { role: null })
-  await page.setViewportSize({ width: 390, height: 844 })
-  const ratio = (a: number[], b: number[]) => {
-    const lin = (c: number) => {
-      const v = c / 255
-      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
-    }
-    const lum = (rgb: number[]) => 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
-    const [la, lb] = [lum(a), lum(b)]
-    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
-  }
-  // 计算色可能是 rgb()/rgba()，也可能是 color(srgb 0.35 …) 这种 0..1 浮点，两种都认。
-  const parse = (value: string): number[] => {
-    const inner = value.replace(/^color\(/, '').replace(/\)$/, '')
-    if (value.startsWith('color(')) {
-      const parts = inner.split(/\s+/).filter((p) => p !== 'srgb')
-      return parts.slice(0, 3).map((p) => Math.round(Number(p) * 255))
-    }
-    return (inner.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
-  }
-
-  for (const theme of ['light', 'dark'] as const) {
-    // 主题靠 localStorage 首屏读取，所以先写再 reload：不用把两轮压成两个 init script。
-    await page.goto('/register')
-    await page.evaluate((value) => window.localStorage.setItem('dash26-theme', value), theme)
-    await page.reload()
-    await expect(page.locator('.app-turnstile-slot-hint')).toBeVisible()
-    const colors = await page.evaluate(() => {
-      const hint = document.querySelector('.app-turnstile-slot-hint') as HTMLElement
-      const slot = document.querySelector('.app-turnstile-slot-placeholder') as HTMLElement
-      return { text: getComputedStyle(hint).color, bg: getComputedStyle(slot).backgroundColor }
-    })
-    const value = ratio(parse(colors.text), parse(colors.bg))
-    expect(value, `${theme} 下占位提示对比度 ${value.toFixed(2)}`).toBeGreaterThanOrEqual(4.5)
   }
 })
 
@@ -673,14 +638,340 @@ test('register: pre-login meter uses the local user tier, not the session policy
   await expect(page).toHaveURL(/\/register$/)
 })
 
-test('register: keeps the Turnstile mount point inside the form', async ({ page }) => {
-  // 人机验证接入点：接入前只有占位，但挂载点必须一直在表单里，
-  // token 才能随注册请求一起提交。
+test('register: without a site key renders no widget and no placeholder', async ({ page }) => {
+  // 未配置密钥 = 该功能不存在：不渲染控件、不留占位、不占版面，也不请求 Cloudflare。
   await mockAccountsApi(page, { role: null })
+  const cloudflareRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().startsWith('https://challenges.cloudflare.com/')) {
+      cloudflareRequests.push(request.url())
+    }
+  })
   await page.goto('/register')
 
   await expect(page.getByRole('heading', { name: '创建账号' })).toBeVisible()
-  await expect(page.locator('form [data-turnstile-slot="register"]')).toHaveCount(1)
+  await expect(page.locator('[data-turnstile-slot="register"]')).toHaveCount(0)
+  await expect(page.getByText('人机验证占位', { exact: true })).toHaveCount(0)
+  expect(cloudflareRequests).toEqual([])
+})
+
+/**
+ * Cloudflare 脚本的替身：不联网，按真实 `render(container, options)` 的形状
+ * 往挂载点塞一个按钮，点一下就把令牌交给 `options.callback`。
+ * `window.turnstile` 由这段脚本定义，前端就不再请求真实端点。
+ */
+const TURNSTILE_STUB = `window.turnstile = {
+  render: function (container, options) {
+    var button = document.createElement('button')
+    button.type = 'button'
+    button.textContent = 'stub-turnstile'
+    button.addEventListener('click', function () { options.callback('stub-token') })
+    container.appendChild(button)
+    return 'stub-widget'
+  },
+  remove: function () {},
+}`
+
+async function fillRegisterForm(page: Page) {
+  await page.locator('#register-email').fill('new@example.com')
+  await page.locator('#register-password').fill('Correct-horse-9!')
+  await page.locator('#register-confirm').fill('Correct-horse-9!')
+  await page.locator('.app-register-agree .box').click()
+}
+
+test('register: a configured site key renders the widget and submits its token', async ({
+  page,
+}) => {
+  await mockAccountsApi(page, {
+    role: null,
+    registration: { turnstile_site_key: 'test-site-key' },
+  })
+  await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js**', (route) =>
+    route.fulfill({ contentType: 'application/javascript', body: TURNSTILE_STUB }),
+  )
+  let submitted: Record<string, unknown> | null = null
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/api/auth/register')) {
+      submitted = request.postDataJSON() as Record<string, unknown>
+    }
+  })
+
+  await page.goto('/register')
+  // 配了站点密钥才挂载控件；同一位置不再有占位。
+  await expect(page.locator('[data-turnstile-slot="register"]')).toHaveCount(1)
+  const widget = page.getByRole('button', { name: 'stub-turnstile' })
+  await expect(widget).toBeVisible()
+
+  await fillRegisterForm(page)
+  await widget.click()
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+
+  await expect(page).toHaveURL(/\/app$/)
+  expect(submitted).not.toBeNull()
+  expect(submitted!.turnstile_token).toBe('stub-token')
+})
+
+test('register: a failed submit burns the token and forces a fresh verification', async ({
+  page,
+}) => {
+  // 令牌一次性：服务端在 KDF/DB 之前就核销。提交失败后旧令牌已作废，
+  // 界面必须换一个新控件，否则用户重试只会拿回 timeout-or-duplicate。
+  await mockAccountsApi(page, {
+    role: null,
+    registration: { turnstile_site_key: 'test-site-key' },
+  })
+  await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js**', (route) =>
+    route.fulfill({
+      contentType: 'application/javascript',
+      body: `window.__turnstileRenders = 0;
+window.turnstile = {
+  render: function (container, options) {
+    window.__turnstileRenders += 1
+    var token = 'token-' + window.__turnstileRenders
+    var button = document.createElement('button')
+    button.type = 'button'
+    button.textContent = 'stub-turnstile'
+    button.addEventListener('click', function () { options.callback(token) })
+    container.appendChild(button)
+    return 'stub-widget'
+  },
+  remove: function () {},
+}`,
+    }),
+  )
+  const tokens: unknown[] = []
+  let registers = 0
+  await page.route('**/api/auth/register', async (route) => {
+    registers += 1
+    if (registers === 1) {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 'internal', message: 'boom' }),
+      })
+      return
+    }
+    await route.fallback()
+  })
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/api/auth/register')) {
+      const body = request.postDataJSON() as Record<string, unknown>
+      tokens.push(body.turnstile_token)
+    }
+  })
+
+  await page.goto('/register')
+  const widget = page.getByRole('button', { name: 'stub-turnstile' })
+  await expect(widget).toBeVisible()
+  await fillRegisterForm(page)
+  await widget.click()
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+
+  // 第一次提交失败，页面停住并已重新渲染控件。
+  await expect(page.locator('.app-alert-block')).toBeVisible()
+  await expect(page).toHaveURL(/\/register$/)
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __turnstileRenders?: number }).__turnstileRenders))
+    .toBe(2)
+
+  // 旧令牌已随失败提交作废：不重新过验证再点提交，本地守卫直接拦住。
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+  await expect(page.getByText('请先完成上方的人机验证', { exact: true })).toBeVisible()
+  expect(registers).toBe(1)
+
+  // 重新过验证后重试成功，请求里带的是新令牌。
+  await widget.click()
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+  await expect(page).toHaveURL(/\/app$/)
+  expect(tokens).toEqual(['token-1', 'token-2'])
+})
+
+test('register: a configured site key blocks submit until a token arrives', async ({ page }) => {
+  await mockAccountsApi(page, {
+    role: null,
+    registration: { turnstile_site_key: 'test-site-key', turnstile_enforced: true },
+  })
+  // 这个替身只画一个不会回调的控件：模拟用户还没做完验证。
+  await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js**', (route) =>
+    route.fulfill({
+      contentType: 'application/javascript',
+      body: `window.turnstile = { render: function (container) {
+        var span = document.createElement('span')
+        span.textContent = 'stub-widget'
+        container.appendChild(span)
+        return 'stub-widget'
+      }, remove: function () {} }`,
+    }),
+  )
+  let registers = 0
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/api/auth/register')) registers += 1
+  })
+
+  await page.goto('/register')
+  await expect(page.getByText('stub-widget', { exact: true })).toBeVisible()
+  await fillRegisterForm(page)
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+
+  await expect(page.getByText('请先完成上方的人机验证', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(/\/register$/)
+  expect(registers).toBe(0)
+})
+
+test('register: a failed widget script offers an in-page retry instead of a dead form', async ({
+  page,
+}) => {
+  // 脚本加载失败时 UI 不能只剩一句「请先完成验证」：那会让人以为验证码画不出来是
+  // 自己的问题，只能刷新整页。这里断言失败态可解释、可就地重试、重试后能提交。
+  await mockAccountsApi(page, {
+    role: null,
+    registration: { turnstile_site_key: 'test-site-key', turnstile_enforced: true },
+  })
+  let scriptRequests = 0
+  await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js**', (route) => {
+    scriptRequests += 1
+    if (scriptRequests === 1) return route.abort('failed')
+    return route.fulfill({
+      contentType: 'application/javascript',
+      body: `window.turnstile = { render: function (container, options) {
+        var button = document.createElement('button')
+        button.type = 'button'
+        button.textContent = 'stub-turnstile'
+        button.addEventListener('click', function () { options.callback('stub-token') })
+        container.appendChild(button)
+        return 'stub-widget'
+      }, remove: function () {} }`,
+    })
+  })
+  let registers = 0
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/api/auth/register')) registers += 1
+  })
+
+  await page.goto('/register')
+  await expect(page.getByRole('alert')).toContainText('人机验证加载失败')
+  await fillRegisterForm(page)
+
+  // 失败态下提交：给的是「加载失败」而不是「请先完成」，并零请求。
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+  await expect(page.getByText('人机验证加载失败，请点上方「重新加载」后再试', { exact: true })).toBeVisible()
+  expect(registers).toBe(0)
+
+  // 就地重试，不刷新页面。
+  await page.getByRole('button', { name: '重新加载' }).click()
+  const widget = page.getByRole('button', { name: 'stub-turnstile' })
+  await expect(widget).toBeVisible()
+  expect(scriptRequests).toBe(2)
+  // 重试成功后「加载失败」必须自己撤掉，不能留到用户过完验证为止。
+  await expect(
+    page.getByText('人机验证加载失败，请点上方「重新加载」后再试', { exact: true }),
+  ).toHaveCount(0)
+
+  await widget.click()
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+  await expect(page).toHaveURL(/\/app$/)
+  expect(registers).toBe(1)
+})
+
+test('register: enforced without a site key defers to the server instead of a dead guard', async ({
+  page,
+}) => {
+  // enforced 但没有站点密钥 = 配置不完整（或本地快照早于服务端开闸）。本地不能
+  // 拿「请先完成上方的人机验证」把表单锁死——上方根本没有控件。放行给服务端判，
+  // 服务端回 human_verification_failed 时重拉状态，让控件按新密钥出现。
+  await mockAccountsApi(page, {
+    role: null,
+    registration: { turnstile_site_key: '', turnstile_enforced: true },
+  })
+  await page.route('**/api/auth/register', (route) =>
+    route.fulfill({
+      status: 400,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        error: { code: 'human_verification_failed', message: 'human verification failed' },
+      }),
+    }),
+  )
+  let registers = 0
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/api/auth/register')) registers += 1
+  })
+
+  await page.goto('/register')
+  await fillRegisterForm(page)
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+
+  await expect(page.getByText('人机验证未通过，请重新完成验证', { exact: true })).toBeVisible()
+  await expect(page.getByText('请先完成上方的人机验证', { exact: true })).toHaveCount(0)
+  expect(registers).toBe(1)
+})
+
+test('register: switching the theme rebuilds the widget in the new palette', async ({
+  page,
+}) => {
+  // Turnstile 的 theme 是 render 时的一次性参数：不重建控件，切主题后 iframe 里仍是旧配色。
+  await mockAccountsApi(page, {
+    role: null,
+    registration: { turnstile_site_key: 'test-site-key' },
+  })
+  await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js**', (route) =>
+    route.fulfill({
+      contentType: 'application/javascript',
+      body: `window.__turnstileThemes = [];
+window.turnstile = { render: function (container, options) {
+  window.__turnstileThemes.push(options.theme)
+  var span = document.createElement('span')
+  span.textContent = 'stub-widget'
+  container.appendChild(span)
+  return 'stub-' + window.__turnstileThemes.length
+}, remove: function () {} }`,
+    }),
+  )
+
+  await page.goto('/register')
+  await expect(page.getByText('stub-widget', { exact: true })).toBeVisible()
+  await page.locator('.app-theme-toggle').click()
+
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __turnstileThemes: string[] }).__turnstileThemes.length))
+    .toBe(2)
+  expect(
+    await page.evaluate(() => (window as unknown as { __turnstileThemes: string[] }).__turnstileThemes),
+  ).toEqual(['light', 'dark'])
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+})
+
+test('register: a site key in log mode renders the widget but never blocks submit', async ({
+  page,
+}) => {
+  await mockAccountsApi(page, {
+    role: null,
+    registration: { turnstile_site_key: 'test-site-key', turnstile_enforced: false },
+  })
+  await page.route('https://challenges.cloudflare.com/turnstile/v0/api.js**', (route) =>
+    route.fulfill({
+      contentType: 'application/javascript',
+      body: `window.turnstile = { render: function (container) {
+        var span = document.createElement('span')
+        span.textContent = 'stub-widget'
+        container.appendChild(span)
+        return 'stub-widget'
+      }, remove: function () {} }`,
+    }),
+  )
+  let registers = 0
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/api/auth/register')) registers += 1
+  })
+
+  await page.goto('/register')
+  await expect(page.getByText('stub-widget', { exact: true })).toBeVisible()
+  await fillRegisterForm(page)
+  await page.getByRole('button', { name: '创建账号', exact: true }).click()
+
+  // log 档服务端只记日志：没有令牌也放行，页面不该被本地守卫拦住。
+  await expect(page).toHaveURL(/\/app$/)
+  expect(registers).toBe(1)
 })
 
 test('register: the local fallback governs the meter when the policy endpoint fails', async ({

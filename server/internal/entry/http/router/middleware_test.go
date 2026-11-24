@@ -103,6 +103,38 @@ func TestSecurityHeadersWiredThroughRouter(t *testing.T) {
 		strings.Contains(csp, "script-src 'unsafe-inline'") {
 		t.Fatalf("script-src 不得含 'unsafe-inline'（当前: %q）", csp)
 	}
+	if strings.Contains(csp, "challenges.cloudflare.com") {
+		t.Fatalf("未启用人机验证时 CSP 不得放行 Cloudflare（当前: %q）", csp)
+	}
+}
+
+// 启用人机验证只放开 Cloudflare 控件需要的三条指令；
+// script-src 仍不得含 'unsafe-inline'，也不得变成通配符。
+func TestSecurityHeadersAllowTurnstileOriginsOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine, err := New(Options{Sessions: cspWiringIssuer{}, Turnstile: true})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	csp := rec.Header().Get("Content-Security-Policy")
+	for _, want := range []string{
+		"script-src 'self' https://challenges.cloudflare.com",
+		"frame-src https://challenges.cloudflare.com",
+		"connect-src 'self' https://challenges.cloudflare.com",
+	} {
+		if !strings.Contains(csp, want) {
+			t.Fatalf("CSP 缺指令 %q（当前: %q）", want, csp)
+		}
+	}
+	if strings.Contains(csp, "unsafe-inline") && strings.Contains(csp, "script-src 'self' 'unsafe-inline'") {
+		t.Fatalf("script-src 不得含 'unsafe-inline'（当前: %q）", csp)
+	}
+	if strings.Contains(csp, "script-src https:") || strings.Contains(csp, "script-src *") {
+		t.Fatalf("script-src 不得放宽成通配符（当前: %q）", csp)
+	}
 }
 
 // index.html 不得有内联 <script> 块：CSP 的 script-src 只有 'self'，

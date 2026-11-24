@@ -79,6 +79,14 @@ type Deps struct {
 	Mail coremail.Sender
 	// MailBaseURL 是重置链接基址（无尾斜杠）。Mail 非 nil 时必填。
 	MailBaseURL string
+	// Human 校验公开注册的人机验证令牌。nil 表示关闭（off 档）。
+	Human HumanVerifier
+	// HumanSiteKey 是回给前端的 Turnstile 站点密钥。
+	// 与 Human 成对出现：只配一侧即构造失败。
+	HumanSiteKey string
+	// HumanEnforce 为 true 时拒绝未通过校验的注册（on 档）；
+	// false 为 log 档，只记日志不改变注册结果。Human 为 nil 时不得为 true。
+	HumanEnforce bool
 	// Logger 可选。缺省用 slog.Default。
 	Logger *slog.Logger
 }
@@ -107,6 +115,12 @@ type Service struct {
 	throttle resetThrottle
 	// reauth 按用户限制危险操作二次口令的失败次数（见 reauthenticate.go）。
 	reauth *reauthThrottle
+	// human 是注册的人机验证端口；nil 表示 off 档。
+	human HumanVerifier
+	// humanSiteKey 只在 human 非 nil 时非空。
+	humanSiteKey string
+	// humanEnforce 区分 on（true）与 log（false）。
+	humanEnforce bool
 }
 
 // NewService 构造用例服务。任一必需依赖缺失即失败关闭。
@@ -132,6 +146,10 @@ func NewService(d Deps) (*Service, error) {
 		return nil, errors.New("appauth: nil KDF")
 	case d.Quota == nil:
 		return nil, errors.New("appauth: nil quota limits")
+	case (d.Human == nil) != (strings.TrimSpace(d.HumanSiteKey) == ""):
+		return nil, errors.New("appauth: Human and HumanSiteKey must be configured together")
+	case d.Human == nil && d.HumanEnforce:
+		return nil, errors.New("appauth: HumanEnforce requires a Human verifier")
 	}
 	mailBase := strings.TrimRight(strings.TrimSpace(d.MailBaseURL), "/")
 	if d.Mail != nil && mailBase == "" {
@@ -157,6 +175,9 @@ func NewService(d Deps) (*Service, error) {
 		log:           log,
 		mailSlots:     make(chan struct{}, maxConcurrentResetMails),
 		reauth:        newReauthThrottle(d.Clock, ReauthFailureLimit, ReauthWindow),
+		human:         d.Human,
+		humanSiteKey:  strings.TrimSpace(d.HumanSiteKey),
+		humanEnforce:  d.HumanEnforce,
 	}, nil
 }
 
