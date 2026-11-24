@@ -394,9 +394,9 @@ body {
 
 .card-head {
   align-items: center;
-  padding: 0 0 var(--space-3);
-  margin-bottom: var(--space-3);
-  gap: var(--space-3);
+  padding: 0 0 var(--space-4);
+  margin-bottom: var(--space-5);
+  gap: var(--space-4);
 }
 
 .card-head > :last-child {
@@ -420,21 +420,21 @@ body {
 .hero {
   align-items: center;
   gap: var(--space-4);
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--section-gap);
 }
 
 .hero-text .eyebrow {
-  margin-bottom: 2px;
+  margin-bottom: var(--space-1);
 }
 
 .hero-title {
   font-size: var(--text-2xl);
   line-height: var(--leading-2xl);
-  margin: 0 0 2px;
+  margin: 0 0 var(--space-1);
 }
 
 .hero-sub {
-  margin: 0;
+  margin: var(--space-2) 0 0;
   font-size: var(--text-base);
   line-height: var(--leading-base);
 }
@@ -636,7 +636,7 @@ body {
 }
 
 .content {
-  padding: var(--page-pad-y) var(--page-pad-x) var(--space-5);
+  padding: var(--page-pad-y) var(--page-pad-x) var(--space-6);
 }
 
 .grid {
@@ -649,9 +649,9 @@ body {
 }
 
 .kpi-card {
-  padding: var(--card-pad);
+  padding: var(--card-pad) var(--card-pad) var(--space-5);
   border-radius: var(--radius-lg);
-  gap: var(--space-3);
+  gap: 14px;
 }
 
 .kpi-icon {
@@ -3489,7 +3489,7 @@ a.kpi-card {
 .kpi-compare {
   color: color-mix(in srgb, var(--t-muted) 88%, var(--t-base));
   gap: var(--space-2);
-  padding-top: var(--space-2);
+  padding-top: var(--space-3);
   font-size: var(--text-xs);
   line-height: var(--leading-xs);
 }
@@ -3810,10 +3810,9 @@ html {
 }
 
 @media (max-width: 720px) {
-    .kpi-grid {
+  .kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-2);
-    margin-bottom: var(--space-3);
+    margin-bottom: var(--space-5);
   }
 }
 .app-card-tabs {
@@ -3852,9 +3851,9 @@ html {
 .app-metric-value.is-success { color: var(--success); }
 
 @media (max-width: 720px) {
-    .kpi-compare {
+  .kpi-compare {
     flex-wrap: wrap;
-    padding-top: var(--space-1);
+    margin-top: var(--space-2);
   }
   .kpi-compare > span:last-child {
     flex-basis: 100%;
@@ -4934,7 +4933,7 @@ html {
 
 /* ---------- 密度覆盖层（任务书 06） ----------
  * 缺省 standard：不写任何覆盖，现几何与基线逐像素不变。
- * compact 只缩两处：`.app-row-table` 行高 48→40、卡片 padding 22→14（窄屏 18→12）。
+ * compact 只缩两处：`.app-row-table` 行高 48→40、卡片 padding 标准 22→14（窄屏 16→12）。
  * 字号与导航行高不动——可读性下限；KPI 数字的 44px 字号是拍板值，更不碰。
  */
 html[data-density="compact"] .app-row-table tbody tr {
@@ -5745,7 +5744,6 @@ html[data-density="compact"] .card {
   .hero {
     align-items: flex-start;
     gap: var(--space-2);
-    margin-bottom: var(--space-2);
   }
 
   .hero-text .eyebrow {
@@ -5773,13 +5771,13 @@ html[data-density="compact"] .card {
   }
 
   .card {
-    padding: var(--card-pad);
+    padding: var(--space-4);
   }
 
   .card-head {
-    padding-bottom: var(--space-2);
-    margin-bottom: var(--space-2);
-    gap: var(--space-2);
+    padding-bottom: var(--space-3);
+    margin-bottom: var(--space-3);
+    gap: var(--space-3);
   }
 
   .card-title-wrap .eyebrow {
@@ -5787,12 +5785,8 @@ html[data-density="compact"] .card {
   }
 
   .kpi-card {
-    padding: var(--card-pad);
-    gap: var(--space-1);
-  }
-
-  .app-dashboard-workbench {
-    margin-bottom: var(--space-3);
+    padding: var(--space-4);
+    gap: var(--space-3);
   }
 
   .app-schedule-toolbar {
@@ -5827,8 +5821,7 @@ html[data-density="compact"] .card {
   }
 
   .app-health-strip {
-    padding: var(--card-pad-sm) var(--card-pad);
-    margin-top: var(--space-3);
+    padding: var(--card-pad-sm) var(--space-4);
   }
 
   .app-health-inline {
@@ -5860,7 +5853,7 @@ html[data-density="compact"] .card {
   }
 
   .content {
-    padding: var(--page-pad-y) var(--page-pad-x) var(--space-3);
+    padding: var(--page-pad-y) var(--page-pad-x) var(--space-4);
   }
 
   .app-filters {
