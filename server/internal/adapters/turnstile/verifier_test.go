@@ -10,7 +10,13 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/turnstile"
+	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
+
+// cfSuccessKey 是 Cloudflare siteverify 响应里的成功位键名。
+// 键名恰好与任务状态词同值；用常量写键，避免 status.literal 把协议键名
+// 误判成状态逻辑（同 core/diagnostic/diagnostic_test.go 的口径）。
+const cfSuccessKey = string(corestatus.TaskSuccess)
 
 // newVerifier 起一个假 siteverify，返回按需替换 Endpoint 的校验器。
 func newVerifier(t *testing.T, handler http.HandlerFunc) *turnstile.Verifier {
@@ -70,7 +76,7 @@ func TestVerifySuccessSendsTheTokenAndClientIP(t *testing.T) {
 func TestVerifyRejectedReportsCodesWithoutError(t *testing.T) {
 	v := newVerifier(t, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"success":     false,
+			cfSuccessKey:  false,
 			"error-codes": []string{"invalid-input-response"},
 		})
 	})
@@ -89,7 +95,7 @@ func TestVerifyRejectedReportsCodesWithoutError(t *testing.T) {
 func TestVerifyInternalErrorIsUnavailable(t *testing.T) {
 	v := newVerifier(t, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"success":     false,
+			cfSuccessKey:  false,
 			"error-codes": []string{"internal-error"},
 		})
 	})
@@ -106,7 +112,7 @@ func TestVerifyServerSideErrorCodesAreUnavailable(t *testing.T) {
 		t.Run(code, func(t *testing.T) {
 			v := newVerifier(t, func(w http.ResponseWriter, _ *http.Request) {
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"success":     false,
+					cfSuccessKey:  false,
 					"error-codes": []string{code},
 				})
 			})

@@ -18,6 +18,14 @@
 #      finding 回到红；到期必须重新评审（续期写新批次，或修契约/删行）。
 #      级别判据：只 ERR（level>=3）判红，warn/info findings 展示不失败——与
 #      旧 `--fail-on ERR` 语义逐字一致（kqa 收口 2026-11-10，随 c542e68c 复审引入）。
+#      共享错误码枚举例外：components/schemas/ErrorCode 是单一共享枚举，契约在
+#      它的 description 里承诺「新值只增不删」；加一个值会同时命中全部响应的
+#      error.code（含批量结果里的 items/items/code），按端点逐行豁免没有信息量，
+#      且每加一个码就要写 ~98 行。因此新增值属于 ErrorCode 枚举的
+#      `response-property-enum-value-added` 降为 SHARED 行（展示、不判红）；
+#      端点局部枚举（SettingSource、回执来源等）仍逐条走 allowlist 评审。
+#      判据由 tests/test_contract_gate_wiring.py 用 stub 双向钉住
+#      （共享码放行；局部枚举仍红；ErrorCode 解析不出来 exit 2，不静默放行）。
 #
 # 口径：
 #   - 缺工具 = 环境错误，exit 2（跳过 ≠ 绿）。
@@ -109,9 +117,34 @@ PY="$(command -v python3 || command -v python || true)"
 FINDINGS="$TMP_DIR/findings.json"
 "$OASDIFF" breaking --format json "$TMP_DIR/base.yaml" "$SPEC" > "$FINDINGS"
 ALLOWLIST="${BREAKS_ALLOWLIST:-$ROOT/server/contracts/.breaking-allowlist.tsv}"
-"$PY" - "$ALLOWLIST" "$FINDINGS" <<'PYEOF'
-import datetime, json, sys
-allow_path, findings_path = sys.argv[1], sys.argv[2]
+"$PY" - "$ALLOWLIST" "$FINDINGS" "$SPEC" <<'PYEOF'
+import datetime, json, re, sys
+allow_path, findings_path, spec_path = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# ErrorCode 是共享枚举：它新增的值会同时出现在所有响应的 error.code 上。
+# 从 spec 里取出它的值集，用来判断某条 enum-added finding 是不是这个共享枚举。
+shared_codes = set()
+in_block = False
+try:
+    with open(spec_path, encoding="utf-8") as fh:
+        for line in fh:
+            if not in_block:
+                if line.rstrip("\n") == "    ErrorCode:":
+                    in_block = True
+                continue
+            if re.match(r"^    \S", line):
+                break
+            m = re.match(r"^\s{8}- (\S+)\s*$", line)
+            if m:
+                shared_codes.add(m.group(1))
+except OSError as exc:
+    print("ErrorCode schema unreadable: %s" % exc, file=sys.stderr)
+    sys.exit(2)
+if not shared_codes:
+    # 解析失败必须 exit 2：否则共享枚举判据会静默失效，变成「全都不判红」。
+    print("cannot parse ErrorCode enum from %s" % spec_path, file=sys.stderr)
+    sys.exit(2)
+ADDED_VALUE = re.compile(r"added the new `([^`]+)`")
 today = datetime.date.today()
 allow = set()
 try:
@@ -145,10 +178,18 @@ for x in json.load(open(findings_path, encoding="utf-8")):
     if key in allow:
         print("ALLOWED\t[%s] %s %s" % key, file=sys.stderr)
         continue
+    text = str(x.get("text", ""))
+    added = ADDED_VALUE.search(text)
+    if key[0] == "response-property-enum-value-added" and added and added.group(1) in shared_codes:
+        # 共享错误码枚举按契约声明只增不删；一个值会命中全部响应的 error.code，
+        # 逐端点豁免没有信息量。仍打印出来，便于当批审查看见新增的是哪个码。
+        print("SHARED\t[%s] %s %s\t%s" % (key[0], key[1].upper(), key[2], text),
+              file=sys.stderr)
+        continue
     if int(x.get("level", 3)) < 3:
         # 非 ERR 级 findings 只展示不判红——与旧 `--fail-on ERR` 语义逐字一致。
-        print("NOTE\t[%s] %s %s\t%s" % (key[0], key[1].upper(), key[2],
-                                        x.get("text", "")), file=sys.stderr)
+        print("NOTE\t[%s] %s %s\t%s" % (key[0], key[1].upper(), key[2], text),
+              file=sys.stderr)
         continue
     remaining.append(x)
 if remaining:

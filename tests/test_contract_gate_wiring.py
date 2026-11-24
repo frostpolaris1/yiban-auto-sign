@@ -358,6 +358,12 @@ class EntryScriptTest(unittest.TestCase):
                       "豁免名册默认路径没进脚本非注释行")
         self.assertIn("python3 not found", joined,
                       "缺 python 解释器的 fail-closed（exit 2）路径没被钉住")
+        # 共享错误码枚举的判据必须真在链上：它是「ErrorCode 新增值不判红」的唯一依据，
+        # 删掉这段就会退回到按端点写 98 行 allowlist 的老路。
+        self.assertIn("response-property-enum-value-added", joined,
+                      "共享枚举判据没进脚本非注释行")
+        self.assertIn("ErrorCode", joined,
+                      "共享枚举判据没有从 spec 取 ErrorCode 值集")
 
     def test_missing_tool_exits_2(self):
         self.assertIn("exit 2", self.script,
@@ -513,6 +519,57 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("EXPIRED", out)
         self.assertIn("breaking-stub", out)
+
+    def _write_json_oasdiff(self, items):
+        """写一个输出指定 findings 列表的 oasdiff stub。"""
+        tmp = self.tmp.name.replace("\\", "/")
+        data = tmp + "/findings.json"
+        with io.open(data, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(items, ensure_ascii=False))
+        path = tmp + "/oasdiff-json"
+        _write_stub(path, "#!/usr/bin/env bash\ncat '%s'\n" % data)
+        return path
+
+    def _enum_added(self, prop, value):
+        return [{
+            "id": "response-property-enum-value-added",
+            "operation": "GET",
+            "path": "/stub",
+            "level": 3,
+            "text": ("added the new `%s` enum value to the `%s` "
+                     "response property for the response status `400`"
+                     % (value, prop)),
+        }]
+
+    def test_shared_error_code_added_is_not_breaking(self):
+        # ErrorCode 是共享枚举：新增值会命中全部响应的 error.code，
+        # 按端点逐行豁免没有信息量，判据降为 SHARED 行且不判红。
+        rc, out = self._run("--base", "HEAD",
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("error/code",
+                                                 "human_verification_failed")))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("SHARED", out)
+        self.assertIn("human_verification_failed", out)
+
+    def test_shared_error_code_nested_in_items_is_not_breaking(self):
+        # 批量结果是 Error 的数组元素，property 形如 items/items/code；
+        # 判据按「新增值属于 ErrorCode」而不是按 property 字面匹配。
+        rc, out = self._run("--base", "HEAD",
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("items/items/code",
+                                                 "human_verification_failed")))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("SHARED", out)
+
+    def test_scoped_enum_added_still_breaking(self):
+        # 端点局部枚举（如 SettingSource 的 db）不在 ErrorCode 里，仍必须判红：
+        # 证明共享枚举豁免没有放宽成「所有枚举新增都放行」。
+        rc, out = self._run("--base", "HEAD",
+                            OASDIFF=self._write_json_oasdiff(
+                                self._enum_added("source", "db")))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("ERR", out)
 
     def test_future_allowlist_row_still_exempts(self):
         # 正向对照：未过期行仍放行，证明过期判据不是恒红。
