@@ -62,18 +62,21 @@
   --text-display: 44px;
   --leading-display: 44px;
 
-  /* ---------- 卡片内边距（两档） ---------- */
+  /* ---------- 卡片内边距（两档） ----------
+   * --card-pad 取 22px 为 Adminator 原生对齐例外（见 DESIGN-SYSTEM.md §2.8）；
+   * --card-pad-sm 保持 12px，用于健康条/遥测小卡等紧凑容器，以及 compact 密度
+   * 窄屏整卡内距（html[data-density="compact"] .card）。 */
   --card-pad-sm: 12px;
-  --card-pad: 16px;
+  --card-pad: 22px;
 
   /* ---------- 外壳与内容区几何 ---------- */
   --sidebar-w: 240px;
   --sidebar-w-rail: 68px;
   --topbar-h: 52px;
-  --page-pad-x: 24px;
-  --page-pad-y: 16px;
-  --section-gap: 16px;
-  --grid-gap: 16px;
+  --page-pad-x: 32px;
+  --page-pad-y: 32px;
+  --section-gap: 20px;
+  --grid-gap: 20px;
 
   /* ---------- 数据表行高与表头（标准 / 紧凑） ---------- */
   /* 原生 .table tbody td 实测 43.1、表头 padding 10px 0 12px（高 38）；
@@ -106,9 +109,9 @@
 @media (max-width: 720px) {
   :root {
     --topbar-h: 48px;
-    --page-pad-x: 12px;
-    --page-pad-y: 8px;
-    --section-gap: 12px;
+    --page-pad-x: 16px;
+    --page-pad-y: 20px;
+    --section-gap: 16px;
     --grid-gap: 12px;
   }
 }
