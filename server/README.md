@@ -178,8 +178,8 @@ category and remains the authoritative gate.
 ### Product version
 
 The repository root `VERSION` file is the single source of the Go-line
-product version; it holds one `X.Y.Z` line and only moves forward (v1.0.0
-was the first release). `server/scripts/build-release.sh` refuses to build a
+product version; it holds one `X.Y.Z` line and only moves forward (v0.7.0
+was the first release of the Go line; still pre-1.0). `server/scripts/build-release.sh` refuses to build a
 release without it and injects version/commit/build_time into both binaries
 via ldflags. Release tags are `v$VERSION`.
 `scripts/release-check.sh --only go-version` asserts the product side only:

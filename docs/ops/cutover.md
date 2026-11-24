@@ -10,7 +10,7 @@
 
 ## 0. 基线与证据口径
 
-- 版本基线：Go 线版本自 **v1.0.0** 起逐步加版，仓库根 `VERSION` 是唯一来源；
+- 版本基线：Go 线版本自 **v0.7.0** 起逐步加版，仓库根 `VERSION` 是唯一来源；
   发布件按切换当日最终 tip 现建，不沿用任何旧基线。当日 tip 以
   `git log --oneline -1 origin/develop` 为准；构建必须在干净 worktree 跑
   `server/scripts/build-release.sh`（主树会注入旧 hash；口径见交接手册
@@ -34,19 +34,19 @@
 
 版本单一来源是仓库根 `VERSION`（单行 X.Y.Z）；commit 取
 `git rev-parse --short HEAD`；两者由 `server/scripts/build-release.sh`
-用 `-ldflags -X` 注入两个二进制。版本自 v1.0.0 起逐步加版；本页不写死
+用 `-ldflags -X` 注入两个二进制。版本自 v0.7.0 起逐步加版；本页不写死
 当日 tip 与版本号。
 
 ```bash
 git log --oneline -1 origin/develop  # 切换当日最终 tip，抄进 §7
 git rev-parse --short HEAD           # 构建点的 commit，V1/V2 以它为准
-cat VERSION                          # 发布版本（≥ 1.0.0）
+cat VERSION                          # 发布版本（= 仓库根 VERSION，≥ 0.7.0）
 bash server/scripts/build-release.sh <outdir>
 ```
 
 | # | 谓词 | 命令与判据 |
 |---|---|---|
-| V1 | server 自报版本 | `<outdir>/yiban-server --version` 打印 `version/commit/build_time` 三行；version == `cat VERSION`（发布时 ≥ 1.0.0 的当前值），commit == 构建时 `git rev-parse --short HEAD`；出现 `dev`/`unknown` 即失败 |
+| V1 | server 自报版本 | `<outdir>/yiban-server --version` 打印 `version/commit/build_time` 三行；version == `cat VERSION`（发布时 ≥ 0.7.0 的当前值），commit == 构建时 `git rev-parse --short HEAD`；出现 `dev`/`unknown` 即失败 |
 | V2 | cli 自报版本 | `<outdir>/yiban-cli version` 三行同上；与 V1 逐行一致（双侧核对） |
 | V3 | 版本门 | `bash scripts/release-check.sh --only go-version` rc=0（内部含「发布 tag `v$VERSION` 指向 HEAD」断言；打 tag 前该项 FAIL 是预期，发布时才绿） |
 
