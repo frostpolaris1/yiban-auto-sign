@@ -23,6 +23,7 @@
 | `implementation-notes.md` | **原理与实现**：模块树、签到流程、定位算法、重试机制、WAF 检测、工作流续期 | 旧 |
 | `scheduler-v3.md` | 旧栈调度 v3 运维手册 | 旧 |
 | `lease-deadline-guard.md` | **租约截止 / 回收冷却**：双跑根因、7 格实测矩阵、生产参数建议 | 新 |
+| `attempt-key-claim-cycle.md` | **幂等键 = 认领周期**：回收后旧键折叠的根因、键形状决策、矩阵 distinct 1→2 | 新 |
 | `troubleshooting.md` | **故障排查与常见问题**（Q1–Q10） | 旧 |
 | `time-prefs-backfill.md` | **旧自选时间片补录**：导出、dry-run、`--apply`、报告字段与核对 SQL | 新 |
 

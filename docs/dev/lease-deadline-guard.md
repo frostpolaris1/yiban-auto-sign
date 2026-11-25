@@ -31,7 +31,7 @@
 | `server/migrations/postgres/00012_scheduling.sql` | `uq_sign_tasks_one_running ON sign_tasks(account_id) WHERE state='running'` —— 只保护"正在跑"的那一行 |
 | `server/migrations/postgres/00020_schedule_lease.sql` | `claim_seq` 递增 + `lease_expires_at`：认领栅栏，结算必须带本次序号 |
 | `server/internal/adapters/pg/schedule.go:225` `Finish` | `UPDATE ... WHERE state='running' AND claim_seq=$6`，0 行即 `ErrScheduleConflict` |
-| `server/internal/app/worker/worker.go:750` `attemptID` | `"<taskID>#<attempts>"`（等待型重扫 `"<taskID>#<attempts>.<n>"`） |
+| `server/internal/app/worker/worker.go:750` `attemptID` | `"<taskID>#<attempts>.<claim_seq>"`（一次认领周期一个键，见 `attempt-key-claim-cycle.md`） |
 | `server/internal/app/worker/worker.go:402` `Sign` | 改动前直接吃 loop 的 `ctx`：一次提交可以无限期占着租约（现吃 `attemptCtx`，`:325`） |
 
 > 基线 `fab09cff4` 上行号是 `ClaimDue:503`、`ReclaimExpired:653`、回收落点参数 `:699`；本文按改动后的 HEAD 记。
@@ -111,7 +111,7 @@
 - 全程真时钟：冻结时钟会把要观察的现象消灭掉。
 
 判据：`signs` = `Sign` 调用总数；`dup = signs-1`；`peak` = 同时在空中的 `Sign` 数；
-`distinct` = 不同 `attemptID` 数；`reclaim` = `audit_logs` 里 `task.reclaim` 行数；
+`distinct` = 不同 `attemptID` 数（键 = `attempts.claim_seq`，故**有回收时必然 ≥ 2**）；`reclaim` = `audit_logs` 里 `task.reclaim` 行数；
 `fence` = 两轮 `Step` 返回 `conflict` 的次数；`attempts`/`state`/`result` 取行上终态；
 `late` = 第二幕（等冷却结束再跑一轮）之后的 `Sign` 总数。
 
@@ -120,13 +120,13 @@
 
 | 格 | 租约 | 预算 | 冷却 | signs | dup | peak | distinct | reclaim | fence | attempts | 终态 | late | 耗时 |
 |----|------|------|------|-------|-----|------|----------|---------|-------|----------|------|------|------|
-| 基线（无 A 无 B） | 300ms | — | — | 2 | **1** | **2** | 1 | 1 | 1 | 1 | success/success | 0 | 1.87s |
+| 基线（无 A 无 B） | 300ms | — | — | 2 | **1** | **2** | **2** | 1 | 1 | 1 | success/success | 0 | 1.87s |
 | 仅长租约 | 900ms | — | — | 1 | 0 | 1 | 1 | 0 | 0 | 1 | success/success | 0 | 2.29s |
 | 仅 A 预算 | 300ms | 120ms | — | 1 | 0 | 1 | 1 | 0 | 0 | 1 | pending/transient | 0 | 0.83s |
-| A 预算 1.2s **超过租约** | 300ms | 1200ms | — | 2 | **1** | **2** | 1 | 1 | 1 | 1 | success/success | 0 | 2.05s |
+| A 预算 1.2s **超过租约** | 300ms | 1200ms | — | 2 | **1** | **2** | **2** | 1 | 1 | 1 | success/success | 0 | 2.05s |
 | 仅 B 冷却 | 300ms | — | 5s | 1 | 0 | 1 | 1 | 1 | 1 | 0 | pending/（空） | **2** | 6.85s |
 | A+B | 300ms | 120ms | 5s | 1 | 0 | 1 | 1 | 0 | 0 | 1 | pending/transient | 0 | 0.93s |
-| 仅 A，提供方吞取消 | 300ms | 120ms | — | 2 | **1** | **2** | 1 | 1 | 1 | 1 | success/success | 0 | 2.08s |
+| 仅 A，提供方吞取消 | 300ms | 120ms | — | 2 | **1** | **2** | **2** | 1 | 1 | 1 | success/success | 0 | 2.08s |
 
 读法（四条，缺一条就会误判改动价值）：
 
@@ -227,13 +227,15 @@ go test ./internal/adapters/pg/ -run Reclaim -v          # 回收冷却 e2e
 | 审计 | `internal/core/audit/chain.go` | detail 白名单增 `grace_sec` |
 | 门 | `canonical.tsv`、`tools/gate/anchors_test.go` | `env.get` allow 增列本实验测试文件；规则哈希同步 |
 
-### 顺带发现（未修，已单独开工单）
+### 顺带发现（2 已在 `fix/attempt-key-claim-cycle` 修掉，1 仍未修）
 
 1. **提供方的 `RetryAdvice` 被整条丢弃。** `contract.Result.Retry` 由 provider 填
    （`signing/providers/yiban/provider.go:378`），`signing/conformance/suite.go:488-556` 会校验它，
    但执行面从不读：`grep '\.Retry\b' server/internal --include=*.go` 除 conformance 外零命中。
    适配器能说"请退避 5 分钟"，调度面看不见——建议把 `Retry.After` 并进 `core/retry.NextDelay` 的下限。
-2. **回收不 bump `attempts`，第二次认领沿用同一个 `attemptID`**（矩阵 `distinct` 恒为 1）。
-   契约把 `attemptID` 当幂等键、意图是"每次尝试不同"，回收路径恰好相反。
-   两种收口：回收时 bump `attempts`；或在契约里写明"同一行的重跑共享幂等键"。
-   现状下若平台不做去重，"吞取消 + 短租约"这一格没有任何宿主侧手段可挡。
+2. ~~**回收不 bump `attempts`，第二次认领沿用同一个 `attemptID`**（矩阵 `distinct` 恒为 1）。~~
+   **已修**：键改为 `"<taskID>#<attempts>.<claim_seq>"`，一次认领周期一个键；
+   矩阵三格（基线 / A 超租约 / 吞取消）的 `distinct` 随之从 1 变 2。
+   根因与取舍见 [`attempt-key-claim-cycle.md`](attempt-key-claim-cycle.md)。
+   注：这一项修的是"接管方复用旧键"，挡不住"吞取消 + 短租约"本身——
+   那一格仍然 `dup=1`，宿主侧唯一杠杆仍是"租约显著大于提供方最坏耗时"。

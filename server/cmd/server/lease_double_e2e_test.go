@@ -174,8 +174,11 @@ type labObservation struct {
 // 每格的 signs = wantDup+1（由 wantDup 断言）；peak / distinct / reclaims /
 // fences / attempts 逐格钉死，-1 表示该格不应出现该量纲。
 var labMatrix = []labCell{
+	// wantDistinct=2：回收后的第二次认领会 bump claim_seq，幂等键随之换新
+	// （attemptID 带 claim_seq，见 issue #403）。两次提交不同键，说明
+	// "接管"对提供方是另一次执行，不会读回第一次的缓存。
 	{name: "基线（无 A 无 B）", lease: 300 * time.Millisecond, wantDup: 1,
-		wantPeak: 2, wantDistinct: 1, wantReclaims: 1, wantFences: 1, wantAttempts: 1},
+		wantPeak: 2, wantDistinct: 2, wantReclaims: 1, wantFences: 1, wantAttempts: 1},
 	// 这一格故意在租约之内再跑一轮：证明"长租约"本身就是一道门，
 	// 而不是靠回收/冷却拦住第二次认领。
 	{name: "仅长租约 900ms", lease: 900 * time.Millisecond, wantDup: 0,
@@ -184,7 +187,7 @@ var labMatrix = []labCell{
 	{name: "仅 A 预算 120ms", lease: 300 * time.Millisecond, budget: 120 * time.Millisecond, wantDup: 0,
 		wantPeak: 1, wantDistinct: 1, wantReclaims: 0, wantFences: 0, wantAttempts: 1},
 	{name: "A 预算 1.2s 超过租约", lease: 300 * time.Millisecond, budget: 1200 * time.Millisecond, wantDup: 1,
-		wantPeak: 2, wantDistinct: 1, wantReclaims: 1, wantFences: 1, wantAttempts: 1},
+		wantPeak: 2, wantDistinct: 2, wantReclaims: 1, wantFences: 1, wantAttempts: 1},
 	// 冷却挡住的是"立刻重领"，不是"重复提交本身"：第二幕等冷却过去，
 	// 同一行会被重新认领、再提交一次（wantLateSigns=2）。
 	{name: "仅 B 冷却 5s", lease: 300 * time.Millisecond, grace: 5 * time.Second, wantDup: 0,
@@ -193,7 +196,7 @@ var labMatrix = []labCell{
 	{name: "A+B", lease: 300 * time.Millisecond, grace: 5 * time.Second, budget: 120 * time.Millisecond, wantDup: 0,
 		wantPeak: 1, wantDistinct: 1, wantReclaims: 0, wantFences: 0, wantAttempts: 1},
 	{name: "仅 A，提供方吞取消", lease: 300 * time.Millisecond, budget: 120 * time.Millisecond, ignoreCtx: true, wantDup: 1,
-		wantPeak: 2, wantDistinct: 1, wantReclaims: 1, wantFences: 1, wantAttempts: 1},
+		wantPeak: 2, wantDistinct: 2, wantReclaims: 1, wantFences: 1, wantAttempts: 1},
 }
 
 func TestLeaseDoubleRunMatrix(t *testing.T) {

@@ -740,18 +740,25 @@ func coreLocation(loc contract.Location) corelocation.Location {
 	}
 }
 
-// attemptID 生成"按尝试唯一"的幂等键。
+// attemptID 生成"一次认领周期一个"的幂等键。
 //
 // 为什么不能只用 task.ID：provider 按 (账号, AttemptID) 缓存结果（含
-// transient）。若每次重试都送同一个 ID，"重试"只会读回首次结果、不发请求。带上 attempts 后，每次真实尝试都有新键；
-// 同一尝试被重复调用时仍折叠（这正是幂等缓存要防的双发）。
-// 等待型重扫行再带重扫计数：提交面 no_position 已按旧键入缓存，
-// 重扫后点位回来了，旧键只会读回那份缓存，永远签不上。
+// transient）。若每次重试都送同一个 ID，"重试"只会读回首次结果、不发请求。
+// 带上 attempts 后，业务重试（RequeueRetry 会 bump）每次都是新键。
+//
+// 为什么还要带 claim_seq：租约被回收后重跑是**另一次执行**，而回收刻意
+// 不动 attempts（被回收不是一次结论尝试，见 ReclaimExpired）。只按
+// attempts 拼键会让第二次认领沿用上一次的键，于是提供方的结果缓存与
+// 同键串行锁会把"接管"折叠成"等旧调用"：要么直接读回旧结论、要么被
+// 分片锁挡在旧调用后面，回收形同虚设。claim_seq 在每次认领时递增
+// （pg.ScheduleRepo.ClaimDue 的 claim_seq = claim_seq + 1），故
+// **一次租约一个键**；同一租约内重复调用仍是同一个键——这正是幂等
+// 缓存要折叠的"同一尝试双发"。
+//
+// 等待型重扫不再额外拼重扫计数：重扫必经 RequeueWait → 重新认领 →
+// claim_seq 前进，键自动换新（提交面 no_position 的缓存因此不会命中）。
 func attemptID(task corescheduleTask) string {
-	if n := waitTargetRescanCount(task.Result); n > 0 {
-		return fmt.Sprintf("%s#%d.%d", task.ID, task.Attempts, n)
-	}
-	return fmt.Sprintf("%s#%d", task.ID, task.Attempts)
+	return fmt.Sprintf("%s#%d.%d", task.ID, task.Attempts, task.ClaimSeq)
 }
 
 // windowSource 归一窗口来源；空值兜底为 fallback（保守方向）。

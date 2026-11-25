@@ -258,7 +258,8 @@ func TestPhotoInjected(t *testing.T) {
 	if len(photos.owners) != 1 || photos.owners[0] != "user-1" {
 		t.Fatalf("owners = %v, want [user-1]", photos.owners)
 	}
-	if len(photos.calls) != 1 || photos.calls[0] != "t1#0" {
+	// 首次认领后 claim_seq=1，故键是 t1#0.1。
+	if len(photos.calls) != 1 || photos.calls[0] != "t1#0.1" {
 		t.Fatalf("attemptIDs = %v", photos.calls)
 	}
 }
