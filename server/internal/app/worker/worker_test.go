@@ -371,6 +371,8 @@ type fakeSigner struct {
 	discoverErr error
 	submitErr   error
 	signs       int
+	// retry 是 Result.Retry：提供方重试建议（issue #402 接线后的消费面）。
+	retry contract.RetryAdvice
 	// attemptIDs 记录每次提交的幂等键：重试必须每次不同。
 	attemptIDs []string
 	// requests 记录每次提交的完整请求：P5-C 断言 Location 与 Image。
@@ -408,7 +410,7 @@ func (f *fakeSigner) Sign(_ context.Context, req contract.SignRequest) (contract
 		hook()
 		f.mu.Lock()
 	}
-	return contract.Result{Outcome: f.outcome}, firstErr(f.submitErr, f.err)
+	return contract.Result{Outcome: f.outcome, Retry: f.retry}, firstErr(f.submitErr, f.err)
 }
 
 // firstErr 取第一个非 nil 错误：面级错误优先，未设则回落到通用 err。

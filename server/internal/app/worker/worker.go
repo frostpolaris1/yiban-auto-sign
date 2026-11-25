@@ -342,11 +342,11 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		}
 		if outcome, reason, ok := outcomeOf(err); ok {
 			s.logOutcome(ctx, task, stageDiscovery, outcome, reason)
-			return false, s.settleOutcome(ctx, task, win, outcome, reason, s.deps.Clock.Now().Sub(attemptStart))
+			return false, s.settleOutcome(ctx, task, win, outcome, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 		}
 		reason := mask.SafeErrorText(err)
 		s.logOutcome(ctx, task, stageDiscovery, contract.OutcomeTransient, reason)
-		return false, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart))
+		return false, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 	}
 	if len(targets) == 0 {
 		// Position 空是「平台没放数据」：等待型重扫，不当当日结论。
@@ -421,14 +421,14 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		}
 		if outcome, reason, ok := outcomeOf(err); ok {
 			s.logOutcome(ctx, task, stageSubmit, outcome, reason)
-			return true, s.settleOutcome(ctx, task, win, outcome, reason, s.deps.Clock.Now().Sub(attemptStart))
+			return true, s.settleOutcome(ctx, task, win, outcome, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 		}
 		reason := mask.SafeErrorText(err)
 		s.logOutcome(ctx, task, stageSubmit, contract.OutcomeTransient, reason)
-		return true, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart))
+		return true, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 	}
 	s.logOutcome(ctx, task, stageSubmit, result.Outcome, result.Message)
-	return true, s.settleOutcome(ctx, task, win, result.Outcome, result.Message, s.deps.Clock.Now().Sub(attemptStart))
+	return true, s.settleOutcome(ctx, task, win, result.Outcome, result.Message, s.deps.Clock.Now().Sub(attemptStart), result.Retry)
 }
 
 // settleOutcome 按结论词表落终态或退避重排。
@@ -442,7 +442,11 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 //   - 确定性失败：rejected、photo_rejected、blocked → failed；
 //   - 凭据错：credential_invalid → failed，并把账号移出排期；
 //   - 可重试面：transient、pending_upstream、unknown → 预算内退避。
-func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win corewindow.Window, outcome contract.Outcome, reason string, dur time.Duration) error {
+//
+// advice 是提供方在 contract.Result.Retry 里给的重试建议（错误路径传零值：
+// 拿不到平台结论时没有建议可听）。它只参与可重试面的两条判据：
+// 尝试次数上限（更小者为准）与等待下限（NextDelayWithFloor）。
+func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win corewindow.Window, outcome contract.Outcome, reason string, dur time.Duration, advice contract.RetryAdvice) error {
 	// 结算一律用"现在"，不用尝试开始时刻：一次尝试可能整段耗在预算里
 	// （缺省 0.8×租约 = 96s）。拿开始时刻算退避会让 run_at 落进过去，
 	// 下一次 tick 立刻重试（预算截断本来就会把尝试拖长）；
@@ -466,16 +470,41 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 	// 重试面：预算耗尽或窗口放不下即落 failed。
 	// 退避档位按"已发生的尝试序号"取：第 1 次失败取基础间隔，之后指数放大。
 	// 抖动与放大由 core/retry 统一计算，本处只判预算与窗口。
-	policy := coreretry.BudgetFor(string(outcome))
+	policy := advisePolicy(coreretry.BudgetFor(string(outcome)), advice)
 	if task.Attempts+1 >= policy.MaxAttempts {
 		return s.finishFailed(ctx, task, outcome, reason, dur, &win, settleAt)
 	}
-	delay, ok := coreretry.NextDelay(policy, task.Attempts+1, coreretry.Window{End: win.End}, settleAt)
+	delay, ok := coreretry.NextDelayWithFloor(policy, task.Attempts+1, coreretry.Window{End: win.End}, settleAt, advice.After)
 	if !ok {
 		return s.finishFailed(ctx, task, outcome, reason, dur, &win, settleAt)
 	}
 	// 业务失败重排要计尝试数（与等待型 RequeueWait 区分）。
 	return s.requeueRetry(ctx, task, settleAt.Add(delay), string(outcome))
+}
+
+// advisePolicy 用提供方的重试建议收口宿主的重试预算。
+//
+// 只做一件保守的事：建议"可重试"且建议次数更小时，压低 MaxAttempts。
+// 提供方比宿主更了解平台（例如"这个瞬态错误重试一次就够"），但建议
+// 不能把次数抬到宿主预算之上——宿主预算负责上限。
+//
+// **不做 !Retryable 一票否决**：零值建议（Retryable=false、MaxAttempts=0）
+// 无法区分"没有建议"与"明确不重试"，老提供方不填 Retry，否决会把它们的
+// 正常重试全部掐掉。要表达"不重试"，正确写法是 Retryable=true 且
+// MaxAttempts=1（宿主第一次失败就落 failed）；只填 MaxAttempts=1 而
+// Retryable=false 会被上面的条件当作没有建议。
+//
+// 该写法目前只对 transient 真正生效：conformance 只允许 transient/challenge
+// 标 Retryable=true，challenge 又在 settleOutcome 里直接落 skipped。其余结果
+// （含 pending_upstream/unknown）没有合法的限次表达，见 issue #413。
+//
+// After 不在这里处理：它是等待下限，交给 NextDelayWithFloor 与窗口判据
+// 一起算（见 core/retry）。
+func advisePolicy(p coreretry.Policy, advice contract.RetryAdvice) coreretry.Policy {
+	if advice.Retryable && advice.MaxAttempts >= 1 && advice.MaxAttempts < p.MaxAttempts {
+		p.MaxAttempts = advice.MaxAttempts
+	}
+	return p
 }
 
 // finishFailed 先落放弃行，再落 failed 终态。
