@@ -58,6 +58,9 @@ func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 		{"kid of the wrong length", map[string]any{"kid": "0123456789abcde"}, coreaudit.ErrDetailShape},
 		{"field with spaces", map[string]any{"field": "user name"}, coreaudit.ErrDetailShape},
 		{"from with a dash", map[string]any{"from": "not-a-status"}, coreaudit.ErrDetailShape},
+		{"grace seconds below zero", map[string]any{"grace_sec": int64(-1)}, coreaudit.ErrDetailShape},
+		{"grace seconds above the upper bound", map[string]any{"grace_sec": int64(3601)}, coreaudit.ErrDetailShape},
+		{"grace seconds as a float beyond the bound", map[string]any{"grace_sec": 3601.5}, coreaudit.ErrDetailShape},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := coreaudit.EncodeDetail(tc.detail)
@@ -109,6 +112,12 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 	}
 	if _, err := coreaudit.EncodeDetail(nil); err != nil {
 		t.Fatalf("an empty detail must be accepted: %v", err)
+	}
+	// 回收冷却秒数与配置同界：0 与 3600 是闭区间端点，必须接受。
+	for _, grace := range []int64{0, 3600} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{"grace_sec": grace}); err != nil {
+			t.Fatalf("grace_sec=%d must be accepted: %v", grace, err)
+		}
 	}
 }
 

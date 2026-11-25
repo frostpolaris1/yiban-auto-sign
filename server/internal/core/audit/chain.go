@@ -387,6 +387,12 @@ var versionKeys = map[string]bool{
 	"privacy_version": true,
 }
 
+// graceSecKeys 是租约回收冷却秒数 detail 键集。取值限 0..3600，
+// 与 YIBAN_RECLAIM_GRACE_SEC 的配置上界一致；防止毫秒值或放大值入链。
+var graceSecKeys = map[string]bool{
+	"grace_sec": true,
+}
+
 // ZeroHash 是新链首行的 prev_hash：32 字节全零。
 func ZeroHash() []byte { return make([]byte, sha256.Size) }
 
@@ -611,13 +617,17 @@ func isElevenDigitOneShape(s string) bool {
 }
 
 // validateDetailNumberWithLimits 是数值族的公共入口：先按按键限幅（crop_* 限
-// 0..10），再走通用数值规则。限幅挂键名而不是挂类型，同键异型不会绕过。
+// 0..10，version_* 限 1..1000，grace_sec 限 0..3600），再走通用数值规则。
+// 限幅挂键名而不是挂类型，同键异型不会绕过。
 func validateDetailNumberWithLimits(key string, value float64) error {
 	if cropPercentKeys[key] && (value < 0 || value > 10) {
 		return fmt.Errorf("%w: %q must be within 0..10", ErrDetailShape, key)
 	}
 	if versionKeys[key] && (value < 1 || value > 1000) {
 		return fmt.Errorf("%w: %q must be within 1..1000", ErrDetailShape, key)
+	}
+	if graceSecKeys[key] && (value < 0 || value > 3600) {
+		return fmt.Errorf("%w: %q must be within 0..3600", ErrDetailShape, key)
 	}
 	return validateDetailNumber(value)
 }

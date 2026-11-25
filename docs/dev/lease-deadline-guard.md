@@ -222,13 +222,13 @@ go test ./internal/adapters/pg/ -run Reclaim -v          # 回收冷却 e2e
 | canonical 门（含 `-tests` 两遍） | `gate: ok (44 rules)` ×2 | — |
 | logfield 门 | 通过 | — |
 | structure / license / generate 门 | `structure: ok (10 scopes, 11 rules)`、`license: ok (37 modules)`、oapi 无漂移 | — |
-| pg e2e | **174** 个顶层 PASS（阈值 50） | 55.5s |
-| auth e2e（`cmd/server`，含本矩阵 7 格 + 第二幕） | **302** 个顶层 PASS（阈值 45） | 174.8s |
-| cli e2e | **158** 个顶层 PASS（阈值 20） | 28.8s |
-| container e2e | `TestContainerPhotoDirWritableByNonroot` passed | 89.9s |
-| 全程 | `EXIT=0` | **6m51s** |
+| pg e2e | **174** 个顶层 PASS（阈值 50） | 53.6s |
+| auth e2e（`cmd/server`，含本矩阵 7 格 + 第二幕） | **302** 个顶层 PASS（阈值 45） | 174.9s |
+| cli e2e | **158** 个顶层 PASS（阈值 20） | 27.9s |
+| container e2e | `TestContainerPhotoDirWritableByNonroot` passed | 85.7s |
+| 全程 | `EXIT=0` | **约 7m10s** |
 
-> 这次跑测时宿主另有负载，auth 段 356s、container 段 240s 明显慢于空载（空载 auth 曾 181s）；
+> 本次为最终 HEAD 复跑；auth 段 175s、container 段 86s，均接近空载。
 > 数字本身不受影响，只是耗时列不能当基线。
 
 新增用例：`TestLeaseDoubleRunMatrix`（1 个 test / 7 个子用例 + 第二幕，空载 27.5s）、
@@ -237,7 +237,7 @@ go test ./internal/adapters/pg/ -run Reclaim -v          # 回收冷却 e2e
 
 ## 6. 改动清单
 
-5 个提交，36 个跟踪文件 `+2470 / -92`（`git diff --shortstat 035444a1a..HEAD`）。
+6 个提交，37 个跟踪文件 `+2493 / -93`（`git diff --shortstat 035444a1a..HEAD`）。
 其中新增测试文件 4 个共 1239 行（`cmd/server/lease_double_e2e_test.go` 523 行、
 `internal/app/worker/attempt_budget_test.go` 403 行、`attempt_budget_internal_test.go` 43 行、
 `retry_advice_test.go` 270 行）；既有 `schedule_lease_e2e_test.go` 追加 58 行、
