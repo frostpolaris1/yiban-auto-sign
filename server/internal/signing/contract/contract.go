@@ -233,6 +233,23 @@ type Evidence struct {
 }
 
 // RetryAdvice 告诉宿主是否重试、何时重试。
+//
+// 宿主的消费口径（见 app/worker 的 advisePolicy 与 core/retry.NextDelayWithFloor）：
+//   - MaxAttempts 是**上限建议**：只在 Retryable、MaxAttempts >= 1 且比宿主
+//     预算更小时压低；宿主预算永远管上限，提供方不许把次数抬高。
+//     MaxAttempts=0 视为没填（不生效）。要表达"不重试"目前只能写
+//     Retryable=true 且 MaxAttempts=1（只填 1 而 Retryable=false 会被当作
+//     没有建议，宿主照旧按缺省预算重试）；而 conformance 的 sign.retry 只
+//     允许 Retryable=true 出现在 transient（必须）与 challenge（可选），其余
+//     结果标 Retryable=true 直接判红——所以这条写法实际只对 transient 生效，
+//     pending_upstream/unknown 目前没有合法的"限次/不重试"表达（issue #413）。
+//   - After 是**等待下限**：宿主退避曲线只许比它更慢；它受宿主硬上限
+//     （core/retry.MaxBackoff，600s）约束，After 超过该上限会永远放弃重试；
+//     窗口尾段放不下这个下限时当日放弃（不越窗）。
+//   - 零值（Retryable=false, MaxAttempts=0, After=0）表示"没有建议"，
+//     宿主完全走缺省预算——不要用零值表达"不重试"。
+//   - ClearSession 目前宿主尚未消费（app/worker 不读该字段），仅为记录；
+//     它不改变次数与落点。
 type RetryAdvice struct {
 	Retryable    bool
 	After        time.Duration

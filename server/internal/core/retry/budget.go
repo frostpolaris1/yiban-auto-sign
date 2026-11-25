@@ -67,6 +67,8 @@ type Window struct {
 
 // NextDelay 返回第 attempt 次失败后的等待时长：(delay, true)；放弃返回 (0, false)。
 //
+// 不接受"等待下限"：提供方建议的冷却走 NextDelayWithFloor。
+//
 // 曲线由 cenkalti/backoff 计算：第 attempt 档的名义间隔 = base×Multiplier^(attempt-1)，
 // 再乘 [1-RandomizationFactor, 1+RandomizationFactor] 的随机倍率。
 // 本包只在曲线上加一条窗口约束：cap = min(MaxBackoff, 剩余×TailRatio)，
@@ -76,6 +78,25 @@ type Window struct {
 // 也不把间隔压到基础值之下。窗口已过（剩余 ≤ 0）同样放弃：
 // 业务日窗口已过 ⇒ 绝不把落点写进次日窗口。
 func NextDelay(p Policy, attempt int, w Window, now time.Time) (time.Duration, bool) {
+	return nextDelay(p, attempt, w, now, 0)
+}
+
+// NextDelayWithFloor 是 NextDelay 的"等待下限"版本：floor 是提供方要求的
+// 最小冷却（contract.RetryAdvice.After），宿主曲线只许比它更慢。
+//
+// floor 必须在两处生效，且顺序有讲究：
+//   - 抬名义间隔：floor 高于 base 时把 base 抬到 floor。这样既有的
+//     "cap < base ⇒ 放弃"判据会同时覆盖 floor——窗口尾段放不下 floor 时
+//     当日放弃，而不是让抖动后的值贴着 cap 越过提供方下限；
+//   - 夹抖动结果：曲线抖动幅度是 [1-R, 1+R]，floor=5min 时抖动可能给出
+//     3min。提供方说"至少等 5 分钟"就必须至少 5 分钟，故抖动之后下界再夹一次。
+//
+// floor <= 0 等价于 NextDelay：零值建议就是"没有建议"，不能凭空加等待。
+func NextDelayWithFloor(p Policy, attempt int, w Window, now time.Time, floor time.Duration) (time.Duration, bool) {
+	return nextDelay(p, attempt, w, now, floor)
+}
+
+func nextDelay(p Policy, attempt int, w Window, now time.Time, floor time.Duration) (time.Duration, bool) {
 	remaining := w.End.Sub(now)
 	if remaining <= 0 {
 		return 0, false
@@ -83,6 +104,9 @@ func NextDelay(p Policy, attempt int, w Window, now time.Time) (time.Duration, b
 	base := p.After
 	if base <= 0 {
 		base = DefaultAfter
+	}
+	if floor > base {
+		base = floor
 	}
 	cap := MaxBackoff
 	if tail := time.Duration(float64(remaining) * TailRatio); tail < cap {
@@ -94,6 +118,10 @@ func NextDelay(p Policy, attempt int, w Window, now time.Time) (time.Duration, b
 	delay := jittered(p, attempt, base)
 	if delay > cap {
 		delay = cap
+	}
+	// base ≥ floor ⇒ cap ≥ base ≥ floor，故这里不会把 delay 抬过 cap。
+	if delay < floor {
+		delay = floor
 	}
 	return delay, true
 }

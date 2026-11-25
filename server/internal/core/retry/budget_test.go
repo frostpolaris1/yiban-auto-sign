@@ -186,3 +186,57 @@ func TestNextDelayAfterWindow(t *testing.T) {
 		t.Fatal("窗口已过不该给落点")
 	}
 }
+
+// 提供方下限抬高名义间隔：floor > base 时按 floor 走曲线，
+// 且抖动不得把间隔压到 floor 之下。
+func TestNextDelayWithFloorRaisesBase(t *testing.T) {
+	p := Policy{MaxAttempts: 3, After: time.Minute}
+	w := Window{End: farFuture}
+	now := time.Unix(1000, 0)
+	for i := 0; i < 64; i++ {
+		d, ok := NextDelayWithFloor(p, 1, w, now, 5*time.Minute)
+		if !ok {
+			t.Fatal("地板在窗口内，不该放弃")
+		}
+		if d < 5*time.Minute || d > 7*time.Minute+30*time.Second {
+			t.Fatalf("delay = %v, want [5m, 7m30s]（5m ×[1,1.5]）", d)
+		}
+	}
+}
+
+// 下限高于窗口尾段份额：当日放弃，不把间隔压到下限之下。
+func TestNextDelayWithFloorGivesUpBeyondTail(t *testing.T) {
+	p := Policy{MaxAttempts: 3, After: time.Minute}
+	now := time.Unix(1000, 0)
+	// 剩余 10min ⇒ cap = 3min < floor 5min。
+	w := Window{End: now.Add(10 * time.Minute)}
+	if d, ok := NextDelayWithFloor(p, 1, w, now, 5*time.Minute); ok {
+		t.Fatalf("floor 超过尾段份额应放弃, got %v", d)
+	}
+}
+
+// floor=0 等价于 NextDelay：零值建议不是"无限等待"。
+func TestNextDelayWithFloorZeroEqualsNextDelay(t *testing.T) {
+	p := Policy{MaxAttempts: 3, After: time.Minute}
+	w := Window{End: farFuture}
+	now := time.Unix(1000, 0)
+	for i := 0; i < 32; i++ {
+		d, ok := NextDelayWithFloor(p, 1, w, now, 0)
+		if !ok || d < 30*time.Second || d > 90*time.Second {
+			t.Fatalf("floor=0 delay = (%v,%v), want [30s,90s]", d, ok)
+		}
+	}
+}
+
+// 下限小于等于宿主 base 时不改变曲线。
+func TestNextDelayWithFloorDoesNotShrink(t *testing.T) {
+	p := Policy{MaxAttempts: 3, After: 2 * time.Minute}
+	w := Window{End: farFuture}
+	now := time.Unix(1000, 0)
+	for i := 0; i < 32; i++ {
+		d, ok := NextDelayWithFloor(p, 1, w, now, 30*time.Second)
+		if !ok || d < time.Minute || d > 3*time.Minute {
+			t.Fatalf("floor<base delay = (%v,%v), want [1m,3m]", d, ok)
+		}
+	}
+}
