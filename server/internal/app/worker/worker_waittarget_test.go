@@ -294,3 +294,65 @@ func TestAttemptKeyAdvancesPerClaimCycle(t *testing.T) {
 		t.Fatalf("幂等键 = %q, want t1#0.6（attempts=0，键随第 6 次认领）", got)
 	}
 }
+
+// Rearm 之后的重新认领必须换键，并且在换键之后真实发起提交。
+//
+// 判据（B1 收口）：
+//   - 两次 AttemptID 不等：等待型重扫不计 attempts，键的换新只能靠 claim_seq；
+//     Rearm 不改 attempts，若键只绑 attempts，重开后会复用同一个键被上游判重；
+//   - 第二次真的调用 signIn（不是命中同键缓存）：假 Signer 的 signs 计数；
+//   - 结论落 success：换键后的提交是新一轮真实尝试，不继承上一轮的等待词。
+func TestRearmAfterWaitTargetSubmitsWithNewAttemptID(t *testing.T) {
+	ctx := context.Background()
+	actor := appaudit.Actor{UserID: "u1", Label: "u***@example.test"}
+	st := newStore(baseTask())
+	st.enabledTasks = []string{"st-1"}
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := defaultSigner()
+	signer.outcome = contract.OutcomeNoPosition // 平台没放点位：等待型重扫
+	clk := &stepClock{t: testNow()}
+	svc := newServiceWithClock(t, st, signer, fakeLimiter{allow: true}, clk)
+
+	// 第一轮：认领 claim_seq=1，提交后拿回 no_position，落 wait_target:1。
+	if _, err := svc.Step(ctx, 10); err != nil {
+		t.Fatalf("首轮 Step: %v", err)
+	}
+	if signer.signs != 1 {
+		t.Fatalf("首轮 sign 调用 = %d, want 1", signer.signs)
+	}
+	if got := signer.attemptIDs[0]; got != "t1#0.1" {
+		t.Fatalf("首轮幂等键 = %q, want t1#0.1", got)
+	}
+	if got := st.results["t1"]; got != "wait_target:1" {
+		t.Fatalf("首轮 result = %q, want wait_target:1", got)
+	}
+
+	// 用户手动再试：等待行 Rearm 到当下，result 清零，attempts 仍是 0。
+	if _, err := svc.Request(ctx, "acct-1", actor); err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if got := st.rearmed["t1"]; got != string(corestatus.TaskPending) {
+		t.Fatalf("重开审计来源 = %q, want pending", got)
+	}
+
+	// 第二轮：重新认领 claim_seq=2，键换新，真发提交并落 success。
+	signer.outcome = contract.OutcomeSuccess
+	if _, err := svc.Step(ctx, 10); err != nil {
+		t.Fatalf("重领 Step: %v", err)
+	}
+	if len(signer.attemptIDs) != 2 {
+		t.Fatalf("sign 次数 = %d, want 2（Rearm 后必须真发，不许命中同键缓存）", len(signer.attemptIDs))
+	}
+	if signer.attemptIDs[0] == signer.attemptIDs[1] {
+		t.Fatalf("两次幂等键相同 = %q（Rearm 后复用键会被上游判重）", signer.attemptIDs[0])
+	}
+	if got, want := signer.attemptIDs[1], "t1#0.2"; got != want {
+		t.Fatalf("第二次幂等键 = %q, want %q（attempts 仍 0，键随第 2 次认领）", got, want)
+	}
+	if got := st.finished["t1"]; got != corestatus.TaskSuccess {
+		t.Fatalf("终态 = %q, want success", got)
+	}
+	if got := st.tasks[0].Attempts; got != 1 {
+		t.Fatalf("attempts = %d, want 1（Finish 记一次成功尝试）", got)
+	}
+}

@@ -10,9 +10,11 @@ package worker_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
@@ -123,5 +125,98 @@ func TestRetryAdviceFloorBeyondTailGivesUp(t *testing.T) {
 	}
 	if _, done := st.finished["t1"]; !done {
 		t.Fatal("放弃应落终态")
+	}
+}
+
+// 限次建议不再依赖 Retryable：conformance 不允许 pending_upstream/unknown
+// 标 Retryable=true（其余结果标 true 直接判红），但次数照样能收口——
+// 这是 issue #413 的判定点：不重试写 MaxAttempts=1，与 Retryable 无关。
+func TestRetryAdviceLimitsWithoutRetryable(t *testing.T) {
+	for _, outcome := range []contract.Outcome{contract.OutcomePendingUpstream, contract.OutcomeUnknown} {
+		for _, limit := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/max=%d", outcome, limit), func(t *testing.T) {
+				st := newStore(baseTask())
+				st.windows["st-1|2026-10-29"] = openWindow()
+				signer := defaultSigner()
+				signer.outcome = outcome
+				// 刻意 Retryable=false：回归点就在这里。
+				signer.retry = contract.RetryAdvice{Retryable: false, MaxAttempts: limit}
+				clk := &stepClock{t: testNow()}
+				svc := newServiceWithClock(t, st, signer, fakeLimiter{allow: true}, clk)
+
+				if _, err := svc.Step(context.Background(), 10); err != nil {
+					t.Fatalf("首轮 Step: %v", err)
+				}
+				if limit == 1 {
+					if _, requeued := st.requeued["t1"]; requeued {
+						t.Fatalf("%s + MaxAttempts=1 应首次失败即落终态，不该重排", outcome)
+					}
+					if got := st.finished["t1"]; got != corestatus.TaskFailed {
+						t.Fatalf("终态 = %q, want failed", got)
+					}
+					if signer.signs != 1 {
+						t.Fatalf("sign 次数 = %d, want 1", signer.signs)
+					}
+					return
+				}
+				runAt, ok := st.requeued["t1"]
+				if !ok {
+					t.Fatalf("%s + MaxAttempts=2 应重试一次（宿主预算 3 被压到 2）", outcome)
+				}
+				// 第二次认领：只许再失败一次，然后落 failed。
+				clk.t = runAt.Add(time.Second)
+				if _, err := svc.Step(context.Background(), 10); err != nil {
+					t.Fatalf("重试 Step: %v", err)
+				}
+				if signer.signs != 2 {
+					t.Fatalf("sign 次数 = %d, want 2（MaxAttempts=2 ⇒ 只重试一次）", signer.signs)
+				}
+				if got := st.finished["t1"]; got != corestatus.TaskFailed {
+					t.Fatalf("重试后终态 = %q, want failed", got)
+				}
+				if signer.attemptIDs[0] == signer.attemptIDs[1] {
+					t.Fatalf("两次幂等键相同 = %q（重试必须换键）", signer.attemptIDs[0])
+				}
+			})
+		}
+	}
+}
+
+// 退避落点以结算时刻（settleAt）为基准，不用尝试开始时刻：
+// 一次尝试整段耗在预算里时（缺省 0.8×租约 ≈ 96s），用开始时刻算会把
+// run_at 写进过去，下一次 tick 立刻再撞一次平台。
+//
+// 这里用可进时钟模拟"整段耗在预算里"，而不是真的烧预算：真实预算耗时
+// （毫秒级）远小于退避下限（30s 起），两种基准算出的落点区分不开。
+func TestBackoffAnchoredOnSettleTimeAfterLongAttempt(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := defaultSigner()
+	signer.outcome = contract.OutcomeTransient
+	signer.retry = contract.RetryAdvice{Retryable: true, MaxAttempts: 3, After: 90 * time.Second}
+	clk := &stepClock{t: testNow()}
+	signer.onSign = func() { clk.t = clk.t.Add(5 * time.Minute) }
+	svc := newServiceWithClock(t, st, signer, fakeLimiter{allow: true}, clk)
+
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	runAt, ok := st.requeued["t1"]
+	if !ok {
+		t.Fatal("预算内应重排重试")
+	}
+	settleAt := testNow().Add(5 * time.Minute) // 尝试耗掉 5 分钟后才结算
+	if !runAt.After(settleAt) {
+		t.Fatalf("落点 = %v 早于结算时刻 %v（用尝试开始时刻算会落进过去）", runAt, settleAt)
+	}
+	low, high := settleAt.Add(90*time.Second), settleAt.Add(136*time.Second)
+	if runAt.Before(low) || runAt.After(high) {
+		t.Fatalf("落点 = %v, want [%v,%v]（settleAt + 90s 下限，抖动 [90s,135s]）", runAt, low, high)
+	}
+	if got := st.tasks[0].Attempts; got != 1 {
+		t.Fatalf("attempts = %d, want 1（失败一次计一次）", got)
+	}
+	if got := st.results["t1"]; got != string(contract.OutcomeTransient) {
+		t.Fatalf("result = %q, want transient", got)
 	}
 }

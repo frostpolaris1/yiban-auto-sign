@@ -1,22 +1,22 @@
 # 接线提供方的重试建议（issue #402）
 
-> 分支 `fix/retry-advice-wiring`，base `origin/develop` `035444a1a`。
-> 关联：[#402](https://github.com/frostpolaris1/yiban-auto-sign/issues/402)。
-> 与 PR #404 有已知的小冲突：`core/retry.Policy` 的 `ClearSession` 在 #404 里改名为
-> `SessionTainted`；本 PR 不碰该字段，合并时按 #404 的名字 rebase 即可。
+> 分支 `fix-b1-idempotency`（收口 #404 `292d3af2e` + #403 `fca29030c` + 本 PR `8a3f8e8c5`），
+> 三条 base 均为 `035444a1a`。
+> 关联：[#402](https://github.com/frostpolaris1/yiban-auto-sign/issues/402)、#413。
+> 已知冲突已解：`core/retry.Policy` 的 `ClearSession` 在 #404 里改名为 `SessionTainted`；
+> 本 PR 不碰该字段，合并后按 #404 的名字保留（见 §2 最后一条）。
 
 ## 0. 结论
 
 1. `contract.RetryAdvice` 从"生产 + 校验但无人消费"改成真正的结算输入：
    `After` 是**等待下限**（`NextDelayWithFloor`），`MaxAttempts` 是**上限建议**
-   （只在更小且 `Retryable` 时压低宿主预算）。
+   （只在 `>= 1` 且更小时压低宿主预算，不看 `Retryable`）。
 2. **不做 `!Retryable` 一票否决**：零值建议（老提供方不填 `Retry`）与
-   "明确不重试"无法区分，否决会把它们的正常重试全掐掉。提供方要表达不重试，
-   正确写法是 `Retryable=true` 且 `MaxAttempts=1`（只填 1 会被当作没有建议）。
-   这条写法目前**只对 `transient` 生效**：conformance 的 `checkSignRetry` 只允许
-   `transient`/`challenge` 标 `Retryable=true`，而 `challenge` 在宿主侧走 `skipped`；
-   `pending_upstream`/`unknown` 既不能被 conformance 接受 `Retryable=true`，
-   `Retryable=false` 的建议又会被宿主忽略——已另开 issue #413。
+   "明确不重试"无法区分，否决会把它们的正常重试全掐掉。宿主只认次数：
+   `MaxAttempts=0` 是"没填"，要表达不重试就写 `MaxAttempts=1`（第一次失败即 failed）。
+   次数与 `Retryable` 解耦后，`pending_upstream`/`unknown` 也能限次——
+   conformance 的 `checkSignRetry` 只禁它们的 `Retryable=true`，从不校验
+   `MaxAttempts`（issue #413 已解）。
 3. 易班的 `After` 保持 0 并写明理由：平台无文档化固定冷却，宿主 60s 基础间隔
    已覆盖重发节奏；凭空编下限只会白等。
 
@@ -44,12 +44,16 @@
 
 具体规则：
 
-- `MaxAttempts`：仅当 `advice.Retryable && advice.MaxAttempts >= 1 && advice.MaxAttempts < policy.MaxAttempts`
-  才压低。抬高永远不允许（宿主预算管上限）。
+- `MaxAttempts`：仅当 `advice.MaxAttempts >= 1 && advice.MaxAttempts < policy.MaxAttempts`
+  才压低。抬高永远不允许（宿主预算管上限）。`Retryable` 不参与判定。
+- **落点基准**：退避从 `settleAt`（结算时刻）算，不从尝试开始时刻算（#404
+  `lease-deadline-guard`）；一次尝试整段耗在预算里时，只有前者能保证 `run_at`
+  不落进过去。
 - `After`：`NextDelayWithFloor` 里两处生效——先抬名义间隔（`base = max(base, floor)`），
   让既有"窗口尾段放不下就放弃"的判据同时覆盖下限；抖动后再夹一次，防止
   `[0.5, 1.5]` 抖动把 `floor=5min` 压成 3min。
-- `!Retryable`：不作为否决条件（见 §0 第 2 条）。
+- `!Retryable`：既不否决也不参与次数判定；它只服务 conformance 语义
+  （`transient` 必须标 true、`challenge` 可选，其余结果标 true 判红）。
 - `ClearSession`：本 PR 不动。宿主目前**完全没有消费**该字段（`app/worker` 不读它，易班清的是
   自己的会话缓存），所以契约注释已改成"尚未消费、仅为记录"；真要做"主动清会话"，得先在会话
   仓储上定义清除动作与审计（与 #404 把 `Policy.ClearSession` 改名为 `SessionTainted` 是同一件事的两半）。
@@ -59,10 +63,10 @@
 | 文件 | 改动 |
 |------|------|
 | `server/internal/core/retry/budget.go:95` | 新增 `NextDelayWithFloor(p, attempt, w, now, floor)`；`NextDelay` 委托 `nextDelay(..., 0)` |
-| `server/internal/app/worker/worker.go:425` | `settleOutcome` 增 `advice contract.RetryAdvice` 参数；成功路径传 `result.Retry`，错误路径传零值 |
-| `server/internal/app/worker/worker.go:469` | 新增 `advisePolicy`（`MaxAttempts` 只压不抬） |
-| `server/internal/app/worker/worker.go:448` | 退避落点改 `NextDelayWithFloor(..., advice.After)` |
-| `server/internal/signing/contract/contract.go:245` | `RetryAdvice` 注释写明宿主消费口径与"零值 = 没有建议" |
+| `server/internal/app/worker/worker.go:449` | `settleOutcome` 增 `advice contract.RetryAdvice` 参数；成功路径传 `result.Retry`，其余 6 处传零值 |
+| `server/internal/app/worker/worker.go:485` | 新增 `advisePolicy`（`MaxAttempts` 只压不抬，不看 `Retryable`） |
+| `server/internal/app/worker/worker.go:477` | 退避落点改 `NextDelayWithFloor(..., settleAt, advice.After)` |
+| `server/internal/signing/contract/contract.go:238` | `RetryAdvice` 注释写明宿主消费口径、"零值 = 没有建议"、限次与 `Retryable` 解耦 |
 | `server/internal/signing/providers/yiban/provider.go:389` | `retryFor` 注释写明 `After` 为何留 0 |
 
 ## 4. 验证
@@ -76,7 +80,7 @@
 | `TestNextDelayWithFloorZeroEqualsNextDelay` | floor=0 等价旧曲线 |
 | `TestNextDelayWithFloorDoesNotShrink` | floor < base 时不改变曲线 |
 
-### 4.2 `app/worker`（`retry_advice_test.go`，5 例）
+### 4.2 `app/worker`（`retry_advice_test.go`，7 例）
 
 | 用例 | 钉住的行为 |
 |------|-----------|
@@ -85,10 +89,20 @@
 | `TestRetryAdviceDoesNotRaiseAttempts` | 建议 `MaxAttempts=9` ⇒ 仍按宿主 60s 曲线重排 |
 | `TestRetryAdviceZeroKeepsHostPolicy` | 零值建议 ⇒ 与改动前完全一致 |
 | `TestRetryAdviceFloorBeyondTailGivesUp` | 下限超出窗口尾段份额 ⇒ failed，不越窗重排 |
+| `TestRetryAdviceLimitsWithoutRetryable` | `pending_upstream`/`unknown` + `{Retryable:false, MaxAttempts:1}` ⇒ 首次失败即 failed；`=2` ⇒ 重试一次后 failed |
+| `TestBackoffAnchoredOnSettleTimeAfterLongAttempt` | 一次尝试整段耗时（时钟前推 5min）⇒ 落点以 `settleAt` 为基准，`run_at` 晚于 `settleAt` |
 
-### 4.3 门
+### 4.3 `app/worker` 幂等键（`worker_waittarget_test.go`，1 例）
 
-`cd server && ./scripts/verify.sh` 全绿（含 canonical/logfield/gofmt/vet/全包测试/真库 e2e/CLI e2e）。
+| 用例 | 钉住的行为 |
+|------|-----------|
+| `TestRearmAfterWaitTargetSubmitsWithNewAttemptID` | `no_position(wait_target:1)` ⇒ Rearm 后重领：两次 `AttemptID` 不等，第二次真发 signIn 并落 success |
+
+### 4.4 门
+
+B1 分支实测（`cd server`）：`go test -p 1 -count=1 ./internal/app/worker/... ./internal/core/retry/... ./internal/signing/contract/...`
+与同范围的 `go test -race` 全绿；`go build ./...` rc=0。全量 `./scripts/verify.sh` 不在本分支重跑，
+留给 PR 前的统一门（含 canonical/logfield/gofmt/vet/真库 e2e）。
 
 ## 5. 边界与未做
 
@@ -99,6 +113,6 @@
   cool-down，填进 `RetryAdvice.After` 即可自动生效（本 PR 的接线是通用面）。
 - **下限只作用于业务退避**：等待型重扫（`wait_target`）走自己的 base 5min 曲线，
   与 `RetryAdvice` 无关；这是既有口径，不在本工单内合并。
-- **"限次建议"的合法域不全**：见 §0 第 2 条与 issue #413。要让
-  `pending_upstream`/`unknown` 也能限次，得先决定是放宽 conformance 还是给
-  `RetryAdvice` 加一个"显式建议"标志，不在本 PR 内改判定表。
+- **"限次建议"的合法域**：见 §0 第 2 条。次数与 `Retryable` 解耦后，任何结果都能用
+  `MaxAttempts` 限次/拒重试，issue #413 已解；conformance 判定表不变，`Retryable`
+  仍是它的语义位，不再兼作宿主的开关。
