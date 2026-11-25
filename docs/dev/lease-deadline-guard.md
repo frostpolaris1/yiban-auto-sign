@@ -222,13 +222,13 @@ go test ./internal/adapters/pg/ -run Reclaim -v          # 回收冷却 e2e
 | canonical 门（含 `-tests` 两遍） | `gate: ok (44 rules)` ×2 | — |
 | logfield 门 | 通过 | — |
 | structure / license / generate 门 | `structure: ok (10 scopes, 11 rules)`、`license: ok (37 modules)`、oapi 无漂移 | — |
-| pg e2e | **174** 个顶层 PASS（阈值 50） | 53.6s |
-| auth e2e（`cmd/server`，含本矩阵 7 格 + 第二幕） | **302** 个顶层 PASS（阈值 45） | 174.9s |
+| pg e2e | **174** 个顶层 PASS（阈值 50） | 53.1s |
+| auth e2e（`cmd/server`，含本矩阵 7 格 + 第二幕） | **302** 个顶层 PASS（阈值 45） | 178.3s |
 | cli e2e | **158** 个顶层 PASS（阈值 20） | 27.9s |
-| container e2e | `TestContainerPhotoDirWritableByNonroot` passed | 85.7s |
-| 全程 | `EXIT=0` | **约 7m10s** |
+| container e2e | `TestContainerPhotoDirWritableByNonroot` passed | 86.7s |
+| 全程 | `EXIT=0` | **约 7m03s** |
 
-> 本次为最终 HEAD 复跑；auth 段 175s、container 段 86s，均接近空载。
+> 本次为最终 HEAD 复跑；auth 段 178s、container 段 87s，均接近空载。
 > 数字本身不受影响，只是耗时列不能当基线。
 
 新增用例：`TestLeaseDoubleRunMatrix`（1 个 test / 7 个子用例 + 第二幕，空载 27.5s）、
@@ -237,7 +237,7 @@ go test ./internal/adapters/pg/ -run Reclaim -v          # 回收冷却 e2e
 
 ## 6. 改动清单
 
-6 个提交，37 个跟踪文件 `+2493 / -93`（`git diff --shortstat 035444a1a..HEAD`）。
+7 个提交（6 个功能/修复 + 1 个文档账本），37 个跟踪文件 `+2494 / -93`（`git diff --shortstat 035444a1a..HEAD`）。
 其中新增测试文件 4 个共 1239 行（`cmd/server/lease_double_e2e_test.go` 523 行、
 `internal/app/worker/attempt_budget_test.go` 403 行、`attempt_budget_internal_test.go` 43 行、
 `retry_advice_test.go` 270 行）；既有 `schedule_lease_e2e_test.go` 追加 58 行、
@@ -252,7 +252,7 @@ go test ./internal/adapters/pg/ -run Reclaim -v          # 回收冷却 e2e
 | 配置面 | `internal/adapters/config/config.go`、`configdata/registry.json`、三份 `.env.example`、`README.md` | 两个新键（`YIBAN_RECLAIM_GRACE_SEC` / `YIBAN_ATTEMPT_BUDGET_SEC`）+ 预算 < 租约的门 |
 | 装配面 | `internal/assembly/assembly.go`、`worker_deps_test.go` | 链式注入租约/冷却；`workerAttemptBudget` 派生；镜像判据同步 |
 | 词表 | `internal/core/retry/policy.go`、`budget.go`、`signing/conformance/retry_vocab_test.go` | `ClearSession` → `SessionTainted` |
-| 审计 | `internal/core/audit/chain.go` | detail 白名单增 `grace_sec` |
+| 审计 | `internal/core/audit/chain.go` | detail 白名单增 `grace_sec`，限幅 0..3600 |
 | 门 | `canonical.tsv`、`tools/gate/anchors_test.go` | `env.get` allow 增列本实验测试文件；规则哈希同步 |
 
 ### 顺带发现（2 已在 `fix/attempt-key-claim-cycle` 修掉；1 已在本分支修掉）
@@ -263,7 +263,8 @@ go test ./internal/adapters/pg/ -run Reclaim -v          # 回收冷却 e2e
    详见 [`retry-advice-wiring.md`](retry-advice-wiring.md)。
 2. ~~**回收不 bump `attempts`，第二次认领沿用同一个 `attemptID`**（矩阵 `distinct` 恒为 1）。~~
    **已修**：键改为 `"<taskID>#<attempts>.<claim_seq>"`，一次认领周期一个键；
-   矩阵三格（基线 / A 超租约 / 吞取消）的 `distinct` 随之从 1 变 2。
+   矩阵两格（基线 / 吞取消）的 `distinct` 随之从 1 变 2；
+   A 超租约格已被租约余量封顶，`distinct=1`，不再触发接管。
    根因与取舍见 [`attempt-key-claim-cycle.md`](attempt-key-claim-cycle.md)。
    注：这一项修的是"接管方复用旧键"，挡不住"吞取消 + 短租约"本身——
    那一格仍然 `dup=1`，宿主侧唯一杠杆仍是"租约显著大于提供方最坏耗时"。
