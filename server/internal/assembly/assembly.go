@@ -1243,9 +1243,10 @@ func buildWorkerDeps(cfg *config.Config, d workerDeps) appworker.Deps {
 // workerAttemptBudget 返回一次真实尝试的总截止时间。
 //
 // 配置为 0 时按租约派生：0.8×租约，留 20% 给结算与调度抖动。
-// 派生值恒小于租约，故预算先于回收触发——本次尝试由自己结算，
-// 回收器找不到过期行，同账号双跑不会出现（配置的显式值由
-// config 校验必须小于租约）。
+// 派生值恒小于租约；显式值另由 config 校验必须小于租约。两条路径
+// 都还不足以完全避免"回收器先于持有者"：预算从凭据就绪起算，租约从
+// 认领起算，中间的窗口/出口/限速/凭据读取会吃掉租约。运行面因此再用
+// 租约余量封顶（worker.effectiveAttemptBudget），保证预算先于回收触发。
 func workerAttemptBudget(cfg *config.Config) time.Duration {
 	if cfg.AttemptBudget > 0 {
 		return cfg.AttemptBudget

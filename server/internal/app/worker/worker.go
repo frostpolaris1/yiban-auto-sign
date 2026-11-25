@@ -52,6 +52,7 @@ const (
 	waitRate           = "wait_rate"           // 出口限速未放行
 	waitEgress         = "wait_egress"         // 出口不可用（无可用出口或分配失败）
 	waitBatchAborted   = "wait_batch_aborted"  // 本行前置步骤遇基础设施失败，退回队列
+	waitLeaseSpent     = "wait_lease_spent"    // 认领租约已被前置阶段耗尽，未发平台请求
 	windowMissingRetry = 10 * time.Minute      // 窗口未发现时的重试间隔
 	// requeueBackoff 是未提交失败退回队列的最小等待：DB 故障期不让同一行
 	// 每 2 秒热循环重领（P1-5）。
@@ -321,8 +322,24 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	// 没有它，卡住的提供方会持住租约直到过期；回收器把行放回队列后，
 	// 第二个执行体能在本执行体还活着时再认领同一账号——库层唯一索引只盖
 	// state='running'，挡不住这条路径（回收已把旧行改成 pending）。
-	// 零值不设限：保持引入预算前的行为。
-	attemptCtx, cancelAttempt := attemptDeadline(ctx, s.deps.AttemptBudget)
+	// 预算还要受租约余量封顶：租约从认领时刻起算，预算从凭据就绪起算，
+	// 中间的窗口/出口/限速/凭据读取会吃掉租约；只按配置值限长仍可能晚于回收器。
+	// 零值不限尝试时长（装配层缺省非零）；租约余量护栏仍生效。
+	budget, leaseSpent := effectiveAttemptBudget(s.deps.AttemptBudget, task.LeaseExpiresAt, attemptStart)
+	if leaseSpent {
+		// 前序（窗口/出口/限速/凭据）已把租约吃光：不能再发平台请求，
+		// 也不能把这次"没发出去"记成账号失败一次。退回队列，不计数。
+		// 不写 outcome 日志：这不是一次尝试，别把 attempt/task.attempts 指标带偏。
+		// 冲突是良性的：走到这里时租约已过/将过，回收器可能已把行放回队列
+		// 并换了 claim_seq。退回失败不代表数据丢了，别让它升级成整轮提前收尾。
+		// 不另打日志：回收器侧已写 task.reclaim 审计，可作为这次冲突的旁证。
+		err := s.requeueWait(ctx, task, requeueRunAt(task.RunAt, s.deps.Clock.Now()), waitLeaseSpent)
+		if err != nil && coreerrs.From(err).Code != coreerrs.CodeConflict {
+			return false, err
+		}
+		return false, nil
+	}
+	attemptCtx, cancelAttempt := attemptDeadline(ctx, budget)
 	defer cancelAttempt()
 	ref := contract.AccountRef{ID: task.AccountID, SchoolID: task.SchoolID, Platform: "yiban"}
 
@@ -333,6 +350,13 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		Account: ref, Credential: cred,
 	})
 	if err != nil {
+		// 业务结论优先于预算判定：提供方已经给出 challenge/凭据错时，
+		// 不能因为同一时刻预算到期就降级成 transient——那会把确定的
+		// 当日结论重新打回可重试面，challenge 还会被多打三次。
+		if outcome, reason, ok := outcomeOf(err); ok {
+			s.logOutcome(ctx, task, stageDiscovery, outcome, reason)
+			return false, s.settleOutcome(ctx, task, win, outcome, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
+		}
 		if attemptBudgetExhausted(attemptCtx, ctx) {
 			// 预算截断是一次失败的尝试：按 transient 计一次并把落点交给退避。
 			// 不这么归会落进"其余（DB、KEK 等）：基础设施错误，上抛"那条路，
@@ -340,17 +364,15 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 			s.logOutcome(ctx, task, stageDiscovery, contract.OutcomeTransient, attemptBudgetReason)
 			return false, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, attemptBudgetReason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 		}
-		if outcome, reason, ok := outcomeOf(err); ok {
-			s.logOutcome(ctx, task, stageDiscovery, outcome, reason)
-			return false, s.settleOutcome(ctx, task, win, outcome, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
-		}
 		reason := mask.SafeErrorText(err)
 		s.logOutcome(ctx, task, stageDiscovery, contract.OutcomeTransient, reason)
 		return false, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 	}
 	if len(targets) == 0 {
 		// Position 空是「平台没放数据」：等待型重扫，不当当日结论。
-		return false, s.waitTarget(ctx, task, win, now)
+		// 落点以发现结束时刻为基准：发现可能耗掉整个尝试预算，
+		// 用入口 now 会把下一次重扫排进过去（与 settleOutcome 同口径）。
+		return false, s.waitTarget(ctx, task, win, s.deps.Clock.Now())
 	}
 	// 定位先于选点：固定点可能只落在部分候选围栏内。
 	location := contract.Location{Mode: contract.LocationAuto}
@@ -415,13 +437,14 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		Image:    image,
 	})
 	if err != nil {
-		if attemptBudgetExhausted(attemptCtx, ctx) {
-			s.logOutcome(ctx, task, stageSubmit, contract.OutcomeTransient, attemptBudgetReason)
-			return true, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, attemptBudgetReason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
-		}
+		// 同发现面：业务结论优先，预算到期只兜没有结论的错误。
 		if outcome, reason, ok := outcomeOf(err); ok {
 			s.logOutcome(ctx, task, stageSubmit, outcome, reason)
 			return true, s.settleOutcome(ctx, task, win, outcome, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
+		}
+		if attemptBudgetExhausted(attemptCtx, ctx) {
+			s.logOutcome(ctx, task, stageSubmit, contract.OutcomeTransient, attemptBudgetReason)
+			return true, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, attemptBudgetReason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 		}
 		reason := mask.SafeErrorText(err)
 		s.logOutcome(ctx, task, stageSubmit, contract.OutcomeTransient, reason)
@@ -568,6 +591,34 @@ const settlementTimeout = 800 * time.Millisecond
 // WithoutCancel，这里让结算走同一条纪律。
 func settlementContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), settlementTimeout)
+}
+
+// attemptLeaseReserve 是租约终点前留给结算写入的余量。
+// 结算本身有 800ms 上限（settlementTimeout）；再加 200ms 吸收时钟与调度抖动。
+const attemptLeaseReserve = settlementTimeout + 200*time.Millisecond
+
+// effectiveAttemptBudget 把配置的尝试预算压到租约余量之内。
+//
+// 租约从 ClaimDue 的 now 起算，而尝试预算从凭据就绪后的 attemptStart 起算。
+// 窗口读取、出口分配、限速、凭据读取都在两者之间；显式配置即使小于租约，
+// 加上这段前置时间也可能晚于 lease_expires_at，让回收器在持有者提交前放回行。
+// 因此截止时刻取 min(配置预算, 租约终点-结算余量)。
+//
+// configured<=0 表示不限尝试时长，但仍受租约余量护栏；租约终点为空
+// （测试/旧调用）时原样返回。第二个返回值 leaseSpent=true 表示前序已把
+// 租约耗尽：调用方不得再发平台请求，也不得把这次尝试记成业务失败
+// （见 execute 的 waitLeaseSpent 分支）。
+func effectiveAttemptBudget(configured time.Duration, leaseExpiresAt, now time.Time) (time.Duration, bool) {
+	if !leaseExpiresAt.IsZero() {
+		remaining := leaseExpiresAt.Sub(now) - attemptLeaseReserve
+		if remaining <= 0 {
+			return 0, true
+		}
+		if configured > 0 && remaining < configured {
+			return remaining, false
+		}
+	}
+	return configured, false
 }
 
 // attemptDeadline 给一次真实尝试（发现＋提交）加总截止时间。

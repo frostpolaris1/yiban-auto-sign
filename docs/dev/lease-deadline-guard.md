@@ -1,6 +1,6 @@
 # 租约截止、回收冷却与会话标记（实验报告）
 
-> 分支 `fix/lease-deadline-guard`（基线 `fab09cff4`，develop）。
+> 分支 `fix-b1-idempotency`（B1 栈，基线 `035444a1a`；本文主体由 #404 的 `fix/lease-deadline-guard` 带入）。
 > 对象是新栈（`server/`，Go）调度域：`core/schedule` + `adapters/pg` + `app/worker`。
 > 本文的行号按本分支 HEAD 记；基线坐标见 §1 的备注。
 > 记录方式：先给代码坐标，再给实测数字，最后给生产参数建议。
@@ -31,8 +31,8 @@
 | `server/migrations/postgres/00012_scheduling.sql` | `uq_sign_tasks_one_running ON sign_tasks(account_id) WHERE state='running'` —— 只保护"正在跑"的那一行 |
 | `server/migrations/postgres/00020_schedule_lease.sql` | `claim_seq` 递增 + `lease_expires_at`：认领栅栏，结算必须带本次序号 |
 | `server/internal/adapters/pg/schedule.go:225` `Finish` | `UPDATE ... WHERE state='running' AND claim_seq=$6`，0 行即 `ErrScheduleConflict` |
-| `server/internal/app/worker/worker.go:750` `attemptID` | `"<taskID>#<attempts>.<claim_seq>"`（一次认领周期一个键，见 `attempt-key-claim-cycle.md`） |
-| `server/internal/app/worker/worker.go:402` `Sign` | 改动前直接吃 loop 的 `ctx`：一次提交可以无限期占着租约（现吃 `attemptCtx`，`:325`） |
+| `server/internal/app/worker/worker.go:837` `attemptID` | `"<taskID>#<attempts>.<claim_seq>"`（一次认领周期一个键，见 `attempt-key-claim-cycle.md`） |
+| `server/internal/app/worker/worker.go:424` `Sign` | 改动前直接吃 loop 的 `ctx`：一次提交可以无限期占着租约（现吃 `attemptCtx`，`:342`） |
 
 > 基线 `fab09cff4` 上行号是 `ClaimDue:503`、`ReclaimExpired:653`、回收落点参数 `:699`；本文按改动后的 HEAD 记。
 
@@ -49,12 +49,22 @@
 ### A. 一次尝试的总截止时间（`YIBAN_ATTEMPT_BUDGET_SEC`）
 
 - 端口：`appworker.Deps.AttemptBudget time.Duration`（`repo.go`）。
-  **0 不是"不设限"**，而是按 `0.8 × 租约` 派生（`assembly.workerAttemptBudget`，`assembly.go:1224`）——
+  端口层 **0 = 不限尝试时长**（不建立预算截止，保留引入预算前的行为）；
+  它仍会在认领时租约已不足以结算（余量 ≤ 1s）时走 `wait_lease_spent`，
+  但不给运行时长封顶。线上装配不传 0：
+  `assembly.workerAttemptBudget` 在配置为 0 时派生 `0.8 × 租约`（`assembly.go:1250`）——
   也就是说这项改动默认生效。显式配置才是"改数值"，不是"打开开关"。
-- 执行：`worker.go:319` 取 `attemptStart`，`:325` 建 `attemptCtx, cancel := attemptDeadline(ctx, budget)`；
-  `DiscoverTargets`（`:332`）与 `Sign`（`:402`）吃 `attemptCtx`；
+- 租约余量封顶：`ClaimDue` 在认领行上带出 `lease_expires_at`
+  （`core/schedule/schedule.go` 的 `TaskRow.LeaseExpiresAt`、`adapters/pg/schedule.go`）；
+  `worker.effectiveAttemptBudget` 把配置预算压到
+  `min(配置, lease_expires_at - attemptStart - (settlementTimeout + 200ms))`。
+  预算从凭据就绪起算、租约从认领起算，这段前序（暂停门/窗口/出口/限速/凭据解密）
+  因此自动从预算里扣掉；余量不足以覆盖结算保留时 `effectiveAttemptBudget` 返回 `leaseSpent=true`，
+  `execute` 以 `wait_lease_spent` 退回队列——**一个平台请求都不发，也不计 attempts**。
+- 执行：`worker.go:320` 取 `attemptStart`，`:342` 建 `attemptCtx, cancel := attemptDeadline(ctx, budget)`；
+  `DiscoverTargets`（`:349`）与 `Sign`（`:424`）吃 `attemptCtx`；
   结算仍走 `settlementContext`（`WithoutCancel` + 800ms），**预算截断不影响落库**。
-- 判据：`attemptBudgetExhausted(attemptCtx, parent)`（`:565`）= 子 ctx `DeadlineExceeded`
+- 判据：`attemptBudgetExhausted(attemptCtx, parent)`（`:642`）= 子 ctx `DeadlineExceeded`
   **且父 ctx 未结束**。父 ctx 退出是 `Canceled`（停机），不是"这次尝试失败"，不能冒充；
   调用方自己传进来的 `DeadlineExceeded`（如 HTTP 请求超时）同理不算预算截断。
 - 结论词：`transient`，日志 reason `attempt_budget_exceeded`（`worker.go:68-72`）。
@@ -63,7 +73,7 @@
 - 边界（三条，读结论时必须一起看）：
   1. **A 只限时长，不防重**：截断只切断等待，已经发出去的请求是否生效由平台决定；
      对"吞掉取消"的提供方 A 毫无作用（矩阵第 7 格 `dup=1`）。
-  2. **A 的释放路径绕过 B**：预算截断经 `settleOutcome → requeueRetry`（`worker.go:509`）
+  2. **A 的释放路径绕过 B**：预算截断经 `settleOutcome → requeueRetry`（`worker.go:558`）
      直接置 `pending` + `run_at`，**不经** `ReclaimExpired` 的冷却。对吞取消的提供方，
      第二次真实提交因此比"等租约到期再回收"更早（96s vs 120s），且没有冷却。
   3. **预算不覆盖本地阶段**：`Locations.Resolve`、`Photos.PickForAttempt` 不在 `attemptCtx` 上，
@@ -120,17 +130,25 @@
 
 | 格 | 租约 | 预算 | 冷却 | signs | dup | peak | distinct | reclaim | fence | attempts | 终态 | late | 耗时 |
 |----|------|------|------|-------|-----|------|----------|---------|-------|----------|------|------|------|
-| 基线（无 A 无 B） | 300ms | — | — | 2 | **1** | **2** | **2** | 1 | 1 | 1 | success/success | 0 | 1.87s |
-| 仅长租约 | 900ms | — | — | 1 | 0 | 1 | 1 | 0 | 0 | 1 | success/success | 0 | 2.29s |
-| 仅 A 预算 | 300ms | 120ms | — | 1 | 0 | 1 | 1 | 0 | 0 | 1 | pending/transient | 0 | 0.83s |
-| A 预算 1.2s **超过租约** | 300ms | 1200ms | — | 2 | **1** | **2** | **2** | 1 | 1 | 1 | success/success | 0 | 2.05s |
-| 仅 B 冷却 | 300ms | — | 5s | 1 | 0 | 1 | 1 | 1 | 1 | 0 | pending/（空） | **2** | 6.85s |
-| A+B | 300ms | 120ms | 5s | 1 | 0 | 1 | 1 | 0 | 0 | 1 | pending/transient | 0 | 0.93s |
-| 仅 A，提供方吞取消 | 300ms | 120ms | — | 2 | **1** | **2** | **2** | 1 | 1 | 1 | success/success | 0 | 2.08s |
+| 基线（无 A 无 B） | 1.5s | — | — | 2 | **1** | **2** | **2** | 1 | 1 | 1 | success/success | 0 | 3.9s |
+| 仅长租约 | 3s | — | — | 1 | 0 | 1 | 1 | 0 | 0 | 1 | success/success | 0 | 3.8s |
+| 仅 A 预算 | 1.5s | 120ms | — | 1 | 0 | 1 | 1 | 0 | 0 | 1 | pending/transient | 0 | 1.6s |
+| A 预算 3s **超过租约，被运行面封顶** | 1.5s | 3s | — | 1 | 0 | 1 | 1 | 0 | 0 | 1 | pending/transient | 0 | 1.6s |
+| 仅 B 冷却 | 1.5s | — | 5s | 1 | 0 | 1 | 1 | 1 | 1 | 0 | pending/（空） | **2** | 2.3s |
+| A+B | 1.5s | 120ms | 5s | 1 | 0 | 1 | 1 | 0 | 0 | 1 | pending/transient | 0 | 1.6s |
+| 仅 A，提供方吞取消 | 1.5s | 120ms | — | 2 | **1** | **2** | **2** | 1 | 1 | 1 | success/success | 0 | 3.9s |
+
+> 租约必须大于 `attemptLeaseReserve`（1s），否则认领后直接判 `wait_lease_spent`；
+> 这里用 1.5s/3s，仍远小于生产 120s。表中数字来自 2026-11-26 真库跑测；
+> 第 4 格已从旧报告的“超过租约 ⇒ 重复”变为“运行面封顶 ⇒ 不重复”。
+
+> 矩阵里第 1/5 格的 `budget=0` 是正控支点：`0` 不封顶，才有 `dup=1` 的基线；
+> 生产装配不会传 0（配置 0 派生 0.8×租约），所以这两格只用于实验。
+> 第 4 格（预算 3s > 租约 1.5s）也是测试直注入，生产被启动门禁止。
 
 读法（四条，缺一条就会误判改动价值）：
 
-1. **只有 A 能在"持有者还活着"的前提下收住重复**：预算 120ms < 租约 300ms ⇒ 行从不进入过期态
+1. **只有 A 能在"持有者还活着"的前提下收住重复**：预算 120ms < 租约 1.5s ⇒ 行从不进入过期态
    （`reclaim=0`），提交在 `hold` 到期之前就被自己切断并结算为 `transient`，第二个执行体认领 0 行。
 2. **B 单独用会把并发重复变成延迟重复**：第一幕 `reclaim=1`、`fence=1`、`attempts=0`，行停在
    `pending`；第二幕等冷却结束再跑，同一行被重新认领、**再提交一次**（`late=2`），
@@ -139,7 +157,7 @@
 3. **A 的边界是提供方是否尊重 `ctx`**：最后一格 `dup=1`。预算只能通过 `ctx` 切断，
    吞掉取消的客户端切不断，此时唯一的杠杆是**让持有者在租约到期之前结算完**
    （租约显著大于提供方最坏耗时）。第 2 格只证明这条防线的机制本身——
-   `hold=1.7s` 其实已经超过 900ms 租约，但第二执行体是在 450ms（租约内）开跑的，
+   `hold=3.8s` 其实已经超过 3s 租约，但第二执行体是在 1.5s（租约内）开跑的，
    所以它认领 0 行、`dup=0`；"租约过期必然被回收"由第 1 格与第 5 格证明。
    一句话：**租约不是超时控制，它只是"到期就允许别人接盘"**。
 4. **A+B 是唯一"零重复 + 零回收"的组合**，但它对吞取消的提供方依然等于 B（第 7 格没有 B 也一样 `dup=1`；
@@ -149,15 +167,19 @@
 
 | 键 | 建议值 | 依据 |
 |----|--------|------|
-| `YIBAN_ATTEMPT_BUDGET_SEC` | `0`（派生 0.8×租约） | 派生值恒小于租约；矩阵第 3 格 |
+| `YIBAN_ATTEMPT_BUDGET_SEC` | `0`（派生 0.8×租约） | 派生值恒小于租约；显式值另由启动门要求 < 租约；运行面再按剩余租约封顶；矩阵第 3 格 |
 | `YIBAN_TASK_LEASE_SEC` | 保持 `120`，**且必须显著大于提供方最坏耗时** | 第 2 格：租约之内无人能领；第 1/5 格：一旦过期必然被回收。这是不依赖任何客户端行为的唯一防线 |
 | `YIBAN_RECLAIM_GRACE_SEC` | `60`（缺省） | 独立保险：把并发重复降级成串行重复、挡住回收抖动/热循环；不是止损 |
-| 预算 ≥ 租约 | **禁止**（启动即失败） | 矩阵第 4 格：等于没设 |
+| 预算 ≥ 租约 | **禁止**（启动即失败） | 启动门直接拒绝；若测试/嵌入式直接注入，运行面仍按租约余量封顶，矩阵第 4 格 `dup=0` |
 
-"A 生效"的准确条件不是"预算 < 租约"，而是
-**`claim → attemptStart` 的耗时 + 预算 < 租约**：认领之后还有暂停门、窗口查询、出口绑定、
-凭据解密、限流等待，这段时间也吃租约。默认派生 0.8× 就是给这段留 20% 余量。
-若把 `YIBAN_ATTEMPT_BUDGET_SEC` 显式调大，必须把这段时间算进去，否则第 4 格的现象会重现。
+"A 生效"的准确条件是：**预算 > 0，且尝试开始时租约余量大于结算保留（1s）**；余量不足时走
+`wait_lease_spent` 等待分支，不产生平台请求，也不消耗 attempts。
+实际截止 = `min(配置预算, lease_expires_at - attemptStart - 结算余量)`，
+所以 `claim → attemptStart` 的前序耗时不用人工估算：它直接从余量里扣。
+默认派生 0.8× 是给结算与抖动留 20% 余量。若前序已把租约吃到不足结算保留，
+`effectiveAttemptBudget` 返回 `leaseSpent=true`，本次尝试不发出平台请求，
+以 `wait_lease_spent` 退回队列且不消耗 attempts。
+显式调大 `YIBAN_ATTEMPT_BUDGET_SEC` 也不会突破租约终点。
 
 ### 上线注意（默认开启的行为变更）
 
@@ -168,6 +190,9 @@
    `task.attempts` 与这个 reason 的出现量。想回到旧行为只能显式设一个接近租约的值
    （仍受"预算 < 租约"的门约束），或临时调大租约。
 3. 发布前建议确认目标学校/平台的 P99 单次链耗时；若 P99 已接近 96s，先调大租约再发布。
+4. 生产装配下不存在"关闭预算"的配置：0 走派生，显式值小于租约，运行面再按租约余量封顶。
+   只有直接调用 `appworker.Deps`（测试/嵌入式）时端口层的 0 才表示不限尝试时长；
+   此时租约余量护栏仍在，租约耗尽同样走 `wait_lease_spent`。
 
 未实现的一条后续选项（记在这里，避免下次重新推导）：
 **回收打标 + 迟到结算救援**——回收时给行打一个可识别的标（如 `result='reclaimed'`），
@@ -197,25 +222,28 @@ go test ./internal/adapters/pg/ -run Reclaim -v          # 回收冷却 e2e
 | canonical 门（含 `-tests` 两遍） | `gate: ok (44 rules)` ×2 | — |
 | logfield 门 | 通过 | — |
 | structure / license / generate 门 | `structure: ok (10 scopes, 11 rules)`、`license: ok (37 modules)`、oapi 无漂移 | — |
-| pg e2e | **174** 个顶层 PASS（阈值 50） | 98.3s |
-| auth e2e（`cmd/server`，含本矩阵 7 格 + 第二幕） | **302** 个顶层 PASS（阈值 45） | 356.4s |
-| cli e2e | **158** 个顶层 PASS（阈值 20） | 79.6s |
-| container e2e | `TestContainerPhotoDirWritableByNonroot` passed | 240.3s |
-| 全程 | `EXIT=0` | **15m44s** |
+| pg e2e | **174** 个顶层 PASS（阈值 50） | 55.5s |
+| auth e2e（`cmd/server`，含本矩阵 7 格 + 第二幕） | **302** 个顶层 PASS（阈值 45） | 174.8s |
+| cli e2e | **158** 个顶层 PASS（阈值 20） | 28.8s |
+| container e2e | `TestContainerPhotoDirWritableByNonroot` passed | 89.9s |
+| 全程 | `EXIT=0` | **6m51s** |
 
 > 这次跑测时宿主另有负载，auth 段 356s、container 段 240s 明显慢于空载（空载 auth 曾 181s）；
 > 数字本身不受影响，只是耗时列不能当基线。
 
-新增用例：`TestLeaseDoubleRunMatrix`（1 个 test / 7 个子用例 + 第二幕，空载 16.9s）、
+新增用例：`TestLeaseDoubleRunMatrix`（1 个 test / 7 个子用例 + 第二幕，空载 27.5s）、
 `AttemptBudget*` 7 例（含发现面截断、末次截断落 `failed`、父 deadline 不误判，0.2s）、
 `TestReclaimExpiredAppliesGrace` 1 例。
 
 ## 6. 改动清单
 
-24 个跟踪文件 `+1325 / -67`（`git diff origin/develop...HEAD`；基线 `fab09cff4` 到 HEAD
-的两点差异含 rebase 带入的 3 个 UI 提交，是 201 文件，不能当本分支的改动面）。
-其中新增测试文件 2 个共 769 行（`cmd/server/lease_double_e2e_test.go` 511 行、
-`internal/app/worker/attempt_budget_test.go` 258 行），既有 `internal/adapters/pg/schedule_lease_e2e_test.go` 追加 50 行。
+5 个提交，36 个跟踪文件 `+2470 / -92`（`git diff --shortstat 035444a1a..HEAD`）。
+其中新增测试文件 4 个共 1239 行（`cmd/server/lease_double_e2e_test.go` 523 行、
+`internal/app/worker/attempt_budget_test.go` 403 行、`attempt_budget_internal_test.go` 43 行、
+`retry_advice_test.go` 270 行）；既有 `schedule_lease_e2e_test.go` 追加 58 行、
+`worker_test.go` 追加 25 行、`worker_waittarget_test.go` 追加 110 行。
+下表按 #404 的主面列；#403/#402 的契约、词表与 provider 面见
+`attempt-key-claim-cycle.md` 与 `retry-advice-wiring.md`。
 
 | 面 | 文件 | 改动 |
 |----|------|------|
@@ -227,12 +255,12 @@ go test ./internal/adapters/pg/ -run Reclaim -v          # 回收冷却 e2e
 | 审计 | `internal/core/audit/chain.go` | detail 白名单增 `grace_sec` |
 | 门 | `canonical.tsv`、`tools/gate/anchors_test.go` | `env.get` allow 增列本实验测试文件；规则哈希同步 |
 
-### 顺带发现（2 已在 `fix/attempt-key-claim-cycle` 修掉，1 仍未修）
+### 顺带发现（2 已在 `fix/attempt-key-claim-cycle` 修掉；1 已在本分支修掉）
 
-1. **提供方的 `RetryAdvice` 被整条丢弃。** `contract.Result.Retry` 由 provider 填
-   （`signing/providers/yiban/provider.go:378`），`signing/conformance/suite.go:488-556` 会校验它，
-   但执行面从不读：`grep '\.Retry\b' server/internal --include=*.go` 除 conformance 外零命中。
-   适配器能说"请退避 5 分钟"，调度面看不见——建议把 `Retry.After` 并进 `core/retry.NextDelay` 的下限。
+1. ~~**提供方的 `RetryAdvice` 被整条丢弃。**~~
+   **已修**：`settleOutcome` 接收 `result.Retry`；`advisePolicy` 只降 `MaxAttempts`
+   （不看 `Retryable`，issue #413），`core/retry.NextDelayWithFloor` 把 `After` 当等待下限。
+   详见 [`retry-advice-wiring.md`](retry-advice-wiring.md)。
 2. ~~**回收不 bump `attempts`，第二次认领沿用同一个 `attemptID`**（矩阵 `distinct` 恒为 1）。~~
    **已修**：键改为 `"<taskID>#<attempts>.<claim_seq>"`，一次认领周期一个键；
    矩阵三格（基线 / A 超租约 / 吞取消）的 `distinct` 随之从 1 变 2。

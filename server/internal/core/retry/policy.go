@@ -25,8 +25,9 @@ import "time"
 // 只标记不执行的原因是归属：清会话属于提供方的会话面（宿主这侧没有
 // 会话句柄），yiban 提供方拿到 999 时自清，宿主再清一遍只是第二套语义。
 // 保留该标记是因为它同时是**词表哨兵**：MaxAttempts==1 && SessionTainted
-// 只可能来自 BudgetFor 的 default 档——conformance 用这个形状钉住
-// "每个结论词都必须有显式分支"（signing/conformance/retry_vocab_test.go）。
+// 只会来自 challenge/credential_invalid 两个已知词，或 BudgetFor 的 default 档
+// ——conformance 用这个形状钉住"每个结论词都必须有显式分支"
+// （signing/conformance/retry_vocab_test.go 显式豁免前两个词）。
 type Policy struct {
 	MaxAttempts int
 	After       time.Duration

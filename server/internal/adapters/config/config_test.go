@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
@@ -83,6 +84,34 @@ func TestLoadFromOverrides(t *testing.T) {
 	if cfg.Env != "production" || cfg.HTTPAddr != "127.0.0.1:8080" ||
 		cfg.DatabaseURL != "postgres://x" || cfg.Timezone != "UTC" {
 		t.Fatalf("unexpected overrides: %#v", cfg)
+	}
+}
+
+func TestLoadFromAttemptBudgetMustBeLessThanLease(t *testing.T) {
+	src := baseSource()
+	src["YIBAN_TASK_LEASE_SEC"] = "120"
+
+	src["YIBAN_ATTEMPT_BUDGET_SEC"] = "120"
+	if _, err := LoadFrom(src); err == nil || !strings.Contains(err.Error(), "must be less than") {
+		t.Fatalf("budget == lease 必须拒绝, got %v", err)
+	}
+
+	src["YIBAN_ATTEMPT_BUDGET_SEC"] = "119"
+	cfg, err := LoadFrom(src)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.AttemptBudget != 119*time.Second {
+		t.Fatalf("AttemptBudget = %v, want 119s", cfg.AttemptBudget)
+	}
+
+	src["YIBAN_ATTEMPT_BUDGET_SEC"] = "0"
+	cfg, err = LoadFrom(src)
+	if err != nil {
+		t.Fatalf("LoadFrom(0): %v", err)
+	}
+	if cfg.AttemptBudget != 0 {
+		t.Fatalf("AttemptBudget = %v, want 0（派生交给装配层）", cfg.AttemptBudget)
 	}
 }
 

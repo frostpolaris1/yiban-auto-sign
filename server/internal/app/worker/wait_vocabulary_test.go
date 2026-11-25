@@ -38,10 +38,10 @@ func TestWaitReasonVocabulary(t *testing.T) {
 			waits++
 		}
 	}
-	// 词表封闭：当前六条（新增 wait_target：Position 空的等待型重扫）。
+	// 词表封闭：当前七条（新增 wait_lease_spent：前序已耗光租约，不发请求退回）。
 	// 增删一条就要改这里的数字。
-	if waits != 6 {
-		t.Fatalf("扫描到 %d 条 wait_ 词，want 6（扫空或漏扫都不得当绿）", waits)
+	if waits != 7 {
+		t.Fatalf("扫描到 %d 条 wait_ 词，want 7（扫空或漏扫都不得当绿）", waits)
 	}
 }
 

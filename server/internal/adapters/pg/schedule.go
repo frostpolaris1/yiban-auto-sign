@@ -555,7 +555,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, day string, 
 		           (SELECT st.school_id::text FROM school_tasks st WHERE st.id = t.school_task_id),
 		           t.day::text, t.run_at, t.state::text, t.attempts, t.claim_seq,
 		           (SELECT a.owner_user_id::text FROM accounts a WHERE a.id = t.account_id),
-		           t.result`,
+		           t.result, t.lease_expires_at`,
 		now, limit, r.lease.Seconds(), day)
 	if err != nil {
 		return nil, mapError(err)
@@ -564,7 +564,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, day string, 
 	var out []coreschedule.TaskRow
 	for rows.Next() {
 		var t coreschedule.TaskRow
-		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.ClaimSeq, &t.OwnerUserID, &t.Result); err != nil {
+		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.ClaimSeq, &t.OwnerUserID, &t.Result, &t.LeaseExpiresAt); err != nil {
 			return nil, mapError(err)
 		}
 		out = append(out, t)

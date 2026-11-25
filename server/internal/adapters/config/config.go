@@ -569,9 +569,10 @@ func LoadFrom(src Source) (*Config, error) {
 		return nil, err
 	}
 	cfg.AttemptBudget = time.Duration(budget) * time.Second
-	// 预算必须落在租约之内：预算晚于租约到期，等于没有预算——
+	// 显式预算必须落在租约之内：预算晚于租约到期，等于没有预算——
 	// 回收器会在持有者还在跑的时候把行放回队列，同账号双跑照旧。
-	// 0 是显式的"不设限"，不参与这条校验。
+	// 0 不是"不设限"：装配层按 0.8×租约派生，派生值自然满足这条校验。
+	// 运行面还会按认领租约的剩余时间再次封顶（worker.effectiveAttemptBudget）。
 	if cfg.AttemptBudget > 0 && cfg.AttemptBudget >= cfg.TaskLease {
 		return nil, fmt.Errorf("config: YIBAN_ATTEMPT_BUDGET_SEC (%ds) must be less than YIBAN_TASK_LEASE_SEC (%ds)",
 			int(cfg.AttemptBudget.Seconds()), int(cfg.TaskLease.Seconds()))

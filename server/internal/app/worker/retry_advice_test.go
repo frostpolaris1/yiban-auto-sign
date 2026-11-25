@@ -106,6 +106,54 @@ func TestRetryAdviceZeroKeepsHostPolicy(t *testing.T) {
 	}
 }
 
+// 只给等待下限、不给次数（MaxAttempts=0）：宿主预算不变，只抬起等待下限。
+// 老提供方/局部建议的常见形态，不能被当成"不重试"。
+func TestRetryAdviceFloorWithoutLimitKeepsHostBudget(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := defaultSigner()
+	signer.outcome = contract.OutcomeTransient
+	signer.retry = contract.RetryAdvice{After: 4 * time.Minute}
+	svc := newService(t, st, signer, fakeLimiter{allow: true})
+
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	runAt, ok := st.requeued["t1"]
+	if !ok {
+		t.Fatal("MaxAttempts=0 是「没有建议」，宿主预算内必须重排")
+	}
+	if _, done := st.finished["t1"]; done {
+		t.Fatal("MaxAttempts=0 不该压缩宿主次数")
+	}
+	low, high := testNow().Add(4*time.Minute), testNow().Add(6*time.Minute)
+	if runAt.Before(low) || runAt.After(high) {
+		t.Fatalf("落点 = %v, want [%v,%v]（After 作为下限，不改变次数）", runAt, low, high)
+	}
+}
+
+// 整段尝试耗过窗口终点：结算时刻已关窗，必须落 failed，
+// 不能把 run_at 排到窗口外再撞一次平台。
+func TestBackoffAfterWindowClosedGivesUp(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := defaultSigner()
+	signer.outcome = contract.OutcomeTransient
+	clk := &stepClock{t: testNow()}
+	signer.onSign = func() { clk.t = clk.t.Add(60 * time.Minute) }
+	svc := newServiceWithClock(t, st, signer, fakeLimiter{allow: true}, clk)
+
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if _, requeued := st.requeued["t1"]; requeued {
+		t.Fatal("结算时窗口已关，不得重排")
+	}
+	if _, done := st.finished["t1"]; !done {
+		t.Fatal("结算时窗口已关，应落终态")
+	}
+}
+
 // 建议下限超出窗口尾段份额：当日放弃，不排到窗口外。
 func TestRetryAdviceFloorBeyondTailGivesUp(t *testing.T) {
 	st := newStore(baseTask())

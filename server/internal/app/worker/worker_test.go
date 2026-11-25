@@ -59,6 +59,11 @@ type fakeStore struct {
 	windowErrFor map[string]error
 	// finishErr 注入结算失败（验证"已提交行不退回"）。
 	finishErr error
+	// requeueWaitErr 注入等待型退回失败（验证租约耗尽时撞回收器的冲突处理）。
+	requeueWaitErr error
+	// fixedLease 非零时让每次认领都用这个租约终点（模拟"认领时已过期"）；
+	// 零值时按 now+2min 刷新，避免多轮 Step 复用上一次的旧租约。
+	fixedLease time.Time
 	// dayTasks / enabledTasks 是手动签到的两个解析输入。
 	dayTasks     []string
 	enabledTasks []string
@@ -127,6 +132,12 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, day string, limit
 		}
 		t.State = string(corestatus.TaskRunning)
 		t.ClaimSeq++
+		if !f.fixedLease.IsZero() {
+			t.LeaseExpiresAt = f.fixedLease
+		} else {
+			// 每次认领都刷新，模拟 pg.ClaimDue 重写 lease_expires_at。
+			t.LeaseExpiresAt = now.Add(2 * time.Minute)
+		}
 		runningAccount[t.AccountID] = true
 		f.claimed = append(f.claimed, t.ID)
 		out = append(out, *t)
@@ -213,6 +224,12 @@ func (f *fakeStore) requeue(ctx context.Context, taskID string, runAt time.Time,
 }
 
 func (f *fakeStore) RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
+	f.mu.Lock()
+	err := f.requeueWaitErr
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	return f.requeue(ctx, taskID, runAt, result, false, claimSeq)
 }
 

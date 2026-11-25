@@ -73,16 +73,17 @@
 
 ### 4.2 真库矩阵（`server/cmd/server/lease_double_e2e_test.go`）
 
-`wantDistinct` 由 1 改为 2 的只有三格——**有回收的那三格**：
+`wantDistinct` 由 1 改为 2 的只有两格——**有回收、且第二次认领又提交的格**：
 
 | 格 | 租约 | 预算 | 冷却 | signs | distinct（旧→新） | reclaim |
 |----|------|------|------|-------|-------------------|---------|
-| 基线 | 300ms | — | — | 2 | 1 → **2** | 1 |
-| A 预算 1.2s 超过租约 | 300ms | 1200ms | — | 2 | 1 → **2** | 1 |
-| 仅 A，提供方吞取消 | 300ms | 120ms | — | 2 | 1 → **2** | 1 |
+| 基线 | 1.5s | — | — | 2 | 1 → **2** | 1 |
+| 仅 A，提供方吞取消 | 1.5s | 120ms | — | 2 | 1 → **2** | 1 |
 
-其余四格 `distinct=1` 不变（没有第二次认领，或回收后未再提交）。
-整条矩阵 `go test ./cmd/server -run TestLeaseDoubleRunMatrix` 7/7 PASS，18.49s。
+旧矩阵的“A 预算 1.2s 超过租约”格在运行面按租约余量封顶后不再回收，
+`distinct=1`；它由 `lease-deadline-guard.md` 的租约封顶一节覆盖。
+其余五格 `distinct=1`（没有第二次认领，或回收后未再提交）。
+整条矩阵 `go test ./cmd/server -run TestLeaseDoubleRunMatrix` 7/7 PASS，空载约 27s。
 
 ### 4.3 门
 

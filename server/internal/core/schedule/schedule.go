@@ -147,9 +147,14 @@ type TaskRow struct {
 	State        string
 	Attempts     int
 	// ClaimSeq 是本次认领的栅栏序号。结算与重排必须原样带回。
-	ClaimSeq    int
-	OwnerUserID string
-	Result      string
+	ClaimSeq int
+	// LeaseExpiresAt 是本次认领的租约终点。执行面用它给尝试预算封顶：
+	// 预算从"凭据就绪"起算，而租约从认领时刻起算，中间的发现前步骤
+	// 会吃掉租约；只按配置值限长仍可能晚于回收器。
+	// 零值表示来源未提供（测试/旧调用），此时不封顶。
+	LeaseExpiresAt time.Time
+	OwnerUserID    string
+	Result         string
 }
 
 // DayOutcomeCounts 是一个业务日的任务行汇总。

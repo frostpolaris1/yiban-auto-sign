@@ -32,8 +32,15 @@ func TestClaimDueSetsLease(t *testing.T) {
 	e := newEnv(t)
 	rowID, due := seedClaimable(t, e, "lease-set")
 	now := due.Add(time.Minute)
-	if _, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10); err != nil {
+	rows, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10)
+	if err != nil {
 		t.Fatalf("claim: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("claimed = %d, want 1", len(rows))
+	}
+	if want := now.Add(2 * time.Minute); !rows[0].LeaseExpiresAt.Equal(want) {
+		t.Fatalf("TaskRow.LeaseExpiresAt = %v, want %v（执行面靠它封顶尝试预算）", rows[0].LeaseExpiresAt, want)
 	}
 	if got := e.scalarInt(
 		"SELECT (lease_expires_at = claimed_at + interval '2 minutes')::int FROM sign_tasks WHERE id = $1::uuid",

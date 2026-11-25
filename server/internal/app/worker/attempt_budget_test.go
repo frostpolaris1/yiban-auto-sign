@@ -21,6 +21,7 @@ import (
 
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
@@ -29,13 +30,20 @@ import (
 // 这正是预算要管的那类提供方——它不忽略取消，但没人给它设上限时
 // 它可以一直等到租约过期。
 type gatedSigner struct {
-	entered chan struct{} // 容量 1：Sign 一进入就通知（区分"还没进提交"与"卡在提交"）
-	delay   time.Duration
-	signs   atomic.Int32
-	started chan struct{} // 容量 1：本次 Sign 已进入
+	entered   chan struct{} // 容量 1：Sign 一进入就通知（区分"还没进提交"与"卡在提交"）
+	delay     time.Duration
+	signs     atomic.Int32
+	discovers atomic.Int32
+	started   chan struct{} // 容量 1：本次 Sign 已进入
 	// hangDiscovery=true 时发现阶段只听 ctx：预算必须覆盖发现，
 	// 不能只管提交（发现也会卡在慢接口上）。
 	hangDiscovery bool
+	// deadlineOutcome 非 nil 时，等到 ctx 结束再返回这条业务结论：
+	// 用来钉住"业务结论优先于预算判定"——两者同时到达时不能降级成 transient。
+	deadlineOutcome *contract.OutcomeError
+	// signErr 非 nil 时提交立即失败：模拟提供方自己返回 DeadlineExceeded，
+	// 而宿主预算还没到期——不能冒充预算截断。
+	signErr error
 }
 
 func newGatedSigner(delay time.Duration) *gatedSigner {
@@ -47,15 +55,22 @@ func newGatedSigner(delay time.Duration) *gatedSigner {
 }
 
 func (g *gatedSigner) DiscoverTargets(ctx context.Context, _ contract.DiscoverRequest) ([]contract.Target, error) {
+	g.discovers.Add(1)
 	if !g.hangDiscovery {
 		return []contract.Target{{ID: "pos-1", Title: "校门"}}, nil
 	}
 	<-ctx.Done()
+	if g.deadlineOutcome != nil {
+		return nil, g.deadlineOutcome
+	}
 	return nil, ctx.Err()
 }
 
 func (g *gatedSigner) Sign(ctx context.Context, _ contract.SignRequest) (contract.Result, error) {
 	g.signs.Add(1)
+	if g.signErr != nil {
+		return contract.Result{}, g.signErr
+	}
 	select {
 	case g.started <- struct{}{}:
 	default:
@@ -71,6 +86,9 @@ func (g *gatedSigner) Sign(ctx context.Context, _ contract.SignRequest) (contrac
 		}
 	}
 	<-ctx.Done()
+	if g.deadlineOutcome != nil {
+		return contract.Result{}, g.deadlineOutcome
+	}
 	return contract.Result{}, ctx.Err()
 }
 
@@ -218,6 +236,48 @@ func TestAttemptBudgetCutAtDiscovery(t *testing.T) {
 	}
 }
 
+// 业务结论与预算到期同时到达：结论优先，不得降级成 transient。
+// 发现面与提交面各一条；challenge 落 skipped，不走可重试预算。
+func TestAttemptBudgetBusinessOutcomeWinsOverDeadline(t *testing.T) {
+	cases := []struct {
+		name          string
+		hangDiscovery bool
+		signs         int32
+	}{
+		{name: "discovery", hangDiscovery: true, signs: 0},
+		{name: "submit", hangDiscovery: false, signs: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newStore(baseTask())
+			st.windows["st-1|2026-10-29"] = openWindow()
+			signer := newGatedSigner(0)
+			signer.hangDiscovery = tc.hangDiscovery
+			signer.deadlineOutcome = &contract.OutcomeError{
+				Outcome: contract.OutcomeChallenge, Message: "challenge",
+			}
+			sink := &logSink{}
+			svc := newBudgetService(t, st, signer, 40*time.Millisecond, sink)
+
+			if _, err := svc.Step(context.Background(), 10); err != nil {
+				t.Fatalf("Step: %v", err)
+			}
+			if got := signer.signs.Load(); got != tc.signs {
+				t.Fatalf("Sign 调用 = %d, want %d", got, tc.signs)
+			}
+			if got := st.finished["t1"]; got != corestatus.TaskSkipped {
+				t.Fatalf("终态 = %q, want skipped（challenge 是业务结论）", got)
+			}
+			if _, requeued := st.requeued["t1"]; requeued {
+				t.Fatal("challenge 不该进可重试预算")
+			}
+			if hasReason(sink.records(t), string(contract.OutcomeTransient), "attempt_budget_exceeded") {
+				t.Fatal("业务结论被预算判定覆盖了")
+			}
+		})
+	}
+}
+
 // 预算耗尽：最后一次截断必须落 failed，不能留在 pending 上每 tick 再撞一次。
 func TestAttemptBudgetExhaustedFinishesFailed(t *testing.T) {
 	task := baseTask()
@@ -254,5 +314,90 @@ func TestAttemptBudgetDoesNotClaimParentDeadline(t *testing.T) {
 	}
 	if hasReason(sink.records(t), string(contract.OutcomeTransient), "attempt_budget_exceeded") {
 		t.Fatal("父 ctx 截止被误判成预算截断")
+	}
+}
+
+// 提供方自己返回 DeadlineExceeded（预算仍活着）：这是提供方结论，
+// 按 transient 计一次尝试；原因词不得冒充 attempt_budget_exceeded。
+func TestAttemptBudgetDoesNotClaimProviderDeadline(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := newGatedSigner(0)
+	signer.signErr = context.DeadlineExceeded
+	sink := &logSink{}
+	svc := newBudgetService(t, st, signer, time.Minute, sink)
+
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v（提供方超时按存量语义结算，不上抛）", err)
+	}
+	if got := st.tasks[0].Attempts; got != 1 {
+		t.Fatalf("attempts = %d, want 1（提供方超时也是一次尝试）", got)
+	}
+	if _, requeued := st.requeued["t1"]; !requeued {
+		t.Fatal("预算未耗尽，应退避重排")
+	}
+	if hasReason(sink.records(t), string(contract.OutcomeTransient), "attempt_budget_exceeded") {
+		t.Fatal("提供方自己的 DeadlineExceeded 被误判成预算截断")
+	}
+}
+
+// 前置阶段（窗口/出口/限速/凭据）已吃掉租约：不碰提供方、不计尝试，
+// 以等待词退回队列，等回收器重新发放租约。
+func TestAttemptBudgetCappedByExpiredLease(t *testing.T) {
+	st := newStore(baseTask())
+	st.fixedLease = testNow().Add(-time.Minute)
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := newGatedSigner(0)
+	sink := &logSink{}
+	svc := newBudgetService(t, st, signer, time.Minute, sink)
+
+	start := coreclock.System{}.Now()
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Step 耗时 %v：租约已过期，预算没有封顶", elapsed)
+	}
+	if got := signer.signs.Load(); got != 0 {
+		t.Fatalf("Sign 调用 = %d, want 0（租约已耗尽，禁止发平台请求）", got)
+	}
+	if got := signer.discovers.Load(); got != 0 {
+		t.Fatalf("DiscoverTargets 调用 = %d, want 0（租约已耗尽，禁止发平台请求）", got)
+	}
+	if got := st.tasks[0].Attempts; got != 0 {
+		t.Fatalf("attempts = %d, want 0（没发出去的尝试不计数）", got)
+	}
+	if got, ok := st.requeued["t1"]; !ok || !got.Equal(testNow().Add(30*time.Second)) {
+		t.Fatalf("requeue = %v, %v, want %v（wait_lease_spent 退回）", got, ok, testNow().Add(30*time.Second))
+	}
+	if got := st.results["t1"]; got != "wait_lease_spent" {
+		t.Fatalf("result = %q, want wait_lease_spent", got)
+	}
+	if hasReason(sink.records(t), string(contract.OutcomeTransient), "attempt_budget_exceeded") {
+		t.Fatal("租约耗尽被误记成预算截断")
+	}
+}
+
+// 租约耗尽时退回队列可能撞上回收器：行已被放回 pending、claim_seq 已换。
+// 这是良性冲突，不能升级成整轮提前收尾（Step 会再退一次并失败）。
+func TestLeaseSpentRequeueConflictIsBenign(t *testing.T) {
+	st := newStore(baseTask())
+	st.fixedLease = testNow().Add(-time.Minute)
+	st.windows["st-1|2026-10-29"] = openWindow()
+	st.requeueWaitErr = coreerrs.New(coreerrs.CodeConflict, "claim already reclaimed")
+	signer := newGatedSigner(0)
+	svc := newBudgetService(t, st, signer, time.Minute, &logSink{})
+
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step 把良性回收冲突升级成错误: %v", err)
+	}
+	if got := st.tasks[0].Attempts; got != 0 {
+		t.Fatalf("attempts = %d, want 0", got)
+	}
+	if got := signer.discovers.Load(); got != 0 {
+		t.Fatalf("DiscoverTargets 调用 = %d, want 0", got)
+	}
+	if got := signer.signs.Load(); got != 0 {
+		t.Fatalf("Sign 调用 = %d, want 0", got)
 	}
 }
