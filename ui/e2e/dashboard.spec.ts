@@ -45,6 +45,7 @@ import {
  *    业务日跨日换键恰好重取一次，同一业务日内不轮询。
  * 10. 审计链巡检：master/admin 读一次 audit-status 并显示三态、行数与时刻；
  *    断链给定位行且不弹窗；空链说「暂无审计行」，不算通过。
+ *    桌面快捷条与侧栏 3/3 重复，已隐藏（B5）；移动保留且健康条折叠为摘要行。
  *
  * 断言用户可见结果与请求参数，不钉组件内部结构。
  */
@@ -694,7 +695,7 @@ test('invariant 9: the stats read refetches once when the business day rolls ove
   await expect(signStatsCalls(api).length, 'the same business day does not refetch').toBe(2)
 })
 
-test('invariant 10: failed KPI links to failed events and quick links reach queue/audit/system', async ({
+test('invariant 10: failed KPI links to failed events and the desktop yields quick links to the sidebar', async ({
   page,
 }) => {
   await mockDashboardApi(page, {
@@ -711,10 +712,15 @@ test('invariant 10: failed KPI links to failed events and quick links reach queu
   })
   await openDashboard(page)
 
-  const quickNav = page.getByRole('navigation', { name: '管理常用直达' })
-  await expect(quickNav.getByRole('link', { name: '待办处理' })).toHaveAttribute('href', '/queue')
-  await expect(quickNav.getByRole('link', { name: '审计链巡检' })).toHaveAttribute('href', '/audit')
-  await expect(quickNav.getByRole('link', { name: '系统设置' })).toHaveAttribute('href', '/system')
+  // B5（S-10）：桌面快捷条与侧栏 3/3 重复，已隐藏；入口由侧栏承担。
+  // 移动端保留快捷条的 44px 命中由上方 B5 用例断言。
+  const quickLinks = page.locator('nav[aria-label="管理常用直达"]')
+  await expect(quickLinks).toHaveCount(1)
+  await expect(quickLinks).toBeHidden()
+  const sidebar = page.getByRole('complementary', { name: '主导航' })
+  await expect(sidebar.getByRole('link', { name: '待办', exact: true })).toHaveAttribute('href', '/queue')
+  await expect(sidebar.getByRole('link', { name: '审计日志', exact: true })).toHaveAttribute('href', '/audit')
+  await expect(sidebar.getByRole('link', { name: '系统设置', exact: true })).toHaveAttribute('href', '/system')
 
   await kpiCard(page, '今日失败').click()
   await expect(page).toHaveURL(/\/logs\?.*tab=events.*state=failed|\/logs\?.*state=failed.*tab=events/)
@@ -834,4 +840,172 @@ test('invariant 13: the pause button stays disabled until the engine snapshot la
 
   releaseEngine()
   await expect(pause).toBeEnabled({ timeout: 10_000 })
+})
+
+test.describe('B5 冗余移除与移动健康条（2026-11-25）', () => {
+  test('B5: the desktop drops the duplicated quick links while the sidebar keeps all three entries', async ({
+    page,
+  }) => {
+    const api = await mockDashboardApi(page, { role: 'admin' })
+    await openDashboard(page)
+
+    // 快捷条仍在 DOM（移动端复用），桌面由样式隐藏，不占首屏。
+    // 先断言存在再断言隐藏：0 匹配时 toBeHidden 也会通过，会变成空绿。
+    const quickLinks = page.locator('nav[aria-label="管理常用直达"]')
+    await expect(quickLinks).toHaveCount(1)
+    await expect(quickLinks).toBeHidden()
+    expect(auditStatusCalls(api), '隐藏快捷条不新增请求').toHaveLength(1)
+
+    const sidebar = page.getByRole('complementary', { name: '主导航' })
+    const entries = [
+      { name: '待办', href: '/queue' },
+      { name: '审计日志', href: '/audit' },
+      { name: '系统设置', href: '/system' },
+    ] as const
+    for (const entry of entries) {
+      await expect(sidebar.getByRole('link', { name: entry.name, exact: true })).toHaveAttribute(
+        'href',
+        entry.href,
+      )
+    }
+  })
+
+  test('B5: the mobile keeps the quick links with a 44px hit box', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockDashboardApi(page, { role: 'admin' })
+    await openDashboard(page)
+
+    const quickNav = page.locator('nav[aria-label="管理常用直达"]')
+    await expect(quickNav).toBeVisible()
+    const entries = [
+      { name: '待办处理', href: '/queue' },
+      { name: '审计链巡检', href: '/audit' },
+      { name: '系统设置', href: '/system' },
+    ] as const
+    for (const entry of entries) {
+      const link = quickNav.getByRole('link', { name: entry.name })
+      await expect(link).toHaveAttribute('href', entry.href)
+      // ::after 的 -14px 外扩是触控命中区；上下各在 13px 处做真实 hit test（留 1px 余量），
+      // 并直接断言伪元素上下都没被单侧裁掉，避免只留上缘仍能命中 30px 的空绿。
+      const probe = await link.evaluate((el) => {
+        const rect = el.getBoundingClientRect()
+        const pseudo = getComputedStyle(el, '::after')
+        const hits = [-13, 13].map((dy) => {
+          const target = document.elementFromPoint(rect.left + rect.width / 2, rect.top + dy)
+          return target !== null && el.contains(target)
+        })
+        return { hits, top: pseudo.top, bottom: pseudo.bottom }
+      })
+      expect(probe.top, entry.name + ' ::after 上扩 -14px').toBe('-14px')
+      expect(probe.bottom, entry.name + ' ::after 下扩 -14px').toBe('-14px')
+      expect(probe.hits, entry.name + ' 命中盒覆盖字形上下 13px').toEqual([true, true])
+    }
+  })
+
+  test('B5: on mobile the health strip folds to a short summary and expands on demand', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockDashboardApi(page, { role: 'admin' })
+    await openDashboard(page)
+
+    const strip = page.getByRole('region', { name: '系统健康与审计巡检' })
+    await expect(strip).toBeVisible()
+    const collapsed = await strip.boundingBox()
+    expect(collapsed?.height ?? Number.POSITIVE_INFINITY, '折叠高度 ≤150').toBeLessThanOrEqual(150)
+
+    const toggle = strip.getByRole('button', { name: '详情' })
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(strip.getByRole('link', { name: /在飞/ })).toBeHidden()
+    await expect(strip.getByRole('link', { name: '运行台账 →' })).toBeHidden()
+    await expect(strip.locator('a:visible'), '折叠态可见链接 0 个').toHaveCount(0)
+    await toggle.scrollIntoViewIfNeeded()
+
+    const toggleHit = await toggle.evaluate((el) => {
+      const rect = el.getBoundingClientRect()
+      const target = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+      return { hit: target !== null && el.contains(target), height: rect.height }
+    })
+    expect(toggleHit.height, '详情按钮命中高度 ≥44').toBeGreaterThanOrEqual(44)
+    expect(toggleHit.hit).toBe(true)
+
+    await toggle.click()
+    const collapse = strip.getByRole('button', { name: '收起' })
+    await expect(collapse).toHaveAttribute('aria-expanded', 'true')
+    await expect(strip.getByRole('link', { name: /在飞/ })).toBeVisible()
+    await expect(strip.getByRole('link', { name: '运行台账 →' })).toBeVisible()
+    await expect(strip.locator('a:visible'), '展开态 4 个链接：3 个脉冲 chip + 运行台账').toHaveCount(4)
+
+    await strip.getByRole('link', { name: '运行台账 →' }).click()
+    await expect(page).toHaveURL(/\/logs\?tab=events$/)
+  })
+
+  test('B5: the mobile dashboard height stays inside the documented budget', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockDashboardApi(page, { role: 'admin' })
+    await openDashboard(page)
+
+    const docHeight = await page.evaluate(() => document.documentElement.scrollHeight)
+    expect(docHeight, '移动整页 ≤2100px').toBeLessThanOrEqual(2100)
+  })
+
+  test('B5: the desktop health strip stays unfolded without a detail toggle', async ({ page }) => {
+    await mockDashboardApi(page, { role: 'admin' })
+    await openDashboard(page)
+
+    const strip = page.getByRole('region', { name: '系统健康与审计巡检' })
+    const toggle = strip.locator('.app-health-toggle')
+    await expect(toggle).toBeAttached()
+    await expect(toggle).toBeHidden()
+    await expect(strip.getByRole('link', { name: /在飞/ })).toBeVisible()
+    // R5：桌面链接目标数不变（3 个脉冲 chip + 运行台账），不因移动折叠改造而丢失。
+    await expect(strip.locator('.app-health-bar a')).toHaveCount(4)
+    const box = await strip.boundingBox()
+    expect(box?.height ?? 0, '桌面条高 107±8').toBeGreaterThanOrEqual(99)
+    expect(box?.height ?? 0).toBeLessThanOrEqual(115)
+  })
+
+  test('B5: a failed audit read is visible in the mobile summary, not a mute "waiting"', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockDashboardApi(page, {
+      role: 'admin',
+      auditStatusError: { status: 500, code: 'internal_error', message: '巡检不可用' },
+    })
+    await openDashboard(page)
+
+    const strip = page.getByRole('region', { name: '系统健康与审计巡检' })
+    // 限定在摘要行内，且必须只有一处：引擎徽章此时正常，不会误配。
+    await expect(strip.locator('.app-health-summary').getByText('读取失败')).toHaveCount(1)
+    await expect(strip.locator('.app-health-summary').getByText('读取失败')).toBeVisible()
+    await expect(strip.getByRole('button', { name: '收起' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  test('B5: a broken audit chain force-expands the mobile strip', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockDashboardApi(page, {
+      role: 'admin',
+      auditStatus: { ...DEFAULT_AUDIT_STATUS, ok: false, broken_at: 42 },
+    })
+    await openDashboard(page)
+
+    const strip = page.getByRole('region', { name: '系统健康与审计巡检' })
+    const toggle = strip.getByRole('button', { name: '收起' })
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(strip.getByText('审计异常')).toBeVisible()
+    await expect(strip.getByRole('link', { name: /在飞/ })).toBeVisible()
+
+    // 强制展开可手动收起，也能再次展开。
+    await toggle.click()
+    await expect(strip.getByRole('button', { name: '详情' })).toHaveAttribute('aria-expanded', 'false')
+    await expect(strip.getByRole('link', { name: /在飞/ })).toBeHidden()
+    await strip.getByRole('button', { name: '详情' }).click()
+    await expect(strip.getByRole('button', { name: '收起' })).toHaveAttribute('aria-expanded', 'true')
+
+    const ovX = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    )
+    expect(ovX, '断链强制展开不产生横向滚动').toBe(0)
+  })
 })
