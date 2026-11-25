@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   auditBrokenText,
   auditVerdict,
+  healthForcedKey,
+  resolveHealthOpen,
 } from '../../src/features/dashboard/audit-status.ts'
 
 /**
@@ -49,4 +51,23 @@ test('anchor mismatch reason is shown', () => {
 
 test('missing anchor has no broken text', () => {
   assert.equal(auditBrokenText(report({ anchor_status: 'missing' })), null)
+})
+
+// 这三例只锁纯函数语义；组件是否真的调用它们由 e2e「B5: a broken audit chain
+// force-expands the mobile strip」在真实 DOM 上咬住（helper 被绕开时该用例会红）。
+test('health strip keeps a manual collapse within the same anomaly signature', () => {
+  const key = healthForcedKey(null, null, 'engine offline')
+  assert.equal(resolveHealthOpen(true, key, { key, open: false }), false)
+})
+
+test('health strip reopens when the anomaly signature changes', () => {
+  const oldKey = healthForcedKey(null, '500 巡检不可用', null)
+  const newKey = healthForcedKey('broken_at row 3', null, null)
+  assert.equal(resolveHealthOpen(true, newKey, { key: oldKey, open: false }), true)
+})
+
+test('health strip falls back to forced state without an override', () => {
+  const key = healthForcedKey('broken_at row 3', null, null)
+  assert.equal(resolveHealthOpen(true, key, null), true)
+  assert.equal(resolveHealthOpen(false, key, null), false)
 })

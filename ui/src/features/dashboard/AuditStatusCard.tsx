@@ -13,6 +13,7 @@
  * 引擎读取失败与审计读取失败各自独立重试，互不连坐。
  */
 
+import { useId, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
@@ -27,6 +28,8 @@ import {
   auditBrokenText,
   auditVerdict,
   auditVerdictTone,
+  healthForcedKey,
+  resolveHealthOpen,
   shortHash,
 } from './audit-status'
 import { enginePulse } from './display'
@@ -97,9 +100,50 @@ export function AuditStatusCard({
 }: AuditStatusCardProps) {
   const pulse = enginePulse(engine)
   const broken = report ? auditBrokenText(report) : null
+  const verdict = report === undefined ? null : auditVerdict(report)
+  const auditText =
+    verdict !== null
+      ? AUDIT_VERDICT_LABELS[verdict]
+      : loading
+        ? '巡检中…'
+        : '等待巡检…'
+  const engineFailed = engineError !== null
+  const auditFailed = error !== null
+  // 异常态强制展开；手动收起只对「当前这一起异常」有效：异常签名变化（新断链/失败）
+  // 后 override 失配、回到强制展开，避免一次收起把后续告警永久折叠（R6）。
+  // 恢复后若再次读到同文本异常，视为同一事件，保留用户此前的收起选择。
+  const forcedKey = healthForcedKey(broken, error, engineError)
+  const forcedOpen = broken !== null || auditFailed || engineFailed
+  const [override, setOverride] = useState<{ key: string; open: boolean } | null>(null)
+  const open = resolveHealthOpen(forcedOpen, forcedKey, override)
+  const panelId = useId()
 
   return (
-    <section className="card app-health-strip" aria-label="系统健康与审计巡检">
+    <section
+      className="card app-health-strip"
+      aria-label="系统健康与审计巡检"
+      data-expanded={open}
+    >
+      <div className="app-health-summary">
+        <span className="app-health-summary-label">引擎</span>
+        <Badge tone={engineFailed ? 'danger' : pulse.tone} dot>
+          {engineFailed ? '读取失败' : engineLoading && engine === undefined ? '读取中…' : pulse.label}
+        </Badge>
+        <span className="app-health-summary-label">审计</span>
+        <Badge tone={auditFailed ? 'danger' : verdict === null ? 'info' : auditVerdictTone(verdict)}>
+          {auditFailed ? '读取失败' : auditText}
+        </Badge>
+        <button
+          type="button"
+          className="app-health-toggle"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOverride({ key: forcedKey, open: !open })}
+        >
+          {open ? '收起' : '详情'}
+        </button>
+      </div>
+      <div className="app-health-detail" id={panelId}>
       {pause?.paused ? (
         <PauseBanner
           inflight={pulse.inflight ?? 0}
@@ -203,6 +247,7 @@ export function AuditStatusCard({
           </Alert>
         </div>
       ) : null}
+      </div>
     </section>
   )
 }

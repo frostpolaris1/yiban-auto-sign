@@ -13,6 +13,8 @@ export {
   auditVerdict,
   auditVerdictTone,
   shortHash,
+  healthForcedKey,
+  resolveHealthOpen,
   type AuditVerdict,
   type AuditVerdictTone,
 } from '@/lib/audit-status'

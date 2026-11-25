@@ -48,6 +48,24 @@ export function auditVerdictTone(verdict: AuditVerdict): AuditVerdictTone {
   return AUDIT_VERDICT_TONES[verdict]
 }
 
+/** 健康条强制展开的状态签名：任一异常文本变化都视为新事件。 */
+export function healthForcedKey(
+  broken: string | null,
+  error: string | null,
+  engineError: string | null,
+): string {
+  return [broken ?? '', error ?? '', engineError ?? ''].join('|')
+}
+
+/** 手动收起只在同一异常签名内生效；签名变化或恢复后由 forcedOpen 决定。 */
+export function resolveHealthOpen(
+  forcedOpen: boolean,
+  forcedKey: string,
+  override: { key: string; open: boolean } | null,
+): boolean {
+  return override !== null && override.key === forcedKey ? override.open : forcedOpen
+}
+
 /** 断链或锚点异常的说明；无异常时返回 null。 */
 export function auditBrokenText(report: AuditStatusReport): string | null {
   if (anchorBroken(report)) {
