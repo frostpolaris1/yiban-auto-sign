@@ -754,6 +754,9 @@ func TestDiscoverOutcomeErrorSettlesByVocabulary(t *testing.T) {
 
 // 瞬时失败重试时，每次提交的 AttemptID 必须不同，否则 provider 幂等缓存
 // 会把"重试"折叠成首次结果。
+//
+// 键由 (attempts, claim_seq) 两段拼成（见 attemptID）：业务重试在
+// RequeueRetry 里 bump attempts、再次认领又 bump claim_seq，两段都前进。
 func TestRetryUsesFreshAttemptID(t *testing.T) {
 	st := newStore(baseTask())
 	st.windows["st-1|2026-10-29"] = openWindow()
@@ -780,8 +783,8 @@ func TestRetryUsesFreshAttemptID(t *testing.T) {
 	if signer.attemptIDs[0] == signer.attemptIDs[1] {
 		t.Fatalf("重试复用了同一 AttemptID: %q", signer.attemptIDs[0])
 	}
-	if signer.attemptIDs[0] != "t1#0" || signer.attemptIDs[1] != "t1#1" {
-		t.Fatalf("AttemptID 形状 = %v, want [t1#0 t1#1]", signer.attemptIDs)
+	if signer.attemptIDs[0] != "t1#0.1" || signer.attemptIDs[1] != "t1#1.2" {
+		t.Fatalf("AttemptID 形状 = %v, want [t1#0.1 t1#1.2]（attempts.claim_seq）", signer.attemptIDs)
 	}
 }
 

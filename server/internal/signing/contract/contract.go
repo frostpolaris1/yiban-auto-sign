@@ -155,6 +155,9 @@ type Profile struct {
 
 // SignRequest 是一次签到尝试。
 type SignRequest struct {
+	// AttemptID 是一次**认领周期**的幂等键：同一租约内重复调用必须同值，
+	// 租约被回收后重跑必须换新值（否则提供方的结果缓存与同键串行会把
+	// 接管折叠成"读回旧结论"）。生成规则见 app/worker 的 attemptID。
 	AttemptID  string
 	Account    AccountRef
 	Credential Credential
