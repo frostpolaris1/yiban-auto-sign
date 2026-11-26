@@ -2054,7 +2054,7 @@ paths:
         and limit. The response is text/csv with one header row whose
         columns match the task list fields, quoted per RFC 4180. The
         school name, task name and result cells are formula-escaped: a
-        leading = + - @ TAB or CR gets a single-quote prefix so
+        leading = + - @ TAB CR or LF gets a single-quote prefix so
         spreadsheet applications do not evaluate the cell (CWE-1236).
         Content-Disposition names the file after the effective business
         day, so a request without day reads tasks-<today>.csv. The export
