@@ -256,7 +256,9 @@ func TestStructureRowsPinned(t *testing.T) {
 	// admin-search-06：ui/src/features 增 search（顶栏全局搜索面板）。
 	// user-app：ui/src/features 增 me（我的区），components/shell 增 UserAppShell。
 	// turnstile：adapters 增 turnstile（公开注册的 siteverify 出口）。
-	const want = "1d6114214fb14582afe94dd1c7d33c6281222f0fedfeee76afaffbb3a2b2d1b1"
+	// 2026-11-27 PR1：root 的 docker/yiban/web/frontend/config 标为可选，
+	// 退役期间允许缺席；删除旧线后仍保持可选。
+	const want = "6452c8266406aba4f4a9a6502ee427792ad94705a02a7bb9044a9941e2101cdf"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}

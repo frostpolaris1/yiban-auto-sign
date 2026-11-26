@@ -177,6 +177,7 @@ fast	tests/test_gate_manifest_sync.py
 fast	tests/test_gate_narrowing_e2e.py
 fast	tests/test_generated_artifacts_gate.py	# 子进程跑 --check：字体打标与 Lucide 精灵图
 fast	tests/test_geo_sampling.py
+fast	tests/test_git_config_hygiene.py	# 主仓 config 的 core.worktree 卫生门（bash+awk，秒级）
 fast	tests/test_global_pause.py
 slow	tests/test_global_pause_chain_e2e.py	# 真子进程：真跑 run.sh 全链引擎（本机 4.9s）
 fast	tests/test_health_report_schedule_e2e.py
@@ -235,6 +236,7 @@ fast	tests/test_notify_p05_routes.py
 fast	tests/test_notify_throttle.py
 fast	tests/test_notify_webhook.py
 slow	tests/test_only_single_process.py	# 真进程组：起真进程树并 terminate 整组（本机 10.9s）
+fast	tests/test_openapi_generator_gate.py	# 假生成器驱动写模式失败关闭（临时树，秒级）
 fast	tests/test_panel_false_signals.py
 fast	tests/test_path_env_priority_single_source.py
 fast	tests/test_path_env_read_gate.py
@@ -309,6 +311,7 @@ fast	tests/test_sign_touchpoint_singleton.py
 fast	tests/test_skip_visibility_gate.py
 fast	tests/test_slot_geometry.py
 fast	tests/test_smtp_identity_frontend.py
+fast	tests/test_stacks_ci_wiring.py	# stacks 作业与脚本可执行位静态门
 fast	tests/test_state_file_writes.py
 fast	tests/test_state_gc.py
 fast	tests/test_state_helpers_hardening.py	# sched-run/slot kind/清理不可读目录（本机 1.5s）
@@ -383,6 +386,7 @@ fast	tests/test_window_edge_single_source.py
 fast	tests/test_wire_dump.py
 fast	tests/test_work_accounts_selection.py
 fast	tests/test_workers_domain_single_source.py
+fast	tests/test_workflow_security_gate.py	# workflow SHA 钉、退役回潮、run 段直插静态门
 fast	tests/test_yiban_fallback_sh.py
 fast	tests/test_yiban_status_single_source.py
 fast	tests/test_zero_old_coordinates.py

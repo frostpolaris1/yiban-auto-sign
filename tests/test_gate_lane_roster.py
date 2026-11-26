@@ -403,6 +403,9 @@ class MetaGatesStayFastTest(unittest.TestCase):
         "tests/test_no_literal_date_in_fixtures.py",
         "tests/test_path_env_read_gate.py",
         "tests/test_ui_e2e_ci_wiring.py",
+        "tests/test_stacks_ci_wiring.py",
+        "tests/test_git_config_hygiene.py",
+        "tests/test_workflow_security_gate.py",
     })
 
     def test_named_meta_gates_are_fast(self):
