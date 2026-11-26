@@ -16,6 +16,9 @@
 #   - outdir 已存在则复用（幂等），缺失则创建；相对路径先归一为绝对
 #     路径（后文会 cd 进 server/ 编译，不归一会让相对 outdir 落进
 #     server/ 下）；产物只写 outdir，不写仓库内任何文件；
+#   - 先在 outdir 内的临时 staging 构建与生成清单，全部成功后再逐件
+#     搬入 outdir；失败（含坏 --ui-dir）不留本次半个二进制或半份清单。
+#     逐件 mv 在进程被杀时仍有极短的新旧混合窗口，不宣称原子；
 #   - commit 取 git rev-parse --short HEAD；取不到（非 git 检出）⇒
 #     exit 2：发布件必须带真实提交，不许回落 unknown；
 #   - 一律不注入分支名：发布件不带分支身份；
@@ -112,23 +115,47 @@ mkdir -p "$OUT"
 # 归一为绝对路径：后面要 cd 进 server/ 编译，相对 outdir 不归一会写进 server/ 下。
 OUT="$(cd "$OUT" && pwd)"
 exe="$(exe_suffix)"
+
+# UI 产物先校验：坏 --ui-dir 必须在任何编译之前失败。
+if [ -n "$UI_DIST" ]; then
+    [ -d "$UI_DIST" ] || die "--ui-dir is not a directory: $UI_DIST"
+    [ -f "$UI_DIST/index.html" ] || die "--ui-dir has no index.html: $UI_DIST"
+fi
+
+# 全部产物先落临时 staging；任何一步失败都由 trap 清掉，
+# outdir 里不会出现「编译成功但清单失败」的半成品。
+stage="$(mktemp -d "$OUT/.build-release.XXXXXX")"
+cleanup() { rm -rf "$stage"; }
+trap cleanup EXIT
+
 (
     cd "$ROOT/server"
-    go build -trimpath -ldflags="$ldflags" -o "$OUT/yiban-server$exe" ./cmd/server
-    go build -trimpath -ldflags="$ldflags" -o "$OUT/yiban-cli$exe" ./cmd/cli
+    go build -trimpath -ldflags="$ldflags" -o "$stage/yiban-server$exe" ./cmd/server
+    go build -trimpath -ldflags="$ldflags" -o "$stage/yiban-cli$exe" ./cmd/cli
 )
-
-echo "build-release: version=$ver commit=$commit build_time=$build_time"
-echo "build-release: wrote $OUT/yiban-server$exe"
-echo "build-release: wrote $OUT/yiban-cli$exe"
 
 # UI 产物入签名清单（P1-6 ③）：清单落在发布 staging（与二进制同居），
 # 由 make-manifest.sh 以 basename 收录；绝不写进 ui-dist 本身。
 if [ -n "$UI_DIST" ]; then
-    [ -d "$UI_DIST" ] || die "--ui-dir is not a directory: $UI_DIST"
-    [ -f "$UI_DIST/index.html" ] || die "--ui-dir has no index.html: $UI_DIST"
-    bash "$ROOT/scripts/release/make-ui-sums.sh" "$UI_DIST" "$OUT/ui-SHA256SUMS" \
-        || die "cannot generate ui checksums in $OUT"
+    bash "$ROOT/scripts/release/make-ui-sums.sh" "$UI_DIST" "$stage/ui-SHA256SUMS" \
+        || die "cannot generate ui checksums in $stage"
+fi
+
+# 全部成功后再搬入 outdir；无 UI 的构建清掉旧清单，避免复用目录时
+# 让上一次的 ui-SHA256SUMS 混进新 manifest。
+if [ -z "$UI_DIST" ]; then
+    rm -f "$OUT/ui-SHA256SUMS"
+fi
+mv -f "$stage/yiban-server$exe" "$OUT/yiban-server$exe"
+mv -f "$stage/yiban-cli$exe" "$OUT/yiban-cli$exe"
+if [ -n "$UI_DIST" ]; then
+    mv -f "$stage/ui-SHA256SUMS" "$OUT/ui-SHA256SUMS"
+fi
+
+echo "build-release: version=$ver commit=$commit build_time=$build_time"
+echo "build-release: wrote $OUT/yiban-server$exe"
+echo "build-release: wrote $OUT/yiban-cli$exe"
+if [ -n "$UI_DIST" ]; then
     echo "build-release: wrote $OUT/ui-SHA256SUMS"
     echo "build-release: manifest: bash $ROOT/scripts/release/make-manifest.sh $ver $OUT/yiban-server$exe $OUT/yiban-cli$exe $OUT/ui-SHA256SUMS"
 fi
