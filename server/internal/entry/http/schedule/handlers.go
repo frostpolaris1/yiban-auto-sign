@@ -40,6 +40,7 @@ import (
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -58,7 +59,7 @@ type Planner interface {
 	PreviewCached(ctx context.Context, in appschedule.Input) (appschedule.Preview, error)
 	Build(ctx context.Context, in appschedule.Input) (appschedule.Preview, error)
 	Override(ctx context.Context, scope corescope.Scope, in appschedule.Input,
-		start, end time.Time, reason, actorID string) (appschedule.Preview, error)
+		start, end time.Time, reason string, actor coreaudit.Actor) (appschedule.Preview, error)
 	Report(ctx context.Context, in appschedule.Input) (appschedule.Preview, error)
 	Task(ctx context.Context, scope corescope.Scope, taskID string) (coreschedule.TaskInfo, error)
 	ListWindows(ctx context.Context, scope corescope.Scope, day string, refresh bool) ([]coreschedule.WindowView, error)
@@ -330,8 +331,9 @@ func (h *Handler) Override(c *gin.Context, _ oapi.ScheduleOverrideParams) {
 		return
 	}
 	in.WeekendClosed = !open
+	// 审计主体来自入口会话：Label 已在 NewActor 内掩码，绝不下发邮箱原文。
 	p, err := h.planner.Override(c.Request.Context(), scope, in,
-		body.Start, body.End, body.Reason, user.ID)
+		body.Start, body.End, body.Reason, appaudit.NewActor(user))
 	if err != nil {
 		fail(c, err)
 		return

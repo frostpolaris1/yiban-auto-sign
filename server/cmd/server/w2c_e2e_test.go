@@ -315,6 +315,8 @@ func w2cNewEnvWithAnchor(t *testing.T, anchorPath string) *w2cEnv {
 	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
 		Discover: e.discover, Prefs: e.prefs, Self: e.sched, Tx: db,
+		// 覆盖写面同事务追加审计（P2-3），与生产装配同形。
+		Audit:          e.audits,
 		Notifier:       assembly.ScheduleNotifier{Broker: e.broker, Clock: clk},
 		CapacityAlerts: capacityAlerts,
 	})

@@ -32,7 +32,9 @@ import (
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
@@ -154,6 +156,9 @@ func NewService(deps Deps) (*Service, error) {
 	}
 	if deps.Tx == nil {
 		return nil, errors.New("schedule: nil transaction manager")
+	}
+	if deps.Clock == nil {
+		deps.Clock = coreclock.System{}
 	}
 	log := deps.Logger
 	if log == nil {
@@ -554,7 +559,7 @@ func (s *Service) overrideActive(ctx context.Context, taskID, day string) (bool,
 // 预览按请求窗口算（Input.override），不读库内旧覆盖；版本竞争
 // （ErrWindowStale）时整体重试一次。
 // 停用任务拒写覆盖（k0y-6）：判据在写库之前，回 conflict 且不留覆盖行。
-func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input, start, end time.Time, reason, actorID string) (Preview, error) {
+func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input, start, end time.Time, reason string, actor coreaudit.Actor) (Preview, error) {
 	if err := requireScheduleScope(scope); err != nil {
 		return Preview{}, err
 	}
@@ -575,6 +580,11 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	if n := utf8.RuneCountInString(reason); n < 1 || n > 200 {
 		return Preview{}, validation("reason must be 1 to 200 characters")
 	}
+	// 审计在事务末尾才校验 detail：先预检理由，避免覆盖/缓存/计划写完
+	// 才因 PII 回 500。手机号与邮箱一律拒收，零写入。
+	if _, err := coreaudit.EncodeDetail(map[string]any{"reason": reason}); err != nil {
+		return Preview{}, validation("reason must not contain phone numbers or email addresses")
+	}
 	if !start.Before(end) {
 		return Preview{}, validation("override start must be before end")
 	}
@@ -592,29 +602,52 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	if in.WeekendClosed {
 		return s.closedPreview(ctx, in)
 	}
+	// 写覆盖面必须有审计端口：缺端口不是「跳过审计」，而是 fail-closed。
+	if s.deps.Audit == nil {
+		return Preview{}, coreerrs.New(coreerrs.CodeInternal, "audit repository is not configured")
+	}
 	ov := coreschedule.WindowOverride{
 		SchoolTaskID: in.SchoolTaskID,
 		Day:          in.Day,
 		Start:        start,
 		End:          end,
 		Reason:       reason,
-		CreatedBy:    actorID,
+		CreatedBy:    actor.UserID,
 	}
 	in.override = &ov
 	b, err := s.prepareBuild(ctx, in)
 	if err != nil {
 		return Preview{}, err
 	}
+	// 旧值必须来自事务内、PutOverride 之前的读取：覆盖第二遍时审计要记
+	// 库内旧窗，不能把请求里的新值当成旧值。版本竞争重试也一样重读。
+	var prev *coreschedule.WindowOverride
 	putOverride := func(ctx context.Context) error {
+		stored, err := s.deps.Windows.GetOverride(ctx, in.SchoolTaskID, in.Day)
+		switch {
+		case err == nil:
+			prev = &stored
+		case isNotFound(err):
+			prev = nil
+		default:
+			return err
+		}
 		return s.deps.Windows.PutOverride(ctx, ov)
 	}
-	changed, err := s.writeBuild(ctx, in, b, putOverride)
+	// 审计是事务最后一条语句：覆盖、缓存、重排、补插、容量释放全落才追加；
+	// Append 失败整批回滚，覆盖不留在库里（fail-closed）。
+	appendAudit := func(ctx context.Context) error {
+		_, err := s.deps.Audit.Append(ctx, windowOverrideEntry(in, ov, prev, actor, s.deps.Clock.Now().UTC()))
+		return err
+	}
+	changed, err := s.writeBuild(ctx, in, b, putOverride, appendAudit)
 	if errors.Is(err, coreschedule.ErrWindowStale) {
 		b, err = s.prepareBuild(ctx, in)
 		if err != nil {
 			return Preview{}, err
 		}
-		changed, err = s.writeBuild(ctx, in, b, putOverride)
+		prev = nil
+		changed, err = s.writeBuild(ctx, in, b, putOverride, appendAudit)
 	}
 	if err != nil {
 		return Preview{}, err
@@ -686,7 +719,7 @@ func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error
 	if err != nil {
 		return Preview{}, false, err
 	}
-	changed, err := s.writeBuild(ctx, in, b, nil)
+	changed, err := s.writeBuild(ctx, in, b, nil, nil)
 	if err != nil {
 		return Preview{}, false, err
 	}
@@ -723,13 +756,14 @@ func (s *Service) prepareBuild(ctx context.Context, in Input) (*buildPlan, error
 }
 
 // writeBuild 在一个事务里物化计划：可选前置写（Override 的覆盖行）、
-// 容量释放复活、窗口缓存、重排、补插与容量释放。before 失败则整批回滚。
+// 容量释放复活、窗口缓存、重排、补插与容量释放。before/after 失败都整批
+// 回滚；after 固定排在最后（Override 的审计链追加，P2-3）。
 // 窗口变化与计划几何变化分开判定：窗口版本/事件只随真实窗口变化，
 // 名册或档位变化只触发重排（P1-8）。
 // 每次重建先复活当日 capacity_released 行再按当前容量截断：容量回升
 // （override 撤销/窗口变长/重建）时被释放的行回到 pending，结果等于
 // 当前容量的确定态（revive→truncate 幂等）。其他 skipped 词绝不复活。
-func (s *Service) writeBuild(ctx context.Context, in Input, b *buildPlan, before func(context.Context) error) (bool, error) {
+func (s *Service) writeBuild(ctx context.Context, in Input, b *buildPlan, before, after func(context.Context) error) (bool, error) {
 	windowChanged := b.res.changed()
 	planChanged := windowChanged
 	if !planChanged {
@@ -773,12 +807,44 @@ func (s *Service) writeBuild(ctx context.Context, in Input, b *buildPlan, before
 				return err
 			}
 		}
+		// 审计必须是事务最后一条语句（P2-3）：前面的写全成功才追加。
+		if after != nil {
+			return after(ctx)
+		}
 		return nil
 	})
 	if err != nil {
 		return false, err
 	}
 	return windowChanged, nil
+}
+
+// windowOverrideEntry 构造人工覆盖的审计条目（P2-3）。
+// changes 的旧值来自事务内 PutOverride 之前的覆盖行（prev 为 nil 即首次覆盖，
+// 两段旧值都是 null）；目标恒为 school_task，SchoolID 取请求的学校。
+// Actor 由入口会话构造，Label 已掩码；reason 已在入口预检过 PII。
+func windowOverrideEntry(in Input, ov coreschedule.WindowOverride, prev *coreschedule.WindowOverride, actor coreaudit.Actor, ts time.Time) coreaudit.Entry {
+	var oldStart, oldEnd any
+	if prev != nil {
+		oldStart, oldEnd = prev.Start.Unix(), prev.End.Unix()
+	}
+	return coreaudit.Entry{
+		TS:          ts,
+		SchoolID:    in.SchoolID,
+		ActorUserID: actor.UserID,
+		ActorRole:   actor.Role,
+		ActorLabel:  actor.Label,
+		Action:      coreaudit.ActionScheduleWindowOverride,
+		TargetType:  "school_task",
+		TargetID:    in.SchoolTaskID,
+		Detail: map[string]any{
+			"changes": map[string][2]any{
+				"window.start": {oldStart, ov.Start.Unix()},
+				"window.end":   {oldEnd, ov.End.Unix()},
+			},
+			"reason": ov.Reason,
+		},
+	}
 }
 
 // planGeometryChanged 报告新计划是否与库内 pending 行不同（P1-8）。

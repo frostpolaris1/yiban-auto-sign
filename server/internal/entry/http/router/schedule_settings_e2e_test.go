@@ -160,7 +160,7 @@ func (e2ePlanner) Build(context.Context, appschedule.Input) (appschedule.Preview
 }
 
 func (e2ePlanner) Override(context.Context, corescope.Scope, appschedule.Input,
-	time.Time, time.Time, string, string) (appschedule.Preview, error) {
+	time.Time, time.Time, string, coreaudit.Actor) (appschedule.Preview, error) {
 	return appschedule.Preview{}, nil
 }
 

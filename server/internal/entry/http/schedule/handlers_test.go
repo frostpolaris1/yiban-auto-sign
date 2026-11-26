@@ -16,6 +16,7 @@ import (
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -45,7 +46,7 @@ type fakePlanner struct {
 	previewCalls       int
 	previewCachedCalls int
 	lastInput          appschedule.Input
-	lastActor          string
+	lastActor          coreaudit.Actor
 	lastStart          time.Time
 	lastEnd            time.Time
 	lastReason         string
@@ -112,10 +113,10 @@ func (f *fakePlanner) Build(_ context.Context, in appschedule.Input) (appschedul
 }
 
 func (f *fakePlanner) Override(_ context.Context, _ corescope.Scope, in appschedule.Input,
-	start, end time.Time, reason, actorID string) (appschedule.Preview, error) {
+	start, end time.Time, reason string, actor coreaudit.Actor) (appschedule.Preview, error) {
 	f.overrides++
 	f.lastInput, f.lastStart, f.lastEnd = in, start, end
-	f.lastReason, f.lastActor = reason, actorID
+	f.lastReason, f.lastActor = reason, actor
 	if in.WeekendClosed {
 		return fakeClosedPreview(in), nil
 	}
@@ -531,8 +532,12 @@ func TestOverridePassesReasonAndActor(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if planner.lastReason != "平台窗口错误" || planner.lastActor != "u1" {
-		t.Fatalf("reason=%q actor=%q", planner.lastReason, planner.lastActor)
+	wantActor := appaudit.NewActor(coreauth.User{
+		ID: "u1", Email: "boss@example.com", Role: coreauth.RoleMaster,
+	})
+	if planner.lastReason != "平台窗口错误" || planner.lastActor != wantActor {
+		t.Fatalf("reason=%q actor=%+v, want %+v（Label 必须掩码）",
+			planner.lastReason, planner.lastActor, wantActor)
 	}
 	if planner.lastStart.Format(time.RFC3339) != start || planner.lastEnd.Format(time.RFC3339) != end {
 		t.Fatalf("起止 = %v ~ %v", planner.lastStart, planner.lastEnd)

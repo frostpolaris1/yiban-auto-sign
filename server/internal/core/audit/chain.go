@@ -175,6 +175,10 @@ const (
 	ActionPhotoPurge Action = "photo.purge"
 	// P5：学校默认图登记。detail 只记新照片 id 与旧照片 id（可空）。
 	ActionSchoolDefaultPhotoSet Action = "school.default_photo_set"
+	// P2-3：人工覆盖任务窗口。与 window_overrides 同事务追加，
+	// detail 记 changes（window.start/window.end 的旧→新 Unix 秒，旧值可为 null）
+	// 与 reason；目标恒为 school_task。周末门关闭不写覆盖，也不写它。
+	ActionScheduleWindowOverride Action = "schedule.window_override"
 )
 
 // Actor 是写审计行时的操作者。

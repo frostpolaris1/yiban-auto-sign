@@ -465,3 +465,48 @@ func TestEncodeDetailAcceptsScheduleWritebackChanges(t *testing.T) {
 		t.Fatal("非 changes 键接受了映射形态")
 	}
 }
+
+// P2-3 人工窗口覆盖：changes 的 window.start/window.end 记 Unix 秒，
+// 旧值不存在时为 null。Unix 秒不是手机号；11 位 1 开头仍是 PII。
+// 这两个键位只证明「接受/拒绝」；业务语义由 app/schedule 与 e2e 钉住。
+func TestEncodeDetailAcceptsWindowOverrideChanges(t *testing.T) {
+	raw, err := coreaudit.EncodeDetail(map[string]any{
+		"changes": map[string][2]any{
+			"window.start": {nil, int64(1790000000)},
+			"window.end":   {int64(1790003600), int64(1790007200)},
+		},
+		"reason": "平台窗口错误",
+	})
+	if err != nil {
+		t.Fatalf("合法覆盖审计被拒绝: %v", err)
+	}
+	if !strings.Contains(raw, "\"window.start\":[null,1790000000]") {
+		t.Fatalf("changes 编码 = %s", raw)
+	}
+	// 键位只接受二元组里的 nil/布尔/整数：浮点、时间串都不是「旧值或新值」。
+	for _, bad := range []map[string][2]any{
+		{"window.start": {nil, 1790000000.5}},
+		{"window.start": {nil, "2026-10-29T01:00:00Z"}},
+	} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{"changes": bad}); err == nil {
+			t.Fatalf("changes %v 未被拒绝", bad)
+		}
+	}
+	// 手机号形态的数字不得借 Unix 秒键位进链。
+	for _, bad := range []any{13800138000, int64(13800138000)} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{
+			"changes": map[string][2]any{"window.start": {nil, bad}},
+		}); !errors.Is(err, coreaudit.ErrDetailPII) {
+			t.Fatalf("window.start %v（%T）err = %v, want ErrDetailPII", bad, bad, err)
+		}
+	}
+	// reason 仍走通用字符串规则：手机号与邮箱拒绝。
+	for _, bad := range []string{"联系 13800138000", "boss@example.com"} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{
+			"changes": map[string][2]any{"window.start": {nil, 1}},
+			"reason":  bad,
+		}); err == nil {
+			t.Fatalf("reason %q 未被拒绝", bad)
+		}
+	}
+}
