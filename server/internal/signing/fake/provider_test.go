@@ -392,3 +392,104 @@ func TestUndeclaredCapabilityReturnsError(t *testing.T) {
 		t.Fatal("未声明 TargetDiscovery 仍返回 nil 错误")
 	}
 }
+
+// SeedOutcome 必须能复现契约的全部结果。
+// 依据：符合性矩阵逐项布种，假 Provider 自己不能有缺项。
+func TestSeedOutcomeCoversContract(t *testing.T) {
+	allCaps := contract.Capabilities{
+		WindowDiscovery: true,
+		TargetDiscovery: true,
+		ImageRequired:   true,
+		ManualCaptcha:   true,
+		DeviceBinding:   true,
+		FixedLocation:   true,
+		Rank:            true,
+	}
+	for _, want := range contract.AllOutcomes() {
+		p := New("fake", allCaps)
+		req := signRequest("attempt-seed-" + string(want))
+		if !p.SeedOutcome(&req, want) {
+			t.Fatalf("能力齐全时 %q 布种返回 false", want)
+		}
+		result, err := p.Sign(context.Background(), req)
+		if err != nil {
+			t.Fatalf("%q 布种后 Sign 报错: %v", want, err)
+		}
+		if result.Outcome != want {
+			t.Fatalf("布种 %q 得到 %q", want, result.Outcome)
+		}
+		if got, ok := p.ExpectedOutcome(req); !ok || got != want {
+			t.Fatalf("布种 %q 后 ExpectedOutcome = %q, %v", want, got, ok)
+		}
+	}
+}
+
+// 布种豁免只限能力不足的两项，其余 false 都是缺陷。
+func TestSeedOutcomeExemptionsFollowCapabilities(t *testing.T) {
+	weak := New("fake", contract.Capabilities{})
+	if weak.SeedOutcome(nil, contract.OutcomePhotoMissing) {
+		t.Fatal("未声明 ImageRequired 时 photo_missing 应返回 false")
+	}
+	if weak.SeedOutcome(nil, contract.OutcomeDeviceUnbound) {
+		t.Fatal("未声明 DeviceBinding 时 device_unbound 应返回 false")
+	}
+	for _, want := range contract.AllOutcomes() {
+		if want == contract.OutcomePhotoMissing || want == contract.OutcomeDeviceUnbound {
+			continue
+		}
+		if !weak.SeedOutcome(nil, want) {
+			t.Fatalf("%q 不属于能力豁免，应返回 true", want)
+		}
+	}
+	if !New("fake", contract.Capabilities{ImageRequired: true}).SeedOutcome(nil, contract.OutcomePhotoMissing) {
+		t.Fatal("声明 ImageRequired 后 photo_missing 应返回 true")
+	}
+	if !New("fake", contract.Capabilities{DeviceBinding: true}).SeedOutcome(nil, contract.OutcomeDeviceUnbound) {
+		t.Fatal("声明 DeviceBinding 后 device_unbound 应返回 true")
+	}
+}
+
+// 布种不动脚本：脚本仍按序发牌，布种只固定单个 AttemptID。
+func TestSeedOutcomeKeepsScripts(t *testing.T) {
+	p := New("fake", contract.Capabilities{}).
+		OnSign(ResultSteps(contract.OutcomeSuccess, contract.OutcomeAlreadyDone)...)
+	req := signRequest("attempt-seed")
+	if !p.SeedOutcome(&req, contract.OutcomeChallenge) {
+		t.Fatal("challenge 布种应返回 true")
+	}
+	if got, ok := p.ExpectedOutcome(req); !ok || got != contract.OutcomeChallenge {
+		t.Fatalf("布种后 ExpectedOutcome = %q, %v; want challenge", got, ok)
+	}
+	// 另一个 AttemptID 仍走脚本序列的第一项。
+	other := signRequest("attempt-other")
+	result, err := p.Sign(context.Background(), other)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if result.Outcome != contract.OutcomeSuccess {
+		t.Fatalf("脚本首项 = %q, want success", result.Outcome)
+	}
+}
+
+// 布种与并发读不得死锁：OnAttempt 持锁，SeedOutcome 不得在锁内回调。
+func TestSeedOutcomeIsSafeUnderConcurrency(t *testing.T) {
+	allCaps := contract.Capabilities{ImageRequired: true, DeviceBinding: true}
+	p := New("fake", allCaps)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, want := range contract.AllOutcomes() {
+			req := signRequest("attempt-" + string(want))
+			p.SeedOutcome(&req, want)
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		p.ExpectedOutcome(signRequest("attempt-concurrent"))
+		p.SignCalls()
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SeedOutcome 与读路径互相等待：疑似持锁回调造成死锁")
+	}
+}
