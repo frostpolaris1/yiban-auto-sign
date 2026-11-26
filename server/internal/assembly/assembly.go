@@ -31,7 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -291,24 +290,26 @@ func newServerFromStack(cfg *config.Config, stack *Stack, closeOnShutdown bool) 
 }
 
 const (
-	// startupCapacityWindow 是启动容量报告的评估窗口：一个业务日。
-	startupCapacityWindow = 24 * time.Hour
-	// startupCapacityTarget 是启动告警对照的日任务规模（10k 档）。
-	startupCapacityTarget = 10000
+	// startupCapacityWindow 是启动容量报告的评估窗口：默认签到窗口
+	// 06:30-07:50。窗口可被 DB 设置覆盖，启动阶段只报默认窗口口径；
+	// 真实容量在每次计划 Build 时按生效窗口计算。
+	startupCapacityWindow = time.Duration(
+		coreschedule.DefaultSignWindowEndMinute-coreschedule.DefaultSignWindowStartMinute,
+	) * time.Minute
 	// rateKneeSlack 是 worker 超过出口拐点 rate*avg 多少倍才告警。默认
 	// 4 个 worker 对拐点 3 只多 1 个，属于合理的延迟余量，不打扰启动；
-	// 翻倍以上说明可能误以为加 worker 能加日容量。
+	// 翻倍以上说明可能误以为加 worker 能加窗口容量。
 	rateKneeSlack = 2.0
 )
 
-// reportConfiguredCapacity 在启动时记录配置容量，并在低于 10k 目标或
+// reportConfiguredCapacity 在启动时记录默认签到窗口的配置容量，并在
 // worker 明显超过出口拐点时告警。只写日志，不阻断启动，不读取凭据。
 func reportConfiguredCapacity(log *slog.Logger, cfg *config.Config) {
 	window := startupCapacityWindow
 	util := corecapacity.UtilDefault
 	capacity := corecapacity.Capacity(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
 	binding := corecapacity.BindingOf(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
-	log.Info("configured daily schedule capacity",
+	log.Info("configured sign-window schedule capacity",
 		logfield.KeyEvent, "assembly.capacity_configured",
 		logfield.KeyWorkers, cfg.Workers,
 		logfield.KeyDurationMS, cfg.AvgAttempt.Milliseconds(),
@@ -318,31 +319,10 @@ func reportConfiguredCapacity(log *slog.Logger, cfg *config.Config) {
 		logfield.KeyCapacity, capacity,
 		logfield.KeyBinding, string(binding),
 	)
-	if capacity < startupCapacityTarget {
-		suggested := corecapacity.SuggestedWorkers(startupCapacityTarget, window, cfg.AvgAttempt, util)
-		attrs := []any{
-			logfield.KeyEvent, "assembly.capacity_below_target",
-			logfield.KeyTarget, startupCapacityTarget,
-			logfield.KeyCapacity, capacity,
-			logfield.KeyShortfall, startupCapacityTarget - capacity,
-			logfield.KeyWorkers, cfg.Workers,
-			logfield.KeySuggestedWorkers, suggested,
-			logfield.KeyBinding, string(binding),
-		}
-		// 64 通道仍装不下 10k 时，单靠加 worker 已无解，给出速率下界：
-		// 取“通道吞吐拐点”和“窗口净需求”的较大者，向上取到两位小数。
-		if cfg.AvgAttempt > 0 && util > 0 &&
-			corecapacity.Capacity(window, suggested, cfg.AvgAttempt, cfg.EgressRate, util) < startupCapacityTarget {
-			needRate := math.Max(float64(suggested)/cfg.AvgAttempt.Seconds(),
-				float64(startupCapacityTarget)/(window.Seconds()*util))
-			attrs = append(attrs, logfield.KeySuggestedRate, math.Ceil(needRate*100)/100)
-		}
-		log.Warn("daily capacity is below the 10,000-attempt target; raise workers, egress rate, or add instances", attrs...)
-	}
 	if cfg.AvgAttempt > 0 && cfg.EgressRate > 0 {
 		knee := cfg.EgressRate * cfg.AvgAttempt.Seconds()
 		if float64(cfg.Workers) > rateKneeSlack*knee {
-			log.Warn("workers are above the egress-rate knee; extra workers add latency headroom, not daily capacity",
+			log.Warn("workers are above the egress-rate knee; extra workers add latency headroom, not sign-window capacity",
 				logfield.KeyEvent, "assembly.capacity_rate_bound",
 				logfield.KeyWorkers, cfg.Workers,
 				logfield.KeyDurationMS, cfg.AvgAttempt.Milliseconds(),

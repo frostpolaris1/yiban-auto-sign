@@ -200,7 +200,8 @@ func TestRunAssemblesOnce(t *testing.T) {
 	}
 }
 
-// 启动容量日志：默认 4 worker / rate 1 / avg 3s 的日容量是 69,120。
+// 启动容量日志：默认 4 worker / rate 1 / avg 3s，按默认 80 分钟签到窗口
+// （06:30-07:50）计算窗口容量是 3,840，不是 24 小时吞吐的 69,120。
 // 该配置在 rate=1 时第 4 个 worker 只买延迟余量，已越过 rate 拐点但不告警
 // （拐点告警只在明显超配时触发，避免每次启动噪声）。
 func TestBuildLogsConfiguredDailyCapacity(t *testing.T) {
@@ -217,8 +218,8 @@ func TestBuildLogsConfiguredDailyCapacity(t *testing.T) {
 	}
 	wantRecordInt(t, info, "workers", 4)
 	wantRecordInt(t, info, "duration_ms", 3000)
-	wantRecordInt(t, info, "window_s", 86400)
-	wantRecordInt(t, info, "capacity", 69120)
+	wantRecordInt(t, info, "window_s", 4800)
+	wantRecordInt(t, info, "capacity", 3840)
 	if got := info["binding"]; got != "egress_rate" {
 		t.Fatalf("binding = %v, want egress_rate（4/3 已超过 rate=1）", got)
 	}
@@ -228,48 +229,12 @@ func TestBuildLogsConfiguredDailyCapacity(t *testing.T) {
 	if _, ok := info["util"]; !ok {
 		t.Fatalf("Info 缺 util：%v", info)
 	}
-	if got := h.warnEvents("assembly.capacity_below_target"); got != 0 {
-		t.Fatalf("容量 69,120 覆盖 10k，below-target Warn = %d", got)
-	}
 	if got := h.warnEvents("assembly.capacity_rate_bound"); got != 0 {
 		t.Fatalf("默认 4 worker 不得触发超配 Warn，got %d", got)
 	}
 }
 
-// 日容量低于 10k：Warn 必须给出目标、缺口与可执行的建议 worker 数。
-func TestBuildWarnsWhenDailyCapacityBelowTarget(t *testing.T) {
-	cfg := capacityConfig(t)
-	cfg.Workers, cfg.AvgAttempt, cfg.EgressRate = 1, 300*time.Second, 1
-	h := &recordHandler{}
-	stack, err := Build(cfg, slog.New(h))
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	defer stack.Close()
-
-	info := h.event("assembly.capacity_configured")
-	if info == nil {
-		t.Fatalf("缺启动容量 Info 日志：%v", h.records)
-	}
-	wantRecordInt(t, info, "capacity", 230)
-
-	warn := h.event("assembly.capacity_below_target")
-	if warn == nil {
-		t.Fatalf("容量 230 < 10k 必须 Warn：%v", h.records)
-	}
-	if warn["level"] != slog.LevelWarn.String() {
-		t.Fatalf("below-target 级别 = %v, want WARN", warn["level"])
-	}
-	wantRecordInt(t, warn, "target", 10000)
-	wantRecordInt(t, warn, "capacity", 230)
-	wantRecordInt(t, warn, "shortfall", 9770)
-	wantRecordInt(t, warn, "suggested_workers", 44)
-	if _, ok := warn["suggested_rate"]; ok {
-		t.Fatalf("worker 侧可补齐时不得建议改 rate：%v", warn)
-	}
-}
-
-// worker 数明显超过 rate×avg 拐点时，加 worker 不再增日容量：Warn 指向 rate。
+// worker 数明显超过 rate×avg 拐点时，加 worker 不再增窗口容量：Warn 指向 rate。
 func TestBuildWarnsWhenWorkersFarAboveRateKnee(t *testing.T) {
 	cfg := capacityConfig(t)
 	cfg.Workers = 10
@@ -285,9 +250,6 @@ func TestBuildWarnsWhenWorkersFarAboveRateKnee(t *testing.T) {
 		t.Fatalf("10 worker / rate 1 / avg 3s 必须 Warn：%v", h.records)
 	}
 	wantRecordInt(t, warn, "workers", 10)
-	if got := h.warnEvents("assembly.capacity_below_target"); got != 0 {
-		t.Fatalf("容量 69,120 覆盖 10k，below-target Warn = %d", got)
-	}
 }
 
 // TestBuildWithoutDatabaseServesHealthz 是装配冒烟。

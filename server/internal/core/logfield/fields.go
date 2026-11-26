@@ -98,12 +98,9 @@ const (
 	KeyRate             = "rate"
 	KeyUtil             = "util"
 	KeyWindowSeconds    = "window_s"
-	KeyTarget           = "target"
 	KeyShortfall        = "shortfall"
 	KeyDemand           = "demand"
 	KeyBinding          = "binding"
-	KeySuggestedWorkers = "suggested_workers"
-	KeySuggestedRate    = "suggested_rate"
 	KeyBytes            = "bytes"
 	KeyTotal            = "total"
 	KeySuccess          = string(corestatus.TaskSuccess)
@@ -164,12 +161,9 @@ var All = []Field{
 	{Key: KeyRate, Const: "KeyRate", Kind: KindNumber, Meaning: "出口速率（账号尝试/秒）"},
 	{Key: KeyUtil, Const: "KeyUtil", Kind: KindNumber, Meaning: "容量计算使用的利用系数"},
 	{Key: KeyWindowSeconds, Const: "KeyWindowSeconds", Kind: KindCount, Meaning: "容量计算窗口的秒数"},
-	{Key: KeyTarget, Const: "KeyTarget", Kind: KindCount, Meaning: "容量对照的目标账号尝试数"},
-	{Key: KeyShortfall, Const: "KeyShortfall", Kind: KindCount, Meaning: "目标或需求未覆盖的任务数"},
+	{Key: KeyShortfall, Const: "KeyShortfall", Kind: KindCount, Meaning: "需求未被窗口容量覆盖的任务数"},
 	{Key: KeyDemand, Const: "KeyDemand", Kind: KindCount, Meaning: "当日任务需求数"},
 	{Key: KeyBinding, Const: "KeyBinding", Kind: KindEnum, Meaning: "容量瓶颈归属（workers/egress_rate）"},
-	{Key: KeySuggestedWorkers, Const: "KeySuggestedWorkers", Kind: KindCount, Meaning: "建议的并发执行体数（有效配置夹到 1..64）"},
-	{Key: KeySuggestedRate, Const: "KeySuggestedRate", Kind: KindNumber, Meaning: "64 通道仍不足时建议的出口速率"},
 	{Key: KeyBytes, Const: "KeyBytes", Kind: KindCount, Meaning: "HTTP 响应体字节数"},
 	{Key: KeyTotal, Const: "KeyTotal", Kind: KindCount, Meaning: "某业务日的任务行总数（含未了结行）"},
 	{Key: KeySuccess, Const: "KeySuccess", Kind: KindCount, Meaning: "某业务日 state=success 的任务行数"},
