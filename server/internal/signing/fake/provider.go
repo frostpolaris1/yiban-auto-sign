@@ -134,9 +134,10 @@ func (p *Provider) OnAttempt(attemptID string, result contract.Result) *Provider
 //
 // 返回 false 表示本次无法布种，只有三种情形：
 // 未声明 ImageRequired 时没有 photo_missing；未声明 DeviceBinding 时
-// 没有 device_unbound；req 为 nil 时没有 AttemptID 可固定。
+// 没有 device_unbound；req 为 nil 或 AttemptID 为空时没有可固定的身份。
 // 前两者是契约豁免，第三者是用错接口——返回 true 会让调用方
-// 误以为「已复现该结果」，实际什么都没布。
+// 误以为「已复现该结果」，实际什么都没布：Sign 与 ExpectedOutcome
+// 都只按非空 AttemptID 查表，写进 attemptFixed[""] 永远读不到。
 func (p *Provider) SeedOutcome(req *contract.SignRequest, want contract.Outcome) bool {
 	if want == contract.OutcomePhotoMissing && !p.caps.ImageRequired {
 		return false
@@ -144,7 +145,7 @@ func (p *Provider) SeedOutcome(req *contract.SignRequest, want contract.Outcome)
 	if want == contract.OutcomeDeviceUnbound && !p.caps.DeviceBinding {
 		return false
 	}
-	if req == nil {
+	if req == nil || req.AttemptID == "" {
 		return false
 	}
 	// 不在持锁状态下回调：OnAttempt 自己会取 p.mu。

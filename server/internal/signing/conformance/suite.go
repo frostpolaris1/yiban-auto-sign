@@ -71,7 +71,8 @@ type Expecter interface {
 // 未声明 ImageRequired 时做不出 photo_missing，
 // 未声明 DeviceBinding 时做不出 device_unbound。
 // 其余 false 一律判红——否则「做不出就返回 false」能把空绿洗成通过。
-// req 为 nil 时一律返回 false：没有 AttemptID 可固定，返回 true 是假布种。
+// req 为 nil 或 AttemptID 为空时一律返回 false：没有可固定的身份，
+// 返回 true 是假布种。
 type OutcomeSeeder interface {
 	SeedOutcome(req *contract.SignRequest, want contract.Outcome) (supported bool)
 }

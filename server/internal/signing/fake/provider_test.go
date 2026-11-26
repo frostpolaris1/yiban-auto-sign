@@ -464,6 +464,23 @@ func TestSeedOutcomeNilRequestIsUnsupported(t *testing.T) {
 	}
 }
 
+// 空 AttemptID 的请求同样无法定位：返回 false，且不得写入任何表。
+// 依据：Sign 与 ExpectedOutcome 都只查非空 AttemptID；写进 attemptFixed[""]
+// 永远不会被读到，返回 true 等于谎报「已复现」。
+func TestSeedOutcomeRejectsEmptyAttemptID(t *testing.T) {
+	p := New("fake", contract.Capabilities{ImageRequired: true, DeviceBinding: true})
+	if p.SeedOutcome(&contract.SignRequest{}, contract.OutcomeSuccess) {
+		t.Fatal("空 AttemptID 布种应返回 false：没有可固定的请求身份")
+	}
+	if len(p.attemptFixed) != 0 || len(p.attempts) != 0 {
+		t.Fatalf("空 AttemptID 布种写入了结果表：attemptFixed %d 项, attempts %d 项",
+			len(p.attemptFixed), len(p.attempts))
+	}
+	if got, ok := p.ExpectedOutcome(contract.SignRequest{}); ok {
+		t.Fatalf("空 AttemptID 布种污染了期望：ExpectedOutcome = %q, %v", got, ok)
+	}
+}
+
 // 布种不动脚本：脚本仍按序发牌，布种只固定单个 AttemptID。
 func TestSeedOutcomeKeepsScripts(t *testing.T) {
 	p := New("fake", contract.Capabilities{}).
