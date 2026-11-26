@@ -18,8 +18,10 @@
 -- 锁超时窗口：迁移连接由 openMigrationDB 建，自带 lock_timeout=5s。
 -- ALTER 保留 5s 的快速失败语义；两条 CIC 在等待老快照时可能超过 5s，
 -- 故 ALTER 之后、首个 CIC 之前 SET lock_timeout='0'，建完索引后、
--- ANALYZE 之前收回 '5s'（ANALYZE 也要快速失败），末尾恢复
--- statement_timeout。lock_timeout=0 只覆盖真正需要长等的 CIC。
+-- ANALYZE 之前收回 '5s'（ANALYZE 也要快速失败），并在 ANALYZE 前
+-- 恢复 statement_timeout（openMigrationDB 的 60s）；lock_timeout=0 只覆盖
+-- 真正需要长等的 CIC。ANALYZE 只采样，60s 足够；无界执行被启动 ctx
+-- 取消会留下未落版本行的迁移，下次启动整段重跑。
 --
 -- 注意：CREATE INDEX CONCURRENTLY 不在事务里；中断会留下 INVALID 索引
 --（pg_index.indisvalid = false）。CIC 当场失败时 goose 通常还没写版本行，
@@ -51,6 +53,8 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sign_tasks_day_state
 -- 改一处必须改另一处，否则 CIC 窗口后的行为会漂移。
 SET lock_timeout = '5s';
 
-ANALYZE sign_tasks;
-
+-- 恢复到会话默认（openMigrationDB 的 60s）再 ANALYZE：它只采样，
+-- 60s 足够；无界执行被 ctx 取消会留下未落版本行的迁移，下次启动重跑。
 RESET statement_timeout;
+
+ANALYZE sign_tasks;
