@@ -365,17 +365,18 @@ concurrent streams. The 11th connection gets 429 `rate_limited` with
 Daily capacity is
 `sign window × min(workers / avg_attempt, egress_rate) × util`, with
 `util = 0.8`. The default window is 06:30–07:50 (80 minutes = 4,800 seconds),
-not 24 hours: attempts can only run inside it. A window override stored in the
-DB changes the effective capacity for that plan; the startup report always
-uses the default window. The default configuration carries 3,840 attempts in
-that window, so 10,000 needs either 10 workers at rate 3.0 or 9 workers at
-rate 2.7:
+not 24 hours: attempts can only run inside it. The default edge buffers give
+back 60 seconds at each end, so capacity is computed over the effective
+4,680 seconds. A window override stored in the DB changes the effective
+capacity for that plan; the startup report always uses the default parameters.
+The default configuration carries 3,744 attempts in that window, so 10,000
+needs either 10 workers at rate 3.0 or 9 workers at rate 2.7:
 
 | `YIBAN_WORKERS` | `YIBAN_EGRESS_RATE` | `YIBAN_AVG_ATTEMPT_SEC` | attempts per default window |
 | --- | --- | --- | --- |
-| 4 (default) | 1.0 | 3 | 3,840 |
-| 10 | 3.0 | 3 | 11,520 |
-| 8 | 2.6 | 3 | 9,984 (below 10,000) |
+| 4 (default) | 1.0 | 3 | 3,744 |
+| 10 | 3.0 | 3 | 11,232 |
+| 8 | 2.6 | 3 | 9,734 (below 10,000) |
 
 Concurrency stops buying window capacity at the rate knee
 `workers = egress_rate × avg_attempt` (3 at the defaults). A fourth worker at
