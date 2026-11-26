@@ -46,7 +46,7 @@ type TaskLister interface {
 	EnabledTasks(ctx context.Context) ([]coreschedule.TaskInfo, error)
 }
 
-// TaskAnalyzer 刷新 sign_tasks 的统计信息（实现为 pg.ScheduleRepo）。
+// TaskAnalyzer 刷新 sign_tasks 的统计信息。
 // 可选端口：nil 时不做统计刷新，行为与既有完全一致。
 type TaskAnalyzer interface {
 	AnalyzeSignTasks(ctx context.Context) error
@@ -105,8 +105,9 @@ type DailyBuilder struct {
 	// nil 时用 Params 原值。口径：**当日已铺行不回改**——
 	// 改值自下一次构建（次日凌晨 00:10）生效。
 	Overrides Overrides
-	// Analyzer 可为 nil：铺行成功后刷新 sign_tasks 统计（P0-3）。
-	// 失败只 Warn，不改构建结论：统计陈旧不阻断排期。
+	// Analyzer 可为 nil：有成功构建的任务后刷新 sign_tasks 统计（P0-3）。
+	// 走应用池，受 5s statement_timeout 约束；失败只 Warn，不改构建结论，
+	// 过期统计仍会由 autovacuum 兜底。
 	Analyzer TaskAnalyzer
 	// Logger 可为 nil：用 slog.Default。周末门关闭时如实记一行
 	//（批 3b：不铺行不留日志就没有任何痕迹）。
@@ -117,6 +118,7 @@ type DailyBuilder struct {
 // 先做跨日清理：day 之前的 pending 行落 skipped(window_closed)，
 // 周末门关闭也照做——旧行不会再被认领，必须当日了结（P1-6）。
 // 返回成功构建的任务数与首个错误；单个任务失败不阻断其余任务。
+// built 是任务数不是行数：幂等重放时 Build 返回 0 行也计 1。
 // 批 3b 周末门：当日 weekday 对应键为 false（缺行=false=不签，
 // 对齐旧线 SUNDAY/SATURDAY_SIGN 缺省 0）时整日不铺行——
 // 返回 0 行并如实记一行「周末门关闭」；键读取失败上抛不铺（保守方向）。
@@ -196,8 +198,9 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 		}
 		built++
 	}
-	// P0-3：只有真的铺了行才刷新统计。ANALYZE 失败不改构建结论——
-	// 计划行已经落库，陈旧统计只会让后续查询慢，不该让日切报错重试。
+	// P0-3：built>0 只表示至少一个任务构建成功；幂等重放 0 行也会触发
+	// 一次 ANALYZE（统计仍要刷新）。ANALYZE 失败不改构建结论——计划行
+	// 已经落库，陈旧统计只会让后续查询慢，不该让日切报错重试。
 	if built > 0 && b.Analyzer != nil {
 		if err := b.Analyzer.AnalyzeSignTasks(ctx); err != nil {
 			log := b.Logger

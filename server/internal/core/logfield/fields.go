@@ -147,7 +147,7 @@ var All = []Field{
 	{Key: KeyNotifications, Const: "KeyNotifications", Kind: KindCount, Meaning: "已清理的过期站内信行数"},
 	{Key: KeyAccounts, Const: "KeyAccounts", Kind: KindCount, Meaning: "账号批次物理删除的软删账号数（用户批次连带删的不计）"},
 	{Key: KeyUsers, Const: "KeyUsers", Kind: KindCount, Meaning: "已物理删除的软删用户数"},
-	{Key: KeyBuilt, Const: "KeyBuilt", Kind: KindCount, Meaning: "本轮已构建的任务行数"},
+	{Key: KeyBuilt, Const: "KeyBuilt", Kind: KindCount, Meaning: "本轮成功构建的任务数（幂等重放 0 行也计 1）"},
 	{Key: KeyBytes, Const: "KeyBytes", Kind: KindCount, Meaning: "HTTP 响应体字节数"},
 	{Key: KeyTotal, Const: "KeyTotal", Kind: KindCount, Meaning: "某业务日的任务行总数（含未了结行）"},
 	{Key: KeySuccess, Const: "KeySuccess", Kind: KindCount, Meaning: "某业务日 state=success 的任务行数"},
