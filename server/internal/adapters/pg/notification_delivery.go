@@ -260,8 +260,8 @@ func (r *NotificationDeliveryRepo) ClaimDueForSend(ctx context.Context,
 	return items, nil
 }
 
-// ReleaseClaim 归还一条行的认领：只清 claimed_until，不改 status、
-// attempts 与 next_retry_at。
+// ReleaseClaim 归还一条行的认领：清 claimed_until 并 touch updated_at，
+// 不改 status、attempts 与 next_retry_at。
 //
 // 发送前的瞬时读错误（RecipientActive、CountSentOnDay）走这里，让行在
 // 下一轮 30 秒内即可重新认领，而不是等满租约。释放幂等：对未认领行或

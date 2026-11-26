@@ -461,4 +461,7 @@ stays at-least-once. If the send succeeded but the process died before
 enqueuing twice, not the same row from being delivered twice. Two transient
 reads between claim and send (recipient status, webhook daily budget) release
 the claim on error, so the row is retried on the next round instead of
-waiting out the lease.
+waiting out the lease. The release carries no claim token: if an owner stalls
+for longer than the lease and a new owner re-claims, the stale owner's release
+can clear the new lease. That only widens the at-least-once window; it does
+not lose a row.

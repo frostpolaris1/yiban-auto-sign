@@ -35,6 +35,8 @@ func TestReleaseClaimMakesRowImmediatelyClaimable(t *testing.T) {
 		t.Fatalf("释放误清另一行的 claimed_until")
 	}
 	// 释放只清租约：行仍是 pending、attempts 不变，next_retry_at 原样保留。
+	retryBefore := e.scalarString(
+		"SELECT next_retry_at::text FROM notification_deliveries WHERE id = $1::uuid", ids[0])
 	if got := e.scalarString(
 		"SELECT status FROM notification_deliveries WHERE id = $1::uuid", ids[0]); got != "pending" {
 		t.Fatalf("释放后 status = %q, want pending", got)
@@ -42,6 +44,10 @@ func TestReleaseClaimMakesRowImmediatelyClaimable(t *testing.T) {
 	if got := e.scalarInt(
 		"SELECT attempts FROM notification_deliveries WHERE id = $1::uuid", ids[0]); got != 0 {
 		t.Fatalf("释放后 attempts = %d, want 0（释放不是尝试）", got)
+	}
+	if got := e.scalarString(
+		"SELECT next_retry_at::text FROM notification_deliveries WHERE id = $1::uuid", ids[0]); got != retryBefore {
+		t.Fatalf("释放后 next_retry_at = %q, want 原样 %q", got, retryBefore)
 	}
 
 	again, err := ledger.ClaimDueForSend(e.ctx, now, 10, time.Minute)
@@ -55,6 +61,17 @@ func TestReleaseClaimMakesRowImmediatelyClaimable(t *testing.T) {
 	}
 	if err := ledger.ReleaseClaim(e.ctx, "00000000-0000-0000-0000-000000000000"); err != nil {
 		t.Fatalf("未认领行 ReleaseClaim: %v", err)
+	}
+	// 终态行（已 sent）再释放是空操作，不会把 sent 拉回 pending。
+	if err := ledger.MarkSent(e.ctx, ids[0]); err != nil {
+		t.Fatalf("MarkSent: %v", err)
+	}
+	if err := ledger.ReleaseClaim(e.ctx, ids[0]); err != nil {
+		t.Fatalf("终态行 ReleaseClaim: %v", err)
+	}
+	if got := e.scalarString(
+		"SELECT status FROM notification_deliveries WHERE id = $1::uuid", ids[0]); got != "sent" {
+		t.Fatalf("终态行释放后 status = %q, want sent", got)
 	}
 	if err := ledger.ReleaseClaim(e.ctx, ""); errs.From(err).Code != errs.CodeValidation {
 		t.Fatalf("空 id code = %v (%v), want validation", errs.From(err).Code, err)

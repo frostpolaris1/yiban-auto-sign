@@ -259,6 +259,33 @@ func TestSendDueReleasesClaimOnAudienceReadError(t *testing.T) {
 	}
 }
 
+// 释放本身失败只 Warn，不覆盖原始的读错误（行仍被租约藏着，最多等满租约）。
+func TestSendDueReleaseFailureKeepsOriginalError(t *testing.T) {
+	store := newFakeStore()
+	clk := newManualClock()
+	audience := reviewAudience()
+	store.emails["master-1"] = "master-1@example.com"
+	sender := &fakeSender{}
+	dispatcher := newDelivery(t, store, audience, sender, clk, nil)
+	dispatchReview(t, dispatcher, store)
+
+	audience.activeErr = map[string]error{"master-1": errors.New("audience read failed")}
+	store.failRelease = errors.New("release failed")
+	err := dispatcher.SendDue(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "audience read failed") {
+		t.Fatalf("SendDue error = %v, want 原始读错误", err)
+	}
+	if strings.Contains(err.Error(), "release failed") {
+		t.Fatalf("SendDue error = %v, 释放失败不应覆盖原始错误", err)
+	}
+	if got := store.releaseCount(); got != 1 {
+		t.Fatalf("释放尝试 = %d 次, want 1", got)
+	}
+	if got := sender.calls(); got != 0 {
+		t.Fatalf("读错误却发送: calls=%d, want 0", got)
+	}
+}
+
 // webhook 额度读失败：同样在返回前释放认领，下一轮即可重试。
 func TestSendDueReleasesClaimOnBudgetReadError(t *testing.T) {
 	store := newFakeStore()
