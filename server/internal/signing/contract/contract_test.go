@@ -5,7 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,26 +86,31 @@ func TestAllOutcomesMatchDeclaration(t *testing.T) {
 func declaredOutcomes(t *testing.T) []outcomeDecl {
 	t.Helper()
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool {
-		return !strings.HasSuffix(info.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parse 包目录: %v", err)
-	}
-	pkg, ok := pkgs["contract"]
-	if !ok {
-		t.Fatalf("包目录内没有 contract 包：%v", keysOf(pkgs))
+		t.Fatalf("read 包目录: %v", err)
 	}
 
-	names := make([]string, 0, len(pkg.Files))
-	for name := range pkg.Files {
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	if len(names) == 0 {
+		t.Fatal("包目录内没有可解析的 contract 源文件")
+	}
 
 	var decls []outcomeDecl
 	for _, name := range names {
-		decls = append(decls, fileOutcomeDecls(t, fset, name, pkg.Files[name])...)
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		decls = append(decls, fileOutcomeDecls(t, fset, name, file)...)
 	}
 	sort.SliceStable(decls, func(i, j int) bool {
 		if decls[i].file != decls[j].file {
@@ -210,15 +215,6 @@ func validCases(t *testing.T, declared []outcomeDecl) []string {
 		return false // case 内部不再下钻
 	})
 	return values
-}
-
-func keysOf(pkgs map[string]*ast.Package) []string {
-	keys := make([]string, 0, len(pkgs))
-	for key := range pkgs {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func TestUnknownIsNotSuccess(t *testing.T) {

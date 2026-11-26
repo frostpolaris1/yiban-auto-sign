@@ -159,7 +159,7 @@ func TestMustChangePasswordGateBlocksOtherAPIs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			csrf := ""
 			if tc.withCSRF {
-				csrf = issued.Session.CSRFToken
+				csrf = issued.CSRFToken
 			}
 			rec := serve(engine, requestWithSession(tc.method, tc.path, tc.body, csrf, &issued.Session))
 			assertGateForbidden(t, rec, issued.Token, "leak-me-not")
@@ -193,7 +193,7 @@ func TestMustChangePasswordGateBlocksRegistrationWrite(t *testing.T) {
 		t.Fatalf("router.New: %v", err)
 	}
 	rec := serve(engine, requestWithSession(http.MethodPut, "/api/auth/registration",
-		`{"enabled":true}`, issued.Session.CSRFToken, &issued.Session))
+		`{"enabled":true}`, issued.CSRFToken, &issued.Session))
 	assertGateForbidden(t, rec, issued.Token)
 	if spy.calls != 0 {
 		t.Fatalf("注册开关用例被调用 %d 次，门失效", spy.calls)
@@ -249,7 +249,7 @@ func TestMustChangePasswordGateAllowsPasswordPolicy(t *testing.T) {
 		t.Fatalf("policy = %d/%d/%d, want 10/2/1024; body=%q",
 			body.MinChars, body.MinClasses, body.MaxBytes, rec.Body.String())
 	}
-	for _, secret := range []string{issued.Token, issued.CSRFToken, issued.Session.User.Email} {
+	for _, secret := range []string{issued.Token, issued.CSRFToken, issued.User.Email} {
 		if strings.Contains(rec.Body.String(), secret) {
 			t.Fatalf("policy 响应回显了敏感值 %q: %q", secret, rec.Body.String())
 		}
@@ -257,7 +257,7 @@ func TestMustChangePasswordGateAllowsPasswordPolicy(t *testing.T) {
 
 	// 其它方法与前缀不得借道：都落到 NoRoute 404，不进任何处理器。
 	rec = serve(engine, requestWithSession(http.MethodPost, "/api/auth/password-policy",
-		"", issued.Session.CSRFToken, &issued.Session))
+		"", issued.CSRFToken, &issued.Session))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("POST password-policy status = %d, want 404; body=%q", rec.Code, rec.Body.String())
 	}
@@ -297,7 +297,7 @@ func TestMustChangePasswordGateAllowsLogout(t *testing.T) {
 	engine := newAuthEngine(t, issuer, stubAuth{})
 
 	rec := serve(engine, requestWithSession(http.MethodPost, "/api/auth/logout",
-		"", issued.Session.CSRFToken, &issued.Session))
+		"", issued.CSRFToken, &issued.Session))
 	if rec.Code == http.StatusForbidden {
 		t.Fatalf("logout was stopped by the gate; body=%q", rec.Body.String())
 	}
@@ -330,7 +330,7 @@ func TestMustChangePasswordGateSkipsNormalSessions(t *testing.T) {
 	}
 
 	rec = serve(engine, requestWithSession(http.MethodPost, "/api/me/delete",
-		`{"current_password":"pw"}`, issued.Session.CSRFToken, &issued.Session))
+		`{"current_password":"pw"}`, issued.CSRFToken, &issued.Session))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%q", rec.Code, rec.Body.String())
 	}

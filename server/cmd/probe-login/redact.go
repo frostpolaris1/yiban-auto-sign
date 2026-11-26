@@ -13,7 +13,7 @@ var probeURLPattern = regexp.MustCompile(`(?i)https?://[^\s"'<>，。、；：�
 
 // probeURLTrailingPunctuation 是 URL 外侧的 ASCII 句读。URL 自身可以合法包含
 // 这些字符，但探针输出的是错误串，优先保留句子结构；脱敏结果本就不承诺字节保真。
-const probeURLTrailingPunctuation = ",;:.)]}.!?"
+const probeURLTrailingPunctuation = ",;:.)]}!?"
 
 // redactProbeText 对文本中的每个 http/https URL 脱敏：保留 scheme、host、
 // path，查询串的值替换为 ***（参数名保留），fragment 清空。解析失败的

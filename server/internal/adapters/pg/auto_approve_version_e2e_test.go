@@ -180,12 +180,9 @@ func TestAutoApproveCredentialVersionChangedStaysPending(t *testing.T) {
 
 	// 后台核验是异步的：有界等待失败审计落地。
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if u.scalarInt(`SELECT count(*) FROM audit_logs
-			WHERE action = $1 AND target_id = $2 AND detail LIKE '%credential_changed%'`,
-			string(coreaudit.ActionAccountAutoCheckFailed), account.ID) == 1 {
-			break
-		}
+	for u.scalarInt(`SELECT count(*) FROM audit_logs
+		WHERE action = $1 AND target_id = $2 AND detail LIKE '%credential_changed%'`,
+		string(coreaudit.ActionAccountAutoCheckFailed), account.ID) != 1 {
 		if time.Now().After(deadline) {
 			t.Fatalf("no credential_changed audit within the deadline; status = %q", u.accountStatus(account.ID))
 		}

@@ -49,7 +49,7 @@ func TestMigration00033StaticShape(t *testing.T) {
 		t.Fatalf("00033 shape = (lock 0 %d, stmt 0 %d, CIC %d, stmt reset %d, lock 5s %d); want all present",
 			zero, stmtZero, cic, stmtReset, five)
 	}
-	if !(zero < cic && stmtZero < cic && cic < stmtReset && cic < five) {
+	if zero >= cic || stmtZero >= cic || cic >= stmtReset || cic >= five {
 		t.Fatalf("00033 timeout window is wrong: lock0 %d, stmt0 %d, CIC %d, reset %d, lock5s %d",
 			zero, stmtZero, cic, stmtReset, five)
 	}

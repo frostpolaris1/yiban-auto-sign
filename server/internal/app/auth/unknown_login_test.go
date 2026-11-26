@@ -57,12 +57,6 @@ func (c *warnCapture) snapshot() []slog.Record {
 	return out
 }
 
-func (c *warnCapture) count() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.records)
-}
-
 // attrOf 取一条日志记录里的字段值。
 func attrOf(r slog.Record, key string) (any, bool) {
 	var value any

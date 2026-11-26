@@ -80,7 +80,7 @@ func TestMigration00032DayIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query pg_index: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var name string
 		var valid bool
@@ -328,7 +328,7 @@ func explainPlan(t *testing.T, m *migrationDownEnv, settings []string, query str
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var b strings.Builder
 	for rows.Next() {
 		var line string
