@@ -46,6 +46,12 @@ type TaskLister interface {
 	EnabledTasks(ctx context.Context) ([]coreschedule.TaskInfo, error)
 }
 
+// TaskAnalyzer 刷新 sign_tasks 的统计信息（实现为 pg.ScheduleRepo）。
+// 可选端口：nil 时不做统计刷新，行为与既有完全一致。
+type TaskAnalyzer interface {
+	AnalyzeSignTasks(ctx context.Context) error
+}
+
 // BuildParams 是构建计划的部署参数，与 HTTP 建计划同源。
 type BuildParams struct {
 	Workers       int
@@ -99,6 +105,9 @@ type DailyBuilder struct {
 	// nil 时用 Params 原值。口径：**当日已铺行不回改**——
 	// 改值自下一次构建（次日凌晨 00:10）生效。
 	Overrides Overrides
+	// Analyzer 可为 nil：铺行成功后刷新 sign_tasks 统计（P0-3）。
+	// 失败只 Warn，不改构建结论：统计陈旧不阻断排期。
+	Analyzer TaskAnalyzer
 	// Logger 可为 nil：用 slog.Default。周末门关闭时如实记一行
 	//（批 3b：不铺行不留日志就没有任何痕迹）。
 	Logger *slog.Logger
@@ -186,6 +195,20 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 			continue
 		}
 		built++
+	}
+	// P0-3：只有真的铺了行才刷新统计。ANALYZE 失败不改构建结论——
+	// 计划行已经落库，陈旧统计只会让后续查询慢，不该让日切报错重试。
+	if built > 0 && b.Analyzer != nil {
+		if err := b.Analyzer.AnalyzeSignTasks(ctx); err != nil {
+			log := b.Logger
+			if log == nil {
+				log = slog.Default()
+			}
+			log.Warn("schedule: analyze sign_tasks failed; plan rows stay valid",
+				logfield.KeyEvent, "schedule.analyze_sign_tasks_failed",
+				logfield.KeyBuilt, built,
+				logfield.KeyError, err)
+		}
 	}
 	return built, firstErr
 }

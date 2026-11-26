@@ -909,6 +909,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 日切构建：启动补建 + 业务日 00:10 定时。参数与 HTTP 建计划同源。
 		daily, err := appschedule.NewDailyCron(&appschedule.DailyBuilder{
 			Service: scheduleSvc, Tasks: scheduleRepo, Clock: clk, Location: loc,
+			// P0-3：日切铺行后刷新 sign_tasks 统计（失败只 Warn）。
+			Analyzer: scheduleRepo,
 			Params: appschedule.BuildParams{
 				Workers: cfg.Workers, Avg: cfg.AvgAttempt, Rate: cfg.EgressRate,
 				Util: corecapacity.UtilDefault, SlotsPerSlice: slots, SignDist: appschedule.SignDistFront,
