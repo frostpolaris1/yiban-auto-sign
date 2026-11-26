@@ -169,3 +169,57 @@ func TestUIIndexHasNoInlineScripts(t *testing.T) {
 		t.Fatalf("主题引导必须同步加载（无 defer/async）: %q", tag)
 	}
 }
+
+// must_change_password 门的放行判断必须按 Gin 注册形状精确匹配：
+// 方法不符、以允许路径为前缀的路径都不得漏过。
+// 该门是强制改密的唯一硬门；用前缀匹配会让 /api/auth/me/xxx 之类漏进去。
+func TestMustChangePasswordAllowedMatchesExactRouteAndMethod(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	decisions := make(map[string]bool)
+	probe := func(name string) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			decisions[name] = mustChangePasswordAllowed(c)
+		}
+	}
+	engine.GET("/api/auth/me", probe("get me"))
+	engine.POST("/api/auth/me", probe("post me"))
+	engine.GET("/api/auth/me/extra", probe("me extra"))
+	engine.POST("/api/auth/change-password", probe("post change-password"))
+	engine.GET("/api/auth/change-password", probe("get change-password"))
+	engine.POST("/api/auth/logout", probe("logout"))
+	engine.POST("/api/me/restore", probe("restore"))
+	engine.GET("/api/accounts", probe("accounts"))
+	engine.POST("/api/me/delete", probe("me delete"))
+	engine.GET("/internal/probe", probe("non-public"))
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		want   bool
+	}{
+		{"get me", http.MethodGet, "/api/auth/me", true},
+		{"post me", http.MethodPost, "/api/auth/me", false},
+		{"me extra", http.MethodGet, "/api/auth/me/extra", false},
+		{"post change-password", http.MethodPost, "/api/auth/change-password", true},
+		{"get change-password", http.MethodGet, "/api/auth/change-password", false},
+		{"logout", http.MethodPost, "/api/auth/logout", true},
+		{"restore", http.MethodPost, "/api/me/restore", true},
+		{"accounts", http.MethodGet, "/api/accounts", false},
+		{"me delete", http.MethodPost, "/api/me/delete", false},
+		{"non-public", http.MethodGet, "/internal/probe", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, tc.path, nil))
+			got, ok := decisions[tc.name]
+			if !ok {
+				t.Fatalf("探针未命中：%s %s 未注册", tc.method, tc.path)
+			}
+			if got != tc.want {
+				t.Fatalf("%s %s allowed = %v, want %v", tc.method, tc.path, got, tc.want)
+			}
+		})
+	}
+}

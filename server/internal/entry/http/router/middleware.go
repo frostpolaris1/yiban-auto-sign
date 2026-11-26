@@ -370,9 +370,40 @@ func unsafeMethod(method string) bool {
 	return false
 }
 
+// mustChangePasswordAllowed 报告强制改密会话能否访问当前路由。
+//
+// # 威胁模型
+// 只把 must_change_password 写进会话、由 UI 自己引导改密，不构成强制：
+// 绕过 UI 直接调 API 的客户端仍拥有全部权限。门必须在 authenticate()
+// 解析出会话之后、进入处理器之前拒绝，且必须挡下注销账号——
+// 否则先删号、再在恢复窗内恢复，就能绕开改密。
+//
+// # 放行面
+// publicPaths 全部优先放行：登出与恢复必须可用，否则用户被永久卡死；
+// 另加精确 GET /api/auth/me（UI 读标志与 CSRF 令牌）与
+// 精确 POST /api/auth/change-password（唯一出路）。
+//
+// 判断只看 Gin 注册形状 c.FullPath()：前缀匹配会让 /api/auth/me/xxx
+// 之类漏过；方法与路径必须同时匹配。
+func mustChangePasswordAllowed(c *gin.Context) bool {
+	route := c.FullPath()
+	if _, public := publicPaths[route]; public {
+		return true
+	}
+	switch route {
+	case "/api/auth/me":
+		return c.Request.Method == http.MethodGet
+	case "/api/auth/change-password":
+		return c.Request.Method == http.MethodPost
+	}
+	return false
+}
+
 // authenticate 解析会话 cookie。
 // 未知路由落到 NoRoute（404）；公开路由无会话也放行。
 // **数据库故障不是未登录**：只有 ErrNoSession 走 401 与公开路径。
+// 解析出的会话若带 must_change_password，除 publicPaths、
+// 精确 GET /api/auth/me 与精确 POST /api/auth/change-password 外一律 403。
 func (s *server) authenticate() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		route := c.FullPath()
@@ -384,6 +415,14 @@ func (s *server) authenticate() gin.HandlerFunc {
 			sess, rerr := s.sessions.Resolve(c.Request.Context(), token)
 			if rerr == nil {
 				c.Request = c.Request.WithContext(auth.WithSession(c.Request.Context(), sess))
+				// 强制改密的硬门：标志只写进会话、等 UI 自觉改密，等于没有强制。
+				// 门在处理器之前，注销账号与全部业务 API 一并挡下。
+				// 403 用既有 forbidden 码与可行动文案；不回显口令或会话令牌。
+				if sess.User.MustChangePassword && !mustChangePasswordAllowed(c) {
+					respond.Error(c.Writer, c.Request, errs.New(errs.CodeForbidden, "password change required"))
+					c.Abort()
+					return
+				}
 				c.Next()
 				return
 			}
