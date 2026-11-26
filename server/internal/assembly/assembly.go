@@ -267,6 +267,13 @@ const (
 	httpIdleTimeout       = 60 * time.Second
 )
 
+// startupMigrateBudget 是启动时应用迁移的总预算（P0-3）。
+// 00032 起迁移里有 CREATE INDEX CONCURRENTLY：大表建索引可能远超 30s，
+// 旧预算会取消 CIC、留下 INVALID 索引，systemd 重启环里反复失败。
+// 大表迁移仍应优先在停服窗口跑 yiban-cli migrate / update.sh（5 分钟预算），
+// 启动自愈只兜小步迁移；失败信息指向 deploy/README.md §7.1。
+const startupMigrateBudget = 10 * time.Minute
+
 // newServerFromStack 用已装配好的 Stack 构造未启动的 server。
 //
 // closeOnShutdown 决定 HTTP 关闭是否释放连接池：
@@ -359,11 +366,14 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		logger.Warn("auth endpoints are disabled: YIBAN_DATABASE_URL is empty")
 		logger.Warn("user, school, admin and account endpoints return 501: YIBAN_DATABASE_URL is empty")
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), startupMigrateBudget)
 		defer cancel()
 
 		if _, err := pg.Migrate(ctx, cfg.DatabaseURL); err != nil {
-			return nil, fmt.Errorf("assembly: migrate: %w", err)
+			// 被取消的 CONCURRENTLY 可能留下 INVALID 索引，恢复步骤在 §7.1。
+			return nil, fmt.Errorf("assembly: migrate: %w "+
+				"(a cancelled CONCURRENTLY build may leave INVALID indexes; "+
+				"see deploy/README.md §7.1)", err)
 		}
 		var err error
 		db, err = pg.Open(ctx, pg.Options{DSN: cfg.DatabaseURL})
