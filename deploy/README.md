@@ -637,9 +637,11 @@ sudo systemctl restart yiban.service
 | 进程起不来 | `YIBAN_UI_DIR` 指向的目录缺 `index.html` 时服务端**拒绝启动**。这是有意行为 |
 | 上传/读取照片失败（裸机） | `server.env` 的 `YIBAN_PHOTO_DIR` 是否等于单元里 `ReadWritePaths` 的路径；改目录后重跑 `install.sh` 再 `systemctl restart` |
 
-### 7.1 00032 索引失败处理
+### 7.1 00032/00033 索引失败处理
 
-`00032` 用 `CREATE INDEX CONCURRENTLY` 给 `sign_tasks` 建两个按日索引。
+`00032` 与 `00033` 都用 `CREATE INDEX CONCURRENTLY` 建索引；`00032` 给
+`sign_tasks` 建两个按日索引，`00033` 给全局账号列表建
+`idx_accounts_created_live`。
 并发建索引不在事务里：连接中断或进程被杀会留下 `INVALID` 索引——
 索引定义还在，查询不选它。
 
@@ -658,7 +660,8 @@ sudo systemctl restart yiban.service
 SELECT c.relname, i.indisvalid
   FROM pg_index i
   JOIN pg_class c ON c.oid = i.indexrelid
- WHERE c.relname IN ('idx_sign_tasks_day_run_at_id', 'idx_sign_tasks_day_state');
+ WHERE c.relname IN ('idx_sign_tasks_day_run_at_id', 'idx_sign_tasks_day_state',
+                     'idx_accounts_created_live');
 ```
 
 只处理 `indisvalid = false` 的那一条。**禁止无条件同时 DROP 两条**：
@@ -696,6 +699,16 @@ yiban-cli migrate
 `00032` 会重跑：`ALTER TABLE` 幂等，两索引 `IF NOT EXISTS` 只补缺的那条，
 `ANALYZE` 与两个 autovacuum 设置也会重新执行。若 CIC 又失败，重复本节。
 恢复 A 有 e2e 覆盖（模拟 INVALID 后手工重建）；恢复 B 仅文档核对，未做自动化。
+
+`00033` 的恢复同理：只删 INVALID 的 `idx_accounts_created_live`，按原定义重建并
+`ANALYZE accounts;`；版本行若要退回，是 `DELETE FROM goose_db_version WHERE version_id = 33;`。
+
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS idx_accounts_created_live;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_accounts_created_live
+    ON accounts (created_at DESC, id DESC) WHERE deleted_at IS NULL;
+ANALYZE accounts;
+```
 
 **升级大表时**
 

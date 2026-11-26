@@ -195,11 +195,13 @@ func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID stri
 	}
 	where += accountSearchWhere(search, &args)
 	query, args, err := appendKeyset(`SELECT `+accountColumns+` FROM accounts`+where,
-		args, cursor, "created_at", "id")
+		args, cursor, "accounts.created_at", "accounts.id")
 	if err != nil {
 		return nil, "", err
 	}
-	query += ` ORDER BY created_at DESC, id DESC`
+	// 必须限定 accounts.id：选择列把 id 输出成 text，裸 id 会解析到输出列，
+	// 令 (created_at DESC, id DESC) 索引的第二列失去有序性。
+	query += ` ORDER BY accounts.created_at DESC, accounts.id DESC`
 	query, args = appendLimit(query, args, limit)
 
 	rows, err := r.db.q(ctx).Query(ctx, query, args...)

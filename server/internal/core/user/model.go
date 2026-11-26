@@ -85,7 +85,7 @@ type Counts struct {
 
 // OwnerCounts 是单个用户名下未软删账号的三计数。
 // Account 全部、Pending 只 pending、Review 含 pending 与 rejected，
-// 与列表的账号聚合列（adapters/pg 的 account_counts）同一口径。
+// 与列表/Counts 的账号聚合（adapters/pg 的 userAccountAggregate）同一口径。
 // 变更接口（Update/Restore）的行扫描不含聚合列，
 // 用例层在写成功后用本结构补齐 Record 的三个计数字段。
 type OwnerCounts struct {
