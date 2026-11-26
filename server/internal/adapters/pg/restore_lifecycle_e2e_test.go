@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
@@ -81,7 +82,7 @@ func TestRestoreAdminWaitsForOwnerSoftDelete(t *testing.T) {
 	}()
 	<-ready
 
-	started := time.Now()
+	started := coreclock.System{}.Now()
 	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 		_, err := e.accts.Restore(ctx, corescope.Master(), account.ID, 10000)
 		return err
