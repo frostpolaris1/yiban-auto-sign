@@ -117,6 +117,11 @@ type Repo interface {
 	// 只处理已软删且已锁定的行；审计行不动。
 	Purge(ctx context.Context, id string) error
 	RestoreSelf(ctx context.Context, scope corescope.Scope, id, by string, notBefore time.Time, limit int) (Record, error)
+	// DiscoveryCandidatesForSchool 返回某校可用于窗口发现的活跃账号，
+	// 按 last_verified_at DESC NULLS LAST, created_at ASC, id ASC 排序。
+	// 从未验证的新号排在已验证行之后：单坏号不挡住全校发现。
+	// limit 由适配器限定在 1..N；非法值报 validation。
+	DiscoveryCandidatesForSchool(ctx context.Context, schoolID string, limit int) ([]Record, error)
 	Credential(ctx context.Context, scope corescope.Scope, accountID string) (Credential, error)
 	// Credentials 批量读多个账号的凭据，按账号 ID 建索引。
 	// 空 ids 回空 map；软删行与作用域外的行不出现在结果里。

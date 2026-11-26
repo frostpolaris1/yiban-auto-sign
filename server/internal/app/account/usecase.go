@@ -248,6 +248,23 @@ func (s *Service) FirstActiveForSchool(ctx context.Context, schoolID string) (Re
 	return page.Items[0], nil
 }
 
+// DiscoveryCandidatesForSchool 返回某校窗口发现的多候选账号，最近验证者在前。
+//
+// 供组合根轮换用：一个坏号只让它自己那一轮失败，不把全校拖进连续失败。
+// 排序与 limit 范围归仓储一处实现，用例层不再排一次。
+// 空候选沿用 FirstActiveForSchool 的 not_found 文案：计划层据此回退缓存
+// 或默认窗口，并与「无可用账号」区分于平台故障。
+func (s *Service) DiscoveryCandidatesForSchool(ctx context.Context, schoolID string, limit int) ([]Record, error) {
+	candidates, err := s.deps.Accounts.DiscoveryCandidatesForSchool(ctx, schoolID, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, errs.New(errs.CodeNotFound, "no active account for window discovery")
+	}
+	return candidates, nil
+}
+
 // Get 在作用域内读一个账号。跨校或已软删返回 404。
 func (s *Service) Get(ctx context.Context, scope corescope.Scope, id string) (Record, error) {
 	if err := app.RequireScope(scope); err != nil {

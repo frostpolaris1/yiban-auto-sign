@@ -69,14 +69,17 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreimage "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/image"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
+	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	corewebhook "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/webhook"
+	corewindow "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/window"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	audithttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/audit"
@@ -849,7 +852,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Windows:  scheduleRepo,
 			Plans:    scheduleRepo,
 			Accounts: scheduleRepo,
-			Discover: scheduleDiscoverer{provider: gated, accounts: accountSvc, tasks: scheduleRepo},
+			Discover: scheduleDiscoverer{provider: gated, accounts: accountSvc, tasks: scheduleRepo, Logger: logger},
 			Prefs:    prefRepo,
 			// 用户自选读面的当日账号/任务解析：与计划仓储同源。
 			Self: scheduleRepo,
@@ -1331,16 +1334,42 @@ func (r accountDeviceReader) DeviceState(ctx context.Context, accountID string, 
 	}, nil
 }
 
-// scheduleDiscoverer 用同校一个活跃账号读取平台窗口。
+// discoveryCandidates 是窗口发现一次最多尝试的候选账号数。
 //
-// 窗口属于任务，平台调用却需要登录凭据：借首个活跃账号的登录态。
-// 账号选择策略在 app/account.FirstActiveForSchool；本类型只做接线：
-// 读任务、取凭据、调 provider。该校没有可用账号时返回 not_found，
+// 取 3 而不是 1：候选来自同校 active 账号，任何一个都可能是新注册的
+// 坏号或凭据失效号，只认一个会让全校发现连续失败并回退默认窗口。
+// 也不取更多：上游一次窗口探测要登录平台，3 次已把"单坏号不污染全校"
+// 与探测成本折中；固定常量，故意不做成配置面。
+const discoveryCandidates = 3
+
+// discoveryAccounts 是窗口发现需要的账号能力面。
+//
+// 只为可替换：生产注入 *appaccount.Service，测试注入假实现。
+type discoveryAccounts interface {
+	DiscoveryCandidatesForSchool(ctx context.Context, schoolID string, limit int) ([]appaccount.Record, error)
+	SigningCredential(ctx context.Context, scope corescope.Scope, id string) (appaccount.SigningCredential, error)
+}
+
+// discoveryTaskReader 读校级任务，窄接口便于替换。
+type discoveryTaskReader interface {
+	Task(ctx context.Context, schoolTaskID string) (coreschedule.TaskInfo, error)
+}
+
+// scheduleDiscoverer 用同校若干活跃账号轮换读取平台窗口。
+//
+// 窗口属于任务，平台调用却需要登录凭据：借账号的登录态。
+// 候选顺序在 app/account.DiscoveryCandidatesForSchool（最近验证优先，
+// 未验证的新号靠后）；本类型只做轮换：按序取凭据、调 provider，
+// 首个合法窗口即成功。账号级失败（凭据失效、设备未绑定、被拦、
+// 挑战、暂态）只 warn 并换下一个号；急停与 ctx 取消立即返回，
+// 不把停机当账号问题。全部候选失败时返回最后一个错误，保留上层
+// 既有的回退与告警语义；该校没有可用账号时返回 not_found，
 // 计划层按缓存或回退窗口继续，不把"没有可借用账号"当成平台故障。
 type scheduleDiscoverer struct {
 	provider windowDiscoverer
-	accounts *appaccount.Service
-	tasks    *pg.ScheduleRepo
+	accounts discoveryAccounts
+	tasks    discoveryTaskReader
+	Logger   *slog.Logger
 }
 
 // DiscoverWindow 读一个任务当日的平台窗口。
@@ -1349,16 +1378,53 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 	if err != nil {
 		return contract.Window{}, err
 	}
-	acct, err := d.accounts.FirstActiveForSchool(ctx, task.SchoolID)
+	candidates, err := d.accounts.DiscoveryCandidatesForSchool(ctx, task.SchoolID, discoveryCandidates)
 	if err != nil {
 		return contract.Window{}, err
 	}
+	if len(candidates) == 0 {
+		return contract.Window{}, coreerrs.New(coreerrs.CodeNotFound, "no active account for window discovery")
+	}
+	logger := d.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	var lastErr error
+	for _, acct := range candidates {
+		if err := ctx.Err(); err != nil {
+			return contract.Window{}, err
+		}
+		window, err := d.discoverFor(ctx, task.SchoolID, acct)
+		if err == nil {
+			return window, nil
+		}
+		if discoveryAborted(err) {
+			return contract.Window{}, err
+		}
+		lastErr = err
+		// 失败只记标识与闭集分类：平台报错原文可能带手机号或凭据。
+		outcome, class := discoveryFailureClass(err)
+		attrs := []any{logfield.KeySchoolID, task.SchoolID, logfield.KeyAccountID, acct.ID}
+		if outcome != "" {
+			attrs = append(attrs, logfield.KeyOutcome, outcome)
+		}
+		attrs = append(attrs, logfield.KeyError, class)
+		logger.Warn("window discovery: candidate failed", attrs...)
+	}
+	return contract.Window{}, lastErr
+}
+
+// discoverFor 用一个候选账号探一次窗口。
+//
+// 凭据读取失败也算该候选失败：账号行还在但凭据已不可用，
+// 正是需要轮换到下一个号的情形。
+func (d scheduleDiscoverer) discoverFor(ctx context.Context, schoolID string, acct appaccount.Record) (contract.Window, error) {
 	cred, err := d.accounts.SigningCredential(ctx, corescope.Master(), acct.ID)
 	if err != nil {
 		return contract.Window{}, err
 	}
-	return d.provider.DiscoverWindow(ctx, contract.DiscoverRequest{
-		Account: contract.AccountRef{ID: acct.ID, SchoolID: task.SchoolID, Platform: "yiban"},
+	window, err := d.provider.DiscoverWindow(ctx, contract.DiscoverRequest{
+		Account: contract.AccountRef{ID: acct.ID, SchoolID: schoolID, Platform: "yiban"},
 		Credential: contract.Credential{
 			Phone:      cred.Phone,
 			Password:   cred.Password,
@@ -1366,6 +1432,43 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 			PhoneModel: cred.PhoneModel,
 		},
 	})
+	if err != nil {
+		return contract.Window{}, err
+	}
+	// provider 无错也可能给零窗口或反向窗口：那不是一个可排期的结论，
+	// 不能当成全校成功，只按这一个候选失败处理。
+	if err := corewindow.Validate(corewindow.Window{Start: window.Start, End: window.End}); err != nil {
+		return contract.Window{}, coreerrs.New(coreerrs.CodeUpstream, "window discovery: provider returned an invalid window")
+	}
+	return window, nil
+}
+
+// discoveryAborted 报告该错误是否必须立即放弃轮换。
+//
+// 急停是全局状态，ctx 取消是调用方停机：两者都不是"这个号坏了"，
+// 继续换号只会拉长停机响应，并让上层把停机误记成账号问题。
+func discoveryAborted(err error) bool {
+	var paused *coreerrs.PausedError
+	if errors.As(err, &paused) {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// discoveryFailureClass 把候选失败压成两个闭集字段。
+//
+// outcome 只取 contract.Outcome 的稳定值；error 只取稳定错误码或
+// mask.SafeErrorText 的三个分类词，绝不回原始消息——平台报错里
+// 可能带凭据或手机号。
+func discoveryFailureClass(err error) (outcome, class string) {
+	var outcomeErr *contract.OutcomeError
+	if errors.As(err, &outcomeErr) {
+		outcome = string(outcomeErr.Outcome)
+	}
+	if e := coreerrs.From(err); e != nil && e.Code != coreerrs.CodeInternal {
+		return outcome, string(e.Code)
+	}
+	return outcome, coremask.SafeErrorText(err)
 }
 
 // WorkerNotifier 把执行循环的任务事件转成总线事件。

@@ -30,6 +30,23 @@ type fakeListRepo struct {
 	credentialIDs   []string
 	credentials     map[string]Credential
 	credentialErr   error
+
+	discoveryCalls      int
+	discoverySchoolID   string
+	discoveryLimit      int
+	discoveryCandidates []Record
+	discoveryErr        error
+}
+
+// DiscoveryCandidatesForSchool 记录候选查询的入参与返回。
+func (f *fakeListRepo) DiscoveryCandidatesForSchool(_ context.Context, schoolID string, limit int) ([]Record, error) {
+	f.discoveryCalls++
+	f.discoverySchoolID = schoolID
+	f.discoveryLimit = limit
+	if f.discoveryErr != nil {
+		return nil, f.discoveryErr
+	}
+	return f.discoveryCandidates, nil
 }
 
 func (f *fakeListRepo) List(_ context.Context, scope corescope.Scope, schoolID string, status Status, _, _ string, limit int, _ bool) ([]Record, string, error) {
@@ -170,6 +187,62 @@ func TestFirstActiveForSchoolEmptyIsNotFound(t *testing.T) {
 	}
 	if code := errs.From(err).Code; code != errs.CodeNotFound {
 		t.Fatalf("code = %q, want not_found", code)
+	}
+}
+
+// 候选查询把院校与 limit 原样交给仓储，顺序不动：
+// 排序口径只有仓储一处实现，用例层不得再排一次。
+func TestDiscoveryCandidatesForSchoolForwardsFilter(t *testing.T) {
+	repo := &fakeListRepo{discoveryCandidates: []Record{{ID: "acc-1"}, {ID: "acc-2"}, {ID: "acc-3"}}}
+	svc := newListService(t, repo, nil)
+
+	got, err := svc.DiscoveryCandidatesForSchool(context.Background(), "school-1", 3)
+	if err != nil {
+		t.Fatalf("DiscoveryCandidatesForSchool: %v", err)
+	}
+	if repo.discoveryCalls != 1 {
+		t.Fatalf("repo queried %d times, want 1", repo.discoveryCalls)
+	}
+	if repo.discoverySchoolID != "school-1" || repo.discoveryLimit != 3 {
+		t.Fatalf("query = school %q limit %d, want school-1/3", repo.discoverySchoolID, repo.discoveryLimit)
+	}
+	want := []string{"acc-1", "acc-2", "acc-3"}
+	if len(got) != len(want) {
+		t.Fatalf("returned %d candidates, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].ID != want[i] {
+			t.Fatalf("candidate %d is %q, want %q", i, got[i].ID, want[i])
+		}
+	}
+}
+
+// 空候选沿用旧方法的 not_found 文案：计划层据此回退缓存窗口，
+// 不把它当平台故障，也不返回空切片伪装成功。
+func TestDiscoveryCandidatesForSchoolEmptyIsNotFound(t *testing.T) {
+	repo := &fakeListRepo{}
+	svc := newListService(t, repo, nil)
+
+	_, err := svc.DiscoveryCandidatesForSchool(context.Background(), "school-1", 3)
+	if err == nil {
+		t.Fatal("empty school returned candidates")
+	}
+	if code := errs.From(err).Code; code != errs.CodeNotFound {
+		t.Fatalf("code = %q, want not_found", code)
+	}
+}
+
+// 仓储错误原样上抛：包装成 not_found 会让读库故障触发全校回退默认窗口。
+func TestDiscoveryCandidatesForSchoolRepoErrorPassesThrough(t *testing.T) {
+	repo := &fakeListRepo{discoveryErr: errs.New(errs.CodeInternal, "db connection lost")}
+	svc := newListService(t, repo, nil)
+
+	_, err := svc.DiscoveryCandidatesForSchool(context.Background(), "school-1", 3)
+	if err == nil {
+		t.Fatal("repo failure was swallowed")
+	}
+	if code := errs.From(err).Code; code != errs.CodeInternal {
+		t.Fatalf("code = %q, want internal", code)
 	}
 }
 
