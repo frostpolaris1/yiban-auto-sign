@@ -24,8 +24,16 @@ bash scripts/e2e/deploy-baremetal-e2e.sh
 bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>
 ```
 
-三条都在仓库根目录执行。三条都在 WSL 或 Linux 上跑。
-三条都写 `--log-dir` 指定目录与 docker 资源，不碰生产路径。
+UI 签名链本地用例（不需要 docker，可按用例单跑）：
+
+```bash
+bash scripts/e2e/ui-signing-e2e.sh success
+bash scripts/e2e/ui-signing-e2e.sh tampered extra symlink no-ui-entry
+```
+
+四条都在仓库根目录执行，且都在 WSL 或 Linux 上跑。前三条的容器资源
+与日志都走 `--log-dir`，不碰生产路径；UI 用例只需要 bash、openssl、
+sha256sum（不碰 docker，单跑一例只需几秒）。
 
 常用选项：
 
@@ -83,7 +91,8 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 | B3 | 全新 PostgreSQL 18；public 表数为 0 |
 | B4 | 用 `golang:1.27-alpine` 真编译 server 与 cli |
 | B4c | 用 `node:22-alpine` 真跑 `npm ci && npm run build`；产物含 `index.html` 与 `assets/*.js`（可复用外部产物排障） |
-| B4b | 对真编译产物签发清单→验签通过 |
+| B4b | 对真编译产物 + UI 清单（`ui-SHA256SUMS`）签发 manifest→验签通过 |
+| B4d | 本地跑 `ui-signing-e2e.sh`：篡改 `index.html`、清单外文件、软链、清单与目录互锁均被拒；正常 UI 换新并留 `ui.bak`；所有拒绝都发生在停服/换件之前 |
 | B5 | OS 容器 systemd 就绪；`/etc/yiban`、`yiban` 用户、二进制均不存在 |
 | B6 | `install.sh --ui-dir` 退出 0，输出 `install complete: healthz ok` |
 | B6b | `systemd-analyze verify` 通过；单元含 `NoNewPrivileges=true`/`PrivateTmp=true`/`UMask=0077`/`ProtectSystem=strict`/`ProtectHome=true`/`ReadWritePaths=-/var/lib/yiban/photos`；`systemctl show` 的 `NoNewPrivileges`/`PrivateTmp`/`ProtectSystem`/`ProtectHome`/`UMask` 与之一致；`ReadWritePaths` 含照片目录 |
@@ -112,6 +121,7 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 | 容器 | 自动轨 | `.github/workflows/deploy-gate.yml` 的 `container-deploy-e2e` 作业 |
 | 裸机 | **发布前手跑项** | 本文件 §1；脚本每次运行打印 MANUAL 行 |
 | 回滚演练 | **发布前手跑项** | 本文件 §1 与 §8；脚本每次运行打印 MANUAL 行 |
+| UI 签名链 | 随裸机演练手跑（可单跑） | 本文件 §1；`scripts/e2e/ui-signing-e2e.sh` |
 
 裸机与回滚演练不进自动轨的理由：它们要求 docker 的 `--privileged`
 与 host cgroup。该形态尚未在 GitHub 托管 runner 上实测。

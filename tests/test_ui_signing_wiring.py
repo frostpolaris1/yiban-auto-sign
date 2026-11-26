@@ -37,6 +37,9 @@ UPDATE_SH = os.path.join(BASE, "deploy", "baremetal", "update.sh")
 SIGNING_DOC = os.path.join(BASE, "docs", "dev", "release-signing.md")
 RELEASE_DOC = os.path.join(BASE, "deploy", "release.md")
 TOOLING_GATE = os.path.join(BASE, "scripts", "tooling-gate.sh")
+UI_SIGNING_E2E = os.path.join(BASE, "scripts", "e2e", "ui-signing-e2e.sh")
+BARE_METAL_E2E = os.path.join(BASE, "scripts", "e2e", "deploy-baremetal-e2e.sh")
+E2E_DOC = os.path.join(BASE, "docs", "dev", "deploy-e2e.md")
 BASH = shutil.which("bash")
 SHA256SUM = shutil.which("sha256sum")
 GIT = shutil.which("git")
@@ -345,6 +348,50 @@ class UpdateShUIWiringTest(unittest.TestCase):
         release = read_repo("deploy/release.md")
         for needle in ("ui-SHA256SUMS", "make-ui-sums.sh"):
             self.assertIn(needle, release, "发布手册缺 UI 签名链：" + needle)
+
+
+class UISigningE2EWiringTest(unittest.TestCase):
+    """④ UI 签名链的本地 e2e 必须能单跑，且接进裸机演练与文档。"""
+
+    def test_script_exists_and_is_executable(self):
+        self.assertTrue(os.path.isfile(UI_SIGNING_E2E), "缺 scripts/e2e/ui-signing-e2e.sh")
+        self.assertTrue(os.access(UI_SIGNING_E2E, os.X_OK), "e2e 脚本必须可执行")
+
+    def test_each_case_runs_alone_without_docker(self):
+        if not BASH:
+            self.skipTest("no bash")
+        for case in ("success", "tampered", "extra", "no-ui-entry"):
+            with self.subTest(case=case):
+                proc = run_bash([UI_SIGNING_E2E, case], cwd=BASE)
+                self.assertEqual(
+                    proc.returncode, 0,
+                    "单跑用例 %s 必须绿：rc=%s\nstdout:%s\nstderr:%s"
+                    % (case, proc.returncode, proc.stdout[-2000:], proc.stderr[-2000:]),
+                )
+                self.assertIn("passed=1 failed=0", proc.stdout)
+
+    def test_baremetal_drill_signs_ui_list_and_runs_the_local_cases(self):
+        text = read_repo("scripts/e2e/deploy-baremetal-e2e.sh")
+        self.assertTrue(
+            'make-ui-sums.sh" "$UI_OUT" "$SIGN_DIR/ui-SHA256SUMS"' in text,
+            "B4b 必须为 UI 产物生成清单",
+        )
+        self.assertTrue(
+            '"$BIN_OUT/yiban-server" "$BIN_OUT/yiban-cli" "$SIGN_DIR/ui-SHA256SUMS"' in text,
+            "B4b 的 manifest 必须收 UI 清单作第三件",
+        )
+        self.assertTrue(
+            '"$REPO/scripts/e2e/ui-signing-e2e.sh"' in text,
+            "裸机演练必须跑 UI 签名链本地用例（失败即红）",
+        )
+
+    def test_docs_and_tooling_gate_cover_the_new_e2e(self):
+        doc = read_repo("docs/dev/deploy-e2e.md")
+        for needle in ("ui-signing-e2e.sh", "B4d"):
+            self.assertIn(needle, doc, "e2e 文档缺 UI 签名链说明：" + needle)
+        gate = read_repo("scripts/tooling-gate.sh")
+        self.assertIn("scripts/e2e/ui-signing-e2e.sh", gate,
+                      "新增 e2e 脚本必须进 tooling-gate 的 SHELL_FILES")
 
 
 if __name__ == "__main__":

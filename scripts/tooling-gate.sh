@@ -32,6 +32,7 @@ SHELL_FILES=(
     scripts/e2e/deploy-container-e2e.sh
     scripts/e2e/deploy-baremetal-e2e.sh
     scripts/e2e/update-rollback-e2e.sh
+    scripts/e2e/ui-signing-e2e.sh
     scripts/e2e/lib/deploy-e2e.sh
     scripts/verify-stacks.sh
     scripts/workflow-run-interp-gate.sh
