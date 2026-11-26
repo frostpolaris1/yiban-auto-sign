@@ -6,6 +6,7 @@ package auth
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -30,6 +31,26 @@ func (c *samplerClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.t = c.t.Add(d)
+}
+
+// 同一 IP 的并发放行必须恰好一次；锁外判定会重复放行。
+func TestUnknownLoginSamplerConcurrentSameIPAllowsOnce(t *testing.T) {
+	s := newUnknownLoginSampler(newSamplerClock())
+	var allowed atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ok, _ := s.allow("203.0.113.77"); ok {
+				allowed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := allowed.Load(); got != 1 {
+		t.Fatalf("concurrent allows = %d, want exactly 1", got)
+	}
 }
 
 // 表满 4096 后新键被抑制且长度不增；过期键会被 sweep 回收。

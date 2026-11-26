@@ -142,6 +142,9 @@ func wantUnknownLoginAudit(t *testing.T, entry coreaudit.Entry) {
 	if entry.Detail["count"] != 1 {
 		t.Fatalf("detail count = %v, want 1", entry.Detail["count"])
 	}
+	if len(entry.Detail) != 2 {
+		t.Fatalf("detail has %d keys, want exactly reason+count: %v", len(entry.Detail), entry.Detail)
+	}
 }
 
 // isLowerHex 判断指纹是否为小写十六进制串。
@@ -153,20 +156,20 @@ func isLowerHex(s string) bool {
 	return err == nil
 }
 
-// 同一 IP 连打 3 次：3 次 401、3 次 dummy KDF、3 次 Warn，仅 1 条审计。
+// 同一 IP 连打 10 次：10 次 401、10 次 dummy KDF、10 次 Warn，仅 1 条审计。
 func TestUnknownEmailLoginAuditsOncePerIPPerMinute(t *testing.T) {
 	clk := newMutableClock()
 	capture := &warnCapture{}
 	h := newSamplingHarness(t, clk, capture)
 	ctx := t.Context()
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 10; i++ {
 		if err := loginFromIP(ctx, h, "203.0.113.10", "nobody@example.com"); err != appauth.ErrInvalidCredentials {
 			t.Fatalf("attempt %d = %v, want ErrInvalidCredentials", i+1, err)
 		}
 	}
-	if got := h.kdf.verifies.Load(); got != 3 {
-		t.Fatalf("dummy KDF verifies = %d, want 3", got)
+	if got := h.kdf.verifies.Load(); got != 10 {
+		t.Fatalf("dummy KDF verifies = %d, want 10", got)
 	}
 	if len(h.audits.entries) != 1 {
 		t.Fatalf("audit rows = %d, want 1: %+v", len(h.audits.entries), h.audits.entries)
@@ -174,15 +177,17 @@ func TestUnknownEmailLoginAuditsOncePerIPPerMinute(t *testing.T) {
 	wantUnknownLoginAudit(t, h.audits.entries[0])
 
 	warns := capture.snapshot()
-	if len(warns) != 3 {
-		t.Fatalf("warn rows = %d, want 3", len(warns))
+	if len(warns) != 10 {
+		t.Fatalf("warn rows = %d, want 10", len(warns))
 	}
 	hashes := make([]string, 0, len(warns))
 	for _, r := range warns {
 		hashes = append(hashes, wantUnknownWarn(t, r))
 	}
-	if hashes[0] != hashes[1] || hashes[1] != hashes[2] {
-		t.Fatalf("ip_hash differs across the same IP: %v", hashes)
+	for i := 1; i < len(hashes); i++ {
+		if hashes[i] != hashes[0] {
+			t.Fatalf("ip_hash differs across the same IP at %d: %v", i, hashes)
+		}
 	}
 	if len(hashes[0]) != 16 || !isLowerHex(hashes[0]) {
 		t.Fatalf("ip_hash = %q, want 16 lowercase hex chars", hashes[0])
@@ -262,7 +267,7 @@ func TestUnknownEmailLoginWithoutMetaUsesFallbackBucket(t *testing.T) {
 }
 
 // 抽样审计写失败第一次返回错误；同 IP 第二次被抑制，回到同形 401。
-func TestUnknownEmailAuditFailureDoesNotChange401(t *testing.T) {
+func TestUnknownEmailAuditFailureFailsClosedThenSuppresses(t *testing.T) {
 	h := newSamplingHarness(t, newMutableClock(), &warnCapture{})
 	ctx := t.Context()
 	auditErr := errors.New("audit store down")
