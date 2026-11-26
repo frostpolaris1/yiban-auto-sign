@@ -3,7 +3,9 @@
 // # 功能
 // Reauthenticate 让当前会话用户在危险请求上重新提交**自己的登录口令**。
 // 校验读用户、KDF.Verify 与 active 判定；用户不存在与坏口令同路径垫时。
-// 失败与超限各写一条无 PII 审计；本文件**不**做任何业务写入。
+// 失败每次写一条无 PII 审计；超限在同一窗口只写一条汇总审计，
+// 其余 429 只记 Warn（界定了公开端点可被刷写的上界）。
+// 本文件**不**做任何业务写入。
 //
 // # 归属
 // app 层用例。入口层通过窄接口注入 account/user handler，
@@ -71,8 +73,11 @@ func (e *ReauthThrottled) Error() string { return e.err.Error() }
 func (e *ReauthThrottled) Unwrap() error { return e.err }
 
 // reauthFailures 记录一个用户的失败（占坑）时刻。
+// throttledAudited 标记本窗口的首条 429 汇总审计是否已放行：
+// 同一窗口只写一条，成功校验 clear 后随状态一起消失。
 type reauthFailures struct {
-	at []time.Time
+	at               []time.Time
+	throttledAudited bool
 }
 
 // reauthThrottle 是进程内按用户的失败节流。
@@ -97,8 +102,10 @@ func newReauthThrottle(clk clock.Clock, limit int, window time.Duration) *reauth
 // reserve 原子占坑：清窗、判限与递增在同一把锁内完成。
 // 并发请求最多放行 limit 个坑位，其余不得付 KDF 成本。
 // ok=false 表示已达上限；wait 是最早一个坑位离开窗口的剩余时长；
-// count 是窗口内的失败条数（ok=false 时停在 limit）。
-func (t *reauthThrottle) reserve(userID string) (wait time.Duration, count int, ok bool) {
+// count 是窗口内的失败条数（ok=false 时停在 limit）；
+// auditThrottle=true 表示本次是窗口内首次超限、应写唯一一条 429 汇总审计。
+// 标记在锁内置位，故并发超限最多一个调用看到 true。
+func (t *reauthThrottle) reserve(userID string) (wait time.Duration, count int, ok bool, auditThrottle bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.clock.Now().UTC()
@@ -112,14 +119,19 @@ func (t *reauthThrottle) reserve(userID string) (wait time.Duration, count int, 
 		if wait < 0 {
 			wait = 0
 		}
-		return wait, len(state.at), false
+		auditThrottle = !state.throttledAudited
+		if auditThrottle {
+			state.throttledAudited = true
+		}
+		return wait, len(state.at), false, auditThrottle
 	}
 	if state == nil {
 		state = &reauthFailures{}
 		t.fails[userID] = state
 	}
 	state.at = append(state.at, now)
-	return 0, len(state.at), true
+	state.throttledAudited = false
+	return 0, len(state.at), true, false
 }
 
 // release 撤销一次占坑。基础设施错误不是用户的失败，不得计入。
@@ -143,6 +155,17 @@ func (t *reauthThrottle) clear(userID string) {
 	delete(t.fails, userID)
 }
 
+// rollbackThrottleAudit 撤销「本窗口已写汇总审计」的标记。
+// 仅在审计写失败时调用：允许同窗口的后续超限重试写一次，
+// 并发下宁可重复也不漏记。成功写入后标记保持置位。
+func (t *reauthThrottle) rollbackThrottleAudit(userID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if state, ok := t.fails[userID]; ok {
+		state.throttledAudited = false
+	}
+}
+
 // prune 原地剔除窗口外时刻，返回保留条数。
 func (f *reauthFailures) prune(now time.Time, window time.Duration) int {
 	kept := f.at[:0]
@@ -162,20 +185,28 @@ func (f *reauthFailures) prune(now time.Time, window time.Duration) int {
 // 节流：付 KDF 成本**之前**原子占坑；窗口内失败达 ReauthFailureLimit 后，
 // 本方法回 *ReauthThrottled（rate_limited + Retry-After 秒数），
 // 不付 KDF 成本；校验成功清零计数。
-// 每次 403 与 429 各写一条 auth.reauth_failed 审计（detail 无口令、无邮箱）；
-// 审计写失败即返回错误，不把未留痕的失败伪装成 403/429。
+// 每次 403 写一条 auth.reauth_failed 审计；同一 5 分钟窗口的首次 429
+// 再写一条汇总审计（detail 无口令、无邮箱），其后只 Warn。
+// 审计写失败即返回错误，不把未留痕的失败伪装成 403/429；
+// 汇总审计失败会回滚标记，让同窗口的下一次超限重试补写。
 // 日志只记 user_id 与结果，口令不出现在任何日志字段里。
 func (s *Service) Reauthenticate(ctx context.Context, userID, password string) error {
 	if password == "" {
 		// 缺口令是入口层判 400 的形状；走到这里按缺值处理。
 		return errs.New(errs.CodeValidation, "current_password is required")
 	}
-	wait, count, ok := s.reauth.reserve(userID)
+	wait, count, ok, auditThrottle := s.reauth.reserve(userID)
 	if !ok {
-		// 超限也留证据：审计写失败即失败关闭，不把 429 当成功。
-		role, label := s.reauthActor(ctx, userID)
-		if err := s.recordReauthFailure(ctx, userID, role, label, count, "throttled"); err != nil {
-			return err
+		if auditThrottle {
+			// 窗口内首次超限：写唯一一条汇总审计。写失败回滚标记并失败关闭，
+			// 让同窗口的下一次超限重试补写，而不是把 429 当成功。
+			role, label := s.reauthActor(ctx, userID)
+			if err := s.recordReauthFailure(ctx, userID, role, label, count, "throttled"); err != nil {
+				s.reauth.rollbackThrottleAudit(userID)
+				return err
+			}
+		} else {
+			s.logReauthThrottled(userID, count)
 		}
 		return NewReauthThrottled(wait)
 	}
@@ -252,4 +283,12 @@ func (s *Service) logReauth(userID, reason string) {
 	s.log.Info("appauth: reauth failed",
 		logfield.KeyUserID, userID,
 		logfield.KeyReason, reason)
+}
+
+// logReauthThrottled 记一条被抑制的 429。只带 user_id 与窗口计数，
+// **永不带口令或邮箱**；窗口内首次超限另有一条汇总审计。
+func (s *Service) logReauthThrottled(userID string, count int) {
+	s.log.Warn("appauth: reauth throttled",
+		logfield.KeyUserID, userID,
+		logfield.KeyCount, count)
 }
