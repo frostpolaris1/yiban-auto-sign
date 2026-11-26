@@ -23,7 +23,10 @@ package pg
 // 待重试：pending 且 attempts>0，按 run_at 升序，行数截断于
 //      EngineRetryLimit（多取一行探测截断）。
 // 在飞/到期/待重试都只算 day >= 今天的行：跨日行不混算（P1-6/2-15）。
-// 列表顺序固定（在飞按认领时刻、待重试按落点），行 id 兜底，可重放。
+// scoped CTE 内把 day 谓词下推到 sign_tasks：三个消费者都只关心今天及
+// 以后，不下推会让历史行走全表扫描（59 万行实测 800ms -> 7.5ms）。
+// 列表顺序固定（在飞按认领时刻、待重试按落点），行 id 兜底，可重放；
+// 外层排序把 id 显式转 uuid，不依赖库里对 text 的 collation。
 
 import (
 	"context"
@@ -67,6 +70,7 @@ func (r *ScheduleRepo) EngineSnapshot(ctx context.Context, scope corescope.Scope
 	countsSQL := `WITH scoped AS (
 	SELECT s.state, s.run_at, s.day, s.account_id, s.updated_at, s.id,
 	       a.deleted_at AS account_deleted_at` + engineFrom + scopeClause + `
+	  AND s.day >= $1::date
 ), latest AS (
 	SELECT DISTINCT ON (account_id) state
 	  FROM scoped
@@ -85,7 +89,7 @@ SELECT (SELECT count(*) FROM scoped
 	}
 
 	// 查询二：在飞与待重试行，一次 Query 取两段。
-	// 两段列形一致，UNION ALL 后按 (kind, 排序时刻, id) 输出；
+	// 两段列形一致，UNION ALL 后按 (kind, 排序时刻, id::uuid) 输出；
 	// 待重试段包在子查询里，LIMIT 只截该段。
 	retryLimitParam := len(scopeArgs) + 3
 	rowsSQL := fmt.Sprintf(`SELECT kind, id, account_id, phone, school_id, school_name,
@@ -111,7 +115,7 @@ FROM (
 		 LIMIT $%d
 	  ) r
 ) x
-ORDER BY kind, sort_at, id`, retryLimitParam)
+ORDER BY kind, sort_at, id::uuid`, retryLimitParam)
 	rowsArgs := append([]any{day, now}, scopeArgs...)
 	rowsArgs = append(rowsArgs, coreschedule.EngineRetryLimit+1)
 	rows, err := r.db.q(ctx).Query(ctx, rowsSQL, rowsArgs...)

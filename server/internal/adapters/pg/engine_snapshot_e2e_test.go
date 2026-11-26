@@ -411,3 +411,75 @@ func TestEngineSnapshotInflightOrder(t *testing.T) {
 		t.Fatalf("Inflight = %+v, want %v by id on equal claimed_at", data.Inflight, wantOrder)
 	}
 }
+
+// TestEngineSnapshotRetryTieBreak：待重试同 run_at 时由 id 升序兜底，
+// 不依赖数据库对等键行的偶然输出顺序。
+func TestEngineSnapshotRetryTieBreak(t *testing.T) {
+	e := newEnv(t)
+	day := "2026-10-29"
+	now := time.Date(2026, 10, 29, 7, 0, 0, 0, time.UTC)
+	school := e.createSchool("engine-retry-tie")
+	runAt := now.Add(30 * time.Minute)
+	taskA := e.engineTask(school.ID, "晨间签到")
+	taskB := e.engineTask(school.ID, "晚间签到")
+	a := e.engineNewAccount(school.ID, 1)
+	b := e.engineNewAccount(school.ID, 2)
+	e.enginePlan(a, taskA, day, runAt)
+	e.enginePlan(b, taskB, day, runAt)
+	e.engineExec("UPDATE sign_tasks SET attempts = 1 WHERE day = $1::date", day)
+
+	want := strings.Split(e.scalarString(`SELECT string_agg(id::text, ',' ORDER BY id)
+		FROM sign_tasks WHERE state = 'pending' AND attempts > 0 AND day = $1::date`, day), ",")
+	if len(want) != 2 {
+		t.Fatalf("pending retry rows = %d, want 2", len(want))
+	}
+	data := e.engineSnapshot(corescope.Master(), day, now)
+	if len(data.Retrying) != 2 {
+		t.Fatalf("Retrying = %d rows, want 2", len(data.Retrying))
+	}
+	for i, row := range data.Retrying {
+		if row.TaskID != want[i] {
+			t.Fatalf("Retrying[%d].TaskID = %s, want %s（同 run_at 按 id 升序）", i, row.TaskID, want[i])
+		}
+	}
+}
+
+// TestEngineSnapshotRetryLimitScope：LIMIT 只作用于待重试段。
+// 同时有在飞行与超限重试行时，两段各自完整：在飞不被 LIMIT 挤掉，
+// 重试仍取满上限并上报截断。
+func TestEngineSnapshotRetryLimitScope(t *testing.T) {
+	e := newEnv(t)
+	day := "2026-10-29"
+	now := time.Date(2026, 10, 29, 7, 0, 0, 0, time.UTC)
+	school := e.createSchool("engine-limit-scope")
+
+	inflightTask := e.engineTask(school.ID, "晨间签到")
+	inflightAccounts := []string{
+		e.engineNewAccount(school.ID, 1),
+		e.engineNewAccount(school.ID, 2),
+	}
+	for _, acct := range inflightAccounts {
+		e.enginePlan(acct, inflightTask, day, now.Add(-2*time.Hour))
+		if _, err := e.sched.ClaimPending(e.ctx, acct, inflightTask, day, now.Add(-time.Minute)); err != nil {
+			t.Fatalf("claim %s: %v", acct, err)
+		}
+	}
+
+	retryAcct := e.engineNewAccount(school.ID, 3)
+	base := now.Add(time.Hour)
+	total := coreschedule.EngineRetryLimit + 2
+	for i := 0; i < total; i++ {
+		taskID := e.engineTask(school.ID, fmt.Sprintf("重试-%03d", i))
+		e.enginePlan(retryAcct, taskID, day, base.Add(time.Duration(i)*time.Minute))
+	}
+	e.engineExec("UPDATE sign_tasks SET attempts = 1 WHERE account_id = $1::uuid AND day = $2::date", retryAcct, day)
+
+	data := e.engineSnapshot(corescope.Master(), day, now)
+	if len(data.Inflight) != 2 {
+		t.Fatalf("Inflight = %d rows, want 2（LIMIT 只截待重试段）", len(data.Inflight))
+	}
+	if len(data.Retrying) != coreschedule.EngineRetryLimit || !data.RetryingTruncated {
+		t.Fatalf("Retrying = %d/truncated=%v, want %d/true",
+			len(data.Retrying), data.RetryingTruncated, coreschedule.EngineRetryLimit)
+	}
+}
