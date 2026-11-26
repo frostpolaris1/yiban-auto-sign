@@ -171,7 +171,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// b7c：boundary.adapters allow 增列
 	// internal/adapters/pg/request_single_success_e2e_test.go
 	// （单日成功真库 e2e 需直接读 worker.Request 的 already_signed 结论）。
-	const want = "2278849d7d2c24ebb9c270a9a6d8b282f5d9e8866725f08b053678cc4dd6ef64"
+	// p3m：新增 window.closedat 规则，关窗判据收敛到 core/window.ClosedAt
+	// （retry.Window 只持有终点，P3-11⑤）；概念级登记口径写入文件头注释。
+	const want = "69612897d23b068216de6b05c719462d426247078909a0c84dedd5d6d1370fa0"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

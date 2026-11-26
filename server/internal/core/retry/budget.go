@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
+
+	corewindow "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/window"
 )
 
 // 尾段份额：退避落点可从窗口剩余部分拿到的最大比例。
@@ -60,7 +62,8 @@ func BudgetFor(outcome string) Policy {
 }
 
 // Window 是退避落点用的窗口形状：只需终点。
-// 与 plan.Window 分开：retry 不关心片几何。
+// 与 plan.Window 分开：retry 不关心片几何；关窗判据统一调
+// core/window.ClosedAt，不在本包自写剩余时间比较（P3-11⑤）。
 type Window struct {
 	End time.Time
 }
@@ -97,10 +100,12 @@ func NextDelayWithFloor(p Policy, attempt int, w Window, now time.Time, floor ti
 }
 
 func nextDelay(p Policy, attempt int, w Window, now time.Time, floor time.Duration) (time.Duration, bool) {
-	remaining := w.End.Sub(now)
-	if remaining <= 0 {
+	// 关窗判据与 core/window.Closed 同源：已到终点即放弃，
+	// 绝不把落点写进次日窗口。remaining 仅供尾段份额计算。
+	if corewindow.ClosedAt(w.End, now) {
 		return 0, false
 	}
+	remaining := w.End.Sub(now)
 	base := p.After
 	if base <= 0 {
 		base = DefaultAfter

@@ -82,6 +82,10 @@ fake.import	import	*	internal/signing/fake	internal/signing/conformance/	interna
 email.normalize.lower	forbid	internal/adapters/pg/user.go	strings.ToLower		邮箱归一只能调用 core/user.NormalizeEmail
 window.validate	func	internal/core/window/	Validate		use window.Validate
 window.effective	func	internal/core/window/	Effective		use window.Effective
+window.closedat	func	internal/core/window/	ClosedAt		use window.ClosedAt
+# 概念级不变式登记在它的唯一实现函数上，不另造概念语法：
+# 可重试分类 → retry.budgetfor；窗口边缘 → window.validate/effective/closedat；
+# 任务结果词 → status.literal。新增概念先落一个实现函数再登记，禁止只写注释。
 rate.bucket	type	internal/core/rate/	Bucket		use rate.Bucket
 rate.limiter	type	internal/core/rate/	Limiter		use rate.Limiter
 plan.nearest	func	internal/core/plan/	NearestFree		use plan.NearestFree

@@ -186,6 +186,16 @@ func TestNextDelayAfterWindow(t *testing.T) {
 	if _, ok := NextDelay(p, 1, w, time.Unix(1000, 0)); ok {
 		t.Fatal("窗口已过不该给落点")
 	}
+	// 恰在终点：与 core/window.Closed 同为 >= 口径，必须放弃。
+	if _, ok := NextDelay(p, 1, Window{End: time.Unix(1000, 0)}, time.Unix(1000, 0)); ok {
+		t.Fatal("恰在终点不该给落点")
+	}
+	// 终点之前仍可给落点（窗口留出 100s，尾段份额足够）。
+	now := time.Unix(1000, 0)
+	roomy := Window{End: now.Add(100 * time.Second)}
+	if _, ok := NextDelay(Policy{MaxAttempts: 3, After: time.Second}, 1, roomy, roomy.End.Add(-50*time.Second)); !ok {
+		t.Fatal("终点之前若尾段够，应给落点")
+	}
 }
 
 // 提供方下限抬高名义间隔：floor > base 时按 floor 走曲线，
