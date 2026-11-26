@@ -39,6 +39,11 @@ import (
 // statement_timeout 是 advisory lock 等待的兜底上界：
 // PostgreSQL 未承诺 lock_timeout 覆盖 advisory lock，
 // 故卡住的锁必须由上层取消。
+//
+// DefaultMaxConns=8 对默认 YIBAN_WORKERS=4 留一倍余量（P3-7）：
+// worker 只在认领/结账的短 SQL 上占连接，等待上游签到期间不持连接；
+// HTTP 读面与 4 个 worker 的峰值并发合计低于 8。若调大 workers，
+// 必须同步评估本值——超过真实并发的连接数只会排队，不增加吞吐。
 const (
 	DefaultMaxConns         = int32(8)
 	DefaultStatementTimeout = 5 * time.Second

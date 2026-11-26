@@ -516,6 +516,8 @@ func (r *ScheduleRepo) Task(ctx context.Context, taskID string) (coreschedule.Ta
 }
 
 // ClaimDue 认领到期任务：单条 UPDATE 批量领取。
+// 统计新鲜度由日切 BuildToday 在 built>0 后 ANALYZE sign_tasks 保证（P2-11），
+// 认领发生在窗口内，不另跑 ANALYZE。
 // 判据全在 SQL：pending、run_at 已到、day >= 当前业务日、账号活跃未删、
 // 任务启用、同账号当前无 running（I-7 的查询面，库层唯一索引仍是最终兜底）。
 // 同账号同业务日已有 success 的也不再认领（决策 2A：任一任务成功即视为
