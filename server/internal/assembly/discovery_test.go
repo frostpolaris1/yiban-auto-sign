@@ -217,6 +217,40 @@ func TestScheduleDiscovererStopsOnContextCancel(t *testing.T) {
 
 // TestScheduleDiscovererAllCandidatesFail 钉住「全坏」语义。
 //
+// TestScheduleDiscovererNormalOutcomeLogsInfo 钉住候选失败日志的分级：
+// already_done 这类正常结论走 Info，只有需人处置的结论才 Warn。
+// 否则全校已签到时每次发现会按候选数刷 Warn，淹没按级别告警的运维面。
+func TestScheduleDiscovererNormalOutcomeLogsInfo(t *testing.T) {
+	start := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	end := start.Add(2 * time.Hour)
+	accounts, provider := newDiscoveryFixture()
+	provider.results = []providerResult{
+		{err: &contract.OutcomeError{Outcome: contract.OutcomeAlreadyDone, Message: "already signed"}},
+		{window: testWindow(start, end)},
+	}
+	var logs bytes.Buffer
+	d := scheduleDiscoverer{
+		provider: provider,
+		accounts: accounts,
+		tasks:    fakeDiscoveryTasks{info: coreschedule.TaskInfo{ID: "task-1", SchoolID: "school-1"}},
+		Logger:   slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+
+	if _, err := d.DiscoverWindow(context.Background(), "task-1"); err != nil {
+		t.Fatalf("DiscoverWindow: %v", err)
+	}
+	line := logs.String()
+	if strings.Count(line, "candidate failed") != 1 {
+		t.Fatalf("logged %q, want exactly one candidate failure", line)
+	}
+	if !strings.Contains(line, "level=INFO") {
+		t.Fatalf("normal outcome logged above INFO: %q", line)
+	}
+	if strings.Contains(line, "level=WARN") {
+		t.Fatalf("normal outcome logged as WARN: %q", line)
+	}
+}
+
 // 全部候选失败时探测 3 次并返回最后一个错误：上层据此记一次告警并回退，
 // 不能返回空窗口伪装成功。
 func TestScheduleDiscovererAllCandidatesFail(t *testing.T) {

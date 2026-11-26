@@ -1,7 +1,7 @@
 package pg_test
 
 // 窗口发现候选 e2e：候选排序、过滤与 limit。
-// 依赖真实 PostgreSQL：NULLS LAST、复合排序键与凭据聚合都在库侧执行。
+// 依赖真实 PostgreSQL：复合排序键、id 兜底与过滤都在库侧执行。
 
 import (
 	"testing"
@@ -33,8 +33,8 @@ func (e *testEnv) seedDiscoveryAccount(id, schoolID, ownerID, phone string, crea
 
 // seedDiscoveryCredential 写一行已加密凭据。
 //
-// 本用例只在意 last_verified_at；其余字段用固定哑值满足库侧形状约束
-// （kid 16 位十六进制、nonce 12 字节、ciphertext 至少 16 字节）。
+// 排序刻意不读 last_verified_at；本辅助只用来证明「验证时间再新也
+// 不能把候选提前」。其余字段用固定哑值满足库侧形状约束。
 func (e *testEnv) seedDiscoveryCredential(accountID, schoolID string, verifiedAt *time.Time) {
 	e.t.Helper()
 	e.exec(`INSERT INTO credentials (account_id, school_id, kid, nonce, ciphertext, last_verified_at)
@@ -44,42 +44,45 @@ func (e *testEnv) seedDiscoveryCredential(accountID, schoolID string, verifiedAt
 		accountID, schoolID, verifiedAt)
 }
 
-// TestDiscoveryCandidatesOrdersVerifiedBeforeNewBadAccount 钉住候选主排序键。
+// TestDiscoveryCandidatesOrdersOldestFirst 钉住候选主排序键是 created_at ASC。
 //
-// 判据一：last_verified_at 较新者在前，已验证的三行按时间倒序。
-// 判据二：从未验证（last_verified_at 为 NULL）的行排在任何已验证行之后
-// （NULLS LAST）。
-// 判据三：created_at 最新但从未验证的新注册号排最后——它正是会把全校
+// 判据一：更早建立的账号先探，与 credentials.last_verified_at 无关。
+// 判据二：created_at 最新但从未验证的新注册号排最后——它正是会把全校
 // 窗口发现带进连续失败的坏号；若排序退化成 created_at DESC，本用例红。
-func TestDiscoveryCandidatesOrdersVerifiedBeforeNewBadAccount(t *testing.T) {
+// 判据三：坏号即使带最新 last_verified_at 也不能排到首位，防止没有写入方
+// 的列重新变成虚假保证。
+func TestDiscoveryCandidatesOrdersOldestFirst(t *testing.T) {
 	e := newEnv(t)
 	school := e.createSchool("disc-order")
 	owner := e.createUser("disc-order@example.com")
 	base := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
-	verifiedNew := base.Add(12 * time.Hour)
-	verifiedOld := base.Add(-96 * time.Hour)
+	oldVerified := base.Add(-96 * time.Hour)
+	newVerified := base.Add(12 * time.Hour)
 
-	// 新注册坏号：created_at 最新，但从未验证成功。
+	// 新注册坏号：created_at 最新，却带着最新的验证时间。
 	badID := discoveryIDHigh
 	e.seedDiscoveryAccount(badID, school.ID, owner.ID, "13900000001", base.Add(24*time.Hour))
+	e.seedDiscoveryCredential(badID, school.ID, &newVerified)
 
+	// 最老的好号：没有验证记录。
 	staleID := discoveryIDMid
 	e.seedDiscoveryAccount(staleID, school.ID, owner.ID, "13900000002", base.Add(-48*time.Hour))
-	e.seedDiscoveryCredential(staleID, school.ID, &verifiedOld)
 
+	// 中间号：验证时间比坏号旧。
 	freshID := discoveryIDLow
 	e.seedDiscoveryAccount(freshID, school.ID, owner.ID, "13900000003", base.Add(-24*time.Hour))
-	e.seedDiscoveryCredential(freshID, school.ID, &verifiedNew)
+	e.seedDiscoveryCredential(freshID, school.ID, &oldVerified)
 
 	got, err := e.accts.DiscoveryCandidatesForSchool(e.ctx, school.ID, 10)
 	mustNotError(t, err, "discovery candidates")
-	want := []string{freshID, staleID, badID}
+	want := []string{staleID, freshID, badID}
 	if len(got) != len(want) {
 		t.Fatalf("got %d candidates, want %d", len(got), len(want))
 	}
 	for i := range want {
 		if got[i].ID != want[i] {
-			t.Fatalf("candidate %d is %s; want %s (order: last_verified_at DESC NULLS LAST)", i, got[i].ID, want[i])
+			t.Fatalf("candidate %d is %s; want %s (order: created_at ASC, id ASC)",
+				i, got[i].ID, want[i])
 		}
 	}
 	if got[len(got)-1].ID != badID {
@@ -89,20 +92,17 @@ func TestDiscoveryCandidatesOrdersVerifiedBeforeNewBadAccount(t *testing.T) {
 
 // TestDiscoveryCandidatesTieBreaksAndFilters 钉住并列裁决与过滤口径。
 //
-// 判据一：last_verified_at 相同时按 created_at 升序（更早建号先探）。
-// 判据二：last_verified_at 与 created_at 都相同时按 id 升序，顺序确定。
-// 判据三：从未验证的行仍排最后。
-// 判据四：软删行、非 active 行（paused_admin）与 pending 行都不出现。
-// 判据五：limit 生效且非法 limit 返回参数错误，不静默置 0。
+// 判据一：created_at 相同时按 id 升序，顺序确定。
+// 判据二：软删行、非 active 行（paused_admin）与 pending 行都不出现。
+// 判据三：limit 生效且非法 limit 返回参数错误，不静默置 0。
 func TestDiscoveryCandidatesTieBreaksAndFilters(t *testing.T) {
 	e := newEnv(t)
 	school := e.createSchool("disc-tie")
 	owner := e.createUser("disc-tie@example.com")
 	base := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
-	verified := base.Add(6 * time.Hour)
 
-	// 同 last_verified_at：created_at 更早者先，其次按 id 升序。
-	equalVerified := []struct {
+	// created_at 最早的先；同一时刻按 id 升序。
+	equalCreated := []struct {
 		id        string
 		createdAt time.Time
 		phone     string
@@ -111,27 +111,24 @@ func TestDiscoveryCandidatesTieBreaksAndFilters(t *testing.T) {
 		{discoveryIDLow, base.Add(time.Hour), "13900000012"}, // 同 created_at 组内 id 最小
 		{discoveryIDMid, base.Add(time.Hour), "13900000013"}, // 同 created_at 组内 id 次小
 	}
-	for _, seed := range equalVerified {
+	for _, seed := range equalCreated {
 		e.seedDiscoveryAccount(seed.id, school.ID, owner.ID, seed.phone, seed.createdAt)
-		at := verified
-		e.seedDiscoveryCredential(seed.id, school.ID, &at)
 	}
 
-	// 从未验证：created_at 最新也排最后。
+	// 最晚建号：排在最后。
 	unverifiedID := "00000000-0000-4000-8000-0000000000ff"
 	e.seedDiscoveryAccount(unverifiedID, school.ID, owner.ID, "13900000014", base.Add(48*time.Hour))
 
-	// 软删的 active 行：验证时间最新也不得入选。
+	// 软删的 active 行不得入选，即使带凭据与验证时间。
 	deletedID := "00000000-0000-4000-8000-0000000000aa"
 	e.seedDiscoveryAccount(deletedID, school.ID, owner.ID, "13900000015", base.Add(-time.Hour))
 	newest := base.Add(96 * time.Hour)
 	e.seedDiscoveryCredential(deletedID, school.ID, &newest)
 	e.exec("UPDATE accounts SET deleted_at = now() WHERE id = $1::uuid", deletedID)
 
-	// 非 active：paused_admin，同样带最新验证时间。
+	// 非 active：paused_admin。
 	pausedID := "00000000-0000-4000-8000-0000000000bb"
 	e.seedDiscoveryAccount(pausedID, school.ID, owner.ID, "13900000016", base.Add(-time.Hour))
-	e.seedDiscoveryCredential(pausedID, school.ID, &newest)
 	e.exec("UPDATE accounts SET status = 'paused_admin' WHERE id = $1::uuid", pausedID)
 
 	// pending：未审核通过。
@@ -139,22 +136,16 @@ func TestDiscoveryCandidatesTieBreaksAndFilters(t *testing.T) {
 	e.exec(`INSERT INTO accounts (id, school_id, owner_user_id, phone, created_at)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, '13900000017', $4)`,
 		pendingID, school.ID, owner.ID, base.Add(-time.Hour))
-	e.seedDiscoveryCredential(pendingID, school.ID, &newest)
 
 	got, err := e.accts.DiscoveryCandidatesForSchool(e.ctx, school.ID, 10)
 	mustNotError(t, err, "discovery candidates")
-	want := []string{
-		discoveryIDHigh,
-		discoveryIDLow,
-		discoveryIDMid,
-		unverifiedID,
-	}
+	want := []string{discoveryIDHigh, discoveryIDLow, discoveryIDMid, unverifiedID}
 	if len(got) != len(want) {
 		t.Fatalf("got %d candidates %v; want %d", len(got), ids(got), len(want))
 	}
 	for i := range want {
 		if got[i].ID != want[i] {
-			t.Fatalf("candidate %d is %s; want %s (created_at ASC, id ASC, NULLS LAST)",
+			t.Fatalf("candidate %d is %s; want %s (created_at ASC, id ASC)",
 				i, got[i].ID, want[i])
 		}
 	}
