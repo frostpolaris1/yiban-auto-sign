@@ -87,7 +87,8 @@
 | 503 | 依赖繁忙，稍后重试 | `校验繁忙，请稍后重试`（带 `Retry-After: 2`） |
 
 - **强制改密门（`must_change_password`）**：会话带该标志时，除 publicPaths
-  （登录/登出/注册/忘记/重置/restore 等）与三条精确路由
+  （登录/登出/注册/忘记/重置/restore 等；其中 `/api/auth/registration`
+  只放行 GET，PUT 写开关仍挡）与三条精确路由
   `GET /api/auth/me`、`GET /api/auth/password-policy`、
   `POST /api/auth/change-password` 外，其余已注册 API 一律 403
   `{"error":"请先修改密码后再操作"}`；未注册路径仍按 404。放行 `password-policy` 是因为改密
