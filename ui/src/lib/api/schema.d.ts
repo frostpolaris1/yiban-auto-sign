@@ -905,7 +905,7 @@ export interface paths {
          * Probe the platform identity and project the college onto a school.
          * @description Runs one platform authentication with the submitted phone and
          *     password and then reads back the device registration registered on
-         *     the platform. Nothing is persisted: the phone, password and device
+         *     the platform. No submitted credential is persisted: the phone, password and device
          *     code never reach storage, logs, audit or the response. The response
          *     carries the device code only as a presence bit; the code itself
          *     never leaves the server.
@@ -2646,7 +2646,9 @@ export interface paths {
          * @description multipart/form-data with a single `image` file part. The server
          *     decodes, rotates, strips metadata, re-encodes and stores the bytes.
          *     The raw upload limit is 10 MiB. Uploading the same bytes again
-         *     returns the same photo id and restores a deleted photo.
+         *     returns the same photo id and restores a deleted photo. New digests
+         *     are capped at 50 per user in a rolling 24-hour window; exceeding the
+         *     quota answers 429 and duplicate digests do not consume it.
          */
         post: operations["PhotoUpload"];
         delete?: never;
@@ -8077,6 +8079,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
