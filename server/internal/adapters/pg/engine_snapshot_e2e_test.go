@@ -444,6 +444,39 @@ func TestEngineSnapshotRetryTieBreak(t *testing.T) {
 	}
 }
 
+// TestEngineSnapshotRetryTieBreakAtLimit：同 run_at 的行超过上限时，
+// 子查询必须按 id 升序取最小的 200 行；把子查询排序改成 id DESC 会红。
+func TestEngineSnapshotRetryTieBreakAtLimit(t *testing.T) {
+	e := newEnv(t)
+	day := "2026-10-29"
+	now := time.Date(2026, 10, 29, 7, 0, 0, 0, time.UTC)
+	school := e.createSchool("engine-retry-tie-limit")
+	acct := e.engineNewAccount(school.ID, 1)
+	runAt := now.Add(time.Hour)
+	total := coreschedule.EngineRetryLimit + 2
+	for i := 0; i < total; i++ {
+		taskID := e.engineTask(school.ID, fmt.Sprintf("同刻任务-%03d", i))
+		e.enginePlan(acct, taskID, day, runAt)
+	}
+	e.engineExec("UPDATE sign_tasks SET attempts = 1 WHERE account_id = $1::uuid AND day = $2::date", acct, day)
+
+	want := strings.Split(e.scalarString(`SELECT string_agg(id::text, ',' ORDER BY id)
+		FROM (SELECT id FROM sign_tasks WHERE state = 'pending' AND attempts > 0
+		      AND account_id = $1::uuid AND day = $2::date ORDER BY id LIMIT $3) x`, acct, day, coreschedule.EngineRetryLimit), ",")
+	if len(want) != coreschedule.EngineRetryLimit {
+		t.Fatalf("want ids = %d, want %d", len(want), coreschedule.EngineRetryLimit)
+	}
+	data := e.engineSnapshot(corescope.Master(), day, now)
+	if len(data.Retrying) != coreschedule.EngineRetryLimit || !data.RetryingTruncated {
+		t.Fatalf("Retrying = %d/truncated=%v, want %d/true", len(data.Retrying), data.RetryingTruncated, coreschedule.EngineRetryLimit)
+	}
+	for i, row := range data.Retrying {
+		if row.TaskID != want[i] {
+			t.Fatalf("Retrying[%d].TaskID = %s, want %s（同 run_at 超限时必须取最小 id）", i, row.TaskID, want[i])
+		}
+	}
+}
+
 // TestEngineSnapshotRetryLimitScope：LIMIT 只作用于待重试段。
 // 同时有在飞行与超限重试行时，两段各自完整：在飞不被 LIMIT 挤掉，
 // 重试仍取满上限并上报截断。
