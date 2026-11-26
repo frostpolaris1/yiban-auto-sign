@@ -63,6 +63,14 @@ func TestAccountSetStatusIfCredentialVersion(t *testing.T) {
 		t.Fatalf("stored status = %q, want active", got)
 	}
 
+	// 纯状态 CAS 的零行文案仍是旧口径：SetStatus/Review 不校验版本，
+	// 不得对管理端声称「版本变了」。
+	_, err = u.accts.SetStatus(u.ctx, corescope.Master(), matched.ID,
+		coreaccount.StatusPending, coreaccount.StatusActive, p2gAt, "")
+	if got, want := err.Error(), "conflict: account status changed"; got != want {
+		t.Fatalf("plain SetStatus message = %q, want %q（状态 CAS 不涉及版本）", got, want)
+	}
+
 	staleOwner := u.createUser("p2g-cas-owner2@example.com")
 	stale := u.createPendingAccount(school.ID, staleOwner.ID, "13900139012")
 	if _, err := u.db.Exec(u.ctx, "UPDATE credentials SET version = 2 WHERE account_id = $1::uuid", stale.ID); err != nil {
@@ -84,6 +92,9 @@ func TestAccountSetStatusIfCredentialVersion(t *testing.T) {
 		coreaccount.StatusPending, coreaccount.StatusActive, 1, p2gAt, "")
 	if got := codeOf(t, err); got != errs.CodeConflict {
 		t.Fatalf("stale version code = %q, want conflict", got)
+	}
+	if got, want := err.Error(), "conflict: account status or credential version changed"; got != want {
+		t.Fatalf("stale version message = %q, want %q（版本 CAS 的零行可能来自状态或版本）", got, want)
 	}
 	if got := u.accountStatus(stale.ID); got != coreaccount.StatusPending {
 		t.Fatalf("stale account status = %q, want pending（版本不匹配不得迁移）", got)
