@@ -75,10 +75,30 @@ func (s *stubAnnouncement) Set(_ context.Context, text string, _ appaudit.Actor)
 	return appsettings.Announcement{Text: text}, nil
 }
 
-type stubAuditReader struct{}
+// stubAuditReader 记录审计列表用例收到的过滤条件。
+type stubAuditReader struct {
+	filter appaudit.ListFilter
+	called int
+}
 
-func (stubAuditReader) List(context.Context, appaudit.ListFilter) (appaudit.LogPage, error) {
+func (s *stubAuditReader) List(_ context.Context, filter appaudit.ListFilter) (appaudit.LogPage, error) {
+	s.called++
+	s.filter = filter
 	return appaudit.LogPage{}, nil
+}
+
+// stubAuditAuthz 把会话角色映射成作用域（生产实现是 app/schooladmin.Service）。
+type stubAuditAuthz struct{ schools []string }
+
+func (s stubAuditAuthz) Authorize(_ context.Context, user auth.User) (corescope.Scope, appaudit.Actor, error) {
+	switch user.Role {
+	case auth.RoleMaster:
+		return corescope.Master(), appaudit.Actor{}, nil
+	case auth.RoleAdmin:
+		return corescope.Admin(s.schools), appaudit.Actor{}, nil
+	default:
+		return corescope.User(user.ID), appaudit.Actor{}, nil
+	}
 }
 
 type stubMailTest struct{}
@@ -189,7 +209,7 @@ func newSettingsEngineWith(t *testing.T, notify *notifyhttp.Handler, system *sys
 		Sessions: issuer,
 		Notify:   notify,
 		System:   system,
-		Audit:    audithttp.NewHandler(stubAuditReader{}),
+		Audit:    audithttp.NewHandler(&stubAuditReader{}, stubAuditAuthz{}),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
@@ -333,6 +353,34 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 				t.Fatalf("%s %s = %d, want %d; body=%s", tc.method, tc.path, rec.Code, tc.status, rec.Body.String())
 			}
 		})
+	}
+}
+
+// 真路由接线：admin 的请求落在绑定校作用域上，不是全局视图。
+func TestAuditRouteNarrowsAdminToBoundSchools(t *testing.T) {
+	issuer := newStubIssuer()
+	gin.SetMode(gin.TestMode)
+	reader := &stubAuditReader{}
+	engine, err := router.New(router.Options{
+		Sessions: issuer,
+		Audit:    audithttp.NewHandler(reader, stubAuditAuthz{schools: []string{"school-a"}}),
+	})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	admin := issueUser(t, issuer, auth.RoleAdmin)
+	rec := serve(engine, requestWithSession(http.MethodGet, "/api/audit-logs", "", "", &admin))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin audit = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if reader.called != 1 {
+		t.Fatalf("use case calls = %d, want 1", reader.called)
+	}
+	if reader.filter.Scope.Kind() != corescope.KindAdmin {
+		t.Fatalf("scope = %+v, want admin", reader.filter.Scope)
+	}
+	if ids := reader.filter.Scope.SchoolIDs(); len(ids) != 1 || ids[0] != "school-a" {
+		t.Fatalf("bound schools = %v, want [school-a]", ids)
 	}
 }
 

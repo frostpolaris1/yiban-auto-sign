@@ -151,14 +151,17 @@ func TestAuditStatusE2E(t *testing.T) {
 		}
 	}
 
-	// 4. 角色门：user 403；admin（未绑定学校）与 master 200。
+	// 4. 角色门：巡检只给 master；user 与 admin 一律 403。
 	userRec := e.do(http.MethodGet, "/api/admin/audit-status", nil, e.login(plain))
 	w2cWantStatus(t, userRec, http.StatusForbidden)
 	if code := e.errorCode(userRec); code != "forbidden" {
 		t.Fatalf("user error code = %q", code)
 	}
 	adminRec := e.do(http.MethodGet, "/api/admin/audit-status", nil, e.login(adminUser))
-	w2cWantStatus(t, adminRec, http.StatusOK)
+	w2cWantStatus(t, adminRec, http.StatusForbidden)
+	if code := e.errorCode(adminRec); code != "forbidden" {
+		t.Fatalf("admin error code = %q", code)
+	}
 
 	// 链头哈希是 64 位小写十六进制；解码长度 32 字节。
 	raw, err := hex.DecodeString(headHash)

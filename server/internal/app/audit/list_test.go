@@ -10,6 +10,7 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // fakeLister 记录查询并返回固定页。
@@ -63,7 +64,7 @@ func TestListMasksActorFilter(t *testing.T) {
 	}
 	for input, want := range cases {
 		lister := &fakeLister{}
-		_, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{Actor: input})
+		_, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{Scope: corescope.Master(), Actor: input})
 		if err != nil {
 			t.Fatalf("List(%q): %v", input, err)
 		}
@@ -80,7 +81,7 @@ func TestListMasksDetail(t *testing.T) {
 		ActorLabel: "a***@example.com",
 		Detail:     `{"reason":"联系电话 13900139000 邮箱 alice@example.com"}`,
 	}}}
-	page, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{})
+	page, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{Scope: corescope.Master()})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -96,14 +97,14 @@ func TestListMasksDetail(t *testing.T) {
 // 缺省 limit 是 50；显式越界 400。
 func TestListLimit(t *testing.T) {
 	lister := &fakeLister{}
-	if _, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{}); err != nil {
+	if _, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{Scope: corescope.Master()}); err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if lister.query.Limit != 50 {
 		t.Fatalf("limit = %d, want 50", lister.query.Limit)
 	}
 	for _, limit := range []int{-1, 201} {
-		_, err := newReader(t, &fakeLister{}).List(context.Background(), appaudit.ListFilter{Limit: limit})
+		_, err := newReader(t, &fakeLister{}).List(context.Background(), appaudit.ListFilter{Scope: corescope.Master(), Limit: limit})
 		var appErr *errs.Error
 		if !errors.As(err, &appErr) || appErr.Code != errs.CodeValidation {
 			t.Fatalf("limit %d err = %v, want validation_failed", limit, err)
@@ -116,9 +117,9 @@ func TestListRejectsInvalidFilters(t *testing.T) {
 	from := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	to := from.Add(-time.Hour)
 	cases := map[string]appaudit.ListFilter{
-		"long action": {Action: strings.Repeat("a", 129)},
-		"long actor":  {Actor: strings.Repeat("a", 255)},
-		"inverted":    {From: &from, To: &to},
+		"long action": {Scope: corescope.Master(), Action: strings.Repeat("a", 129)},
+		"long actor":  {Scope: corescope.Master(), Actor: strings.Repeat("a", 255)},
+		"inverted":    {Scope: corescope.Master(), From: &from, To: &to},
 	}
 	for name, filter := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -138,7 +139,7 @@ func TestListRejectsInvalidFilters(t *testing.T) {
 // 未知 action 不报错：返回空页。
 func TestListUnknownActionIsEmpty(t *testing.T) {
 	lister := &fakeLister{}
-	page, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{Action: "auth.nope"})
+	page, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{Scope: corescope.Master(), Action: "auth.nope"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestListPassesBoundsAndCursor(t *testing.T) {
 	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)
 	lister := &fakeLister{next: "next-cursor", total: 42}
-	page, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{
+	page, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{Scope: corescope.Master(),
 		From: &from, To: &to, Target: "account-1", Cursor: "opaque", Limit: 10,
 	})
 	if err != nil {
@@ -182,7 +183,7 @@ func TestListPassesBoundsAndCursor(t *testing.T) {
 // 超长 target 是 400，且不读仓储。
 func TestListRejectsLongTarget(t *testing.T) {
 	lister := &fakeLister{}
-	_, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{
+	_, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{Scope: corescope.Master(),
 		Target: strings.Repeat("a", 129),
 	})
 	var appErr *errs.Error
@@ -197,7 +198,7 @@ func TestListRejectsLongTarget(t *testing.T) {
 // 计数错误原样上抛。
 func TestListPropagatesCountError(t *testing.T) {
 	boom := errors.New("count failed")
-	_, err := newReader(t, &fakeLister{countErr: boom}).List(context.Background(), appaudit.ListFilter{})
+	_, err := newReader(t, &fakeLister{countErr: boom}).List(context.Background(), appaudit.ListFilter{Scope: corescope.Master()})
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want count error", err)
 	}
@@ -206,8 +207,77 @@ func TestListPropagatesCountError(t *testing.T) {
 // 仓储错误原样上抛。
 func TestListPropagatesRepoError(t *testing.T) {
 	boom := errors.New("boom")
-	_, err := newReader(t, &fakeLister{err: boom}).List(context.Background(), appaudit.ListFilter{})
+	_, err := newReader(t, &fakeLister{err: boom}).List(context.Background(), appaudit.ListFilter{Scope: corescope.Master()})
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want boom", err)
+	}
+}
+
+// admin 作用域原样进入列表与计数查询：绑定校一字不动。
+func TestListPassesAdminScope(t *testing.T) {
+	lister := &fakeLister{}
+	if _, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{
+		Scope: corescope.Admin([]string{"school-a", "school-b"}),
+	}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if kind := lister.query.Scope.Kind(); kind != corescope.KindAdmin {
+		t.Fatalf("kind = %v, want admin", kind)
+	}
+	if got := lister.query.Scope.SchoolIDs(); len(got) != 2 || got[0] != "school-a" || got[1] != "school-b" {
+		t.Fatalf("schools = %v, want [school-a school-b]", got)
+	}
+	if kind := lister.countQ.Scope.Kind(); kind != corescope.KindAdmin {
+		t.Fatalf("count kind = %v, want admin", kind)
+	}
+	if got := lister.countQ.Scope.SchoolIDs(); len(got) != 2 || got[0] != "school-a" {
+		t.Fatalf("count schools = %v, want the same binding", got)
+	}
+}
+
+// master 作用域原样进入查询。
+func TestListPassesMasterScope(t *testing.T) {
+	lister := &fakeLister{}
+	if _, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{
+		Scope: corescope.Master(),
+	}); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if lister.query.Scope.Kind() != corescope.KindMaster || lister.countQ.Scope.Kind() != corescope.KindMaster {
+		t.Fatalf("scope = %v, want master", lister.query.Scope.Kind())
+	}
+}
+
+// user 作用域不开放：403 且仓储零调用（列表与计数都没有）。
+func TestListRejectsUserScope(t *testing.T) {
+	lister := &fakeLister{}
+	_, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{
+		Scope: corescope.User("11111111-1111-1111-1111-111111111111"),
+	})
+	var appErr *errs.Error
+	if !errors.As(err, &appErr) || appErr.Code != errs.CodeForbidden {
+		t.Fatalf("err = %v, want forbidden", err)
+	}
+	if !strings.Contains(err.Error(), "audit logs are scoped to master and admin") {
+		t.Fatalf("err = %v, want the scope message", err)
+	}
+	if lister.called != 0 || lister.countCalled != 0 {
+		t.Fatal("user scope reached the repository")
+	}
+}
+
+// 零值作用域是 500：没解析出作用域不能被当成 master 全量。
+func TestListRejectsInvalidScope(t *testing.T) {
+	lister := &fakeLister{}
+	_, err := newReader(t, lister).List(context.Background(), appaudit.ListFilter{})
+	var appErr *errs.Error
+	if !errors.As(err, &appErr) || appErr.Code != errs.CodeInternal {
+		t.Fatalf("err = %v, want internal_error", err)
+	}
+	if strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v", err)
+	}
+	if lister.called != 0 || lister.countCalled != 0 {
+		t.Fatal("invalid scope reached the repository")
 	}
 }

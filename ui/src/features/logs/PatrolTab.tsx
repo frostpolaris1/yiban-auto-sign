@@ -14,6 +14,7 @@
  * 最近事件由容器层 `LogsView` 维护（切页签不丢），容量 20 条，
  * 最新在前；heartbeat 不列，行内带 lastEventId 证明续传位置。
  * 断线期间仅在本页签激活时每 10 秒轮询一次 `['engine-page']`。
+ * 全局引擎暂停开关仅 master 可操作：admin 的暂停与恢复入口一律禁用（不先吃 403）。
  */
 
 import { useEffect, useState } from 'react'
@@ -72,7 +73,7 @@ export function PatrolTab({ allowed, role, liveStatus, events }: PatrolTabProps)
     enabled: allowed,
   })
 
-  // 全局暂停开关：暂停 master+admin 可发，恢复仅 master；二次口令走 ReauthDialog。
+  // 全局暂停开关：暂停与恢复都仅 master；admin 一律禁用，二次口令走 ReauthDialog。
   const [pauseDialog, setPauseDialog] = useState<'pause' | 'resume' | null>(null)
   const [pauseError, setPauseError] = useState<string | null>(null)
   const [pauseReturnFocus, setPauseReturnFocus] = useState<HTMLElement | null>(null)
@@ -93,8 +94,8 @@ export function PatrolTab({ allowed, role, liveStatus, events }: PatrolTabProps)
       ? '引擎状态读取中'
       : SHOWCASE
         ? '展示模式只读'
-        : paused && role !== 'master'
-          ? '仅主管理员可恢复'
+        : role !== 'master'
+          ? '仅主管理员可操作'
           : undefined
   const pauseCanToggle = pauseBlockedReason === undefined
 
@@ -145,7 +146,7 @@ export function PatrolTab({ allowed, role, liveStatus, events }: PatrolTabProps)
         description={
           pauseDialog === 'resume'
             ? '恢复后待执行任务按序补跑。'
-            : '暂停后执行器不再领取新任务，在飞任务会跑完；恢复仅主管理员，暂停后由巡检页头横幅恢复。'
+            : '暂停后执行器不再领取新任务，在飞任务会跑完；暂停与恢复均仅主管理员，暂停后由巡检页头横幅恢复。'
         }
         confirmText={pauseDialog === 'resume' ? '恢复引擎' : '暂停引擎'}
         pending={pauseMutation.isPending}
@@ -163,7 +164,7 @@ export function PatrolTab({ allowed, role, liveStatus, events }: PatrolTabProps)
         <ul className="app-pause-impact">
           <li>在飞 {engineQuery.data?.inflight.length ?? 0} 条（本管辖范围）继续完成，不会中断。</li>
           <li>待执行 {engineQuery.data?.due_now ?? 0} 条（本管辖范围）暂停领取，恢复后按序补跑。</li>
-          <li>暂停是全局开关，影响所有管辖范围；恢复仅主管理员。</li>
+          <li>暂停是全局开关，影响所有管辖范围；暂停与恢复均仅主管理员。</li>
           <li>开关写入设置并记一条审计，重启进程不丢失。</li>
         </ul>
       </ReauthDialog>

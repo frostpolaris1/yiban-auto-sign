@@ -7,9 +7,9 @@
  *
  * **口径**
  * ticket13 起 user 不再进管理壳：壳层一律把 user 302 到用户端 `/app`。
- * 本容器只服务 master/admin：windows、capacity、audit-status、engine、
- * sign-stats 与 account summary；未选任务前容量与拥挤度保持 `enabled: false`，
- * 挂载即零请求。
+ * 本容器只服务 master/admin：windows、capacity、engine、sign-stats 与 account summary；
+ * 未选任务前容量与拥挤度保持 `enabled: false`，挂载即零请求。
+ * engine 快照 master/admin 都读；audit-status 仅 master 读取，admin 不请求也不渲染巡检区。
  * audit-status 与 engine 快照在挂载时按需读取，失败只挂对应区段。
  * windows 与时间片页共用缓存键 `['schedule-windows', day]`。
  * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与趋势图共用一次读取；
@@ -91,6 +91,8 @@ type DashboardViewProps = {
 
 export function DashboardView({ role }: DashboardViewProps) {
   const day = dayOf(new Date())
+  // 巡检端点仅 master；admin 不请求，也不渲染巡检区（避免常驻 403）。
+  const isMaster = role === 'master'
 
   const windowsQuery = useQuery({
     queryKey: ['schedule-windows', day],
@@ -158,6 +160,7 @@ export function DashboardView({ role }: DashboardViewProps) {
     queryKey: ['audit-status'],
     queryFn: () =>
       SHOWCASE ? Promise.resolve(showcaseAuditStatus()) : getAuditStatus(),
+    enabled: isMaster,
     staleTime: 60_000,
     retry: false,
   })
@@ -187,7 +190,7 @@ export function DashboardView({ role }: DashboardViewProps) {
   }
   const announcementText = announcementQuery.data?.text.trim() ?? ''
 
-  // 全局暂停开关：暂停 master+admin 可发，恢复仅 master；二次口令走 ReauthDialog。
+  // 全局暂停开关：暂停与恢复都仅 master；admin 一律禁用，二次口令走 ReauthDialog。
   const queryClient = useQueryClient()
   const [pauseDialog, setPauseDialog] = useState<'pause' | 'resume' | null>(null)
   const [pauseError, setPauseError] = useState<string | null>(null)
@@ -209,8 +212,8 @@ export function DashboardView({ role }: DashboardViewProps) {
       ? '引擎状态读取中'
       : SHOWCASE
         ? '展示模式只读'
-        : paused && role !== 'master'
-          ? '仅主管理员可恢复'
+        : role !== 'master'
+          ? '仅主管理员可操作引擎开关'
           : undefined
   const pauseAction = {
     paused,
@@ -334,6 +337,7 @@ export function DashboardView({ role }: DashboardViewProps) {
         />
       </div>
       <AuditStatusCard
+        auditAllowed={isMaster}
         report={auditStatusQuery.data}
         loading={auditStatusQuery.isPending}
         error={
@@ -358,7 +362,7 @@ export function DashboardView({ role }: DashboardViewProps) {
         description={
           pauseDialog === 'resume'
             ? '恢复后待执行任务按序补跑。'
-            : '暂停后执行器不再领取新任务，在飞任务会跑完；恢复仅主管理员，暂停后由健康条横幅恢复。'
+            : '暂停后执行器不再领取新任务，在飞任务会跑完；暂停与恢复均仅主管理员，暂停后由健康条横幅恢复。'
         }
         confirmText={pauseDialog === 'resume' ? '恢复引擎' : '暂停引擎'}
         pending={pauseMutation.isPending}
@@ -376,7 +380,7 @@ export function DashboardView({ role }: DashboardViewProps) {
         <ul className="app-pause-impact">
           <li>在飞 {engineQuery.data?.inflight.length ?? 0} 条（本管辖范围）继续完成，不会中断。</li>
           <li>待执行 {engineQuery.data?.due_now ?? 0} 条（本管辖范围）暂停领取，恢复后按序补跑。</li>
-          <li>暂停是全局开关，影响所有管辖范围；恢复仅主管理员。</li>
+          <li>暂停是全局开关，影响所有管辖范围；暂停与恢复均仅主管理员。</li>
           <li>开关写入设置并记一条审计，重启进程不丢失。</li>
         </ul>
       </ReauthDialog>

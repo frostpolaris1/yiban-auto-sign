@@ -193,8 +193,8 @@ export async function mockLogsApi(page: Page, options: MockLogsOptions): Promise
     }
 
     if (url.pathname === '/api/admin/engine/pause' && request.method() === 'PUT') {
-      if (sessionRole !== 'master' && sessionRole !== 'admin') {
-        return fail(route, 403, 'forbidden', '仅 master/admin 可操作暂停开关')
+      if (sessionRole !== 'master') {
+        return fail(route, 403, 'forbidden', '仅主管理员可操作引擎开关')
       }
       let update: { paused?: boolean; current_password?: string } = {}
       try {
@@ -202,11 +202,8 @@ export async function mockLogsApi(page: Page, options: MockLogsOptions): Promise
       } catch {
         update = {}
       }
-      // 方向门先于口令校验，与服务端同序。
+      // 角色门先于口令校验，与服务端同序；暂停与恢复都仅 master。
       if (typeof update.paused !== 'boolean') return fail(route, 400, 'validation_failed', '缺少目标状态')
-      if (update.paused === false && sessionRole !== 'master') {
-        return fail(route, 403, 'forbidden', '仅主管理员可恢复')
-      }
       if (!update.current_password) return fail(route, 400, 'validation_failed', '缺少口令')
       engineSnapshotState = { ...engineSnapshotState, paused: update.paused === true }
       return json(route, { paused: engineSnapshotState.paused })

@@ -36,6 +36,7 @@ import (
 
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // Domain 把本链与其他 HMAC 用途隔开，参与 payload 首段。
@@ -239,6 +240,8 @@ type LogRow struct {
 
 // LogQuery 是审计只读列表的已定型条件。Actor 是已掩码的标签。
 // Target 是精确匹配的目标 id。From 与 To 是闭区间时间界；nil 表示该侧不限。
+// Scope 是可见面：master 看全部；admin 只看绑定院校的行，school_id IS NULL
+// 的行对它不可见；user 不是合法可见面（入口与仓储都拒）。
 type LogQuery struct {
 	Action string
 	Actor  string
@@ -247,6 +250,7 @@ type LogQuery struct {
 	To     *time.Time
 	Cursor string
 	Limit  int
+	Scope  corescope.Scope
 }
 
 // ErrEmptyChain 表示校验了零行。

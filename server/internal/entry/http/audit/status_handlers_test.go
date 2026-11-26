@@ -2,7 +2,7 @@ package audit_test
 
 // 审计链巡检端点的 HTTP 门与响应映射。
 //
-// 口径：未登录 401；user 403；master/admin 200。
+// 口径：未登录 401；user 与 admin 403（master 专属）；
 // 断链仍是 200：巡检结论不是 HTTP 错误。
 // 响应只带结论与定位行 id，不带审计正文。
 
@@ -30,11 +30,12 @@ func (f *fakeStatusReader) Status(context.Context) (appaudit.ChainStatus, error)
 }
 
 func statusHandler(reader *fakeStatusReader) *audithttp.Handler {
-	return audithttp.NewHandler(&fakeReader{}).WithStatus(reader)
+	return audithttp.NewHandler(&fakeReader{}, &roleAuthorizer{}).WithStatus(reader)
 }
 
 func TestAuditStatusRoleGate(t *testing.T) {
-	handler := statusHandler(&fakeStatusReader{status: appaudit.ChainStatus{OK: true}})
+	reader := &fakeStatusReader{status: appaudit.ChainStatus{OK: true}}
+	handler := statusHandler(reader)
 
 	c, rec := newContext(http.MethodGet, "/api/admin/audit-status", "")
 	handler.AuditStatus(c)
@@ -48,12 +49,36 @@ func TestAuditStatusRoleGate(t *testing.T) {
 		t.Fatalf("user = %d %s", rec.Code, rec.Body.String())
 	}
 
-	for _, role := range []coreauth.Role{coreauth.RoleAdmin, coreauth.RoleMaster} {
-		c, rec = newContext(http.MethodGet, "/api/admin/audit-status", role)
-		handler.AuditStatus(c)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s = %d %s", role, rec.Code, rec.Body.String())
-		}
+	c, rec = newContext(http.MethodGet, "/api/admin/audit-status", coreauth.RoleAdmin)
+	handler.AuditStatus(c)
+	if rec.Code != http.StatusForbidden || errorCode(t, rec) != "forbidden" {
+		t.Fatalf("admin = %d %s", rec.Code, rec.Body.String())
+	}
+	if reader.called != 0 {
+		t.Fatal("admin reached the inspector")
+	}
+
+	c, rec = newContext(http.MethodGet, "/api/admin/audit-status", coreauth.RoleMaster)
+	handler.AuditStatus(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("master = %d %s", rec.Code, rec.Body.String())
+	}
+	if reader.called != 1 {
+		t.Fatalf("inspector calls = %d, want 1", reader.called)
+	}
+}
+
+// 没接作用域解析就 500：巡检同样 fail-closed。
+func TestAuditStatusNilAuthorizerFailsClosed(t *testing.T) {
+	reader := &fakeStatusReader{status: appaudit.ChainStatus{OK: true}}
+	handler := audithttp.NewHandler(&fakeReader{}, nil).WithStatus(reader)
+	c, rec := newContext(http.MethodGet, "/api/admin/audit-status", coreauth.RoleMaster)
+	handler.AuditStatus(c)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("nil authorizer = %d %s", rec.Code, rec.Body.String())
+	}
+	if reader.called != 0 {
+		t.Fatal("nil authorizer reached the inspector")
 	}
 }
 

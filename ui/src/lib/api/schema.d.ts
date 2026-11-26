@@ -1420,12 +1420,10 @@ export interface paths {
          *     due tasks — pending rows stay pending and are consumed after resume;
          *     a settings-store failure surfaces as an error instead of silently
          *     resuming (a broken store never reads as "not paused").
-         *     The gate is split by the requested target value, not by the change
-         *     direction: pausing (paused=true) is available to master and admin;
-         *     resuming (paused=false) is master only, following the legacy
-         *     emergency-stop precedent where any administrator can stop and only
-         *     the master can restart. A caller outside the gate for its target
-         *     value answers 403 with zero writes and zero audit rows.
+         *     Both pausing (paused=true) and resuming (paused=false) are master
+         *     only; the target value does not split the gate. admin and user answer
+         *     403 before the password check, with zero writes and zero audit rows
+         *     and without consuming the reauthentication throttle.
          *     current_password is required: a missing value answers 400 and a
          *     wrong password answers 403, both with zero writes and zero audit
          *     rows; repeated failures share the global reauthentication throttle
@@ -1863,9 +1861,11 @@ export interface paths {
          *     way out. total is the number of rows matching the same filters
          *     ignoring the cursor; has_more is true when next_cursor is non-empty.
          *     The chain is not verified here and there is no export.
-         *     Legacy parity: the previous console showed every school's rows to
-         *     both master and admin; this endpoint deliberately keeps that global
-         *     view and does not narrow by the caller's school scope.
+         *     Visibility is scoped to the caller. master reads every row across all
+         *     schools, including rows whose school_id is NULL. admin reads only rows
+         *     for schools bound to it (admin_schools); rows with school_id NULL are
+         *     not visible to admin, and an admin with no bound school gets an empty
+         *     page rather than the global view. user answers 403.
          */
         get: operations["AuditLogList"];
         put?: never;
@@ -1885,7 +1885,8 @@ export interface paths {
         };
         /**
          * Verify the audit chain end to end.
-         * @description Master and admin only. Reads every audit row in id order in bounded
+         * @description Master only. admin and user answer 403 before any read. Reads every
+         *     audit row in id order in bounded
          *     batches and recomputes each row's HMAC and prev_hash link, including
          *     the link across batch boundaries. Memory is bounded by the batch size;
          *     the scan time grows linearly with the chain length.

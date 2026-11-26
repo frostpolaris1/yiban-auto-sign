@@ -403,7 +403,7 @@ func w2cNewEnvWithAnchor(t *testing.T, anchorPath string) *w2cEnv {
 	if anchorPath != "" {
 		auditInspector.WithAnchor(anchoradapter.NewFile(anchorPath)).WithAnchorMeta(e.audits)
 	}
-	auditHandler := audithttp.NewHandler(auditReader).WithStatus(auditInspector)
+	auditHandler := audithttp.NewHandler(auditReader, adminSvc).WithStatus(auditInspector)
 
 	e.engine, err = router.New(router.Options{
 		Sessions:        e.sessions,

@@ -6,8 +6,9 @@
  * `features/dashboard` 展示层：数据与回调由 `DashboardView` 注入。
  *
  * **口径**
- * 端点 `GET /api/admin/engine` 与 `GET /api/admin/audit-status` 的 `x-roles`
- * 均为 master/admin；不在 user 视角挂载。
+ * 端点 `GET /api/admin/engine` 的 `x-roles` 为 master/admin；
+ * `GET /api/admin/audit-status` 仅 master。admin 不请求、也不渲染审计巡检区。
+ * 不在 user 视角挂载。
  * 正常态浓缩为页尾单行状态条，不再抢占首屏 KPI 视线；
  * 断链或锚点不符时在条下展开行内 danger 告警条，不弹窗、不展示审计正文。
  * 引擎读取失败与审计读取失败各自独立重试，互不连坐。
@@ -43,6 +44,8 @@ export type PauseAction = {
 }
 
 type AuditStatusCardProps = {
+  /** 审计巡检仅 master；false 时不渲染审计区（admin 零请求）。 */
+  auditAllowed: boolean
   report: AuditStatusReport | undefined
   loading: boolean
   error: string | null
@@ -88,6 +91,7 @@ function AuditSummaryInline({ report }: { report: AuditStatusReport }) {
 }
 
 export function AuditStatusCard({
+  auditAllowed,
   report,
   loading,
   error,
@@ -108,12 +112,12 @@ export function AuditStatusCard({
         ? '巡检中…'
         : '等待巡检…'
   const engineFailed = engineError !== null
-  const auditFailed = error !== null
+  const auditFailed = auditAllowed && error !== null
   // 异常态强制展开；手动收起只对「当前这一起异常」有效：异常签名变化（新断链/失败）
   // 后 override 失配、回到强制展开，避免一次收起把后续告警永久折叠（R6）。
   // 恢复后若再次读到同文本异常，视为同一事件，保留用户此前的收起选择。
   const forcedKey = healthForcedKey(broken, error, engineError)
-  const forcedOpen = broken !== null || auditFailed || engineFailed
+  const forcedOpen = (auditAllowed && broken !== null) || auditFailed || engineFailed
   const [override, setOverride] = useState<{ key: string; open: boolean } | null>(null)
   const open = resolveHealthOpen(forcedOpen, forcedKey, override)
   const panelId = useId()
@@ -129,10 +133,16 @@ export function AuditStatusCard({
         <Badge tone={engineFailed ? 'danger' : pulse.tone} dot>
           {engineFailed ? '读取失败' : engineLoading && engine === undefined ? '读取中…' : pulse.label}
         </Badge>
-        <span className="app-health-summary-label">审计</span>
-        <Badge tone={auditFailed ? 'danger' : verdict === null ? 'info' : auditVerdictTone(verdict)}>
-          {auditFailed ? '读取失败' : auditText}
-        </Badge>
+        {auditAllowed ? (
+          <>
+            <span className="app-health-summary-label">审计</span>
+            <Badge
+              tone={auditFailed ? 'danger' : verdict === null ? 'info' : auditVerdictTone(verdict)}
+            >
+              {auditFailed ? '读取失败' : auditText}
+            </Badge>
+          </>
+        ) : null}
         <button
           type="button"
           className="app-health-toggle"
@@ -217,30 +227,34 @@ export function AuditStatusCard({
           )}
         </div>
 
-        <span className="app-health-sep" aria-hidden="true" />
+        {auditAllowed ? (
+          <>
+            <span className="app-health-sep" aria-hidden="true" />
 
-        <div className="app-health-zone app-health-zone--grow">
-          <span className="app-health-label">
-            <Icon name="shield" size={14} />
-            审计链巡检
-          </span>
-          {error !== null ? (
-            <div className="app-health-inline">
-              <Badge tone="danger">读取失败</Badge>
-              <span className="app-health-meta">{error}</span>
-              <Button variant="ghost" size="sm" onClick={onRetry}>
-                重试
-              </Button>
+            <div className="app-health-zone app-health-zone--grow">
+              <span className="app-health-label">
+                <Icon name="shield" size={14} />
+                审计链巡检
+              </span>
+              {error !== null ? (
+                <div className="app-health-inline">
+                  <Badge tone="danger">读取失败</Badge>
+                  <span className="app-health-meta">{error}</span>
+                  <Button variant="ghost" size="sm" onClick={onRetry}>
+                    重试
+                  </Button>
+                </div>
+              ) : report === undefined ? (
+                <span className="app-health-meta">{loading ? '巡检中…' : '等待巡检…'}</span>
+              ) : (
+                <AuditSummaryInline report={report} />
+              )}
             </div>
-          ) : report === undefined ? (
-            <span className="app-health-meta">{loading ? '巡检中…' : '等待巡检…'}</span>
-          ) : (
-            <AuditSummaryInline report={report} />
-          )}
-        </div>
+          </>
+        ) : null}
       </div>
 
-      {broken !== null ? (
+      {auditAllowed && broken !== null ? (
         <div className="app-health-alert">
           <Alert tone="danger" title="审计异常">
             {broken} 请保留现场并排查；本页不展示审计正文。

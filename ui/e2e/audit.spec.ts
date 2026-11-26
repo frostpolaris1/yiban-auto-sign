@@ -15,7 +15,8 @@ import {
  * 3. 断链态页头出危险告警且列表仍可用；列表失败只有列表区出错＋重试，页头结论保持。
  * 4. 无记录与筛选无命中两种空态文案不同；非法日期在客户端阻止提交并提示。
  * 5. user 直达 `/audit` 被 302 到用户端 `/app`：管理台壳与审计表都不渲染，且零审计请求。
- * 6. 390 筛选纵向堆叠、表格在自身容器内横向滚动、页面零横向溢出。
+ * 6. admin 的台账照常可读（行由服务端按绑定校收窄），但巡检仅 master：零巡检请求、页头无结论。
+ * 7. 390 筛选纵向堆叠、表格在自身容器内横向滚动、页面零横向溢出。
  */
 
 async function openAudit(page: Page) {
@@ -234,7 +235,20 @@ test('predicate 5: a user is sent to /app from /audit and sends zero audit reque
   expect(auditStatusCalls(api)).toHaveLength(0)
 })
 
-test('predicate 6: 390 stacks filters, keeps detail reachable, restores focus, and never overflows the page', async ({
+test('predicate 6: an admin reads the scoped ledger without requesting the master-only inspection', async ({
+  page,
+}) => {
+  const api = await mockAuditApi(page, { role: 'admin' })
+  await page.goto('/audit')
+  await openAudit(page)
+
+  await expect(page.locator('[data-audit-verdict]')).toHaveCount(0)
+  await expect(page.getByText('巡检仅主管理员可用')).toBeVisible()
+  expect(auditListCalls(api), 'the ledger still loads for admin').toHaveLength(1)
+  expect(auditStatusCalls(api), 'admin never inspects the chain').toHaveLength(0)
+})
+
+test('predicate 7: 390 stacks filters, keeps detail reachable, restores focus, and never overflows the page', async ({
   page,
 }) => {
   const longDetail = JSON.stringify({ note: 'x'.repeat(2000) })
