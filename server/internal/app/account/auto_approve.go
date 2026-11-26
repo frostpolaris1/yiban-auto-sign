@@ -227,8 +227,9 @@ func (s *Service) runAutoApprove(ctx context.Context, accountID, schoolID string
 			if record.Status != StatusPending {
 				return
 			}
-			// 通知只跟着真正落地的审计走：recordAutoCheckFailed 内部的
-			// 复核可能发现人工已改终态，那时跳过审计也不得补发待审通知。
+			// 通知跟「行仍 pending」这个结论走，不跟审计是否落地走：
+			// recordAutoCheckFailed 会再复核一次，人工已改终态时返回 false；
+			// 审计写失败只 Warn，行已确认 pending 仍返回 true。
 			if s.recordAutoCheckFailed(ctx, accountID, schoolID, autoCheckCredentialChanged) {
 				s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
 			}
@@ -259,10 +260,11 @@ func (s *Service) alertStaysPending(ctx context.Context, accountID, schoolID str
 	s.alertReviewPending(ctx, Record{ID: accountID, SchoolID: schoolID})
 }
 
-// recordAutoCheckFailed 在账号仍 pending 时追加失败审计，并返回是否真的追加。
-// 返回值把「通知」钉在「审计」上：调用方第一次读到的 pending 可能在这里
+// recordAutoCheckFailed 在账号仍 pending 时追加失败审计，并返回「是否仍应通知」。
+// 返回值只回答行是否仍 pending，不表示审计已经落地：复核发现读不到行、
+// 或已被人工改成终态才返回 false；审计写失败只 Warn，调用方仍应补发通知。
+// 返回值把「通知」钉在行状态上：调用方第一次读到的 pending 可能在这里
 // 第二次读之前已被人工改成终态，此时跳过审计也不得补发待审通知。
-// 已被人工审核或删除的行不再审计：结果已由人工事实决定。
 func (s *Service) recordAutoCheckFailed(ctx context.Context, accountID, schoolID, result string) bool {
 	if ctx.Err() != nil {
 		return false
@@ -290,7 +292,8 @@ func (s *Service) recordAutoCheckFailed(ctx context.Context, accountID, schoolID
 			logfield.KeyEvent, "auto_approve.audit_failed",
 			logfield.KeyAccountID, accountID,
 			logfield.KeyError, err.Error())
-		return false
+		// 审计失败不改变「行仍 pending、用户仍欠一条通知」的事实。
+		return true
 	}
 	return true
 }

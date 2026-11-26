@@ -807,7 +807,7 @@ func (r *AccountRepo) classifyMiss(ctx context.Context, s corescope.Scope, id st
 	if _, err := r.fetch(ctx, s, id, false); err != nil {
 		return coreaccount.Record{}, err
 	}
-	return coreaccount.Record{}, conflictError("account status changed")
+	return coreaccount.Record{}, conflictError("account status or credential version changed")
 }
 
 // classifyRestoreMiss 解释一次零行恢复。

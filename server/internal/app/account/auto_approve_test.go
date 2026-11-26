@@ -294,7 +294,7 @@ func TestRunAutoApproveCredentialVersionChangedStaysPending(t *testing.T) {
 
 // TestRunAutoApproveVersionConflictAfterManualReviewStaysSilent 是否定手臂：
 // 版本冲突的判定读到 pending，但 recordAutoCheckFailed 内部的复核发现人工
-// 已通过——两类审计都不写，也不得补发待审通知（N1：通知只跟审计走）。
+// 已通过——两类审计都不写，也不得补发待审通知（行已非 pending）。
 // flipAfter=2 让第 3 次 Get（复核那次）返回 active：第 1 次是
 // SigningCredential，第 2 次是冲突判定。
 func TestRunAutoApproveVersionConflictAfterManualReviewStaysSilent(t *testing.T) {
@@ -328,7 +328,7 @@ func TestRunAutoApproveVersionConflictAfterManualReviewStaysSilent(t *testing.T)
 		t.Fatalf("auto check failed rows = %d, want 0（人工已通过，不写失败词）", count)
 	}
 	if len(alerts.events) != 0 {
-		t.Fatalf("通知 = %+v, want 0（审计未落地不得发通知）", alerts.events)
+		t.Fatalf("通知 = %+v, want 0（行已非 pending，不得补发通知）", alerts.events)
 	}
 }
 
