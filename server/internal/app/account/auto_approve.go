@@ -15,7 +15,10 @@ package account
 // 单发不重试：任一不过或平台故障都留 pending，并写
 // account.auto_check_failed（detail 只含结果词）。
 // 核验在 Service 生命周期上下文内运行：Shutdown 先取消再等待。
-// 审核竞态由 SetStatus 的 pending→active CAS 处理：人工已动过的行不覆盖。
+// 审核竞态由 pending→active 的状态 CAS 处理：人工已动过的行不覆盖。
+// 凭据竞态由 SetStatusIfCredentialVersion 的版本 CAS 处理：核验期间
+// 凭据被替换（ReplaceCredential 会 version+1）时零行，账号留 pending。
+// 两条 CAS 在同一条件 UPDATE 里，激活与「用的是哪一版凭据」不可分。
 // P3-14 通知归属：Create 判「armed＝开关开且端口齐」时**不发** pending
 // 通知，把唯一一条通知交给核验收尾——通过发 auto_approved，
 // 留在 pending 的每一条早退路径（含开关中途关闭与竞写失败）补发
@@ -58,6 +61,9 @@ const (
 	autoCheckSchoolUnbound     = "school_unbound"
 	autoCheckIdentityMissing   = "identity_missing"
 	autoCheckIdentityMismatch  = "identity_mismatch"
+	// autoCheckCredentialChanged 表示核验通过时凭据已被替换：
+	// 平台结论属于旧凭据，不能激活；账号留 pending 等人工。
+	autoCheckCredentialChanged = "credential_changed"
 )
 
 // Shutdown 取消在飞核验并等待它们退出，或上下文先到期。
@@ -175,8 +181,10 @@ func (s *Service) runAutoApprove(ctx context.Context, accountID, schoolID string
 	var approved Record
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		var err error
-		approved, err = s.deps.Accounts.SetStatus(ctx, corescope.Master(), accountID,
-			StatusPending, StatusActive, s.deps.Clock.Now().UTC(), "")
+		// 激活必须与「核验用的是哪一版凭据」同条件：凭据在核验期间
+		// 被替换时行不匹配，账号保持 pending。
+		approved, err = s.deps.Accounts.SetStatusIfCredentialVersion(ctx, corescope.Master(), accountID,
+			StatusPending, StatusActive, credential.CredentialVersion, s.deps.Clock.Now().UTC(), "")
 		if err != nil {
 			return err
 		}
@@ -198,9 +206,32 @@ func (s *Service) runAutoApprove(ctx context.Context, accountID, schoolID string
 		return err
 	})
 	if err != nil {
-		// 人工审核已先一步改过状态：CAS 冲突不是故障，静默让位——
-		// 状态已由人工事实决定，本面不得替它发通知。
+		// CAS 冲突有两类，靠事务外的行状态区分：
+		//   - 人工已动过状态（行不再是 pending）：静默让位，状态已由
+		//     人工事实决定，本面不得替它发通知；
+		//   - 行仍 pending 且可见：只剩「凭据版本已变」一种原因，记结果词
+		//     并按 P3-14 补发 pending 通知（armed 时唯一一条最终态）。
 		if errs.From(err).Code == errs.CodeConflict {
+			record, getErr := s.deps.Accounts.Get(ctx, corescope.Master(), accountID)
+			if getErr != nil {
+				// 冲突后读不到行只影响「要不要补结果词」，不改返回值；
+				// 取消是常态（Shutdown 先取消），不刷告警。
+				if ctx.Err() == nil {
+					s.log.Warn("account: auto approve conflict lookup failed",
+						logfield.KeyEvent, "auto_approve.conflict_lookup_failed",
+						logfield.KeyAccountID, accountID,
+						logfield.KeyError, getErr.Error())
+				}
+				return
+			}
+			if record.Status != StatusPending {
+				return
+			}
+			// 通知只跟着真正落地的审计走：recordAutoCheckFailed 内部的
+			// 复核可能发现人工已改终态，那时跳过审计也不得补发待审通知。
+			if s.recordAutoCheckFailed(ctx, accountID, schoolID, autoCheckCredentialChanged) {
+				s.alertStaysPending(ctx, accountID, schoolID, ownsAlert)
+			}
 			return
 		}
 		s.log.Warn("account: auto approve write failed",
@@ -228,15 +259,17 @@ func (s *Service) alertStaysPending(ctx context.Context, accountID, schoolID str
 	s.alertReviewPending(ctx, Record{ID: accountID, SchoolID: schoolID})
 }
 
-// recordAutoCheckFailed 在账号仍 pending 时追加失败审计。
+// recordAutoCheckFailed 在账号仍 pending 时追加失败审计，并返回是否真的追加。
+// 返回值把「通知」钉在「审计」上：调用方第一次读到的 pending 可能在这里
+// 第二次读之前已被人工改成终态，此时跳过审计也不得补发待审通知。
 // 已被人工审核或删除的行不再审计：结果已由人工事实决定。
-func (s *Service) recordAutoCheckFailed(ctx context.Context, accountID, schoolID, result string) {
+func (s *Service) recordAutoCheckFailed(ctx context.Context, accountID, schoolID, result string) bool {
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	record, err := s.deps.Accounts.Get(ctx, corescope.Master(), accountID)
 	if err != nil || record.Status != StatusPending {
-		return
+		return false
 	}
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		_, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
@@ -257,7 +290,9 @@ func (s *Service) recordAutoCheckFailed(ctx context.Context, accountID, schoolID
 			logfield.KeyEvent, "auto_approve.audit_failed",
 			logfield.KeyAccountID, accountID,
 			logfield.KeyError, err.Error())
+		return false
 	}
+	return true
 }
 
 // alertAutoApproved 在核验通过后通知该校管理员。

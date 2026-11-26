@@ -394,6 +394,24 @@ func (r *AccountRepo) Review(ctx context.Context, s corescope.Scope, id string, 
 // to 为 pending 时同时清空驳回理由与审核戳：pending 行不属于任何已审轮次。
 // 零行由 classifyMiss 区分：越权报 not_found，状态已变报冲突。
 func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id string, from, to coreaccount.Status, at time.Time, reason string) (coreaccount.Record, error) {
+	return r.setStatus(ctx, s, id, from, to, at, reason, 0)
+}
+
+// SetStatusIfCredentialVersion 在状态 CAS 上再加凭据版本谓词：
+// 仅当该账号的 credentials.version 仍等于 expectedVersion 才迁移。
+// 核验期间凭据被替换（version+1）时零行、报 conflict，账号保持原状态。
+// expectedVersion 非正报 validation：调用方必须带上核验时的版本，
+// 否则这个 CAS 会悄悄退化成纯状态 CAS。
+func (r *AccountRepo) SetStatusIfCredentialVersion(ctx context.Context, s corescope.Scope, id string, from, to coreaccount.Status, expectedVersion int32, at time.Time, reason string) (coreaccount.Record, error) {
+	if expectedVersion < 1 {
+		return coreaccount.Record{}, validationError("expected credential version must be positive")
+	}
+	return r.setStatus(ctx, s, id, from, to, at, reason, expectedVersion)
+}
+
+// setStatus 是两种状态迁移的共享实现：expectedCredentialVersion > 0 时
+// 追加凭据版本 EXISTS 谓词；0 表示只做状态 CAS（SetStatus 的旧行为）。
+func (r *AccountRepo) setStatus(ctx context.Context, s corescope.Scope, id string, from, to coreaccount.Status, at time.Time, reason string, expectedCredentialVersion int32) (coreaccount.Record, error) {
 	if !from.Valid() || !to.Valid() {
 		return coreaccount.Record{}, validationError("unknown account status")
 	}
@@ -406,6 +424,14 @@ func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id strin
 	}
 	args := append([]any{id}, scopeArgs...)
 	next := 2 + len(scopeArgs)
+	credentialSQL := ""
+	if expectedCredentialVersion > 0 {
+		credentialSQL = fmt.Sprintf(`
+		   AND EXISTS (
+		       SELECT 1 FROM credentials c
+		        WHERE c.account_id = accounts.id
+		          AND c.version = $%d)`, next+4)
+	}
 	query := fmt.Sprintf(`
 		UPDATE accounts
 		   SET status = $%d::account_status,
@@ -425,10 +451,13 @@ func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id strin
 		       updated_at = $%d
 		 WHERE id = $1::uuid
 		   AND status = $%d::account_status
-		   AND deleted_at IS NULL%s
+		   AND deleted_at IS NULL%s%s
 		RETURNING %s`,
-		next, next, next+1, next, next, next, next+2, next+3, scopeSQL, accountColumns)
+		next, next, next+1, next, next, next, next+2, next+3, scopeSQL, credentialSQL, accountColumns)
 	args = append(args, string(to), reason, at, string(from))
+	if expectedCredentialVersion > 0 {
+		args = append(args, expectedCredentialVersion)
+	}
 	row := r.db.q(ctx).QueryRow(ctx, query, args...)
 	record, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {

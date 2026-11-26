@@ -62,6 +62,12 @@ type StatusCounts = coreaccount.StatusCounts
 // 零行报 conflict（errs.CodeConflict）。**状态迁移规则归用例层，不归本端口**。
 // 目标状态为 pending 时清空驳回理由与审核戳：pending 不属于任何已审轮次。
 //
+// SetStatusIfCredentialVersion 在状态 CAS 之上再加凭据版本 CAS：
+// 仅当 status=from **且**该账号 credentials.version=expectedVersion 才迁移。
+// 零行报 conflict。自动核验用它保证「核验用的凭据」与「激活时的凭据」
+// 同一版本：核验期间凭据被替换（ReplaceCredential 会 version+1），账号留 pending。
+// expectedVersion 必须 ≥ 1，否则报 validation。
+//
 // Get 与 GetIncludingDeleted 都套范围：Get 只回未软删行，
 // GetIncludingDeleted 也回软删行（本人自助面用它区分「不是我的」与「已删」）。
 // 越权行一律 not_found。
@@ -110,6 +116,10 @@ type Repo interface {
 	UpdatePhone(ctx context.Context, scope corescope.Scope, id, phone string, at time.Time) (Record, error)
 	UpdateName(ctx context.Context, scope corescope.Scope, id, name string, at time.Time) (Record, error)
 	SetStatus(ctx context.Context, scope corescope.Scope, id string, from, to Status, at time.Time, reason string) (Record, error)
+	// SetStatusIfCredentialVersion 仅当状态等于 from 且凭据版本仍等于
+	// expectedVersion 时迁移。零行与 SetStatus 同口径走 classifyMiss：
+	// 越权报 not_found，状态或版本已变报 conflict，账号保持 from。
+	SetStatusIfCredentialVersion(ctx context.Context, scope corescope.Scope, id string, from, to Status, expectedVersion int32, at time.Time, reason string) (Record, error)
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason, by string, at time.Time) (Record, error)
 	SoftDelete(ctx context.Context, scope corescope.Scope, id, by string, at time.Time) error
 	Restore(ctx context.Context, scope corescope.Scope, id string, limit int) (Record, error)
