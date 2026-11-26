@@ -7,9 +7,11 @@
  * （色调用本文件收窄的字面量联合，调用方按 `Badge` 的 `Tone` 消费）。
  *
  * **口径**
- * 三态由契约字段派生：锚点不符/错误优先判异常，其次 `empty`，最后 `ok`。
+ * 三态由契约字段派生：锚点不符/错误/缺失优先判异常，其次 `empty`，最后 `ok`。
  * 空链不是通过（服务端口径），文案明说「暂无审计行」而不是「异常」；
- * 但空链带锚点不符时锚点优先，必须显示异常。
+ * 但空链带锚点异常或缺失时锚点优先，必须显示异常。
+ * missing 表示已配置库外锚点读取器却没有锚点证据，属失败关闭，
+ * 不能因为链内自洽就洗成通过。
  * 链头只显示前 12 位十六进制，帮助运维与外部锚点比对。
  */
 
@@ -20,9 +22,13 @@ export type AuditVerdict = 'ok' | 'broken' | 'empty'
 /** 语义色联合：`success`/`danger`/`info` 都是 `Badge` 色调的子集。 */
 export type AuditVerdictTone = 'success' | 'danger' | 'info'
 
-/** 锚点不符或读不出时优先判异常：空链不能把锚点告警洗成「暂无行」。 */
+/** 锚点不符、读不出或缺失时优先判异常：空链不能把锚点告警洗成「暂无行」。 */
 function anchorBroken(report: AuditStatusReport): boolean {
-  return report.anchor_status === 'mismatch' || report.anchor_status === 'error'
+  return (
+    report.anchor_status === 'mismatch' ||
+    report.anchor_status === 'error' ||
+    report.anchor_status === 'missing'
+  )
 }
 
 /** 三态判定：锚点异常优先，其次空链，最后 ok。 */

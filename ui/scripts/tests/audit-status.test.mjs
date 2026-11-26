@@ -50,8 +50,18 @@ test('anchor mismatch reason is shown', () => {
   )
 })
 
-test('missing anchor has no broken text', () => {
-  assert.equal(auditBrokenText(report({ anchor_status: 'missing' })), null)
+test('missing anchor explains initialization', () => {
+  assert.equal(
+    auditBrokenText(report({ anchor_status: 'missing', anchor_reason: 'anchor_not_initialized' })),
+    'anchor_not_initialized',
+  )
+})
+
+test('missing anchor stays broken on an empty chain', () => {
+  assert.equal(
+    auditVerdict(report({ ok: false, empty: true, anchor_status: 'missing' })),
+    'broken',
+  )
 })
 
 // 这三例只锁纯函数语义；组件是否真的调用它们由 e2e「B5: a broken audit chain
