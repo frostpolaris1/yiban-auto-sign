@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -600,6 +601,54 @@ func TestTemplatesMatchRegistry(t *testing.T) {
 				if item.Sensitive && keys[key] != "" {
 					t.Errorf("%s: 秘密键 %s 有值 %q——模板不得含密钥", tc.path, key, keys[key])
 				}
+			}
+		})
+	}
+}
+
+// TestWorkersDefaultMatchesDeployTemplates 钉住读取缺省与三份模板的同源关系。
+//
+// 五处任一处漂移都会让运维看到“默认 4”却启动成别的并发数：
+// config.go 的 keyWorkers、嵌入名册、开发模板、裸机模板、容器模板。
+// 测试直接读文件与配置规格，不复制模板值。
+func TestWorkersDefaultMatchesDeployTemplates(t *testing.T) {
+	const wantWorkers = 4
+	if keyWorkers.fallback != wantWorkers {
+		t.Errorf("config.go 的 %s 缺省 = %d, want %d", keyWorkers.key, keyWorkers.fallback, wantWorkers)
+	}
+
+	reg := loadRegistry(t)
+	entry, ok := entryOf(t, reg, keyWorkers.key)
+	if !ok {
+		t.Fatalf("名册缺少 %s", keyWorkers.key)
+	}
+	if !entry.hasDefault() {
+		t.Fatalf("名册 %s 没有缺省值", keyWorkers.key)
+	}
+	var registryDefault int
+	if err := json.Unmarshal(entry.Default, &registryDefault); err != nil {
+		t.Fatalf("名册 %s 缺省不是整数: %v", keyWorkers.key, err)
+	}
+	if registryDefault != wantWorkers {
+		t.Errorf("名册 %s 缺省 = %d, want %d", keyWorkers.key, registryDefault, wantWorkers)
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "development", path: filepath.Join("..", "..", "..", ".env.example")},
+		{name: "baremetal", path: filepath.Join("..", "..", "..", "..", "deploy", "baremetal", "server.env.example")},
+		{name: "container", path: filepath.Join("..", "..", "..", "..", "deploy", "container", "compose.env.example")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keys := templateKeyLines(t, tc.path)
+			raw, ok := keys[keyWorkers.key]
+			if !ok {
+				t.Fatalf("%s 缺少 %s", tc.path, keyWorkers.key)
+			}
+			if raw != strconv.Itoa(wantWorkers) {
+				t.Errorf("%s: %s=%q, want %d", tc.path, keyWorkers.key, raw, wantWorkers)
 			}
 		})
 	}

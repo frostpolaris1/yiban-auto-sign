@@ -296,6 +296,51 @@ func newServerFromStack(cfg *config.Config, stack *Stack, closeOnShutdown bool) 
 	return srv
 }
 
+const (
+	// startupCapacityWindow 是启动容量报告的评估窗口：默认签到窗口
+	// 06:30-07:50。窗口可被 DB 设置覆盖，启动阶段只报默认窗口口径；
+	// 真实容量在每次计划 Build 时按生效窗口计算。
+	startupCapacityWindow = time.Duration(
+		coreschedule.DefaultSignWindowEndMinute-coreschedule.DefaultSignWindowStartMinute,
+	) * time.Minute
+	// rateKneeSlack 是 worker 超过出口拐点 rate*avg 多少倍才告警。默认
+	// 4 个 worker 对拐点 3 只多 1 个，属于合理的延迟余量，不打扰启动；
+	// 翻倍以上说明可能误以为加 worker 能加窗口容量。
+	rateKneeSlack = 2.0
+)
+
+// reportConfiguredCapacity 在启动时记录默认签到窗口的配置容量，并在
+// worker 明显超过出口拐点时告警。只写日志，不阻断启动，不读取凭据。
+func reportConfiguredCapacity(log *slog.Logger, cfg *config.Config) {
+	window := startupCapacityWindow
+	util := corecapacity.UtilDefault
+	capacity := corecapacity.Capacity(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
+	binding := corecapacity.BindingOf(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
+	log.Info("configured sign-window schedule capacity",
+		logfield.KeyEvent, "assembly.capacity_configured",
+		logfield.KeyWorkers, cfg.Workers,
+		logfield.KeyDurationMS, cfg.AvgAttempt.Milliseconds(),
+		logfield.KeyRate, cfg.EgressRate,
+		logfield.KeyUtil, util,
+		logfield.KeyWindowSeconds, int(window.Seconds()),
+		logfield.KeyCapacity, capacity,
+		logfield.KeyBinding, string(binding),
+	)
+	if cfg.AvgAttempt > 0 && cfg.EgressRate > 0 {
+		knee := cfg.EgressRate * cfg.AvgAttempt.Seconds()
+		if float64(cfg.Workers) > rateKneeSlack*knee {
+			log.Warn("workers are above the egress-rate knee; extra workers add latency headroom, not sign-window capacity",
+				logfield.KeyEvent, "assembly.capacity_rate_bound",
+				logfield.KeyWorkers, cfg.Workers,
+				logfield.KeyDurationMS, cfg.AvgAttempt.Milliseconds(),
+				logfield.KeyRate, cfg.EgressRate,
+				logfield.KeyCapacity, capacity,
+				logfield.KeyBinding, string(binding),
+			)
+		}
+	}
+}
+
 // Build 装配数据库、用例与路由。
 //
 // 有 DSN 时：迁移 → 连接池 → 仓储 → 认证与全部业务域用例。
@@ -360,6 +405,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	if err != nil {
 		return nil, err
 	}
+	reportConfiguredCapacity(logger, cfg)
 
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		issuer = session.NewMemory(clk, cfg.HashPepper)

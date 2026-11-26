@@ -47,7 +47,7 @@ const (
 	KindError Kind = "error"
 	// KindEnum 是封闭词表取值，不得临时造词。
 	KindEnum Kind = "enum"
-	// KindNumber 是数值状态码或编号，不是计数。
+	// KindNumber 是数值状态码、编号、速率或比例，不是计数。
 	KindNumber Kind = "number"
 	// KindText 是其余自由文本或标量（主机名、路径、掩码邮箱等）。
 	KindText Kind = "text"
@@ -93,6 +93,14 @@ const (
 	KeyAccounts         = "accounts"
 	KeyUsers            = "users"
 	KeyBuilt            = "built"
+	KeyWorkers          = "workers"
+	KeyCapacity         = "capacity"
+	KeyRate             = "rate"
+	KeyUtil             = "util"
+	KeyWindowSeconds    = "window_s"
+	KeyShortfall        = "shortfall"
+	KeyDemand           = "demand"
+	KeyBinding          = "binding"
 	KeyBytes            = "bytes"
 	KeyTotal            = "total"
 	KeySuccess          = string(corestatus.TaskSuccess)
@@ -148,6 +156,14 @@ var All = []Field{
 	{Key: KeyAccounts, Const: "KeyAccounts", Kind: KindCount, Meaning: "账号批次物理删除的软删账号数（用户批次连带删的不计）"},
 	{Key: KeyUsers, Const: "KeyUsers", Kind: KindCount, Meaning: "已物理删除的软删用户数"},
 	{Key: KeyBuilt, Const: "KeyBuilt", Kind: KindCount, Meaning: "本轮成功构建的任务数（幂等重放 0 行也计 1）"},
+	{Key: KeyWorkers, Const: "KeyWorkers", Kind: KindCount, Meaning: "并发执行体（通道）数"},
+	{Key: KeyCapacity, Const: "KeyCapacity", Kind: KindCount, Meaning: "按窗口估算的可承载账号尝试数"},
+	{Key: KeyRate, Const: "KeyRate", Kind: KindNumber, Meaning: "出口速率（账号尝试/秒）"},
+	{Key: KeyUtil, Const: "KeyUtil", Kind: KindNumber, Meaning: "容量计算使用的利用系数"},
+	{Key: KeyWindowSeconds, Const: "KeyWindowSeconds", Kind: KindCount, Meaning: "容量计算窗口的秒数"},
+	{Key: KeyShortfall, Const: "KeyShortfall", Kind: KindCount, Meaning: "需求未被窗口容量覆盖的任务数"},
+	{Key: KeyDemand, Const: "KeyDemand", Kind: KindCount, Meaning: "当日任务需求数"},
+	{Key: KeyBinding, Const: "KeyBinding", Kind: KindEnum, Meaning: "容量瓶颈归属（workers/egress_rate）"},
 	{Key: KeyBytes, Const: "KeyBytes", Kind: KindCount, Meaning: "HTTP 响应体字节数"},
 	{Key: KeyTotal, Const: "KeyTotal", Kind: KindCount, Meaning: "某业务日的任务行总数（含未了结行）"},
 	{Key: KeySuccess, Const: "KeySuccess", Kind: KindCount, Meaning: "某业务日 state=success 的任务行数"},

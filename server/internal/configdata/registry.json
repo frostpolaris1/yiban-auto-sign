@@ -411,7 +411,7 @@
   "YIBAN_WORKERS": {
     "type": "int",
     "domain": [1, 64],
-    "default": 1,
+    "default": 4,
     "group": ["执行体"],
     "doc": "并行执行体数上限（1=单执行体）：认领批大小与计划容量通道数同源",
     "sensitive": false,

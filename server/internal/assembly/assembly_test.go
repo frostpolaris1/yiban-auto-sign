@@ -66,6 +66,92 @@ func (h *countingHandler) count(sub string) int {
 	return n
 }
 
+// recordHandler 保留每条日志的级别与字段，供容量启动日志断言。
+type recordHandler struct {
+	mu      sync.Mutex
+	records []map[string]any
+}
+
+func (h *recordHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordHandler) Handle(_ context.Context, r slog.Record) error {
+	m := map[string]any{"level": r.Level.String(), "msg": r.Message}
+	r.Attrs(func(a slog.Attr) bool {
+		m[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, m)
+	return nil
+}
+
+func (h *recordHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *recordHandler) WithGroup(string) slog.Handler { return h }
+
+// event 返回第一条 event 字段等于 name 的记录。
+func (h *recordHandler) event(name string) map[string]any {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, rec := range h.records {
+		if rec["event"] == name {
+			return rec
+		}
+	}
+	return nil
+}
+
+// warnEvents 统计指定 event 的 WARN 条数。
+func (h *recordHandler) warnEvents(name string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, rec := range h.records {
+		if rec["level"] == slog.LevelWarn.String() && rec["event"] == name {
+			n++
+		}
+	}
+	return n
+}
+
+// capacityConfig 是最小可启动配置；容量字段由各测试覆盖。
+func capacityConfig(t *testing.T) *config.Config {
+	t.Helper()
+	return &config.Config{
+		Env:           "test",
+		HTTPAddr:      "127.0.0.1:0",
+		Timezone:      config.DefaultTimezone,
+		DatabaseURL:   "",
+		HashPepper:    []byte("0123456789abcdef0123456789abcdef"),
+		CredentialKey: make([]byte, 32),
+		PhotoDir:      t.TempDir(),
+		Workers:       4,
+		AvgAttempt:    3 * time.Second,
+		EgressRate:    1,
+	}
+}
+
+func wantRecordInt(t *testing.T, rec map[string]any, key string, want int) {
+	t.Helper()
+	got, ok := rec[key]
+	if !ok {
+		t.Fatalf("日志缺字段 %s：%v", key, rec)
+	}
+	switch v := got.(type) {
+	case int:
+		if v != want {
+			t.Fatalf("%s = %d, want %d", key, v, want)
+		}
+	case int64:
+		if v != int64(want) {
+			t.Fatalf("%s = %d, want %d", key, v, want)
+		}
+	default:
+		t.Fatalf("%s 类型 = %T, want 整数", key, got)
+	}
+}
+
 func TestRunAssemblesOnce(t *testing.T) {
 	t.Setenv("YIBAN_ENV", "test")
 	t.Setenv("YIBAN_HTTP_ADDR", "127.0.0.1:0")
@@ -111,6 +197,104 @@ func TestRunAssemblesOnce(t *testing.T) {
 	}
 	if got := handler.count("auth endpoints are disabled"); got != 1 {
 		t.Fatalf("认证禁用警告 %d 条，want 1：一次 Run 只允许一次装配", got)
+	}
+}
+
+// 启动容量日志：默认 4 worker / rate 1 / avg 3s，按默认 80 分钟签到窗口
+// （06:30-07:50）计算窗口容量是 3,840，不是 24 小时吞吐的 69,120。
+// 该配置在 rate=1 时第 4 个 worker 只买延迟余量，已越过 rate 拐点但不告警
+// （拐点告警只在明显超配时触发，避免每次启动噪声）。
+func TestBuildLogsConfiguredDailyCapacity(t *testing.T) {
+	h := &recordHandler{}
+	stack, err := Build(capacityConfig(t), slog.New(h))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer stack.Close()
+
+	info := h.event("assembly.capacity_configured")
+	if info == nil {
+		t.Fatalf("缺启动容量 Info 日志：%v", h.records)
+	}
+	wantRecordInt(t, info, "workers", 4)
+	wantRecordInt(t, info, "duration_ms", 3000)
+	wantRecordInt(t, info, "window_s", 4800)
+	wantRecordInt(t, info, "capacity", 3840)
+	if got := info["binding"]; got != "egress_rate" {
+		t.Fatalf("binding = %v, want egress_rate（4/3 已超过 rate=1）", got)
+	}
+	if _, ok := info["rate"]; !ok {
+		t.Fatalf("Info 缺 rate：%v", info)
+	}
+	if _, ok := info["util"]; !ok {
+		t.Fatalf("Info 缺 util：%v", info)
+	}
+	if got := h.warnEvents("assembly.capacity_rate_bound"); got != 0 {
+		t.Fatalf("默认 4 worker 不得触发超配 Warn，got %d", got)
+	}
+}
+
+// worker 数明显超过 rate×avg 拐点时，加 worker 不再增窗口容量：Warn 指向 rate。
+func TestBuildWarnsWhenWorkersFarAboveRateKnee(t *testing.T) {
+	cfg := capacityConfig(t)
+	cfg.Workers = 10
+	h := &recordHandler{}
+	stack, err := Build(cfg, slog.New(h))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer stack.Close()
+
+	warn := h.event("assembly.capacity_rate_bound")
+	if warn == nil {
+		t.Fatalf("10 worker / rate 1 / avg 3s 必须 Warn：%v", h.records)
+	}
+	wantRecordInt(t, warn, "workers", 10)
+}
+
+// 出口拐点告警是严格大于：rate=1、avg=3s 的拐点是 6 个 worker，
+// 6 不告警，7 才告警。边界写错成 >= 会让默认附近的配置平白多一条噪声。
+func TestBuildCapacityRateBoundWarnStrictlyAboveKnee(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		workers int
+		want    bool
+	}{
+		{name: "at_threshold_6", workers: 6, want: false},
+		{name: "above_threshold_7", workers: 7, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := capacityConfig(t)
+			cfg.Workers = tc.workers
+			h := &recordHandler{}
+			stack, err := Build(cfg, slog.New(h))
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			defer stack.Close()
+
+			info := h.event("assembly.capacity_configured")
+			if info == nil {
+				t.Fatalf("缺启动容量 Info：%v", h.records)
+			}
+			wantRecordInt(t, info, "workers", tc.workers)
+
+			got := h.warnEvents("assembly.capacity_rate_bound")
+			if !tc.want {
+				if got != 0 {
+					t.Fatalf("%d worker 恰在拐点，不得告警，got %d 条", tc.workers, got)
+				}
+				return
+			}
+			if got != 1 {
+				t.Fatalf("%d worker 已超过拐点，必须恰好 1 条 Warn，got %d", tc.workers, got)
+			}
+			warn := h.event("assembly.capacity_rate_bound")
+			if warn == nil {
+				t.Fatalf("缺 rate_bound Warn：%v", h.records)
+			}
+			wantRecordInt(t, warn, "workers", tc.workers)
+		})
 	}
 }
 

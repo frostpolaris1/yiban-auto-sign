@@ -1,12 +1,16 @@
 package schedule_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
+	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 )
@@ -36,6 +40,8 @@ type fakePlanner struct {
 	staleCalls   int
 	lastStaleDay string
 	staleErr     error
+	// preview 由 Build 原样返回；日切按 Shortfall 决定是否记容量告警。
+	preview appschedule.Preview
 }
 
 func (f *fakePlanner) SkipStalePending(_ context.Context, day string) (int64, error) {
@@ -55,9 +61,10 @@ func (f *fakePlanner) Build(_ context.Context, in appschedule.Input) (appschedul
 	f.lastDay, f.lastTask = in.Day, in.SchoolTaskID
 	f.lastInput = in
 	if in.SchoolTaskID == f.failID {
-		return appschedule.Preview{}, errors.New("discover failed")
+		// 失败也回填 preview：验证失败路径不消费缺口，而不是靠零值蒙过。
+		return f.preview, errors.New("discover failed")
 	}
-	return appschedule.Preview{}, nil
+	return f.preview, nil
 }
 
 func testBuilder(tasks fakeTasks, planner *fakePlanner) *appschedule.DailyBuilder {
@@ -103,6 +110,93 @@ func TestBuildTodayContinuesAfterFailure(t *testing.T) {
 	}
 	if built != 1 || planner.calls != 2 {
 		t.Fatalf("built=%d calls=%d, want 1/2", built, planner.calls)
+	}
+}
+
+// 日切容量缺口：Build 返回 Shortfall>0 时记 WARN，但构建数与错误返回不变。
+func TestBuildTodayWarnsOnCapacityShortfall(t *testing.T) {
+	var buf bytes.Buffer
+	planner := &fakePlanner{preview: appschedule.Preview{
+		Capacity: 100, Demand: 250, Shortfall: 150,
+		Binding: corecapacity.BindingWorkers,
+	}}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	b.Logger = slog.New(slog.NewTextHandler(&buf, nil))
+
+	built, err := b.BuildToday(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if built != 1 || planner.calls != 1 {
+		t.Fatalf("built=%d calls=%d, want 1/1（告警不得改变构建结论）", built, planner.calls)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"level=WARN",
+		"schedule.capacity_shortfall",
+		"day=2026-10-30",
+		"shortfall=150",
+		"built=1",
+		"capacity=100",
+		"demand=250",
+		"school_task_id=t1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("容量告警缺 %q: %s", want, out)
+		}
+	}
+}
+
+// 失败任务即使 preview 带缺口也不得告警：built 仍是 0，告警只属于已铺成行的任务。
+func TestBuildTodayFailedBuildDoesNotWarnCapacityShortfall(t *testing.T) {
+	var buf bytes.Buffer
+	planner := &fakePlanner{
+		failID: "t1",
+		preview: appschedule.Preview{
+			Capacity: 100, Demand: 250, Shortfall: 150,
+			Binding: corecapacity.BindingWorkers,
+		},
+	}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	b.Logger = slog.New(slog.NewTextHandler(&buf, nil))
+
+	built, err := b.BuildToday(context.Background())
+	if err == nil {
+		t.Fatal("构建失败必须返回错误")
+	}
+	if built != 0 {
+		t.Fatalf("built=%d, want 0（失败任务不计入已建数）", built)
+	}
+	if planner.calls != 1 {
+		t.Fatalf("calls=%d, want 1", planner.calls)
+	}
+	if strings.Contains(buf.String(), "schedule.capacity_shortfall") {
+		t.Fatalf("失败任务不得记容量告警: %s", buf.String())
+	}
+}
+
+// 无缺口不告警：零值 Preview 与 Shortfall=0 都不得制造噪声。
+func TestBuildTodayNoCapacityShortfallWarn(t *testing.T) {
+	var buf bytes.Buffer
+	planner := &fakePlanner{preview: appschedule.Preview{Capacity: 250, Demand: 250}}
+	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
+		{ID: "t1", SchoolID: "s1", Enabled: true},
+	}}, planner)
+	b.Logger = slog.New(slog.NewTextHandler(&buf, nil))
+
+	built, err := b.BuildToday(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToday: %v", err)
+	}
+	if built != 1 {
+		t.Fatalf("built=%d, want 1", built)
+	}
+	if strings.Contains(buf.String(), "schedule.capacity_shortfall") {
+		t.Fatalf("无缺口不得告警: %s", buf.String())
 	}
 }
 

@@ -111,7 +111,7 @@ func newHandler(t *testing.T) (*systemhttp.Handler, *memAnnouncementStore, *memA
 func newHandlerWith(t *testing.T, sender coremail.Sender, cooldown appsettings.Cooldown) (*systemhttp.Handler, *memAnnouncementStore, *memAudit) {
 	t.Helper()
 	roster, err := appsettings.NewRoster([]appsettings.Entry{
-		{Key: "YIBAN_WORKERS", Group: "调度", Default: float64(1), HasDefault: true},
+		{Key: "YIBAN_WORKERS", Group: "调度", Default: float64(4), HasDefault: true},
 		{Key: "YIBAN_MAIL_PASS", Group: "发布", Sensitive: true},
 	}, mapSource{"YIBAN_MAIL_PASS": "smtp-secret"})
 	if err != nil {
@@ -213,8 +213,8 @@ func TestSettingsRoleGateAndMasking(t *testing.T) {
 			sensitive[item.Key] = item.Sensitive
 		}
 	}
-	if got := string(items["YIBAN_WORKERS"]); got != "1" {
-		t.Fatalf("YIBAN_WORKERS value = %s, want the registered default 1", got)
+	if got := string(items["YIBAN_WORKERS"]); got != "4" {
+		t.Fatalf("YIBAN_WORKERS value = %s, want the registered default 4", got)
 	}
 	if got := string(items["YIBAN_MAIL_PASS"]); got != "null" {
 		t.Fatalf("sensitive value = %s, want null", got)

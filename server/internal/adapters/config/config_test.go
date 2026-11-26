@@ -255,7 +255,7 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
 	}
-	if cfg.Workers != 1 || cfg.AvgAttempt.Seconds() != 3 || cfg.EgressRate != 1.0 {
+	if cfg.Workers != 4 || cfg.AvgAttempt.Seconds() != 3 || cfg.EgressRate != 1.0 {
 		t.Fatalf("调度缺省 = workers %d avg %v rate %v", cfg.Workers, cfg.AvgAttempt, cfg.EgressRate)
 	}
 	if cfg.EdgeFront.Seconds() != 60 || cfg.EdgeBack.Seconds() != 60 {
@@ -269,7 +269,7 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 	}
 
 	src := baseSource()
-	src["YIBAN_WORKERS"] = "4"
+	src["YIBAN_WORKERS"] = "8"
 	src["YIBAN_AVG_ATTEMPT_SEC"] = "5"
 	src["YIBAN_EGRESS_RATE"] = "1.5"
 	src["YIBAN_WINDOW_EDGE_FRONT_SEC"] = "30"
@@ -281,7 +281,7 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFrom overrides: %v", err)
 	}
-	if cfg.Workers != 4 || cfg.AvgAttempt.Seconds() != 5 || cfg.EgressRate != 1.5 ||
+	if cfg.Workers != 8 || cfg.AvgAttempt.Seconds() != 5 || cfg.EgressRate != 1.5 ||
 		cfg.EdgeFront.Seconds() != 30 || cfg.EdgeBack != 0 ||
 		!cfg.AllowTimePref || cfg.TimePrefCooldown.Seconds() != 60 ||
 		cfg.PhotoDir != "var/photos" {
@@ -311,6 +311,19 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 		if _, err := LoadFrom(src); err == nil {
 			t.Fatalf("%s=%q 必须被拒绝", c.key, c.value)
 		}
+	}
+}
+
+// 显式 YIBAN_WORKERS=1 仍生效：改缺省不吞掉运维的显式收紧。
+func TestWorkersExplicitOneIsHonored(t *testing.T) {
+	src := baseSource()
+	src["YIBAN_WORKERS"] = "1"
+	cfg, err := LoadFrom(src)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.Workers != 1 {
+		t.Fatalf("Workers = %d, want explicit 1", cfg.Workers)
 	}
 }
 

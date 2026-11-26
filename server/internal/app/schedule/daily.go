@@ -175,7 +175,7 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return built, err
 		}
-		_, err := b.Service.Build(ctx, Input{
+		preview, err := b.Service.Build(ctx, Input{
 			SchoolID:      task.SchoolID,
 			SchoolTaskID:  task.ID,
 			Day:           day,
@@ -197,6 +197,24 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 			continue
 		}
 		built++
+		if preview.Shortfall > 0 {
+			log := b.Logger
+			if log == nil {
+				log = slog.Default()
+			}
+			// 铺行成功，但窗口装不下全部需求：构建结论不变，只把缺口
+			// 留在启动/日切日志里，便于运维按容量建议扩容。
+			log.Warn("schedule: daily capacity shortfall; plan rows stay valid",
+				logfield.KeyEvent, "schedule.capacity_shortfall",
+				logfield.KeyDay, day,
+				logfield.KeySchoolTaskID, task.ID,
+				logfield.KeyBuilt, built,
+				logfield.KeyCapacity, preview.Capacity,
+				logfield.KeyDemand, preview.Demand,
+				logfield.KeyShortfall, preview.Shortfall,
+				logfield.KeyBinding, string(preview.Binding),
+			)
+		}
 	}
 	// P0-3：built>0 只表示至少一个任务构建成功；幂等重放 0 行也会触发
 	// 一次 ANALYZE（统计仍要刷新）。ANALYZE 失败不改构建结论——计划行
