@@ -1349,10 +1349,12 @@ class BasePathMiddleware:
     _ROOT_PREFIXES = ("/api/", "/static/", "/data/", "/work/", "/my/", "/user/")
 
     def __init__(self, wsgi_app, base_path=None):
+        """包装目标 WSGI 应用；`base_path` 为显式子路径前缀，为 None 时启用自动探测。"""
         self.wsgi_app = wsgi_app
         self.base_path = base_path  # 显式前缀（优先于自动探测）；None 则自动
 
     def __call__(self, environ, start_response):
+        """按 WSGI 契约解析并回填 `SCRIPT_NAME` / `PATH_INFO` 后转发给内层应用。"""
         # WSGI 契约：代理已设 SCRIPT_NAME 时，PATH_INFO 已相对该脚本路径，直接放行
         if (environ.get("SCRIPT_NAME") or "").strip("/"):
             return self.wsgi_app(environ, start_response)
@@ -1367,6 +1369,7 @@ class BasePathMiddleware:
         return self.wsgi_app(environ, start_response)
 
     def _resolve_prefix(self, environ, path):
+        """解析生效的挂载前缀：显式配置优先，未命中或未配置时回退至自动探测。"""
         # 显式配置（构造参数 > 进程环境 > `.env`，走唯一解析器）；仅当路径确实以该前缀开头才生效
         configured = (self.base_path or env_io.resolve_path("YIBAN_BASE_PATH", "")).strip().strip("/")
         if configured:
@@ -1378,6 +1381,7 @@ class BasePathMiddleware:
 
     @classmethod
     def _detect_prefix(cls, path):
+        """从 `PATH_INFO` 自动探测最短合法子路径前缀；根路径或非法路径返回空串。"""
         # 根路径部署：本身就是首页或已知路由 → 无前缀
         if path == "/" or path in cls._ROOT_MARKERS:
             return ""
@@ -1396,7 +1400,7 @@ class BasePathMiddleware:
             if (rest == "/" or rest in cls._ROOT_MARKERS
                     or rest.startswith(cls._ROOT_PREFIXES)):
                 prefix = path[:pos]
-                # 前缀本身必须是规范的绝对路径（无空段、无 ".."、"。"、反斜杠），
+                # 前缀本身必须是规范的绝对路径（无空段、无 ".."、"."、反斜杠），
                 # 否则一律当根部署处理，不回填 SCRIPT_NAME
                 if "//" in prefix or any(seg in (".", "..") for seg in prefix.split("/")) or "\\" in prefix:
                     return ""
@@ -1426,6 +1430,17 @@ def reject_default_admin_password(env_path):
 
 
 def create_app(host=None):
+    """构建并装配 Flask 应用实例（全站唯一的组合根入口）。
+
+    启动顺序（不可随意调换）：
+    1. 挂载按天脱敏日志 handler 并分级设置组件日志级别；
+    2. .env 歧义键检测 → 弱口令 fail-closed 校验 → 明文管理员口令迁移为 scrypt 哈希；
+    3. 账号凭据密钥一致性自证 → SQLite 初始化与历史 JSON 迁移 → 回收超龄校验任务；
+    4. 注册会话/Cookie/CSP/转发头/限速/鉴权/CSRF/错误处理/安全响应头钩子与共享门禁闭包；
+    5. 启动后台每日清理与健康报告线程、装配全部视图路由并包装 `BasePathMiddleware`。
+
+    参数 `host` 仅用于在监听非回环地址且未开启 `YIBAN_COOKIE_SECURE` 时输出启动告警。
+    """
     global _purge_loop_started
     # v0.26.3：web 进程日志并入按天日志文件（与 signin 子进程同口径）。
     # gunicorn 走 create_app 不执行 main()，此前 root logger 无文件 handler：
@@ -1498,10 +1513,12 @@ def create_app(host=None):
     # nonce 每请求重新生成；页面本身是 no-store（见下方 no_cache），不会被缓存复用。
     @app.before_request
     def _issue_csp_nonce():
+        """为当前请求生成一次性 CSP nonce，挂载到 `g.csp_nonce` 供模板与响应头共用。"""
         g.csp_nonce = secrets.token_urlsafe(16)
 
     @app.context_processor
     def _inject_csp_nonce():
+        """将当前请求的 `csp_nonce` 注入 Jinja 模板上下文，供内联状态脚本块使用。"""
         return {"csp_nonce": getattr(g, "csp_nonce", "")}
 
     # Lucide 图标精灵图：启动时一次性读入并注册为 Jinja 全局 `lucide_sprite`，
@@ -1573,6 +1590,7 @@ def create_app(host=None):
 
     @app.before_request
     def _auto_secure_on_https():
+        """未显式配置 `YIBAN_COOKIE_SECURE` 时，按单次请求是否经 HTTPS 到达动态开关 Cookie Secure。"""
         if _cookie_secure_explicit:
             return
         want = bool(request.is_secure or _forwarded_proto_is_https())
@@ -1590,6 +1608,7 @@ def create_app(host=None):
 
     @app.before_request
     def _report_ambiguous_forwarded_trust():
+        """未显式配置转发头信任开关且收到回环 + XFF 请求时，每进程仅告警一次以提示反代配置。"""
         if _fwd_trust_explicit or _forwarded_trust_notice["logged"]:
             return
         if request.headers.get("X-Forwarded-For", "") and \
@@ -1617,6 +1636,7 @@ def create_app(host=None):
 
     @app.teardown_request
     def _clear_audit_scope(_exc=None):
+        """请求结束时清理线程局部审计作用域 id，防止工作线程复用造成跨请求串号。"""
         db.set_request_scope(None)
 
     if host is not None and not _is_loopback_addr(host) and not cookie_secure:
@@ -1755,6 +1775,7 @@ def create_app(host=None):
     # 页面/静态放宽，避免 302+200 双请求导致正常页面浏览被误伤）----
     @app.before_request
     def rate_limit():
+        """对 `/api/*` 执行分级 IP 限速：已登录 GET 走宽容桶，其余请求走严格桶，超限回 429。"""
         if not request.path.startswith("/api/"):
             return
         ip = _client_ip()
@@ -1779,6 +1800,7 @@ def create_app(host=None):
     # ---- 认证守卫：/api/* 需登录；普通用户仅限 my-* 与 clock ----
     @app.before_request
     def require_login():
+        """`/api/*` 认证与角色访问控制：白名单放行，未登录回 401，普通用户越权访问管理接口留痕并回 403。"""
         if not request.path.startswith("/api/"):
             return
         if request.path in ("/api/login", "/api/register", "/api/setup/admin", "/api/me/restore"):
@@ -1860,6 +1882,7 @@ def create_app(host=None):
 
     @app.before_request
     def check_csrf():
+        """保护 `/api/*` 写请求（POST/PUT/DELETE）：未登录入口做同源校验，登录态比对 `X-CSRF-Token`。"""
         if request.method not in ("POST", "PUT", "DELETE"):
             return
         if not request.path.startswith("/api/"):
@@ -1950,6 +1973,7 @@ def create_app(host=None):
 
     @app.errorhandler(404)
     def _handle_404(e):
+        """统一 404 出口：`/api/*` 回 JSON，静态后缀回空文本，其余渲染站内错误页。"""
         path = request.path
         # 判据只认 path 自身：werkzeug 3.1 起 request.path 已不含 SCRIPT_NAME（子路径下
         # path='/api/nope'、script_root='/tool/demo'），再拼 script_root 前缀会永不命中而落 HTML 错误页。
@@ -1963,6 +1987,7 @@ def create_app(host=None):
 
     @app.errorhandler(500)
     def _handle_500(e):
+        """统一 500 出口：`/api/*` 回脱敏 JSON，页面请求渲染站内错误页。"""
         path = request.path
         if path == "/api" or path.startswith("/api/"):
             return jsonify({"error": "服务器内部错误，请稍后重试"}), 500
@@ -1977,11 +2002,13 @@ def create_app(host=None):
     # 抛解析异常、拿不到 `error` 文案——与 404/500 的 /api/* JSON 口径必须一致。
     # 判据同 404/500：只认 path 自身（werkzeug 3.1 起 request.path 已不含 SCRIPT_NAME）。
     def _is_api_path():
+        """判断当前请求路径是否属于 `/api` 命名空间（不含 `SCRIPT_NAME`）。"""
         p = request.path
         return p == "/api" or p.startswith("/api/")
 
     @app.errorhandler(400)
     def _handle_400(e):
+        """统一 400 出口：`/api/*` 透出受控 description 文案，页面请求渲染错误页。"""
         if _is_api_path():
             # description 只来自本仓 `abort(400, description=...)`（当前仅 _json_body 两处），
             # 是给前端看的用户文案；缺失时回退通用文案，绝不回显内部异常细节。
@@ -1992,6 +2019,7 @@ def create_app(host=None):
 
     @app.errorhandler(405)
     def _handle_405(e):
+        """统一 405 出口：`/api/*` 回 JSON，页面请求渲染错误页。"""
         if _is_api_path():
             return jsonify({"error": "方法不允许"}), 405
         return _render_error_page(
@@ -2000,6 +2028,7 @@ def create_app(host=None):
 
     @app.errorhandler(413)
     def _handle_413(e):
+        """统一 413（请求体超限）出口：`/api/*` 回 JSON，页面请求渲染错误页。"""
         if _is_api_path():
             return jsonify({"error": "请求体过大"}), 413
         return _render_error_page(
@@ -2008,6 +2037,7 @@ def create_app(host=None):
 
     @app.after_request
     def no_cache(resp):
+        """注入全站安全响应头（含逐请求 CSP nonce）并按路径设置页面禁缓存或静态长缓存。"""
         # 全站安全头（所有响应，含 API）：防 MIME 嗅探 / 点击劫持 / 泄露来源 / XSS 与注入面
         # **script-src 不含 'unsafe-inline'**（工单 56ed）：模板里的内联 <script> 块
         # （theme_boot 的 3 段）与内联事件属性（onclick / onerror）已全部外置——
@@ -2056,6 +2086,7 @@ def create_app(host=None):
     # ---- 数据层错误保护：SQLite 读写/密文解密失败 → 明确 500（防静默降级或返回错误数据）----
     @app.errorhandler(RuntimeError)
     def _handle_data_error(e):
+        """兜底拦截数据层 `RuntimeError`：详细原因仅记日志，向客户端返回通用 500 JSON。"""
         logger.error("数据层错误: %s", e)  # 详细信息只入日志，不回显客户端（防内部路径/字段泄露）
         return jsonify({"error": "服务器内部错误，请稍后重试或联系管理员"}), 500
 
@@ -2065,6 +2096,7 @@ def create_app(host=None):
     # （executor_env 与执行体路由）已改为放行本类型（见各自 except 顺序）。
     @app.errorhandler(env_io.EnvWriteRefused)
     def _handle_env_write_refused(e):
+        """统一映射 `.env` fail-closed 写入拒绝异常为 409 JSON，并附脱敏定位载荷。"""
         logger.error("配置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
         # 定位载荷（问题行号/键名 + 脱敏片段，绝不回显值原文）随 409 下发，
         # 前端据此渲染"一键定位/清理"入口（写拒绝定位）。
@@ -2452,6 +2484,7 @@ def create_app(host=None):
     # （issue #23）：24h 一醒时"配置 09:00"落不到 09:00 那一分钟。收细后清理动作照旧
     # 每日一次——`last_cleanup_day` 就是那道闸，不然全表 DELETE 会从每天一遍变成每天几百遍。
     def _daily_purge_loop():
+        """后台守护线程主循环：按固定唤醒栅格触发每日清理/审计自检与告警通道健康报告。"""
         # 首轮延迟：避开启动高峰（迁移/预热），且此时 init_db 已跑过一次 purge，
         # 延迟不会造成额外的清除延迟（下一轮必然覆盖）
         time.sleep(60)
@@ -2636,6 +2669,7 @@ def create_app(host=None):
 # 入口
 # ---------------------------------------------------------------------------
 def main():
+    """命令行直跑入口（`python -m web`）：解析监听与路径参数，装配并启动开发服务器。"""
     global ACCOUNTS_FILE, LOG_FILE, ENV_FILE, STATE_DIR, DB_FILE
     parser = argparse.ArgumentParser(description="易班自动签到网页管理系统")
     # 默认监听改回环——werkzeug 开发服务器不应默认暴露
