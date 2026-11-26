@@ -12,7 +12,8 @@ import {
  * 审计巡检卡的三态与锚点判定。
  *
  * 锚点不符/错误优先于 empty：空链带锚点告警不得被洗成「暂无审计行」。
- * missing 不改变链结论：页面用黄条提示「巡检仅链内自洽」。
+ * missing 是失败关闭：服务端对缺失锚点答 ok=false，页面判「链异常」，
+ * 行内文案提示「锚点缺失（尚未初始化）」。
  */
 
 function report(overrides = {}) {
@@ -34,8 +35,8 @@ test('anchor mismatch wins over empty', () => {
   )
 })
 
-test('anchor missing keeps the chain verdict', () => {
-  assert.equal(auditVerdict(report({ anchor_status: 'missing' })), 'ok')
+test('anchor missing is broken even with a passing chain', () => {
+  assert.equal(auditVerdict(report({ ok: false, anchor_status: 'missing' })), 'broken')
 })
 
 test('anchor error is broken', () => {

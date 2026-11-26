@@ -67,7 +67,7 @@ function AuditSummaryInline({ report }: { report: AuditStatusReport }) {
           report.anchor_seq === undefined ? '' : ` · seq ${report.anchor_seq}`
         }`
       : report.anchor_status === 'missing'
-        ? ' · 锚点未启用（仅链内自洽）'
+        ? ' · 锚点缺失（尚未初始化）'
         : ''
 
   return (

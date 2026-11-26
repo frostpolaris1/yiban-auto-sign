@@ -19,7 +19,9 @@
 // 锚点不一致同样是结论：ok=false + anchor_status=mismatch，调用方仍答 200。
 // 锚点文件读不出/解析失败是错误结论：ok=false + anchor_status=error。
 // 未配置锚点路径时 anchor_status=disabled，行为与引入锚点前相同。
-// 从未写过锚点（文件与高水位都缺）时 anchor_status=missing，链本身照常判定。
+// 已配置读取器却从未写过锚点（文件与高水位都缺）时 anchor_status=missing：
+// 没有任何锚点证据就不是通过，ok=false、reason=anchor_not_initialized；
+// 链结论仍留在 checked_rows/broken_at/empty 里。
 // 文件有锚点但高水位缺失、或高水位读失败，是 error（无法检出截断）。
 // 锚点文件末行被删/文件消失而高水位还在，是 mismatch + anchor_truncated。
 // 响应只带行 id 与哈希，**不带审计正文、actor 或 detail**。
@@ -50,7 +52,8 @@ const (
 
 // ChainStatus 是一次巡检的结论。
 //
-// OK 只在一整条非空链全部复算通过、且（若配置了锚点）锚点比对通过时为 true。
+// OK 只在一整条非空链全部复算通过、且（若配置了锚点读取器）已有锚点
+// 证据并比对通过时为 true；锚点缺失（missing）一律为 false。
 // Empty 表示链内零行：没有证明任何事，不是通过，也不是断链。
 // BrokenAt 是第一个不符行的行 id；与 OK=false、Empty=false 同时出现。
 // LastHash 是最后一个通过复算的行的哈希（小写十六进制；没有通过行时为空串）。
@@ -175,6 +178,9 @@ func (i *Inspector) statusFromChain(ctx context.Context, anchor *coreaudit.Ancho
 		AnchorStatus: anchorStatus,
 		AnchorReason: anchorReason,
 	}
+	if anchorStatus == AnchorStatusMissing && status.AnchorReason == "" {
+		status.AnchorReason = "anchor_not_initialized"
+	}
 	if anchor != nil {
 		status.AnchorSeq = anchor.Seq
 		status.AnchorCount = anchor.Count
@@ -193,8 +199,11 @@ func (i *Inspector) statusFromChain(ctx context.Context, anchor *coreaudit.Ancho
 		status.OK = true
 	}
 	switch anchorStatus {
-	case AnchorStatusDisabled, AnchorStatusMissing:
-		// 链结论照旧；锚点未参与判定。
+	case AnchorStatusDisabled:
+		// 未配置锚点：链结论照旧，与引入锚点前相同。
+	case AnchorStatusMissing:
+		// 已配置读取器却没有任何锚点证据：链结论照旧保留，但不得报健康。
+		status.OK = false
 	case AnchorStatusMismatch, AnchorStatusError:
 		status.OK = false
 	case AnchorStatusOK:
