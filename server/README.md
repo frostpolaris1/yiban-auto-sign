@@ -450,3 +450,18 @@ and `reason=unsupported_address`. The same reason covers a registered address
 with a non-ASCII character or with a control character below 0x20 or equal to
 0x7F. The request still answers 204; the refusal appears in the delivery log
 only.
+
+The retry loop claims due ledger rows instead of reading them: each claim
+writes a 15-minute `claimed_until` lease, and `FOR UPDATE SKIP LOCKED`
+splits due rows between instances, so two instances do not share a row while
+their clocks stay far below the lease. A row whose terminal ledger write is
+lost in a crash becomes visible again at most one lease later, so delivery
+stays at-least-once. If the send succeeded but the process died before
+`MarkSent`, the row is sent again: the unique keys stop one event from
+enqueuing twice, not the same row from being delivered twice. Two transient
+reads between claim and send (recipient status, webhook daily budget) release
+the claim on error, so the row is retried on the next round instead of
+waiting out the lease. The release carries no claim token: if an owner stalls
+for longer than the lease and a new owner re-claims, the stale owner's release
+can clear the new lease. That only widens the at-least-once window; it does
+not lose a row.

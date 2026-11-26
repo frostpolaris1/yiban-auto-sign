@@ -387,7 +387,10 @@ func insertPending(ctx context.Context, q queryer, in corenotify.DeliveryInsert)
 }
 
 // ListDue 返回 next_retry_at <= now 的 pending 行，按到期时刻升序。
-// 单进程串行投递，故不需要 SKIP LOCKED。
+//
+// 只读诊断面，不写租约，**不得用于调度**：调度必须走
+// NotificationDeliveryRepo.ClaimDueForSend（claimed_until + SKIP LOCKED），
+// 否则多实例会重复投递同一行。
 func (r *NotificationDeliveryRepo) ListDue(ctx context.Context, now time.Time, limit int) ([]corenotify.Delivery, error) {
 	if now.IsZero() {
 		return nil, validationError("due timestamp is required")
@@ -424,7 +427,8 @@ func (r *NotificationDeliveryRepo) MarkSent(ctx context.Context, id string) erro
 	return r.markTerminal(ctx, id, `
 		UPDATE notification_deliveries
 		   SET status = 'sent', attempts = attempts + 1, last_error_kind = '',
-		       skip_reason = '', next_retry_at = NULL, updated_at = now()
+		       skip_reason = '', next_retry_at = NULL, claimed_until = NULL,
+		       updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`)
 }
 
@@ -442,6 +446,7 @@ func (r *NotificationDeliveryRepo) MarkFailed(ctx context.Context, id, errorKind
 		       last_error_kind = $2,
 		       skip_reason = '',
 		       next_retry_at = $3,
+		       claimed_until = NULL,
 		       updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`, id, errorKind, nextRetryAt)
 	return mapError(err)
@@ -454,7 +459,7 @@ func (r *NotificationDeliveryRepo) MarkSkipped(ctx context.Context, id, reason s
 	return r.markTerminal(ctx, id, `
 		UPDATE notification_deliveries
 		   SET status = 'skipped', skip_reason = $2, last_error_kind = '',
-		       next_retry_at = NULL, updated_at = now()
+		       next_retry_at = NULL, claimed_until = NULL, updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`, reason)
 }
 
