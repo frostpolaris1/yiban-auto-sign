@@ -89,8 +89,8 @@
 - **强制改密门（`must_change_password`）**：会话带该标志时，除 publicPaths
   （登录/登出/注册/忘记/重置/restore 等）与三条精确路由
   `GET /api/auth/me`、`GET /api/auth/password-policy`、
-  `POST /api/auth/change-password` 外，其余 API 一律 403
-  `{"error":"请先修改密码后再操作"}`。放行 `password-policy` 是因为改密
+  `POST /api/auth/change-password` 外，其余已注册 API 一律 403
+  `{"error":"请先修改密码后再操作"}`；未注册路径仍按 404。放行 `password-policy` 是因为改密
   对话框靠它拿口令规则，缺了它用户无法构造合规新密码、强制改密会死锁。
   `POST /api/me/delete` 与账号/签到/管理面同样拦截，防止先删号再在恢复窗内
   恢复绕过改密；登出属公开路径，可随时退出。
