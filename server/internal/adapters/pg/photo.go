@@ -53,10 +53,60 @@ func (r *PhotoRepo) Create(ctx context.Context, rec corephoto.Record) (corephoto
 	return scanPhoto(row)
 }
 
-// CreateWithinQuota 在滚动 24 小时配额内幂等写入一张用户图片。
-// 必须在事务内运行：advisory lock、计数与写入同属一个事务。
-func (r *PhotoRepo) CreateWithinQuota(context.Context, corephoto.Record, time.Time, int) (corephoto.Record, error) {
-	return corephoto.Record{}, errors.New("pg: CreateWithinQuota is not implemented")
+// CreateWithinQuota 在滚动窗口内按属主计数的配额下幂等写入一张用户图片。
+// since 是窗口起点（调用方传 now-24h），limit 是窗口内允许的新摘要数。
+//
+// 判据顺序刻意如此：
+//  1. 同 (owner, sha256) 已存在时直接走 Create，**不占新配额**——
+//     重传必须成功（含恢复软删行），即使窗口已满；
+//  2. 新摘要先数窗口内行数（**含软删行**，删图不释放配额）；
+//  3. 达到 limit 返回 corephoto.ErrDailyUploadQuota，不写行。
+//
+// 必须在事务内运行：advisory lock、查重、计数与写入必须同属一个事务，
+// 否则并发上传会在 count 与 insert 之间竞态（都看到 limit-1）。
+// 锁键是属主 user id，锁随事务提交/回滚自动释放；同一用户的并发上传
+// 串行化，不同用户互不阻塞。缺事务直接报错，不回退连接池（失败关闭）。
+func (r *PhotoRepo) CreateWithinQuota(ctx context.Context, rec corephoto.Record, since time.Time, limit int) (corephoto.Record, error) {
+	if rec.SchoolID != "" {
+		return corephoto.Record{}, validationError("user photo must not carry a school id")
+	}
+	if limit < 1 {
+		return corephoto.Record{}, validationError("quota limit must be at least 1")
+	}
+	if since.IsZero() {
+		return corephoto.Record{}, validationError("quota window start is required")
+	}
+	if !r.db.hasTx(ctx) {
+		return corephoto.Record{}, ErrNoTransaction
+	}
+	q := r.db.q(ctx)
+	// hashtextextended 把 uuid 文本散列成 bigint 锁键；同属主串行，
+	// 不同属主的散列键互不阻塞。锁随事务结束自动释放。
+	if _, err := q.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
+		rec.OwnerUserID); err != nil {
+		return corephoto.Record{}, mapError(err)
+	}
+	var duplicate bool
+	if err := q.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM photos WHERE owner_user_id = $1::uuid AND sha256 = $2)`,
+		rec.OwnerUserID, rec.SHA256[:]).Scan(&duplicate); err != nil {
+		return corephoto.Record{}, mapError(err)
+	}
+	if duplicate {
+		return r.Create(ctx, rec)
+	}
+	var used int
+	if err := q.QueryRow(ctx,
+		`SELECT count(*) FROM photos WHERE owner_user_id = $1::uuid AND created_at >= $2`,
+		rec.OwnerUserID, since).Scan(&used); err != nil {
+		return corephoto.Record{}, mapError(err)
+	}
+	if used >= limit {
+		// 哨兵必须原样返回：入口层靠 errors.Is 映射 429，mapError 会吞掉它。
+		return corephoto.Record{}, corephoto.ErrDailyUploadQuota
+	}
+	return r.Create(ctx, rec)
 }
 
 // RegisterSchoolOwned 把源照片的字节复制登记为本校资产行（内容寻址，

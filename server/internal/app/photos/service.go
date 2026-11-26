@@ -136,6 +136,8 @@ func NewService(deps Deps) (*Service, error) {
 // detail 只含四边裁切比例与输出摘要（无 PII，无自由文本）；
 // 裁切关闭时四边比例记 0。
 // 追加与落行同事务；审计失败则上传失败，不静默放行。
+// 每用户滚动 24 小时最多落 corephoto.MaxDailyUploads 个新摘要；
+// 重复摘要不计新配额，超限返回 429 rate_limited 且不写审计。
 func (s *Service) Upload(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, raw []byte) (corephoto.Record, error) {
 	if err := requireUser(scope); err != nil {
 		return corephoto.Record{}, err
@@ -162,6 +164,7 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, actor appau
 	// 读锁挡住回收：Put→Touch→Create 全程不得与回收扫描交错。
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	now := s.deps.Clock.Now()
 	if err := s.deps.Blobs.Put(ctx, out.SHA256, out.Data); err != nil {
 		return corephoto.Record{}, err
 	}
@@ -172,15 +175,17 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, actor appau
 	}
 	var created corephoto.Record
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
-		rec, err := s.deps.Store.Create(ctx, corephoto.Record{
+		// 配额判据在仓储事务内：同用户并发上传靠 advisory lock 串行，
+		// 查重、计数与写入不可拆到事务外。
+		rec, err := s.deps.Store.CreateWithinQuota(ctx, corephoto.Record{
 			OwnerUserID: scope.UserID(),
 			SHA256:      out.SHA256,
 			Mime:        out.Mime,
 			Width:       out.Width,
 			Height:      out.Height,
 			Bytes:       int64(len(out.Data)),
-			CreatedAt:   s.deps.Clock.Now(),
-		})
+			CreatedAt:   now,
+		}, now.Add(-24*time.Hour), corephoto.MaxDailyUploads)
 		if err != nil {
 			return err
 		}
@@ -208,6 +213,11 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, actor appau
 		return nil
 	})
 	if err != nil {
+		// 配额拒绝映射为 429：与限流中间件同码，客户端可重试。
+		// 其他错误（含校验与存储失败）原样透传，不误报限流。
+		if errors.Is(err, corephoto.ErrDailyUploadQuota) {
+			return corephoto.Record{}, errs.New(errs.CodeRateLimited, "daily photo upload limit reached")
+		}
 		return corephoto.Record{}, err
 	}
 	return created, nil

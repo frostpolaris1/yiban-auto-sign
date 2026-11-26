@@ -69,14 +69,15 @@ func (h *Handler) AdminEvents(c *gin.Context, params oapi.AdminEventsParams) {
 		return
 	}
 	// 连接预算：先占槽再订阅。超限请求不碰总线，也不写流式响应头。
+	// 两层上限：同一用户只能开一条（防独占），全局最多 10 条（防压垮）。
 	// 429 与限流中间件同码（rate_limited），Retry-After 给客户端一个重试节奏。
-	if n := h.activeStreams.Add(1); n > MaxConcurrentStreams {
-		h.activeStreams.Add(-1)
+	// 槽位在成功占用后立刻 defer 归还，后面任何早退路径都不会泄漏。
+	if !h.streams.acquire(session.User.ID) {
 		c.Header("Retry-After", "5")
 		fail(c, errs.New(errs.CodeRateLimited, "too many concurrent event streams"))
 		return
 	}
-	defer h.activeStreams.Add(-1)
+	defer h.streams.release(session.User.ID)
 	var schools []string
 	if scope.Kind() == corescope.KindAdmin {
 		schools = scope.SchoolIDs()
