@@ -110,7 +110,7 @@ const (
 //
 // 这是**投递专属预算**，不与 core/retry.BudgetFor 合并：那套按签到结果词
 // 分级、以业务窗口为终点；投递是账本式 at-least-once，按 attempts 固定
-// 三档退避，失败后落 failed 等运维重放。两套预算的语义不同源，
+// 三档退避，失败后落 failed，留待运维手工重置账本行。两套预算的语义不同源，
 // 合并会悄悄改投递节奏。本数组的档位与「第 4 次失败」由 delivery_test.go
 // 的退避用例钉住（P3-10 登记为独立预算）。
 var deliveryRetryDelays = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute}

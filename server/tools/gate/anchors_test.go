@@ -97,7 +97,7 @@ func TestCanonicalRuleIDsPinned(t *testing.T) {
 		"token.csrf.func", "token.new.func",
 		"fake.import",
 		"email.normalize.lower",
-		"window.validate", "window.effective",
+		"window.validate", "window.effective", "window.closedat",
 		"rate.bucket", "rate.limiter",
 		"plan.nearest", "plan.spread", "plan.phase",
 		"retry.budgetfor", "retry.nextdelay", "plan.spreadwithin",
@@ -172,8 +172,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// internal/adapters/pg/request_single_success_e2e_test.go
 	// （单日成功真库 e2e 需直接读 worker.Request 的 already_signed 结论）。
 	// p3m：新增 window.closedat 规则，关窗判据收敛到 core/window.ClosedAt
-	// （retry.Window 只持有终点，P3-11⑤）；概念级登记口径写入文件头注释。
+	// （retry.Window 只持有终点，P3-11⑤）；概念级登记口径写入规则表内注释。
 	const want = "d43e06468770939d33d0349cb613cefaea788ab888a2039db53bd65bdfd5014f"
+
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}
