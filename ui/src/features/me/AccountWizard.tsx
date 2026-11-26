@@ -27,22 +27,10 @@ import {
 import { ApiError } from '@/lib/api/client'
 import { photoBytesPath, uploadPhoto } from '@/lib/api/photo'
 import type { Photo } from '@/lib/api/photo'
-import { photoUploadErrorText } from './display'
+import { detectErrorText, photoUploadErrorText } from './display'
 import { ME_KEYS, useSchools } from './queries'
 
 type Step = 1 | 2 | 3 | 'pending'
-
-function detectErrorText(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.status === 400) return '请填写正确的手机号与易班口令。'
-    if (error.status === 403) return '没有权限执行这个操作。'
-    if (error.status === 429) return '尝试过多，请稍后再试。'
-    if (error.status === 502) return '平台暂时不可用，请稍后再试或手动选学校。'
-    if (error.status === 503) return '系统维护中，请稍后再试或手动选学校。'
-    return '没有找到账号，请检查手机号与口令。'
-  }
-  return '网络异常，请稍后重试。'
-}
 
 function createErrorText(error: unknown): string {
   if (error instanceof ApiError) {
