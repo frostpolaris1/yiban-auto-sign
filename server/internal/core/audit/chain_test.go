@@ -121,6 +121,32 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 	}
 }
 
+// TestEncodeDetailAccountRestored 钉住 account_restored 只收布尔。
+// 自助恢复用户的审计用它区分"账号一并恢复"与"属主已有活号"；
+// 字符串/数字即使形似布尔也拒绝，nil 同样拒绝（null 无法表达未恢复）。
+func TestEncodeDetailAccountRestored(t *testing.T) {
+	for _, value := range []bool{true, false} {
+		got, err := coreaudit.EncodeDetail(map[string]any{"account_restored": value})
+		if err != nil {
+			t.Fatalf("account_restored=%v rejected: %v", value, err)
+		}
+		want := `{"account_restored":` + strconv.FormatBool(value) + `}`
+		if got != want {
+			t.Fatalf("canonical detail = %s, want %s", got, want)
+		}
+	}
+	for _, value := range []any{"true", "false", 1, 0, nil} {
+		_, err := coreaudit.EncodeDetail(map[string]any{"account_restored": value})
+		if !errors.Is(err, coreaudit.ErrDetailType) {
+			t.Fatalf("account_restored=%#v error = %v, want ErrDetailType", value, err)
+		}
+	}
+	// 既有布尔键不受影响：retryable 仍按通用布尔规则接受。
+	if _, err := coreaudit.EncodeDetail(map[string]any{"retryable": true}); err != nil {
+		t.Fatalf("retryable must still accept a bool: %v", err)
+	}
+}
+
 // 下面两个常量是回归钉，不是自检。
 // 改动 payload 布局或 formatTime，会让历史链的存储哈希与复算 payload 不符。
 // 这种改动之后重算常量，**只有配套链迁移方案才算正确**。
