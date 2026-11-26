@@ -307,7 +307,7 @@ class BuildReleaseUIWiringTest(unittest.TestCase):
                      env=self.env)
         self.assertEqual(r.returncode, 2, "缺值必须判用法错误：" + r.stdout + r.stderr)
 
-    def test_bad_ui_dir_fails_before_build_and_leaves_no_partial_out(self):
+    def test_bad_ui_dir_fails_and_leaves_out_untouched(self):
         # 先成功构建一次，拿到可对照的旧产物。
         ui = os.path.join(self.tmp, "ui-good")
         make_ui_tree(ui, "good")
@@ -337,6 +337,16 @@ class BuildReleaseUIWiringTest(unittest.TestCase):
         r = run_bash([self.script, fresh, "--ui-dir", bad], env=self.env)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertEqual(os.listdir(fresh) if os.path.isdir(fresh) else [], [])
+
+        # 软链在 UI 校验阶段才被发现：staging 已经建立，trap 必须清干净。
+        linked = os.path.join(self.tmp, "ui-linked")
+        make_ui_tree(linked, "linked")
+        os.symlink("index.html", os.path.join(linked, "alias.html"))
+        fresh2 = os.path.join(self.tmp, "out-fresh-link")
+        r = run_bash([self.script, fresh2, "--ui-dir", linked], env=self.env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(os.listdir(fresh2) if os.path.isdir(fresh2) else [], [],
+                         "清单失败也必须清掉 staging")
 
     def test_no_ui_build_removes_stale_ui_checksums(self):
         ui = os.path.join(self.tmp, "ui-stale")

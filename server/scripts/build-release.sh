@@ -16,8 +16,9 @@
 #   - outdir 已存在则复用（幂等），缺失则创建；相对路径先归一为绝对
 #     路径（后文会 cd 进 server/ 编译，不归一会让相对 outdir 落进
 #     server/ 下）；产物只写 outdir，不写仓库内任何文件；
-#   - 先在 outdir 内的临时 staging 构建与生成清单，全部成功后再原子
-#     搬入 outdir；失败（含坏 --ui-dir）不留半个二进制或半份清单；
+#   - 先在 outdir 内的临时 staging 构建与生成清单，全部成功后再逐件
+#     搬入 outdir；失败（含坏 --ui-dir）不留本次半个二进制或半份清单。
+#     逐件 mv 在进程被杀时仍有极短的新旧混合窗口，不宣称原子；
 #   - commit 取 git rev-parse --short HEAD；取不到（非 git 检出）⇒
 #     exit 2：发布件必须带真实提交，不许回落 unknown；
 #   - 一律不注入分支名：发布件不带分支身份；
@@ -142,12 +143,13 @@ fi
 
 # 全部成功后再搬入 outdir；无 UI 的构建清掉旧清单，避免复用目录时
 # 让上一次的 ui-SHA256SUMS 混进新 manifest。
+if [ -z "$UI_DIST" ]; then
+    rm -f "$OUT/ui-SHA256SUMS"
+fi
 mv -f "$stage/yiban-server$exe" "$OUT/yiban-server$exe"
 mv -f "$stage/yiban-cli$exe" "$OUT/yiban-cli$exe"
 if [ -n "$UI_DIST" ]; then
     mv -f "$stage/ui-SHA256SUMS" "$OUT/ui-SHA256SUMS"
-else
-    rm -f "$OUT/ui-SHA256SUMS"
 fi
 
 echo "build-release: version=$ver commit=$commit build_time=$build_time"
