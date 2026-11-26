@@ -2,7 +2,8 @@
 #
 # 为什么还需要它：CI 的 `tooling-gate` 每个 PR 已跑 govulncheck 与 npm audit（high+）。
 # 这些作业只负责**发现**；发现之后不会自己开升级 PR。
-# 本文件补上后半段：每周检查四个生态的更新，合并成一条 PR 交给 CI 复核。
+# 本文件补上后半段：每周检查 github-actions、npm、gomod 三个生态的更新，
+# 合并成一条 PR 交给 CI 复核。
 #
 # 纪律：
 # - 每个生态只开一个分组 PR（dev/prod 一组），避免周一刷屏。

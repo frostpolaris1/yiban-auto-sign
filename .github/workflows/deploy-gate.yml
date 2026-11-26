@@ -5,7 +5,8 @@ name: Deploy gate
 # 本文件承载两条 e2e：
 #   1. container-deploy-e2e：构建 Go 镜像与 UI 产物，起 compose 栈并等健康检查；
 #   2. update-rollback-e2e：非特权环境下 update.sh 的快照/回滚契约。
-# 两条都必须跑真脚本，不许出现"检查器在、脚本没跑"的空转。
+# 两条都必须真执行被测对象（shell 脚本 / Go 干跑用例），不许出现
+# "检查器在、脚本没跑"的空转。
 #
 # 一键更新失败矩阵（U2）的完整演练需要特权 systemd 容器，托管 runner 上不可得，
 # 不在本文件里跑：它由 update-rollback-privileged.yml（手动 + 自托管）承载。

@@ -4,7 +4,7 @@ target-version = "py313"
 exclude = [".git", "__pycache__"]
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "SIM", "RUF", "DTZ"]
+select = ["E", "W", "F", "I", "B", "SIM", "RUF"]
 ignore = [
     "BLE001",
     "SIM115",
@@ -13,10 +13,6 @@ ignore = [
     "RUF002",
     "RUF003",
 ]
-
-[tool.ruff.lint.per-file-ignores]
-# tests/ 整体豁免 DTZ：测试大量用 naive datetime 构造业务本地时间做断言与打桩。
-"tests/**" = ["DTZ"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

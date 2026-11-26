@@ -400,7 +400,7 @@ func TestRegistryDomainMatchesCodeBounds(t *testing.T) {
 }
 
 // 邮件投递面的缺省值：关闭投递、465 隐式 TLS、本机基址。
-// 阈值与缺省的唯一定义点是 config/registry.json；本测试钉住代码侧口径。
+// 阈值与缺省的唯一定义点是 server/internal/configdata/registry.json；本测试钉住代码侧口径。
 func TestMailConfigDefaults(t *testing.T) {
 	cfg, err := LoadFrom(baseSource())
 	if err != nil {

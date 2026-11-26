@@ -11,7 +11,8 @@
 #   bash scripts/dev-verify.sh --ci       # CI 入口（同上，不建副本、不落日志）
 #   bash scripts/dev-verify.sh --fast     # 提交前自查（同集合，留给调用方习惯）
 #   bash scripts/dev-verify.sh --slow     # 兼容旧调用；本仓已无独立慢集
-#   --log-dir DIR                         # 兼容旧调用；保留参数，不再落日志
+#   --log-dir DIR                         # 兼容旧调用；接受参数，不再落日志
+#   --repo DIR                            # 已不支持：只跑自身仓库，传了即 exit 2
 #
 # 退出码：0 通过；1 有红；2 环境错误。
 set -euo pipefail
@@ -23,12 +24,18 @@ MODE="full"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --ci|--fast|--slow|--fast-all|--fast-scoped) MODE="${1#--}" ;;
-        --log-dir) shift ;;
+        --log-dir)
+            [ "$#" -ge 2 ] || { echo "dev-verify: --log-dir 需要取值" >&2; exit 2; }
+            shift 2
+            continue
+            ;;
         --log-dir=*) ;;
-        --repo) shift ;;
-        --repo=*) ;;
+        --repo|--repo=*)
+            echo "dev-verify: --repo 不再支持：本脚本只跑自身仓库" >&2
+            exit 2
+            ;;
         -h|--help)
-            sed -n '1,26p' "${BASH_SOURCE[0]}" | sed 's/^# {0,1}//'
+            awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
             exit 0
             ;;
         *) echo "dev-verify: 未知参数：$1" >&2; exit 2 ;;
@@ -40,7 +47,7 @@ die() { echo "dev-verify: 环境错误：$*" >&2; exit 2; }
 
 command -v "$PY" >/dev/null 2>&1 || die "找不到解释器：$PY"
 PY="$(command -v "$PY")"
-"$PY" -c "import pytest, ruff" >/dev/null 2>&1 || die "解释器缺 pytest/ruff：$PY"
+"$PY" -c "import pytest, xdist, ruff" >/dev/null 2>&1 || die "解释器缺 pytest/pytest-xdist/ruff：$PY"
 cd "$REPO"
 
 run_ci() {
@@ -51,6 +58,10 @@ run_ci() {
     local cores workers
     cores="$(nproc 2>/dev/null || echo 1)"
     workers="${PYTEST_WORKERS:-$(( cores > 1 ? cores - 1 : 1 ))}"
+    case "$workers" in
+        ''|*[!0-9]*) die "PYTEST_WORKERS 必须是正整数：$workers" ;;
+    esac
+    [ "$workers" -ge 1 ] || die "PYTEST_WORKERS 必须 ≥1：$workers"
     echo "DEV-VERIFY($MODE) interpreter: $py ($("$py" -V 2>&1))"
     echo "DEV-VERIFY($MODE) repo: $REPO"
     echo "DEV-VERIFY($MODE) ruff"

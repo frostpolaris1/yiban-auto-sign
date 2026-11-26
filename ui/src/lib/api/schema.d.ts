@@ -1505,7 +1505,7 @@ export interface paths {
         };
         /**
          * Read the deployment configuration roster, grouped.
-         * @description Read-only. The keys come from config/registry.json, grouped by the
+         * @description Read-only. The keys come from server/internal/configdata/registry.json, grouped by the
          *     group registered there. A non-sensitive key carries the resolved
          *     value (the environment value when set, otherwise the registered
          *     default; a key with neither reads null). A sensitive key never

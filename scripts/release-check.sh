@@ -69,7 +69,11 @@ check_version() {
     STATUS_version=FAIL; REASON_version=""
     [ -f "$vfile" ] || { REASON_version="missing $vfile"; return; }
     [ -f "$changelog" ] || { REASON_version="missing $changelog"; return; }
-    local v
+    local vlines v
+    vlines="$(wc -l < "$vfile" | tr -d ' ')"
+    if [ "$vlines" != "1" ]; then
+        REASON_version="$vfile must be exactly one newline-terminated line, found $vlines"; return
+    fi
     v="$(head -n 1 "$vfile" | tr -d '\r')"
     printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
         REASON_version="VERSION is not X.Y.Z semver: '$v'"; return; }
@@ -517,6 +521,10 @@ selftest() {
     git -C "$tmp" tag v9.9.9
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
     expect "version green on consistent fixture" 0 "$rc"
+    # 突变：VERSION 多一行 → 红（与 go-version 同口径）。
+    printf '9.9.9\n9.9.9\n' > "$tmp/VERSION"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
+    expect "version red when VERSION has two lines" 1 "$rc"
     # 突变：改 VERSION，tag 不再匹配 → 红。
     printf '9.9.10\n' > "$tmp/VERSION"
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
@@ -604,6 +612,22 @@ STUB
     expect "license SKIP (exit 2) is not FAIL" 0 "$rc"
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only license 2>/dev/null \
         | grep -q '^license *SKIP' || { say "MISMATCH: SKIP not visible in summary"; fails=$((fails+1)); }
+    rm -rf "$tmp"
+
+    # 不变式 1p：container/backup 的 POINTER 判据指向现役件，缺件即红。
+    tmp="$(mktemp -d)"
+    mkdir -p "$tmp/scripts/e2e" "$tmp/deploy/container" "$tmp/server/cmd/cli"
+    : > "$tmp/scripts/e2e/deploy-container-e2e.sh"
+    : > "$tmp/scripts/e2e/deploy-baremetal-e2e.sh"
+    : > "$tmp/deploy/container/backup.sh"
+    printf 'case "backup"\ncase "restore"\n' > "$tmp/server/cmd/cli/main.go"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only container >/dev/null 2>&1; rc=$?
+    expect "container pointer green when both e2e scripts exist" 0 "$rc"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only backup >/dev/null 2>&1; rc=$?
+    expect "backup pointer green when backup.sh and cli cases exist" 0 "$rc"
+    rm -f "$tmp/deploy/container/backup.sh"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only backup >/dev/null 2>&1; rc=$?
+    expect "backup pointer red when backup.sh is missing" 1 "$rc"
     rm -rf "$tmp"
 
     # 不变式 1e：帮助文本只取文件头注释块，不得把实现行（set -euo pipefail）

@@ -17,10 +17,13 @@ TESTS_DIR = os.path.join(BASE, "tests")
 DYNAMIC = "\x00DYNAMIC"
 
 _SKIP_MARKERS = frozenset({
-    "skipUnless", "skipIf", "skip", "skipTest", "SkipTest", "importorskip",
+    "skipUnless", "skipIf", "skipif", "skip", "skipTest", "SkipTest", "importorskip",
 })
 
 KNOWN_SKIP_SITES = {
+    "tests/test_dev_verify_entry.py": [
+        ["skipUnless", "需要 bash：--help 要真跑入口脚本"],
+    ],
     "tests/test_deploy_e2e_wiring.py": [
         ["skipTest", "bash 不在 PATH：部署 e2e 脚本语法检查跳过（CI/WSL 有 bash）"],
         ["skipTest", "bash 不在 PATH：更新演练脚本语法检查跳过（CI/WSL 有 bash）"],
@@ -64,19 +67,32 @@ KNOWN_SKIP_SITES = {
 
 
 def _reason(call):
+    for kw in call.keywords:
+        if (
+            kw.arg == "reason"
+            and isinstance(kw.value, ast.Constant)
+            and isinstance(kw.value.value, str)
+        ):
+            return kw.value.value
     for arg in reversed(call.args):
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
             return arg.value
     return DYNAMIC
 
 
+def _iter_sources():
+    """tests/ 下全部 Python 文件；子目录也算，扫描面不得静默缩小。"""
+    for root, _dirs, files in os.walk(TESTS_DIR):
+        for name in sorted(files):
+            if name.endswith(".py"):
+                yield os.path.join(root, name)
+
+
 def scan_tests():
     """返回 {相对路径: [[marker, reason], ...]}（按文件去重、保持出现顺序）。"""
     found = {}
-    for name in sorted(os.listdir(TESTS_DIR)):
-        if not name.startswith("test_") or not name.endswith(".py"):
-            continue
-        path = os.path.join(TESTS_DIR, name)
+    for path in sorted(_iter_sources()):
+        rel = os.path.relpath(path, BASE).replace(os.sep, "/")
         tree = ast.parse(io.open(path, encoding="utf-8").read(), filename=path)
         items = []
         for node in ast.walk(tree):
@@ -91,7 +107,7 @@ def scan_tests():
             if item not in items:
                 items.append(item)
         if items:
-            found["tests/" + name] = items
+            found[rel] = items
     return found
 
 
@@ -129,16 +145,15 @@ class BareDecoratorTest(unittest.TestCase):
     """@unittest.skip 不带括号会静默把函数换成 None：禁止。"""
 
     def test_no_bare_skip_decorator(self):
-        for name in sorted(os.listdir(TESTS_DIR)):
-            if not name.startswith("test_") or not name.endswith(".py"):
-                continue
-            path = os.path.join(TESTS_DIR, name)
+        for path in sorted(_iter_sources()):
             tree = ast.parse(io.open(path, encoding="utf-8").read(), filename=path)
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     continue
                 for dec in node.decorator_list:
-                    if isinstance(dec, ast.Attribute) and dec.attr in {"skip", "skipIf", "skipUnless"}:
+                    name = dec.attr if isinstance(dec, ast.Attribute) else (
+                        dec.id if isinstance(dec, ast.Name) else "")
+                    if name in {"skip", "skipIf", "skipUnless"}:
                         self.fail("%s:%d 裸跳过装饰器" % (path, node.lineno))
 
 

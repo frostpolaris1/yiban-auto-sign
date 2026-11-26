@@ -15,32 +15,12 @@ env/
 !.env.docker.example
 .env.tmp*
 
-# Node / 前端（frontend/ 只入库源码与构建配置；产物在 web/static/vue/，提交入库）
+# Node / 前端
 node_modules/
-frontend/.vite/
 *.tsbuildinfo
-# Playwright 运行产物（失败时的 error context / trace / 报告），属本地产物不入库
-frontend/test-results/
-frontend/playwright-report/
 
-# 本地配置（避免泄露账号密码）
-config.local.py
+# 本地配置（避免泄露密钥）
 *.local
-# 账号配置文件（含密码，严禁入库）
-accounts.json
-# 迁移/升级产出的按日备份（yiban/adapters/persistence/migrations.py 的 _rename_backup；M39）
-accounts.json.bak-*
-users.json.bak-*
-# 通知额度/限速运行时状态（现落 YIBAN_STATE_DIR；历史版本曾按 cwd 落在检出根，
-# 保留忽略以防回潮）。带 * 覆盖 .lock 与 .corrupt-<ts>-<pid> 两种伴生件。
-notify-ledger.json*
-notify-throttle.json*
-*.local.lock
-
-# SQLite 数据库（含账号密文/用户哈希/审计日志，严禁入库）
-yiban.db
-yiban.db-wal
-yiban.db-shm
 
 # IDE
 .vscode/
@@ -51,23 +31,10 @@ yiban.db-shm
 # 日志与数据
 *.log
 logs/
-# 例外：Vue 源码目录名恰为 logs（与上面的「日志目录」规则同名）——必须显式放行。
-# 2026-10-03 实测踩过：frontend/src/logs/** 被静默忽略，git add -A 跳过，导致分支上
-# 只有构建产物、没有源码（新检出无法 npm run build，test_logs_by_date 引用的
-# date-guard.js 也不存在）。负向规则必须紧跟在排除规则之后。
-!frontend/src/logs/
-# 2026-10-21 补：ocr 审查工具不展开「负向目录规则」，只认 `!目录/**`。
-# 缺此行的后果：审查清单漏 13 个 logs 源码文件，审查假绿。
-# 该行与上一行并存；git 本身两行都认，ocr 只认这一行。
-!frontend/src/logs/**
+# 例外：React 源码目录名恰为 logs（与上面的「日志目录」规则同名）。
 !ui/src/features/logs/
 !ui/src/features/logs/**
 data/
-# 裸机演练（scripts/drill-baremetal.sh）在演练树根生成的运行件
-/.venv-bare/
-/bare-data/
-/bare-restore/
-
 # Docker 部署本地目录（含加密密钥/数据库/证书私钥，严禁入库）
 certs/
 
@@ -75,21 +42,9 @@ certs/
 *.tar.gz
 *.zip
 
-# 临时提示词文件
-PROMPT_FOR_MULTIMODAL_MODEL.txt
-
 # 系统文件
 .DS_Store
 Thumbs.db
-
-# 网页管理系统：普通用户表（含密码哈希）
-users.json
-
-# 本地调试目录（不提交）
-demo-log/
-demo-tmp/
-# 本地调试/演示产物目录（2026-08-27 保持不入库）
-demo/
 
 # 备份目录（防历史敏感文件被误提交）
 backup-*/
@@ -130,7 +85,6 @@ docs/dev/*
 !docs/dev/api-executors.md
 !docs/dev/cli.md
 !docs/dev/dev-verify.md
-!docs/dev/constraints.tsv
 !docs/dev/acceptance-criteria.md
 !docs/dev/umask-decision.md
 !docs/dev/release-gate.md
@@ -173,9 +127,6 @@ build/
 # .env 并发写锁文件（2026-08-15 对抗性审查 B）
 .env.lock
 
-# 品牌图标（版权来源不明，不入开源仓库；本地/服务器自行放入即可生效，见 README「自定义 Web 图标」）
-web/static/vendor/logo.png
-
 # 工具产物（2026-09-17 用户要求）：编码助手/审查工具往仓库里落的技能与锁文件，
 # 与运行时、部署、文档都无关，一律不入版本控制
 # （`.agents/`、`.claude/`、`agent/` 是同一份技能在三种 IDE 布局下的副本）
@@ -187,10 +138,6 @@ skills-lock.json
 # hook-status、reports。2026-10-11 一次批量审查的遗留，与运行时/部署/文档都无关，
 # 不入版本控制（原样保留在本地，不删——工具自身可能还要读它）。
 .mimosa/
-web/static/vendor/favicon.png
-# 页脚备案图标（备案号对应官方图标，部署者自放；缺失时页脚 onerror 隐藏，不入库）
-web/static/vendor/gongan-beian.png
-
 # 运营者本地完整版合规文档（不入库，仅自己的服务器用；仓库内相应文件为只含注释的空模板）
 deploy-local/
 
@@ -207,21 +154,7 @@ WORKFLOW.md
 # 理由：模板必须入库才生效（GitHub 从仓库里的模板文件生成 PR 正文），而 develop
 # 分支保护要求所有变更经 PR——自检清单（e2e 先行 / 门禁 / changelog）靠它承载。
 # 守卫见 tests/test_pr_template_gate.py（被忽略 / 未入库 / 缺项都会红）。
-# 2026-08-22 M10：ci.yml / mirror.yml 解除忽略入库（文件内只有 secrets 名引用无值，
-# 入库安全），并全量 SHA 固定第三方 action（防可变 tag 被篡改）
-# signin.yml 必须入库：README「GitHub Actions 使用教程（备选）」的部署通道，
-# Fork 用户依赖此文件；仓库所有者侧通过 Actions 页面 Disable 控制不跑（2026-08-22 复核恢复）
 .commitlintrc.json
-scripts/git-hooks/
-
-# 本地维护工具（含演示凭据/依赖本地字体环境，仅本机使用，2026-08-22 移出版本控制）
-scripts/init_demo_credentials.py
-scripts/scan_ui_emoji.py
-
-# 标题 Web 字体文件（阿里妈妈方圆体，免费商用但体积大不入库；部署时放置，
-# 见 web/templates 标题 @font-face 与 AGENTS.md 字体小节，2026-08-22）
-web/static/vendor/fonts/fangyuan/
-
 # 本地工具配置目录（DSH 路由套件 / 模型 preset，非项目产物，2026-08-16 补忽略）
 dsh-routing-suite/
 v4-flash-godmode-opencode-go/

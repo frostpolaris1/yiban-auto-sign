@@ -425,8 +425,8 @@ func TestRegistrySensitiveMatchesCode(t *testing.T) {
 
 // TestGoStackDoesNotReadLegacyRoster 钉住旧名册的边界。
 //
-// 旧 Python 栈的 config/registry.json（187 键）继续服务旧线，但 Go 生产代码
-// 不得引用它：读旧文件等于把旧键混进新栈的键面。
+// 旧 Python 栈名册已随旧线退役；Go 生产代码仍不得引用旧路径，读旧文件
+// 等于把旧键混进新栈的键面。
 func TestGoStackDoesNotReadLegacyRoster(t *testing.T) {
 	for _, path := range productionGoFiles(t) {
 		if strings.Contains(readFile(t, path), "config/registry.json") {

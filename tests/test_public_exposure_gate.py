@@ -74,8 +74,8 @@ SYNTH_MASKED = re.compile(r"^199\*{3,4}\d{4}$")
 SYNTH_UID = {"1", "10000001"}
 LNG_RANGE = (-2.0, 2.0)
 LAT_RANGE = (-1.0, 10.0)
-#: 扫描面下限：当前入库文本文件约 600；低于此数说明扫描面塌了。
-MIN_FILES = 500
+#: 扫描面下限：旧栈退役后实测入库文本文件约 993；低于此数说明扫描面塌了。
+MIN_FILES = 800
 
 REGISTRY = os.path.join(BASE, "tests", "synthetic-fixtures.json")
 

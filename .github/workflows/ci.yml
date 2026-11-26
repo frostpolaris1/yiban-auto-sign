@@ -1,23 +1,14 @@
 name: CI
 
-# fast 轨（push/PR）：Lint + 安全子集 + e2e smoke + **依赖漏洞审计（pip-audit）**，
-# 前三项目标 ≤3min 含 setup（审计为并行独立 job，不在关键路径上）。
-# 全量轨独立为 nightly.yml（schedule 06:00 UTC / 14:00 北京）——拆成两文件而非同文件两 job，
-# 理由：schedule 是 workflow 级触发，若与 fast job 同文件则必须给 fast job 加
-# `if: github.event_name != 'schedule'` 的事件守卫，语义更脆；两文件让每个 workflow 的
-# 触发条件各自诚实，且 nightly 可用独立的 timeout/并行度。（取舍全文见
-# .superpowers/sdd/m3-batch1-plan-20260925/task-1-report.md）
-# ⚠️ 排程定义点：GitHub 的 `schedule` **只在默认分支上生效**
-# （本仓库默认分支 = main）——所以 `nightly.yml` 与 `e2e-nightly.yml` 的**唯一定义点在
-# 默认分支 main**，**develop 分支不持有这两个文件**（此前在 develop = 同一事实两个定义
-# 点，必然漂移）。两文件的 `actions/checkout` 显式 `ref: develop`：被测对象是活跃线
-# develop——main 是"对外默认可见的已验证分支"、天然落后（见 docs/dev/release-gate.md）；
-# e2e-nightly 的前端步骤随旧线退役在 main 上同步（PR3）。
-# 两条不许破：① 不许把这两个文件加回 develop；② 不许把 checkout 的 `ref` 改成 main
-# （nightly 变成跑旧线、e2e 直接失败）。
+# CI：verify（Python 面：ruff + pytest tests/）、tooling-gate（actionlint/shellcheck/
+# golangci-lint/govulncheck/npm audit）、contract-gate（契约破坏性变更）、stacks
+# （Go+UI 门，含 Postgres 18）、ui-e2e（行为与视觉）。
+# 旧 Python 栈已于 2026-11-27 退役；Go 全量与部署 e2e 在 server/scripts/verify.sh、
+# deploy-gate.yml 与 update-rollback-privileged.yml，不在本文件重复。
+# 排程定义点：nightly.yml 与 e2e-nightly.yml 只在默认分支 main；develop 不持有，
+# 两文件的 checkout 显式 ref: develop，被测对象始终是活跃线。
 # 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
-# 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）
-# （分支模型：功能在 feature/*，汇入 develop，发布走 release/* 或部署分支）
+# 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）。
 on:
   workflow_dispatch:
   pull_request:
@@ -41,9 +32,8 @@ jobs:
   # 改名会让必需检查静默失效。若确要改名，先在 GitHub 设置里同步更新（批 1 约束 6）。
   verify:
     runs-on: ubuntu-latest
-    # 旧线混合面（mixed）实测：套件 ~6.5 分钟 + 门 ~2 分钟 + 装依赖 ~1.5 分钟，
-    # 原 10 分钟上限会在套件刚跑完时把作业判成 cancelled（PR #256 实测）。
-    # 上限不代表目标：快面（newstack/shared）仍在 1.5 分钟左右结束。
+    # 当前 Python 面 177 个用例，本地约 5 秒；15 分钟只作 runner 卡死兜底，
+    # 不代表目标时长。
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -71,20 +61,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---- 关键子集：本地与 CI 同源（scripts/dev-verify.sh --ci） ----
-      # 为什么收成一步：跑法此前有两个入口（CI 内联一份、本地各人一套），两位负责人
-      #   分组跑法不同会产出伪红。现在命令原文只存在仓内入口脚本里一份，CI 只调它的
-      #   子集模式；本地全量（`bash scripts/dev-verify.sh`）与这条子集共用同一个脚本。
+      # ---- 统一入口：本地与 CI 同源（scripts/dev-verify.sh --ci） ----
       # 命令原文只住 scripts/dev-verify.sh 的 run_ci 一份；CI 不复制语义。
+      # 本地与 CI 跑同一集合（ruff + pytest tests/），没有子集模式。
       # 旧线退役后不再有 scope 分类：Python 面只跑新栈门与 tests/。
       # 改动面由流水线自身决定，不按旧路径跳过。
       # 护栏：tests/test_dev_verify_entry.py 与 tests/test_public_exposure_gate_wiring.py。
-      - name: Gate subset (scripts/dev-verify.sh --ci)
+      - name: Python gates (scripts/dev-verify.sh --ci)
         run: bash scripts/dev-verify.sh --ci
 
-      - name: Gate ready
-        # 收尾回执不枚举子集内容，避免第二定义点。
-        run: 'echo "Fast gate active: the step list in this job is the single source; this receipt does not enumerate it."'
+      - name: Python gates ready
+        # 收尾回执不枚举命令，避免第二定义点。
+        run: 'echo "Python gates active: the step list in this job is the single source; this receipt does not enumerate it."'
 
   # ---- 工具链快门：actionlint / shellcheck / golangci / govulncheck / npm audit ----
   # 五道检查都看静态事实，不跑产品测试；与 verify/stacks 并行，不占关键路径。
@@ -150,7 +138,7 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
         run: |
           # base：PR 事件取 base 分支尖端（浅拉一层），push 事件取 event.before。
-          # 与 verify / ui-e2e 的 Classify 步骤同一写法。
+          # 与 ui-e2e 的 Classify 步骤同一写法。
           if [ -n "$BASE_REF" ]; then
             git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1 || true
             base="FETCH_HEAD"
@@ -226,8 +214,8 @@ jobs:
         run: bash scripts/contract-gate.sh --base "${{ steps.scope.outputs.base }}"
 
   # 新栈（Go 后端 + React 前端）的自动门。与 verify job 分开：
-  # Python 旧栈与 Go/React 新栈的依赖与工具链不同，混在一个 job 里会让
-  # 任一栈的安装失败拖垮另一栈。本 job 只调同一个本地入口
+  # Python 面与 Go/React 的依赖与工具链不同，混在一个 job 里会让任一栈的
+  # 安装失败拖垮另一栈。本 job 只调同一个本地入口
   # `bash scripts/verify-stacks.sh`；执行点只住该脚本一份，测试只做
   # 逐字冻结断言（tests/test_stacks_ci_wiring.py::StacksCiWiringTest），
   # 不复制命令语义。
@@ -290,7 +278,7 @@ jobs:
   # 分支保护里呈现 Expected / waiting 状态，required check 的语义有歧义。步骤级判定
   # 让作业照常调度：非 ui 改动时早退，并在 stdout 与 $GITHUB_STEP_SUMMARY 打印显性
   # `ui-e2e SKIP` 行（跳过必须显性可见）。
-  # base 取法与 verify 的 Classify change surface 步骤逐字一致（浅拉一层
+  # base 取法与 contract-gate 的 Classify change surface 步骤逐字一致（浅拉一层
   # 取尖端，不按 SHA 拉）。过滤口径 `^(ui/|server/contracts/)`：ui/e2e 的全部 API 由
   # page.route 假端点提供，不需要 Go 后端，server/ 其余改动不触发；但 openapi 契约
   # 改字段会改前端类型与页面，故 server/contracts/ 算触发面。
@@ -318,7 +306,7 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
         run: |
           # base：PR 事件取 base 分支尖端（浅拉一层），push 事件取 event.before。
-          # 与 verify 的 Classify 步骤同一写法；取不到 base 或 diff 失败即默认跑（fail-closed）。
+          # 与 contract-gate 的 Classify 步骤同一写法；取不到 base 或 diff 失败即默认跑（fail-closed）。
           if [ -n "$BASE_REF" ]; then
             git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1 || true
             base="FETCH_HEAD"

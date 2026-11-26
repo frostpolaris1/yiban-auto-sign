@@ -1,8 +1,8 @@
 # server
 
-Go service for the new stack (`server/` + `ui/`). The Python line
-(`yiban/`, `web/`) is frozen: this directory does not import it and does not
-change its behavior.
+Go service for the only active stack (`server/` + `ui/`). The Python line
+(`yiban/`, `web/`) was retired and deleted on 2026-11-27; this directory never
+imported it.
 
 ## Layout
 
@@ -228,7 +228,7 @@ public pages `/api/changelog`, `/terms`, `/privacy` and `/robots.txt`. The
 production assembly wires every contract endpoint; a handler that is not
 wired answers 501.
 
-The Python line is frozen. Its behavior is reference material only.
+The Python line was retired on 2026-11-27 and is no longer in the tree.
 
 `scripts/generate.sh --check` fails when `contracts/openapi.yaml` and the
 generated code drift apart.

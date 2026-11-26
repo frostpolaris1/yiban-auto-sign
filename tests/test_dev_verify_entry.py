@@ -14,6 +14,7 @@
 import io
 import os
 import re
+import shutil
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -35,6 +36,15 @@ def _func_body(text, name):
     rest = text[m.end():]
     end = re.search(r"^\}$", rest, re.M)
     return rest[:end.start()] if end else ""
+
+
+def _ci_job_body(text, name):
+    m = re.search(r"^  %s:\s*$" % re.escape(name), text, re.M)
+    if m is None:
+        return ""
+    rest = text[m.end():]
+    end = re.search(r"^  [A-Za-z0-9_-]+:\s*$", rest, re.M)
+    return rest[:end.start()] if end else rest
 
 
 def _commands(body):
@@ -65,10 +75,15 @@ class DevVerifyEntryTest(unittest.TestCase):
         cls.body = _func_body(cls.entry, "run_ci")
 
     def test_ci_calls_the_entrypoint(self):
-        self.assertIn("bash scripts/dev-verify.sh --ci", self.ci)
+        verify = _ci_job_body(self.ci, "verify")
+        self.assertTrue(verify, "ci.yml 抽不出 verify 作业")
+        runs = [ln.strip()[4:].strip() for ln in verify.splitlines()
+                if ln.strip().startswith("run:")]
+        self.assertIn("bash scripts/dev-verify.sh --ci", runs)
 
     def test_no_retired_stack_inputs_in_verify(self):
-        verify = self.ci[self.ci.index("  verify:"):self.ci.index("\n  tooling-gate:")]
+        verify = _ci_job_body(self.ci, "verify")
+        self.assertTrue(verify, "ci.yml 抽不出 verify 作业")
         for dead in ("requirements.lock", "requirements.txt", "scripts/ci-scope.sh",
                      "test_vue_build_reproducible.py", "--scope"):
             self.assertNotIn(dead, verify, "verify 仍引用已退役输入：%s" % dead)
@@ -77,7 +92,10 @@ class DevVerifyEntryTest(unittest.TestCase):
         self.assertTrue(self.body, "抽不到 run_ci（脚本结构变了）")
         joined = "\n".join(_commands(self.body))
         self.assertRegex(joined, r"-m ruff check tests scripts")
-        self.assertIn("-m pytest tests/", joined)
+        self.assertTrue(
+            any(cmd.startswith('"$py" -m pytest tests/ ') and "--dist" in cmd
+                for cmd in _commands(self.body)),
+            "run_ci 未真跑 pytest tests/（只点名具体文件的命令不算）")
         self.assertIn(GATE, joined)
         self.assertIn(WIRING, joined)
 
@@ -94,6 +112,7 @@ class DevVerifyEntryTest(unittest.TestCase):
             for bad in ("|| true", "-k ", "--ignore", "--deselect"):
                 self.assertNotIn(bad, cmd, "run_ci 削弱了门：%s" % cmd)
 
+    @unittest.skipUnless(shutil.which("bash"), "需要 bash：--help 要真跑入口脚本")
     def test_help_exits_zero(self):
         import subprocess
         proc = subprocess.run(["bash", ENTRY, "--help"],

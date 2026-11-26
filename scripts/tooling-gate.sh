@@ -35,6 +35,8 @@ SHELL_FILES=(
     scripts/e2e/ui-signing-e2e.sh
     scripts/e2e/lib/deploy-e2e.sh
     scripts/verify-stacks.sh
+    scripts/dev-verify.sh
+    scripts/release-check.sh
     scripts/workflow-run-interp-gate.sh
     scripts/release/make-ui-sums.sh
     scripts/tooling-gate.sh

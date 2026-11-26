@@ -34,8 +34,8 @@ _PRIVATE_KEY_MARKERS = (
     _marker(b"ENCRYPTED PRIVATE KEY"),
 )
 
-# 2026-11-27 快照：git 跟踪 1471 个文件。下限取 1000，留足删减余量。
-_MIN_TRACKED_FILES = 1000
+# 2026-11-27 旧栈退役后快照：git 跟踪 1423 个文件。下限取 1200，留足删减余量。
+_MIN_TRACKED_FILES = 1200
 
 # 显式豁免（§28：要么有门、要么显式豁免）；旧线合成夹具已随旧线删除，当前无豁免。
 _EXEMPT_PATHS = set()
