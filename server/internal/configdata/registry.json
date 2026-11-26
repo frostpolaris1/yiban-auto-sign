@@ -251,7 +251,7 @@
     "type": "bool",
     "default": true,
     "group": ["节流"],
-    "doc": "入站限流总开关。关闭时登录、重置、改密、校验、签到不按 IP 与账号限速",
+    "doc": "入站限流总开关。production 必须为 true：=false 时启动失败；development/test/staging 可关闭，关闭后登录、重置、改密、校验、签到不按 IP 与账号限速",
     "sensitive": false,
     "scope": "server"
   },

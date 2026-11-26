@@ -324,7 +324,7 @@ Canonical runtime files:
 | `YIBAN_TURNSTILE_MODE` | no | `auto` | public-registration human verification: `auto` turns it on only when both keys are set, `off` never verifies, `log` verifies and records the outcome but lets the request through, `on` rejects a missing or invalid token with `human_verification_failed` (HTTP 400), and an unreachable siteverify answers HTTP 502. Applies to `POST /api/auth/register` only. |
 | `YIBAN_TURNSTILE_SITE_KEY` | no | empty | Cloudflare Turnstile site key, returned by `GET /api/auth/registration` so the register form can render the widget. Must be set together with the secret. |
 | `YIBAN_TURNSTILE_SECRET` | no | empty | Cloudflare Turnstile secret used for `/siteverify`; never logged, audited or echoed in an error. Must be set together with the site key. |
-| `YIBAN_RATE_LIMIT_ENABLE` | no | `true` | inbound rate limiting for login, forgot/reset password, change password, verify and sign |
+| `YIBAN_RATE_LIMIT_ENABLE` | no | `true` | inbound rate limiting for login, forgot/reset password, change password, verify and sign. It must stay `true` under `YIBAN_ENV=production`: `false` there is a startup error. development, test and staging may turn it off. |
 | `YIBAN_RATE_IP_PER_MIN` | no | `60` | requests per minute per client IP on those routes |
 | `YIBAN_RATE_IP_BURST` | no | `20` | burst bucket per client IP |
 | `YIBAN_RATE_ACCOUNT_PER_MIN` | no | `10` | requests per minute per account key: normalized email, token digest, user id or account id |
@@ -356,7 +356,10 @@ An inbound rate limit answers 429 with `Retry-After` in seconds. The per-IP
 check runs before session lookup; the per-account check runs before the
 password hash. Other 429 answers (time-preference cooldown, capacity) may omit
 `Retry-After`. The reset flow checks the one-time token before hashing the new
-password.
+password. `YIBAN_RATE_LIMIT_ENABLE=false` is rejected at startup under
+`YIBAN_ENV=production`: the router treats a nil guard as unlimited, so a
+mis-set switch would silently remove all inbound throttling. Non-production
+environments may still turn it off.
 
 The admin event stream (`GET /api/admin/events`) has a process-wide cap of 10
 concurrent streams. The 11th connection gets 429 `rate_limited` with
