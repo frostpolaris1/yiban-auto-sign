@@ -40,19 +40,23 @@ func TestRequestBodyLimitPerPath(t *testing.T) {
 	}
 }
 
-// 批量签到必须在 IP 限流白名单内：契约对整批声明 429，
+// 四条签名路由与 detect 必须在 IP 限流白名单内：契约声明 429，
 // 白名单漏行＝429 运行时不可达。直接断言注册表，漏行即红。
-func TestBatchSignPathIsIPRateLimited(t *testing.T) {
+// 账号键限流已移入 handler，但 IP 面白名单不能跟着删。
+func TestSigningPathsAreIPRateLimited(t *testing.T) {
 	for _, path := range []string{
 		"/api/accounts/:id/sign",
 		"/api/accounts/batch/sign",
+		"/api/accounts/:id/verify",
+		"/api/accounts/:id/person-name",
+		"/api/accounts/detect",
 	} {
 		if _, ok := rateLimitedPaths[path]; !ok {
 			t.Fatalf("%s 不在 rateLimitedPaths 白名单内", path)
 		}
 	}
-	if len(rateLimitedPaths) < 7 {
-		t.Fatalf("白名单 = %d 项, want at least 7（表被清空即红）", len(rateLimitedPaths))
+	if len(rateLimitedPaths) < 11 {
+		t.Fatalf("白名单 = %d 项, want at least 11（表被清空即红）", len(rateLimitedPaths))
 	}
 }
 

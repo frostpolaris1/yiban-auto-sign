@@ -19,6 +19,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
+	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
@@ -89,6 +90,12 @@ func (f *fakeIssuer) Revoke(context.Context, string) error { return nil }
 func (f *fakeIssuer) RevokeAllForUser(context.Context, string) error { return nil }
 
 func newTestRouter(t *testing.T, authz *fakeAuthorizer, svc *fakeService, verifier *fakeVerifier) (http.Handler, coreauth.Issued) {
+	return newTestRouterWithLimiter(t, authz, svc, verifier, &batchLimiter{})
+}
+
+// newTestRouterWithLimiter 装配校验路由；limiter 同时给 handler（账号桶）。
+// 传 *ratelimit.Guard 时也接到路由中间件，复刻生产里同一 guard 的两面。
+func newTestRouterWithLimiter(t *testing.T, authz *fakeAuthorizer, svc *fakeService, verifier *fakeVerifier, limiter signinghttp.AccountLimiter) (http.Handler, coreauth.Issued) {
 	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
 	issued, err := issuer.Issue(context.Background(), coreauth.User{
@@ -97,11 +104,12 @@ func newTestRouter(t *testing.T, authz *fakeAuthorizer, svc *fakeService, verifi
 	if err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
-	engine, err := router.New(router.Options{
-		Sessions:        issuer,
-		InsecureCookies: true,
-		Signing:         signinghttp.NewHandler(svc, authz, verifier),
-	})
+	handler := signinghttp.NewHandler(svc, authz, verifier).WithAccountLimiter(limiter)
+	opts := router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler}
+	if guard, ok := limiter.(*ratelimit.Guard); ok {
+		opts.RateLimit = guard
+	}
+	engine, err := router.New(opts)
 	if err != nil {
 		t.Fatalf("router: %v", err)
 	}
@@ -450,8 +458,15 @@ func newSignRouter(t *testing.T, authz *fakeAuthorizer, manual *fakeManual) (htt
 	return newSignRouterWithAccess(t, authz, manual, &fakeAccess{})
 }
 
-// newSignRouterWithAccess 装配带账号可见面判据的路由。
+// newSignRouterWithAccess 装配带账号可见面判据的路由（限流全放行）。
 func newSignRouterWithAccess(t *testing.T, authz *fakeAuthorizer, manual *fakeManual, access *fakeAccess) (http.Handler, coreauth.Issued) {
+	return newSignRouterWithLimiter(t, authz, manual, access, &batchLimiter{})
+}
+
+// newSignRouterWithLimiter 装配指定账号桶的路由；limiter 为 nil 时
+// 不注入，供「未接线 500」用例使用。传 *ratelimit.Guard 时同时接入
+// 路由中间件，复刻生产装配下前置/后置扣桶的真实路径。
+func newSignRouterWithLimiter(t *testing.T, authz *fakeAuthorizer, manual *fakeManual, access *fakeAccess, limiter signinghttp.AccountLimiter) (http.Handler, coreauth.Issued) {
 	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
 	issued, err := issuer.Issue(context.Background(), coreauth.User{
@@ -462,8 +477,13 @@ func newSignRouterWithAccess(t *testing.T, authz *fakeAuthorizer, manual *fakeMa
 	}
 	handler := signinghttp.NewHandler(&fakeService{}, authz, &fakeVerifier{}).
 		WithManual(manual).
-		WithAccess(access)
-	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler})
+		WithAccess(access).
+		WithAccountLimiter(limiter)
+	opts := router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler}
+	if guard, ok := limiter.(*ratelimit.Guard); ok {
+		opts.RateLimit = guard
+	}
+	engine, err := router.New(opts)
 	if err != nil {
 		t.Fatalf("router: %v", err)
 	}
@@ -481,7 +501,8 @@ func TestSignWithoutAccessWiringFailsLoud(t *testing.T) {
 		t.Fatalf("issue session: %v", err)
 	}
 	handler := signinghttp.NewHandler(&fakeService{}, &fakeAuthorizer{scope: corescope.Master()}, &fakeVerifier{}).
-		WithManual(&fakeManual{})
+		WithManual(&fakeManual{}).
+		WithAccountLimiter(&batchLimiter{})
 	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler})
 	if err != nil {
 		t.Fatalf("router: %v", err)
@@ -655,12 +676,16 @@ func (f *batchManual) Request(_ context.Context, accountID string, _ appaudit.Ac
 // calls 记录判定顺序，供「逐项判定、每 id 判一次」断言使用。
 type batchLimiter struct {
 	denied map[string]bool
+	wait   time.Duration
 	calls  []string
 }
 
 func (f *batchLimiter) AllowAccount(id string) (bool, time.Duration) {
 	f.calls = append(f.calls, id)
-	return !f.denied[id], 0
+	if f.denied[id] {
+		return false, f.wait
+	}
+	return true, 0
 }
 
 // newBatchSignRouter 装配带全部接缝的路由（限流全放行），
@@ -930,9 +955,10 @@ func TestBatchSignLimitKeyNormalized(t *testing.T) {
 	if strings.Join(limiter.calls, ",") != "acc-b,acc-a" {
 		t.Fatalf("limiter keys = %v, want 归一后小写键", limiter.calls)
 	}
-	// 限流只归一键：Get 与入队仍收原样 id。
-	if strings.Join(access.calls, ",") != "ACC-A" {
-		t.Fatalf("access = %v, want ACC-A（原样 id）", access.calls)
+	// 限流只归一键：Get 与入队仍收原样 id；可见面先于扣桶，
+	// 被限流的 acc-b 也必须先经过 Get（否则越权请求会被限流先行掩盖）。
+	if strings.Join(access.calls, ",") != "ACC-B,ACC-A" {
+		t.Fatalf("access = %v, want ACC-B,ACC-A（原样 id，且先于限流）", access.calls)
 	}
 	if strings.Join(manual.calls, ",") != "ACC-A" {
 		t.Fatalf("manual = %v, want ACC-A（原样 id）", manual.calls)
@@ -958,9 +984,17 @@ func (f *fakeRevealAuditor) RecordPersonNameReveal(
 	return f.err
 }
 
-// newPersonNameRouter 装配带揭示审计接缝的路由；auditor 传 nil 供未接线用例。
+// newPersonNameRouter 装配带揭示审计接缝的路由（限流全放行）；
+// auditor 传 nil 供未接线用例。
 func newPersonNameRouter(t *testing.T, authz *fakeAuthorizer, svc *fakeService,
 	verifier *fakeVerifier, auditor signinghttp.RevealAuditor) (http.Handler, coreauth.Issued) {
+	return newPersonNameRouterWithLimiter(t, authz, svc, verifier, auditor, &batchLimiter{})
+}
+
+// newPersonNameRouterWithLimiter 装配指定账号桶的路由；limiter 为 nil
+// 时不注入，供「未接线 500」用例使用。
+func newPersonNameRouterWithLimiter(t *testing.T, authz *fakeAuthorizer, svc *fakeService,
+	verifier *fakeVerifier, auditor signinghttp.RevealAuditor, limiter signinghttp.AccountLimiter) (http.Handler, coreauth.Issued) {
 	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
 	issued, err := issuer.Issue(context.Background(), coreauth.User{
@@ -969,8 +1003,14 @@ func newPersonNameRouter(t *testing.T, authz *fakeAuthorizer, svc *fakeService,
 	if err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
-	handler := signinghttp.NewHandler(svc, authz, verifier).WithRevealAudit(auditor)
-	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler})
+	handler := signinghttp.NewHandler(svc, authz, verifier).
+		WithRevealAudit(auditor).
+		WithAccountLimiter(limiter)
+	opts := router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler}
+	if guard, ok := limiter.(*ratelimit.Guard); ok {
+		opts.RateLimit = guard
+	}
+	engine, err := router.New(opts)
 	if err != nil {
 		t.Fatalf("router: %v", err)
 	}
@@ -1102,5 +1142,319 @@ func TestPersonNameAuditFailureBlocksResponse(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "张三") {
 		t.Fatalf("audit failure still leaked the name: %q", rec.Body.String())
+	}
+}
+
+// --- B6a：账号键限流后置 ----------------------------------------------------
+
+// signingGuard 构造容量 1 的账号桶：测试窗口内只放行一次，
+// 任何前置扣桶都会让「越权 404 后本人首次调用」失败。
+func signingGuard(t *testing.T) *ratelimit.Guard {
+	t.Helper()
+	throttle, err := ratelimit.NewThrottle(ratelimit.Quota{PerMinute: 60, Burst: 1})
+	if err != nil {
+		t.Fatalf("NewThrottle: %v", err)
+	}
+	return &ratelimit.Guard{Account: throttle}
+}
+
+// callSignID 允许测试任意路径 id（规范键/越权 id）。
+func callSignID(t *testing.T, engine http.Handler, issued coreauth.Issued, id string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/"+id+"/sign", nil)
+	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+	req.Header.Set("X-CSRF-Token", issued.CSRFToken)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	return rec
+}
+
+// 越权/跨校打 A 的 sign：只回 404，不消耗 A 的账号桶；
+// 随后 A 首次调用必须成功。guard 同时接路由与 handler，复刻生产装配。
+func TestSignUnauthorizedDoesNotConsumeAccountBucket(t *testing.T) {
+	cases := []struct {
+		name  string
+		scope corescope.Scope
+	}{
+		{"user-other", corescope.User("u2")},
+		{"admin-cross-school", corescope.Admin([]string{"school-2"})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := signingGuard(t)
+			denied := &fakeAccess{err: errs.New(errs.CodeNotFound, "account not found")}
+			badEngine, badIssued := newSignRouterWithLimiter(t,
+				&fakeAuthorizer{scope: tc.scope}, &fakeManual{taskID: "task-bad"}, denied, guard)
+			for i := 0; i < 3; i++ {
+				rec := callSign(t, badEngine, badIssued)
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("越权第 %d 次 status = %d, want 404（不得先扣目标账号桶）: %s",
+						i+1, rec.Code, rec.Body.String())
+				}
+			}
+			if denied.calls != 3 {
+				t.Fatalf("可见面调用 = %d, want 3", denied.calls)
+			}
+
+			goodManual := &fakeManual{taskID: "task-1"}
+			goodEngine, goodIssued := newSignRouterWithLimiter(t,
+				&fakeAuthorizer{scope: corescope.Master()}, goodManual, &fakeAccess{}, guard)
+			rec := callSign(t, goodEngine, goodIssued)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("A 首次调用 status = %d, want 202（B 的 404 不得消耗账号桶）: %s",
+					rec.Code, rec.Body.String())
+			}
+			if goodManual.calls != 1 {
+				t.Fatalf("A manual.Request = %d, want 1", goodManual.calls)
+			}
+		})
+	}
+}
+
+// A 自己超频：429 + Retry-After，且不入队。
+func TestSignOwnAccountRateLimited(t *testing.T) {
+	limiter := &batchLimiter{denied: map[string]bool{"acc-1": true}, wait: 2 * time.Second}
+	manual := &fakeManual{taskID: "task-1"}
+	engine, issued := newSignRouterWithLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, manual, &fakeAccess{}, limiter)
+	rec := callSign(t, engine, issued)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After = %q, want 2", got)
+	}
+	if !strings.Contains(rec.Body.String(), "rate_limited") {
+		t.Fatalf("body = %s, want rate_limited", rec.Body.String())
+	}
+	if manual.calls != 0 {
+		t.Fatalf("限流命中后不得入队, manual=%d", manual.calls)
+	}
+}
+
+// 限流器未接线＝装配错误：Sign 500 响亮失败，不得放行。
+func TestSignWithoutLimiterFailsLoud(t *testing.T) {
+	engine, issued := newSignRouterWithLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, &fakeManual{}, &fakeAccess{}, nil)
+	rec := callSign(t, engine, issued)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("未接线 status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "internal_error") {
+		t.Fatalf("body = %s, want internal_error", rec.Body.String())
+	}
+}
+
+// 单条与批量必须共用同一归一化键：同一 UUID 的大小写变体在两处
+// 都写成同一个小写规范键，避免两份实现漂移。
+func TestSignAndBatchShareNormalizedAccountKey(t *testing.T) {
+	const raw = "0190ABCD-0000-7000-8000-000000000001"
+	const want = "0190abcd-0000-7000-8000-000000000001"
+	limiter := &batchLimiter{}
+
+	singleEngine, singleIssued := newSignRouterWithLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, &fakeManual{taskID: "task-1"},
+		&fakeAccess{}, limiter)
+	if rec := callSignID(t, singleEngine, singleIssued, raw); rec.Code != http.StatusAccepted {
+		t.Fatalf("单条 status = %d, want 202: %s", rec.Code, rec.Body.String())
+	}
+
+	batchEngine, batchIssued := newBatchSignRouterLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, &batchManual{}, &batchAccess{}, limiter)
+	if rec := callBatchSign(t, batchEngine, batchIssued,
+		oapi.AccountBatchSignRequest{Ids: []string{raw}}); rec.Code != http.StatusOK {
+		t.Fatalf("批量 status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	if len(limiter.calls) != 2 || limiter.calls[0] != want || limiter.calls[1] != want {
+		t.Fatalf("limiter keys = %v, want [%s %s]（单条与批量同键）", limiter.calls, want, want)
+	}
+}
+
+// Verify 的账号桶必须在 SigningCredential 成功之后才扣：
+// 越权 404 不消耗 A 的桶；A 首次校验仍成功。
+func TestVerifyUnauthorizedDoesNotConsumeAccountBucket(t *testing.T) {
+	cases := []struct {
+		name  string
+		scope corescope.Scope
+	}{
+		{"user-other", corescope.User("u2")},
+		{"admin-cross-school", corescope.Admin([]string{"school-2"})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := signingGuard(t)
+			badSvc := &fakeService{err: errs.New(errs.CodeNotFound, "account not found")}
+			badEngine, badIssued := newTestRouterWithLimiter(t,
+				&fakeAuthorizer{scope: tc.scope}, badSvc, &fakeVerifier{}, guard)
+			for i := 0; i < 3; i++ {
+				rec := callVerify(t, badEngine, badIssued, true)
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("越权第 %d 次 status = %d, want 404（不得先扣目标账号桶）: %s",
+						i+1, rec.Code, rec.Body.String())
+				}
+			}
+
+			goodSvc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+			goodVerifier := &fakeVerifier{}
+			goodEngine, goodIssued := newTestRouterWithLimiter(t,
+				&fakeAuthorizer{scope: corescope.User("u1")}, goodSvc, goodVerifier, guard)
+			rec := callVerify(t, goodEngine, goodIssued, true)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("A 首次校验 status = %d, want 200（B 的 404 不得消耗账号桶）: %s",
+					rec.Code, rec.Body.String())
+			}
+			if goodVerifier.calls != 1 {
+				t.Fatalf("A verifier calls = %d, want 1", goodVerifier.calls)
+			}
+		})
+	}
+}
+
+// Verify 自己超频：429 + Retry-After，且不调用平台校验。
+func TestVerifyOwnAccountRateLimited(t *testing.T) {
+	limiter := &batchLimiter{denied: map[string]bool{"acc-1": true}, wait: 2 * time.Second}
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	verifier := &fakeVerifier{}
+	engine, issued := newTestRouterWithLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, svc, verifier, limiter)
+	rec := callVerify(t, engine, issued, true)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After = %q, want 2", got)
+	}
+	if svc.lastID != "acc-1" {
+		t.Fatalf("凭据读取 id = %q, want acc-1（先读成功再扣桶）", svc.lastID)
+	}
+	if verifier.calls != 0 {
+		t.Fatalf("限流命中后不得调用平台校验, calls=%d", verifier.calls)
+	}
+}
+
+// 限流器未接线＝装配错误：Verify 500 响亮失败。
+func TestVerifyWithoutLimiterFailsLoud(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	verifier := &fakeVerifier{}
+	engine, issued := newTestRouterWithLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, svc, verifier, nil)
+	rec := callVerify(t, engine, issued, true)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("未接线 status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "internal_error") {
+		t.Fatalf("body = %s, want internal_error", rec.Body.String())
+	}
+	if verifier.calls != 0 {
+		t.Fatalf("未接线不得调用平台校验, calls=%d", verifier.calls)
+	}
+}
+
+// PersonName 的账号桶同样后置：越权 404 不消耗 A 的桶；A 首次揭示成功。
+func TestPersonNameUnauthorizedDoesNotConsumeAccountBucket(t *testing.T) {
+	cases := []struct {
+		name  string
+		scope corescope.Scope
+	}{
+		{"user-other", corescope.User("u2")},
+		{"admin-cross-school", corescope.Admin([]string{"school-2"})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := signingGuard(t)
+			badSvc := &fakeService{err: errs.New(errs.CodeNotFound, "account not found")}
+			badEngine, badIssued := newPersonNameRouterWithLimiter(t,
+				&fakeAuthorizer{scope: tc.scope}, badSvc, &fakeVerifier{}, &fakeRevealAuditor{}, guard)
+			for i := 0; i < 3; i++ {
+				rec := callPersonName(t, badEngine, badIssued)
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("越权第 %d 次 status = %d, want 404（不得先扣目标账号桶）: %s",
+						i+1, rec.Code, rec.Body.String())
+				}
+			}
+
+			goodSvc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+			goodVerifier := &fakeVerifier{profile: contract.Profile{DisplayName: "张三"}}
+			auditor := &fakeRevealAuditor{}
+			goodEngine, goodIssued := newPersonNameRouterWithLimiter(t,
+				&fakeAuthorizer{scope: corescope.User("u1")}, goodSvc, goodVerifier, auditor, guard)
+			rec := callPersonName(t, goodEngine, goodIssued)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("A 首次揭示 status = %d, want 200（B 的 404 不得消耗账号桶）: %s",
+					rec.Code, rec.Body.String())
+			}
+			if goodVerifier.calls != 1 || auditor.calls != 1 {
+				t.Fatalf("verifier=%d auditor=%d, want 1/1", goodVerifier.calls, auditor.calls)
+			}
+		})
+	}
+}
+
+// PersonName 自己超频：429 + Retry-After，且不调用平台与审计。
+func TestPersonNameOwnAccountRateLimited(t *testing.T) {
+	limiter := &batchLimiter{denied: map[string]bool{"acc-1": true}, wait: 2 * time.Second}
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	verifier := &fakeVerifier{profile: contract.Profile{DisplayName: "张三"}}
+	auditor := &fakeRevealAuditor{}
+	engine, issued := newPersonNameRouterWithLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, svc, verifier, auditor, limiter)
+	rec := callPersonName(t, engine, issued)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After = %q, want 2", got)
+	}
+	if svc.lastID != "acc-1" {
+		t.Fatalf("凭据读取 id = %q, want acc-1（先读成功再扣桶）", svc.lastID)
+	}
+	if verifier.calls != 0 || auditor.calls != 0 {
+		t.Fatalf("限流命中后不得校验/审计, verifier=%d auditor=%d", verifier.calls, auditor.calls)
+	}
+}
+
+// 限流器未接线＝装配错误：PersonName 500 响亮失败。
+func TestPersonNameWithoutLimiterFailsLoud(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	verifier := &fakeVerifier{profile: contract.Profile{DisplayName: "张三"}}
+	auditor := &fakeRevealAuditor{}
+	engine, issued := newPersonNameRouterWithLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, svc, verifier, auditor, nil)
+	rec := callPersonName(t, engine, issued)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("未接线 status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "internal_error") {
+		t.Fatalf("body = %s, want internal_error", rec.Body.String())
+	}
+	if verifier.calls != 0 || auditor.calls != 0 {
+		t.Fatalf("未接线不得校验/审计, verifier=%d auditor=%d", verifier.calls, auditor.calls)
+	}
+}
+
+// 批量中越权项不得消耗目标账号桶：access 先判定，限流器只见可见项。
+func TestBatchSignUnauthorizedItemDoesNotConsumeAccountBucket(t *testing.T) {
+	limiter := &batchLimiter{}
+	access := &batchAccess{errs: map[string]error{
+		"acc-b": errs.New(errs.CodeNotFound, "account not found"),
+	}}
+	manual := &batchManual{}
+	engine, issued := newBatchSignRouterLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, manual, access, limiter)
+	rec := callBatchSign(t, engine, issued,
+		oapi.AccountBatchSignRequest{Ids: []string{"acc-a", "acc-b", "acc-c"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	result := decodeBatchResult(t, rec)
+	if result.Items[1].Code == nil || *result.Items[1].Code != oapi.NotFound {
+		t.Fatalf("items[1] = %+v, want not_found", result.Items[1])
+	}
+	if strings.Join(manual.calls, ",") != "acc-a,acc-c" {
+		t.Fatalf("manual = %v, want acc-a,acc-c", manual.calls)
+	}
+	if strings.Join(limiter.calls, ",") != "acc-a,acc-c" {
+		t.Fatalf("limiter = %v, want acc-a,acc-c（越权项不得判桶）", limiter.calls)
 	}
 }

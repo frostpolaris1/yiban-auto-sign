@@ -26,7 +26,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -72,8 +74,8 @@ type AccountAccess interface {
 }
 
 // AccountLimiter 按账号键判限流（实现为 ratelimit.Guard）。
-// 批量逐项接入：每个 id 在入队前判一次，与单条端点的
-// accountLimit 同口径；命中项写 rate_limited 并继续下一项。
+// 单条与批量共用 allowAccount：先归一化键再判桶，命中项写
+// rate_limited 并继续下一项；越权项在判桶前已被可见面挡下。
 type AccountLimiter interface {
 	AllowAccount(id string) (ok bool, wait time.Duration)
 }
@@ -121,8 +123,8 @@ func (h *Handler) WithRevealAudit(a RevealAuditor) *Handler {
 	return h
 }
 
-// WithAccountLimiter 注入账号键限流（批量签到用）。
-// **不注入属装配错误**：批量端点回 500 响亮失败——契约声明的 429
+// WithAccountLimiter 注入账号键限流（sign/verify/person-name/batch 共用）。
+// **不注入属装配错误**：各端点回 500 响亮失败——契约声明的 429
 // 若运行时不可达，就是限流面静默缺失。
 func (h *Handler) WithAccountLimiter(l AccountLimiter) *Handler {
 	h.limiter = l
@@ -151,9 +153,17 @@ func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignPara
 		fail(c, errs.New(errs.CodeInternal, "account access is not wired"))
 		return
 	}
+	if h.limiter == nil {
+		fail(c, errs.New(errs.CodeInternal, "account limiter is not wired"))
+		return
+	}
 	record, err := h.access.Get(c.Request.Context(), scope, string(id))
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	if ok, wait := h.allowAccount(string(id)); !ok {
+		writeRateLimited(c, wait)
 		return
 	}
 	// 旧线签到按钮只对 active 出现（web/routes/signin_api.py 对 status != active
@@ -236,16 +246,17 @@ func (h *Handler) BatchSign(c *gin.Context, _ oapi.AccountBatchSignParams) {
 // batchSignOne 处理单个 id：错误写进该项并继续，不中断批次。
 func (h *Handler) batchSignOne(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, id string) oapi.AccountBatchSignItem {
 	item := oapi.AccountBatchSignItem{Id: id}
-	// 账号键限流先于一切判定，与单条端点同序：router 对单条在进
-	// handler 前判 accountLimit(id)，键经 NormalizeAccountKey 归一——
-	// UUID 的大小写、花括号、urn 形式都落到同一桶，不归一即可拆桶绕过。
-	// 只归一限流键，Get/Request 仍收原样 id。命中只拒本项，批次继续。
-	if ok, _ := h.limiter.AllowAccount(ratelimit.NormalizeAccountKey(id)); !ok {
-		return batchItemError(item, errs.New(errs.CodeRateLimited, "too many sign requests for this account"))
-	}
+	// 先判可见面：越权/跨校项与单条一样 404，且不消耗目标账号桶。
 	record, err := h.access.Get(ctx, scope, id)
 	if err != nil {
 		return batchItemError(item, err)
+	}
+	// 可见项再判账号键限流，与单条 Sign 同序同桶。键经
+	// NormalizeAccountKey 归一：UUID 的大小写、花括号、urn 形式都落到
+	// 同一桶，不归一即可拆桶绕过。Get/Request 仍收原样 id。
+	// 命中只拒本项，批次继续。
+	if ok, _ := h.allowAccount(id); !ok {
+		return batchItemError(item, errs.New(errs.CodeRateLimited, "too many sign requests for this account"))
 	}
 	// 非 active 与单条同口径：conflict，不入队。
 	if !record.Status.Active() {
@@ -308,9 +319,17 @@ func (h *Handler) Verify(c *gin.Context, id oapi.AccountID, _ oapi.AccountVerify
 	if !ok {
 		return
 	}
+	if h.limiter == nil {
+		fail(c, errs.New(errs.CodeInternal, "account limiter is not wired"))
+		return
+	}
 	credential, err := h.svc.SigningCredential(c.Request.Context(), scope, string(id))
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	if ok, wait := h.allowAccount(string(id)); !ok {
+		writeRateLimited(c, wait)
 		return
 	}
 	profile, err := h.verifier.Verify(c.Request.Context(), contract.VerifyRequest{
@@ -373,9 +392,17 @@ func (h *Handler) PersonName(c *gin.Context, id oapi.AccountID, _ oapi.AccountPe
 		fail(c, errs.New(errs.CodeInternal, "reveal auditor is not wired"))
 		return
 	}
+	if h.limiter == nil {
+		fail(c, errs.New(errs.CodeInternal, "account limiter is not wired"))
+		return
+	}
 	credential, err := h.svc.SigningCredential(c.Request.Context(), scope, string(id))
 	if err != nil {
 		fail(c, err)
+		return
+	}
+	if ok, wait := h.allowAccount(string(id)); !ok {
+		writeRateLimited(c, wait)
 		return
 	}
 	profile, err := h.verifier.Verify(c.Request.Context(), contract.VerifyRequest{
@@ -405,6 +432,23 @@ func (h *Handler) PersonName(c *gin.Context, id oapi.AccountID, _ oapi.AccountPe
 		return
 	}
 	respond.JSON(c.Writer, http.StatusOK, oapi.AccountPersonNameResult{PersonName: profile.DisplayName})
+}
+
+// allowAccount 是单条与批量共用的账号桶判定：只归一化键并判桶，
+// 不读账号、不区分端点，避免两份实现漂移。
+func (h *Handler) allowAccount(id string) (bool, time.Duration) {
+	return h.limiter.AllowAccount(ratelimit.NormalizeAccountKey(id))
+}
+
+// writeRateLimited 写与 router 同口径的 429：Retry-After 向上取整秒、
+// 最小 1，再由 fail 走统一错误信封。
+func writeRateLimited(c *gin.Context, wait time.Duration) {
+	seconds := int(math.Ceil(wait.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
+	fail(c, errs.New(errs.CodeRateLimited, "too many requests"))
 }
 
 // isAppError 报告 err 是否宿主自产的急停错误。
