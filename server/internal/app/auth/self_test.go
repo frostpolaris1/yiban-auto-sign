@@ -9,6 +9,7 @@ package auth_test
 // 本文件**不**连数据库，**不**发 HTTP；真库与接线由 cmd/server e2e 负责。
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -180,7 +181,7 @@ func TestRestoreSelfIndistinguishableFailures(t *testing.T) {
 }
 
 // TestRestoreSelfWithinGrace 覆盖 7 天边界内恢复：用户与账号一并恢复、
-// 写 user.self_restore 审计、不建立会话。
+// 写 user.self_restore 审计（account_restored=true）、不建立会话。
 func TestRestoreSelfWithinGrace(t *testing.T) {
 	h := newHarness(t)
 	user := seedSelfUser(t, h, "restore@example.com", "right-pass", coreauth.RoleUser)
@@ -201,6 +202,66 @@ func TestRestoreSelfWithinGrace(t *testing.T) {
 	}
 	if len(h.audits.actions) != 1 || h.audits.actions[0] != coreaudit.ActionUserSelfRestore {
 		t.Fatalf("audit actions = %v, want one user.self_restore", h.audits.actions)
+	}
+	if got := h.audits.entries[0].Detail["account_restored"]; got != true {
+		t.Fatalf("audit account_restored = %#v, want true", got)
+	}
+	if len(h.sessions.issued) != 0 {
+		t.Fatal("restore established a session")
+	}
+}
+
+// TestRestoreSelfKeepsUserWhenAccountSkipped 钉住一人一号优先：
+// 属主名下已有 live 账号时账号不复活，但用户恢复与审计照常成功，
+// Detail 记 account_restored=false，而不是把整次恢复判失败。
+func TestRestoreSelfKeepsUserWhenAccountSkipped(t *testing.T) {
+	h := newHarness(t)
+	user := seedSelfUser(t, h, "sibling@example.com", "right-pass", coreauth.RoleUser)
+	markSelfDeleted(h, user, testClock.T.Add(-time.Hour))
+	h.users.restoreAcctFalse = true
+
+	if err := h.svc.RestoreSelf(t.Context(), user.Email, "right-pass"); err != nil {
+		t.Fatalf("RestoreSelf: %v", err)
+	}
+	if _, ok := h.users.byID[user.ID]; !ok {
+		t.Fatal("user is not live after restore")
+	}
+	if len(h.users.restoredAccts) != 1 || h.users.restoredAccts[0] != user.ID {
+		t.Fatalf("restore attempts = %v, want one for %s", h.users.restoredAccts, user.ID)
+	}
+	if len(h.audits.entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(h.audits.entries))
+	}
+	entry := h.audits.entries[0]
+	if entry.Action != coreaudit.ActionUserSelfRestore {
+		t.Fatalf("audit action = %v, want user.self_restore", entry.Action)
+	}
+	if got, ok := entry.Detail["account_restored"]; !ok || got != false {
+		t.Fatalf("audit account_restored = %#v (present=%v), want false", got, ok)
+	}
+	if got := entry.Detail["field"]; got != "deleted_at" {
+		t.Fatalf("audit field = %#v, want deleted_at", got)
+	}
+	if len(h.sessions.issued) != 0 {
+		t.Fatal("restore established a session")
+	}
+}
+
+// TestRestoreSelfFailsClosedWhenAuditWriteFails 钉住审计失败即整体失败：
+// Append 返回错误时必须把错误上抛，不得把已恢复的用户当成功返回。
+// 替身无回滚语义；真库事务回滚由 cmd/server e2e 与 pg 事务边界保证。
+func TestRestoreSelfFailsClosedWhenAuditWriteFails(t *testing.T) {
+	h := newHarness(t)
+	user := seedSelfUser(t, h, "audit-down@example.com", "right-pass", coreauth.RoleUser)
+	markSelfDeleted(h, user, testClock.T.Add(-time.Hour))
+	auditErr := errors.New("audit down")
+	h.audits.err = auditErr
+
+	if err := h.svc.RestoreSelf(t.Context(), user.Email, "right-pass"); !errors.Is(err, auditErr) {
+		t.Fatalf("RestoreSelf with audit failure = %v, want the audit error", err)
+	}
+	if len(h.audits.entries) != 0 {
+		t.Fatalf("audit entries = %d, want none on a failed append", len(h.audits.entries))
 	}
 	if len(h.sessions.issued) != 0 {
 		t.Fatal("restore established a session")

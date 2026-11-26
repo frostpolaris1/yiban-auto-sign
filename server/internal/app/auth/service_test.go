@@ -49,6 +49,9 @@ type fakeUsers struct {
 	// restoreAcctErr 非空时 RestoreSelfAccount 原样返回它且不记录调用，
 	// 用来模拟恢复撞唯一索引（注销后手机号被抢注）。
 	restoreAcctErr error
+	// restoreAcctFalse 为 true 时 RestoreSelfAccount 返回 (false, nil)，
+	// 模拟属主名下已有 live 账号：账号不复活，但用户恢复照常成功。
+	restoreAcctFalse bool
 }
 
 func newFakeUsers() *fakeUsers {
@@ -182,7 +185,7 @@ func (f *fakeUsers) RestoreSelfAccount(_ context.Context, ownerID string, _ time
 		return false, f.restoreAcctErr
 	}
 	f.restoredAccts = append(f.restoredAccts, ownerID)
-	return true, nil
+	return !f.restoreAcctFalse, nil
 }
 
 // GetDeleted 返回软删行；活行报 conflict，与 PostgreSQL 适配器同分类。
