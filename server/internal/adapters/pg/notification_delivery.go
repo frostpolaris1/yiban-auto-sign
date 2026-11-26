@@ -4,7 +4,7 @@ package pg
 //
 // 功能：管理员收件人（master 全量 + admin 绑定校 + 覆盖订阅）、
 // 账号手机号（文案掩码用）、账号属主的失败邮件开关、
-// 到期投递行（含通知正文与收件地址）。
+// 到期投递行的只读读取与认领（含通知正文与收件地址）。
 // 本文件不判文案、不判默认订阅、不投递邮件、不写审计。
 //
 // 归属：adapters 层。app/notify 只依赖端口，不见本类型。
@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
@@ -153,10 +154,10 @@ func (r *NotificationAudienceRepo) RecipientActive(ctx context.Context, userID s
 
 // ListDueForSend 返回 next_retry_at <= now 的 pending 行，连同通知正文与收件地址。
 //
-// 与 ListDue 同一条扫描口径，只多两列读模型：投递用例按落库文本发信，
-// 收件地址只进 SMTP 信封。收件人集合在 Dispatch 时定型；
-// 投递时不重查 users.mail_notify（开关只在 Dispatch 判定），
-// 但会经 RecipientActive 复核「仍 active 且未软删」，不活跃行落 skipped。
+// 只读诊断/入队检查面：本方法不改 claimed_until，**不得用于调度**。
+// 调度必须走 ClaimDueForSend，否则多实例会重复投递同一行。
+// 读面口径不变：与 ListDue 同一条扫描，多两列读模型（落库文本与收件地址）；
+// 收件人集合在 Dispatch 时定型，投递时经 RecipientActive 复核收件人状态。
 func (r *NotificationDeliveryRepo) ListDueForSend(ctx context.Context, now time.Time, limit int) ([]corenotify.DueDelivery, error) {
 	if now.IsZero() {
 		return nil, validationError("due timestamp is required")
@@ -181,20 +182,95 @@ func (r *NotificationDeliveryRepo) ListDueForSend(ctx context.Context, now time.
 
 	items := make([]corenotify.DueDelivery, 0, limit)
 	for rows.Next() {
-		var (
-			item corenotify.DueDelivery
-			next pgtype.Timestamptz
-		)
-		if err := rows.Scan(&item.ID, &item.NotificationID, &item.UserID, &item.Channel,
-			&item.Status, &item.Attempts, &item.LastErrorKind, &item.SkipReason, &next,
-			&item.CreatedAt, &item.UpdatedAt, &item.Title, &item.Body, &item.Email); err != nil {
-			return nil, mapError(err)
+		item, err := scanDueDelivery(rows)
+		if err != nil {
+			return nil, err
 		}
-		item.NextRetryAt = timePtr(next)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, mapError(err)
 	}
 	return items, nil
+}
+
+// ClaimDueForSend 认领一批到期投递行，并在同一语句里写入 claimed_until 租约。
+//
+// 认领是跨实例的调度互斥点：due 子查询用 FOR UPDATE SKIP LOCKED 只锁
+// 「pending 且到期且不在租约内」的行，被别的实例锁住的行直接跳过而不是
+// 排队等待；claimed 把租约写成 now+lease 后返回认领成功的行。
+// 多实例并发时各自拿到不相交的行；崩溃没记终态的行最迟一个租约后重新
+// 可见，故投递是至少一次，重复由账本唯一键与终态记账吸收。
+//
+// claimed_until <= now 即视为租约过期（与写入侧 now+lease 同一时钟口径，
+// 时间来自调用方注入的 Clock，库内不再取 now() 算租约）。
+func (r *NotificationDeliveryRepo) ClaimDueForSend(ctx context.Context,
+	now time.Time, limit int, lease time.Duration) ([]corenotify.DueDelivery, error) {
+	if now.IsZero() {
+		return nil, validationError("due timestamp is required")
+	}
+	if limit < 1 || limit > 200 {
+		return nil, validationError("limit must be between 1 and 200")
+	}
+	if lease <= 0 || lease > 24*time.Hour {
+		return nil, validationError("lease must be within (0, 24h]")
+	}
+	rows, err := r.db.q(ctx).Query(ctx, `
+		WITH due AS (
+			SELECT id FROM notification_deliveries
+			 WHERE status = 'pending' AND next_retry_at IS NOT NULL AND next_retry_at <= $1
+			   AND (claimed_until IS NULL OR claimed_until <= $1)
+			 ORDER BY next_retry_at, id
+			 LIMIT $2
+			 FOR UPDATE SKIP LOCKED
+		), claimed AS (
+			UPDATE notification_deliveries d
+			   SET claimed_until = $1::timestamptz + $3::interval,
+			       updated_at = now()
+			  FROM due
+			 WHERE d.id = due.id
+			 RETURNING d.id, d.notification_id, d.user_id, d.channel,
+			           d.status, d.attempts, d.last_error_kind, d.skip_reason, d.next_retry_at,
+			           d.created_at, d.updated_at
+		)
+		SELECT c.id::text, c.notification_id::text, c.user_id::text, c.channel, c.status, c.attempts,
+		       c.last_error_kind, c.skip_reason, c.next_retry_at, c.created_at, c.updated_at,
+		       n.title, n.body, u.email
+		  FROM claimed c
+		  JOIN notifications n ON n.id = c.notification_id
+		  JOIN users u ON u.id = c.user_id
+		 ORDER BY c.next_retry_at, c.id`, now, limit, lease.String())
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	items := make([]corenotify.DueDelivery, 0, limit)
+	for rows.Next() {
+		item, err := scanDueDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return items, nil
+}
+
+// scanDueDelivery 读一行到期投递（账本列 + 通知正文 + 收件地址）。
+// 列序是 ListDueForSend 与 ClaimDueForSend 的公共读模型。
+func scanDueDelivery(row pgx.Row) (corenotify.DueDelivery, error) {
+	var (
+		item corenotify.DueDelivery
+		next pgtype.Timestamptz
+	)
+	if err := row.Scan(&item.ID, &item.NotificationID, &item.UserID, &item.Channel,
+		&item.Status, &item.Attempts, &item.LastErrorKind, &item.SkipReason, &next,
+		&item.CreatedAt, &item.UpdatedAt, &item.Title, &item.Body, &item.Email); err != nil {
+		return corenotify.DueDelivery{}, mapError(err)
+	}
+	item.NextRetryAt = timePtr(next)
+	return item, nil
 }

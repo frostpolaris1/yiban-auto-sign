@@ -22,6 +22,9 @@ package notify
 // InsertWithPending：通知行的去重键保证同一事件只落一行站内信，
 // 两个渠道的账本行各自独立入同一事务路径。
 // 投递是至少一次：站内信与账本各一道唯一键吸收重复事件。
+// 多实例调度用 claimed_until 租约 + SKIP LOCKED 认领到期行：并发实例
+// 拿到不相交的行，崩溃而没记终态的行最迟一个租约（15 分钟）后重投；
+// 重复由账本唯一键与终态记账吸收。
 // 重试间隔 1m/5m/30m，共 3 次重试后落 failed；不可重试与 panic 立即 failed。
 // 退避窗口最长约 36 分钟；投递时**不复核** mail_notify/订阅开关，
 // 代价是关掉开关前已入队的投递仍会送达。
@@ -73,6 +76,11 @@ const (
 	DeliveryInterval = 30 * time.Second
 	// deliveryBatch 是单轮扫描的到期行上限。
 	deliveryBatch = 50
+	// deliveryLease 是认领到期行的租约。
+	// 算账：单轮 50 行 × 单封 10s 超时 = 最坏约 500s，15 分钟（900s）覆盖
+	// 一轮的全部发送；崩溃而没记终态的行最迟一个租约后重新可见，
+	// 故投递是至少一次（重复由账本唯一键与终态行吸收）。
+	deliveryLease = 15 * time.Minute
 	// deliveryTimeout 是一次 SMTP 投递的总预算，与 adapters/mail.DefaultTimeout 同值。
 	deliveryTimeout = 10 * time.Second
 	// ledgerTimeout 是投递后写账本的上限。
@@ -128,8 +136,9 @@ type NotificationWriter interface {
 // DeliveryLedger 读写投递账本。实现是 pg.NotificationDeliveryRepo。
 type DeliveryLedger interface {
 	InsertPending(ctx context.Context, in corenotify.DeliveryInsert) (corenotify.Delivery, error)
-	// ListDueForSend 返回 next_retry_at <= now 的 pending 行，带通知正文与收件地址。
-	ListDueForSend(ctx context.Context, now time.Time, limit int) ([]corenotify.DueDelivery, error)
+	// ClaimDueForSend 认领一批到期行（写 claimed_until 租约）并返回认领到的行，
+	// 带通知正文与收件地址。多实例并发时各实例拿到的行不相交。
+	ClaimDueForSend(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]corenotify.DueDelivery, error)
 	MarkSent(ctx context.Context, id string) error
 	MarkFailed(ctx context.Context, id, errorKind string, nextRetryAt *time.Time) error
 	MarkSkipped(ctx context.Context, id, reason string) error
@@ -408,10 +417,13 @@ func (d *Dispatcher) DispatchUserFailure(ctx context.Context, failure corenotify
 	return nil
 }
 
-// SendDue 跑一轮到期投递，返回第一条账本错误。
-// 单轮串行：单进程不变量，不需要租约或 SKIP LOCKED。
+// SendDue 认领并投递一轮到期行，返回第一条账本错误。
+//
+// 认领（ClaimDueForSend）是跨实例互斥点：claimed_until 租约 + SKIP LOCKED
+// 让多实例各自拿到不相交的行，弱锁随事务结束释放、租约兜住崩溃。
+// 不在租约内的行不会重复发送；崩溃丢失终态的行最迟一个租约后重投。
 func (d *Dispatcher) SendDue(ctx context.Context) error {
-	rows, err := d.ledger.ListDueForSend(ctx, d.clock.Now(), deliveryBatch)
+	rows, err := d.ledger.ClaimDueForSend(ctx, d.clock.Now(), deliveryBatch, deliveryLease)
 	if err != nil {
 		return err
 	}

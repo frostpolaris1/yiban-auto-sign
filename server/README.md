@@ -450,3 +450,10 @@ and `reason=unsupported_address`. The same reason covers a registered address
 with a non-ASCII character or with a control character below 0x20 or equal to
 0x7F. The request still answers 204; the refusal appears in the delivery log
 only.
+
+The retry loop claims due ledger rows instead of reading them: each claim
+writes a 15-minute `claimed_until` lease, and `FOR UPDATE SKIP LOCKED`
+splits due rows between instances so two of them never send the same row in
+one round. A row whose terminal ledger write is lost in a crash becomes
+visible again at most one lease later, so delivery stays at-least-once; the
+ledger's unique keys and terminal states absorb the duplicates.

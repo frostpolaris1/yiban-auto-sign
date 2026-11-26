@@ -424,7 +424,8 @@ func (r *NotificationDeliveryRepo) MarkSent(ctx context.Context, id string) erro
 	return r.markTerminal(ctx, id, `
 		UPDATE notification_deliveries
 		   SET status = 'sent', attempts = attempts + 1, last_error_kind = '',
-		       skip_reason = '', next_retry_at = NULL, updated_at = now()
+		       skip_reason = '', next_retry_at = NULL, claimed_until = NULL,
+		       updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`)
 }
 
@@ -442,6 +443,7 @@ func (r *NotificationDeliveryRepo) MarkFailed(ctx context.Context, id, errorKind
 		       last_error_kind = $2,
 		       skip_reason = '',
 		       next_retry_at = $3,
+		       claimed_until = NULL,
 		       updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`, id, errorKind, nextRetryAt)
 	return mapError(err)
@@ -454,7 +456,7 @@ func (r *NotificationDeliveryRepo) MarkSkipped(ctx context.Context, id, reason s
 	return r.markTerminal(ctx, id, `
 		UPDATE notification_deliveries
 		   SET status = 'skipped', skip_reason = $2, last_error_kind = '',
-		       next_retry_at = NULL, updated_at = now()
+		       next_retry_at = NULL, claimed_until = NULL, updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`, reason)
 }
 
