@@ -57,6 +57,9 @@ func (c *manualClock) Advance(d time.Duration) {
 // 认领写入 now+lease；三种终态记账删除该行的认领。
 // failClaim 让 ClaimDueForSend 返回错误（认领失败上抛的判据）。
 // claimLease 记录最近一次认领传入的租约（钉住 SendDue 的 15 分钟常量）。
+// releases 记录 ReleaseClaim 的调用顺序（发送前瞬时读错误释放租约的判据）。
+// failRelease 让 ReleaseClaim 返回错误（释放失败只 Warn 的判据）。
+// countSentErr 让 CountSentOnDay 返回错误（webhook 额度读失败释放租约的判据）。
 type fakeStore struct {
 	mu              sync.Mutex
 	notifications   map[string]*corenotify.Notification
@@ -65,10 +68,13 @@ type fakeStore struct {
 	deliveryOrder   []string
 	emails          map[string]string
 	claimed         map[string]time.Time
+	releases        []string
 	seq             int
 	clock           *manualClock
 	failEmailInsert bool
 	failClaim       error
+	failRelease     error
+	countSentErr    error
 	claimLease      time.Duration
 }
 
@@ -209,6 +215,26 @@ func (s *fakeStore) ClaimDueForSend(_ context.Context, now time.Time, limit int,
 	return out, nil
 }
 
+// ReleaseClaim 与 pg 同语义：只清 claimed_until，不改状态与尝试数。
+// 释放是幂等的；调用方仍要在释放失败时保留原始错误。
+func (s *fakeStore) ReleaseClaim(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releases = append(s.releases, id)
+	if s.failRelease != nil {
+		return s.failRelease
+	}
+	delete(s.claimed, id)
+	return nil
+}
+
+// releaseCount 返回 ReleaseClaim 的累计调用次数。
+func (s *fakeStore) releaseCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.releases)
+}
+
 // claimPresent 报告某行是否仍持有未过期的认领（判据只看存在性）。
 func (s *fakeStore) claimPresent(id string) bool {
 	s.mu.Lock()
@@ -281,6 +307,9 @@ func (s *fakeStore) CountSentOnDay(_ context.Context, channel corenotify.Channel
 	from, to time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.countSentErr != nil {
+		return 0, s.countSentErr
+	}
 	count := 0
 	for _, item := range s.deliveries {
 		if item.Channel != channel || item.Status != corenotify.DeliveryStatusSent {

@@ -221,7 +221,89 @@ func TestSendDueContinuesAfterRowDeliverError(t *testing.T) {
 	}
 }
 
+// 收件人复核读失败：必须在返回前释放认领，同一 now 的下一轮就能重新认领，
+// 而不是被 claimed_until 藏满 15 分钟。
+func TestSendDueReleasesClaimOnAudienceReadError(t *testing.T) {
+	store := newFakeStore()
+	clk := newManualClock()
+	audience := reviewAudience()
+	store.emails["master-1"] = "master-1@example.com"
+	sender := &fakeSender{}
+	dispatcher := newDelivery(t, store, audience, sender, clk, nil)
+	dispatchReview(t, dispatcher, store)
+	row := store.deliveryList()[0]
+
+	audience.activeErr = map[string]error{"master-1": errors.New("audience read failed")}
+	ctx := context.Background()
+	err := dispatcher.SendDue(ctx)
+	if err == nil || !strings.Contains(err.Error(), "audience read failed") {
+		t.Fatalf("SendDue error = %v, want 原样上抛读错误", err)
+	}
+	if got := store.releaseCount(); got != 1 {
+		t.Fatalf("读错误后释放 = %d 次, want 1（不释放会等满 15m 租约）", got)
+	}
+	if store.claimPresent(row.ID) {
+		t.Fatalf("读错误后仍持租约: 下一轮 30s 内认领不到")
+	}
+
+	// 同一 now 立即再跑：释放后的行必须能被重新认领。
+	err = dispatcher.SendDue(ctx)
+	if err == nil || !strings.Contains(err.Error(), "audience read failed") {
+		t.Fatalf("第二轮 SendDue error = %v, want 同一读错误", err)
+	}
+	if got := store.releaseCount(); got != 2 {
+		t.Fatalf("第二轮释放累计 = %d, want 2（行必须能重新认领）", got)
+	}
+	if got := sender.calls(); got != 0 {
+		t.Fatalf("读错误却发送: calls=%d, want 0", got)
+	}
+}
+
+// webhook 额度读失败：同样在返回前释放认领，下一轮即可重试。
+func TestSendDueReleasesClaimOnBudgetReadError(t *testing.T) {
+	store := newFakeStore()
+	clk := newManualClock()
+	audience := &fakeAudience{
+		subscribers: []corenotify.Subscriber{
+			overriding("master-1", "master-1@example.com", webhookOnly(corenotify.CategoryCredentialInvalid)),
+		},
+		phones: map[string]string{"acct-1": "13800000001"},
+	}
+	hook := &fakeWebhookSender{}
+	dispatcher := newWebhookDelivery(t, store, audience, hook, 0, 5, clk, nil)
+	ctx := context.Background()
+	if err := dispatcher.Dispatch(ctx, credentialEvent("acct-1")); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	row := store.deliveryList()[0]
+
+	store.countSentErr = errors.New("budget store unavailable")
+	err := dispatcher.SendDue(ctx)
+	if err == nil || !strings.Contains(err.Error(), "budget store unavailable") {
+		t.Fatalf("SendDue error = %v, want 原样上抛读错误", err)
+	}
+	if got := store.releaseCount(); got != 1 {
+		t.Fatalf("额度读错误后释放 = %d 次, want 1", got)
+	}
+	if store.claimPresent(row.ID) {
+		t.Fatalf("额度读错误后仍持租约: 下一轮 30s 内认领不到")
+	}
+
+	err = dispatcher.SendDue(ctx)
+	if err == nil || !strings.Contains(err.Error(), "budget store unavailable") {
+		t.Fatalf("第二轮 SendDue error = %v, want 同一读错误", err)
+	}
+	if got := store.releaseCount(); got != 2 {
+		t.Fatalf("第二轮释放累计 = %d, want 2（行必须能重新认领）", got)
+	}
+	if got := hook.calls(); got != 0 {
+		t.Fatalf("额度读失败却推送: calls=%d, want 0", got)
+	}
+}
+
 // 三种终态记账都清空认领。
+// fake 钉住 app 侧语义（终态记账后租约消失）；SQL 里 claimed_until=NULL 的
+// 清理由 pg e2e TestClaimDueClearedByTerminalMarks 钉住。
 func TestTerminalMarksClearClaim(t *testing.T) {
 	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
 	past := now.Add(-time.Minute)
