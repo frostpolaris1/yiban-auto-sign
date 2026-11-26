@@ -238,19 +238,17 @@ func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID stri
 const discoveryCandidateMax = 10
 
 // DiscoveryCandidatesForSchool 返回某校可用于窗口发现的活跃账号，
-// 按「最近验证优先」排序，最多 limit 行。
+// 最多 limit 行，按建号时间升序（更早建立的老号先探）。
 //
-// 排序口径（四条判据，缺一都会让坏号挡住好号）：
-// last_verified_at DESC NULLS LAST：最近验证成功的号先探；
-// accounts.created_at ASC：同等验证状态时更早建立的老号先探；
-// accounts.id ASC：前两个键都相等时顺序仍然确定；
-// NULLS LAST：从未验证的行一律排在已验证行之后——刚注册的坏号
-// created_at 最新、last_verified_at 为空，旧口径（created_at DESC）
-// 会把它排到首位，于是全校发现连续失败。本口径下它排最后。
+// 排序不读 credentials.last_verified_at：全仓没有该列的写入方，
+// Insert/Replace 都不写、构建 Credential 的调用方也不设，列恒为 NULL；
+// 拿它当主排序键只会制造「最近验证优先」的虚假保证。老号优先配合
+// 组合根最多 3 个候选轮换，已能挡住「新注册坏号排在首位污染全校」的旧缺陷；
+// 等真正有验证时间写入方时再加回该键，不要只改 ORDER BY。
 //
-// 凭据聚合走派生表而非直接 JOIN credentials：credentials 也有
-// created_at/updated_at 列，直接 JOIN 会让 accountColumns 里的裸列名
-// 变成 ambiguous。派生表按账号聚成一行，与「一账号一凭据」的库约束等价。
+// 只查 accounts、不 JOIN credentials：credentials 也有 created_at/
+// updated_at 列，直接 JOIN 会让 accountColumns 里的裸列名 ambiguous；
+// 本查询不需要凭据字段，跳过 JOIN 也避免全表聚合。
 //
 // 只取 active 且未软删的账号；停用、待审、已删行不参与发现。
 func (r *AccountRepo) DiscoveryCandidatesForSchool(ctx context.Context, schoolID string, limit int) ([]coreaccount.Record, error) {
@@ -259,14 +257,10 @@ func (r *AccountRepo) DiscoveryCandidatesForSchool(ctx context.Context, schoolID
 	}
 	query := `SELECT ` + accountColumns + `
 		FROM accounts
-		LEFT JOIN (
-			SELECT account_id, max(last_verified_at) AS last_verified_at
-			FROM credentials GROUP BY account_id
-		) c ON c.account_id = accounts.id
 		WHERE accounts.school_id = $1::uuid
 			AND accounts.status = 'active'
 			AND accounts.deleted_at IS NULL
-		ORDER BY c.last_verified_at DESC NULLS LAST, accounts.created_at ASC, accounts.id ASC
+		ORDER BY accounts.created_at ASC, accounts.id ASC
 		LIMIT $2`
 	rows, err := r.db.q(ctx).Query(ctx, query, schoolID, limit)
 	if err != nil {

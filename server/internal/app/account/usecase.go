@@ -235,7 +235,11 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, filter ListFi
 	return Page{Items: items, NextCursor: next}, nil
 }
 
-// FirstActiveForSchool 返回学校首个活跃账号，供平台窗口发现借用登录态。
+// FirstActiveForSchool 返回学校首个活跃账号。
+//
+// Deprecated: 窗口发现已改用 DiscoveryCandidatesForSchool 轮换多个候选；
+// 本方法只剩测试在用，新调用方不要接回来，否则单个坏号会重新污染全校窗口。
+//
 // 内部复用 List：master 作用域、active 状态、按存储稳定序取第一条。
 // 空列表返回 not_found；文案沿用发现调用方的既有日志口径。
 func (s *Service) FirstActiveForSchool(ctx context.Context, schoolID string) (Record, error) {

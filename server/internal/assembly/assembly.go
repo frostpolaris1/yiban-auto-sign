@@ -46,6 +46,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	turnstileadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/turnstile"
 	webhookadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/webhook"
+	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
@@ -1498,11 +1499,15 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 		// 失败只记标识与闭集分类：平台报错原文可能带手机号或凭据。
 		outcome, class := discoveryFailureClass(err)
 		attrs := []any{logfield.KeySchoolID, task.SchoolID, logfield.KeyAccountID, acct.ID}
+		level := slog.LevelWarn
 		if outcome != "" {
 			attrs = append(attrs, logfield.KeyOutcome, outcome)
+			// 与 worker/schedule 同口径：already_done 等正常结论走 Info，
+			// 否则全校已签到时每次发现会按候选数刷 Warn。
+			level = appcore.OutcomeLogLevel(contract.Outcome(outcome))
 		}
 		attrs = append(attrs, logfield.KeyError, class)
-		logger.Warn("window discovery: candidate failed", attrs...)
+		logger.Log(ctx, level, "window discovery: candidate failed", attrs...)
 	}
 	return contract.Window{}, lastErr
 }
