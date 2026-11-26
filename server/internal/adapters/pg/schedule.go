@@ -518,6 +518,9 @@ func (r *ScheduleRepo) Task(ctx context.Context, taskID string) (coreschedule.Ta
 // ClaimDue 认领到期任务：单条 UPDATE 批量领取。
 // 判据全在 SQL：pending、run_at 已到、day >= 当前业务日、账号活跃未删、
 // 任务启用、同账号当前无 running（I-7 的查询面，库层唯一索引仍是最终兜底）。
+// 同账号同业务日已有 success 的也不再认领（决策 2A：任一任务成功即视为
+// 今日已签到，兄弟任务不该再打一次平台）。只判 state='success'：
+// skipped/failed 不算成功，不拦兄弟任务。
 // **不按学校状态过滤**（D5 挡新不挡旧）：禁校前已铺的 pending 行照常执行。
 // day 过滤是跨日清理的兜底：日切前残留的旧行即使还在 pending 也不领（P1-6）。
 // FOR UPDATE SKIP LOCKED 让多 worker 不互等。
@@ -535,6 +538,9 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, day string, 
 		     AND NOT EXISTS (
 		       SELECT 1 FROM sign_tasks r
 		       WHERE r.account_id = s.account_id AND r.state = 'running')
+		     AND NOT EXISTS (
+		       SELECT 1 FROM sign_tasks d
+		       WHERE d.account_id = s.account_id AND d.day = s.day AND d.state = 'success')
 		     AND EXISTS (
 		       SELECT 1 FROM accounts a
 		       WHERE a.id = s.account_id AND a.status = 'active' AND a.deleted_at IS NULL)
