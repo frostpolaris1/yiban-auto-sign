@@ -456,7 +456,7 @@ jobs:
   # Python 旧栈与 Go/React 新栈的依赖与工具链不同，混在一个 job 里会让
   # 任一栈的安装失败拖垮另一栈。本 job 只调同一个本地入口
   # `bash scripts/verify-stacks.sh`；执行点只住该脚本一份，测试只做
-  # 逐字冻结断言（tests/test_dev_verify_entry.py::StacksCiWiringTest），
+  # 逐字冻结断言（tests/test_stacks_ci_wiring.py::StacksCiWiringTest），
   # 不复制命令语义。
   # 视觉回归不在本 job：基线目前只有 win32（见 ui/README.md），Linux 基线未生成。
   stacks:
@@ -503,7 +503,7 @@ jobs:
         run: npm ci
 
       # 真调入口脚本（不是内联命令）。命令原文只存在 scripts/verify-stacks.sh；
-      # tests/test_dev_verify_entry.py::StacksCiWiringTest 钉住这条执行行。
+      # tests/test_stacks_ci_wiring.py::StacksCiWiringTest 钉住这条执行行。
       - name: New-stack gates (scripts/verify-stacks.sh)
         env:
           YIBAN_TEST_DATABASE_URL: postgres://yiban:yiban@127.0.0.1:5432/yiban?sslmode=disable

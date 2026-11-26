@@ -640,7 +640,13 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 bash（Git Bash/WSL）"
   ]
  ],
- "tests/test_script_safety_guards.py": [
+ "tests/test_workflow_security_gate.py": [
+  [
+   "skipTest",
+   "bash 不在 PATH"
+  ]
+ ],
+ "tests/test_git_config_hygiene.py": [
   [
    "skipUnless",
    "bash 不可用：配置卫生门无法就地跑"
@@ -760,12 +766,6 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipTest",
    "需要 git 创建临时仓库；私钥门自证 DID NOT run"
-  ]
- ],
- "tests/test_ci_dependency_audit_gate.py": [
-  [
-   "skipTest",
-   "bash 不在 PATH"
   ]
  ],
  "tests/test_ui_signing_wiring.py": [

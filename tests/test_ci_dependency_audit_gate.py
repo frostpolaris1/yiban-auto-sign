@@ -1,61 +1,46 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""CI/工作流面的静态契约：依赖审计门在、action 全 SHA 固定、危险 workflow 不回潮。
+"""CI/工作流面的静态契约：依赖审计门在、排程唯一定义点、前端 e2e 接线。
 
 标签：J · 运维：部署/备份/发布
-覆盖：`.github/workflows/` 下三条不变量——
+覆盖：`.github/workflows/` 下两条不变量——
     ① **依赖审计门存在且审的是 requirements.lock**（M28 批次补缺）：本批手工抬
        urllib3/Werkzeug 关掉 4 个 CVE 之后，`docker/Dockerfile` 注释承诺的
        "CI pip-audit 审计的就是它"曾经是一句空话（工作流里根本没有 pip-audit）。
        `requirements.lock` 是手工维护的精确锁定、全程不含 `--hash=`，没有哈希锁
        可复核 ⇒ **pip-audit 是这里唯一能挡住依赖漂移的机制**，缺了它这条注释又
        变回空话。
-    ② **所有 `uses:` 都是完整 40 位 commit SHA**（既有纪律，新 job 不得破例：
-       可变 tag 被篡改即供应链入口）。
-    ③ **M42/M24 的可自动触发 workflow 不许回潮**：`signin.yml`（真签到，跑在
-       CI runner 上）与带 Gitee 私钥的 `mirror.yml` 在 develop 上已删除，不得被
-       再加回来；`nightly.yml` / `e2e-nightly.yml` 的排程**唯一定义点在默认分支
-       main**（`schedule` 只在默认分支生效，M24），本分支（develop）不得再持有
-       这两个文件，且 `ci.yml` 注释块必须写明该约定与 checkout 的 `ref: develop`。
+    ② **M24 排程唯一定义点**：`nightly.yml` / `e2e-nightly.yml` 的排程**唯一定义点
+       在默认分支 main**（`schedule` 只在默认分支生效），本分支（develop）不得再
+       持有这两个文件，且 `ci.yml` 注释块必须写明该约定与 checkout 的
+       `ref: develop`。（所有 `uses:` 固定 SHA 与退役 workflow 回潮两条检查已迁至
+       tests/test_workflow_security_gate.py。）
 
 对应实现：`.github/workflows/ci.yml`、`docker/Dockerfile`，以及默认分支上的
 `nightly.yml` / `e2e-nightly.yml`（不在本分支内）。
 关键断言：纯静态（读文本 + 轻量解析，**不调 GitHub API、不跑 yaml 解析器**——
 PyYAML 不在运行依赖里，门禁不得为一条注释引入一个新依赖）；活体反例：对同一
-检查器喂一份"可变 tag / 无 pip-audit / 带私钥"的合成内容必须判红。
+检查器喂一份"无 pip-audit / 排程回潮"的合成内容必须判红。
 依赖：纯文件读取，无网络、无 skip。
 """
 import io
 import os
 import re
-import shutil
-import subprocess
 import tempfile
 import unittest
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(BASE, ".github", "workflows")
-INTERP_GATE = os.path.join(BASE, "scripts", "workflow-run-interp-gate.sh")
-BASH = shutil.which("bash")
 DOCKERFILE = os.path.join(BASE, "docker", "Dockerfile")
 CI = os.path.join(WORKFLOWS, "ci.yml")
 E2E_DIR = os.path.join(BASE, "frontend", "e2e")
 PLAYWRIGHT_CONFIG = os.path.join(BASE, "frontend", "playwright.config.ts")
 
-#: `uses: owner/repo@ref`；ref 允许 40 位十六进制（SHA）或任意可变量（tag/分支）。
-_USES = re.compile(r"^\s*-?\s*uses:\s*([^\s#]+)\s*(#.*)?$", re.M)
-#: 40 位小写十六进制
-_SHA = re.compile(r"^[0-9a-f]{40}$")
-
 
 def _read(path):
     with io.open(path, encoding="utf-8") as f:
         return f.read()
-
-
-def _workflow_files():
-    return sorted(n for n in os.listdir(WORKFLOWS) if n.endswith((".yml", ".yaml")))
 
 
 def _e2e_specs():
@@ -102,16 +87,6 @@ def _job_block(text, name):
     return "\n".join(out)
 
 
-def _unpinned_refs(text):
-    """返回该文本里所有**不是 40 位 SHA** 的 `uses:` 引用。"""
-    bad = []
-    for match in _USES.finditer(text):
-        ref = match.group(1).split("@")[-1]
-        if not _SHA.match(ref):
-            bad.append(match.group(1))
-    return bad
-
-
 #: M24 修后（2026-10-05）：这两条排程的**唯一定义点在默认分支 main**。`schedule` 只在
 #: 默认分支生效，故本仓检出（develop）不得再持有它们——一旦回潮，同一个事实就有两个
 #: 定义点，两者必然漂移（本仓 B0.5 门禁的既有纪律）。
@@ -131,7 +106,8 @@ def _on_default_branch():
       ① CI 直接检出默认分支（push 到 main：`GITHUB_REF_NAME=main`）；
       ② PR 以默认分支为基（`GITHUB_BASE_REF=main`）——此时检出是 base(main)+head 的合并
          树，main 侧本就有的定义点在树里，按 develop 口径判会假红。
-    本仓门禁以 develop 检出为前提（同 RetiredWorkflowGuardTest）：本地与 develop 的 CI
+    本仓门禁以 develop 检出为前提（同 tests/test_workflow_security_gate.py 的
+    RetiredWorkflowGuardTest）：本地与 develop 的 CI
     都必须真判"不得持有"。
     """
     return os.environ.get("GITHUB_REF_NAME") == "main" or os.environ.get("GITHUB_BASE_REF") == "main"
@@ -188,56 +164,8 @@ class DependencyAuditGateTest(unittest.TestCase):
                       "Dockerfile 点名的 job 在 ci.yml 里不存在")
 
 
-class WorkflowShaPinTest(unittest.TestCase):
-    """② 所有 `uses:` 固定到完整 commit SHA（既有纪律，不得被新 job 破例）。"""
-
-    def test_every_workflow_pins_uses_to_a_full_sha(self):
-        bad = {}
-        for name in _workflow_files():
-            offenders = _unpinned_refs(_read(os.path.join(WORKFLOWS, name)))
-            if offenders:
-                bad[name] = offenders
-        self.assertEqual(bad, {},
-                         "workflow 的 uses 必须固定 40 位 commit SHA（可变 tag 即供应链入口）："
-                         f"{bad}")
-
-    def test_the_pin_checker_catches_a_mutable_tag(self):
-        """活体反例：同一检查器对合成内容必须判红——否则这条断言可能整个是废的。"""
-        offender = _unpinned_refs("jobs:\n  x:\n    steps:\n      - uses: acme/act@v1\n")
-        self.assertEqual(offender, ["acme/act@v1"],
-                         "检查器必须能抓住可变 tag")
-
-    def test_the_pin_checker_accepts_a_sha_pinned_ref(self):
-        sha = "3d3c42e5aac5ba805825da76410c181273ba90b1"
-        self.assertEqual(_unpinned_refs(f"      - uses: actions/checkout@{sha} # v7\n"), [])
-
-
-class RetiredWorkflowGuardTest(unittest.TestCase):
-    """③ M42：已退役的自动触发 workflow 不得回潮。"""
-
-    #: develop 上已删除（commit 7c7ccf7），回潮即重新引入两个审查发现
-    RETIRED = ("signin.yml", "mirror.yml")
-
-    def test_retired_signin_and_mirror_workflows_are_absent(self):
-        present = [n for n in self.RETIRED if os.path.isfile(os.path.join(WORKFLOWS, n))]
-        self.assertEqual(present, [],
-                         f"这些 workflow 已退役（见 commit 7c7ccf7）：{present}")
-        # main 分支上仍有它们（默认分支治理未完成）——本仓检出基于 develop，
-        # 这里钉的是"别在 develop 上加回来"，不是 main 的现状。
-
-    def test_no_workflow_references_a_gitee_private_key(self):
-        """`mirror.yml` 的危害面是带 Gitee 私钥；任何 workflow 都不得再引这个 secret。"""
-        offenders = []
-        for name in _workflow_files():
-            text = _read(os.path.join(WORKFLOWS, name))
-            if "GITEE_PRIVATE_KEY" in text or "gitee/frostpolaris" in text:
-                offenders.append(name)
-        self.assertEqual(offenders, [],
-                         "不得有 workflow 引用 Gitee 私钥/推送到 Gitee：%s" % offenders)
-
-
 class ScheduledWorkflowDefinitionPointTest(unittest.TestCase):
-    """③ M24：`schedule` 只在默认分支生效 ⇒ 两条排程的唯一定义点在 main。
+    """② M24：`schedule` 只在默认分支生效 ⇒ 两条排程的唯一定义点在 main。
 
     修法（2026-10-05）：`nightly.yml` / `e2e-nightly.yml` 落在默认分支 main，两文件的
     checkout 显式 `ref: develop`（排程跑活跃线）；develop 侧删除副本，避免同一事实两个
@@ -371,122 +299,6 @@ class FrontendE2eCiWiringTest(unittest.TestCase):
                 and ln.strip().startswith("run:")
                 and ("playwright test" in ln or "test:e2e" in ln)]
         self.assertEqual(runs, [], "被注释掉的执行行仍被判成调用点：本门的判据写反了")
-
-
-class WorkflowRunInterpGateTest(unittest.TestCase):
-    """P1-6：run 段内直插 ${{ github.base_ref }} / ${{ github.event.before }} 必须判红。
-
-    这两个表达式先由 GitHub 展开成裸文本再交给 shell，不经过 shell 转义；取值来自
-    base 分支名与 commit sha，属外部输入。正确形态是 job/step 的 env: 映射成
-    BASE_REF / BEFORE_SHA，shell 内以带引号的变量使用。门接在
-    server/scripts/verify.sh（stacks 车道），并登记进 tooling-gate 的 shellcheck 面。
-    """
-
-    def _run(self, workflows):
-        if not BASH:
-            self.skipTest("bash 不在 PATH")
-        tmp = tempfile.mkdtemp(prefix="wf-interp-")
-        try:
-            for name, text in workflows.items():
-                with io.open(os.path.join(tmp, name), "w", encoding="utf-8") as fh:
-                    fh.write(text)
-            return subprocess.run(
-                [BASH, INTERP_GATE, tmp], cwd=BASE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-
-    def test_real_workflows_are_clean(self):
-        if not BASH:
-            self.skipTest("bash 不在 PATH")
-        proc = subprocess.run([BASH, INTERP_GATE], cwd=BASE,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              timeout=120)
-        self.assertEqual(
-            proc.returncode, 0,
-            "run 段仍有直插：%s" % proc.stderr.decode("utf-8", "replace"))
-
-    def test_direct_interpolation_inside_run_block_is_red(self):
-        fixture = "\n".join([
-            "name: t",
-            "on: [pull_request]",
-            "jobs:",
-            "  a:",
-            "    runs-on: ubuntu-latest",
-            "    steps:",
-            "      - name: classify",
-            "        run: |",
-            '          if [ -n "${{ github.base_ref }}" ]; then',
-            '            git fetch origin "${{ github.base_ref }}"',
-            "          fi",
-        ])
-        proc = self._run({"a.yml": fixture})
-        self.assertEqual(proc.returncode, 1, "run 块内直插没有被判红")
-        err = proc.stderr.decode("utf-8", "replace")
-        self.assertIn("a.yml:", err, "命中没有按 file:line 报出来")
-        self.assertIn("github.base_ref", err)
-
-    def test_inline_run_value_is_red(self):
-        fixture = "\n".join([
-            "jobs:",
-            "  a:",
-            "    runs-on: ubuntu-latest",
-            "    steps:",
-            '      - run: git fetch origin "${{ github.event.before }}"',
-        ])
-        proc = self._run({"b.yml": fixture})
-        self.assertEqual(proc.returncode, 1, "run: 行内直插没有被判红")
-        self.assertIn(b"github.event.before", proc.stderr)
-
-    def test_env_indirection_is_green(self):
-        fixture = "\n".join([
-            "jobs:",
-            "  a:",
-            "    runs-on: ubuntu-latest",
-            "    env:",
-            "      BASE_REF: ${{ github.base_ref }}",
-            "      BEFORE_SHA: ${{ github.event.before }}",
-            "    steps:",
-            "      - name: classify",
-            "        run: |",
-            '          if [ -n "$BASE_REF" ]; then',
-            '            git fetch --no-tags --depth=1 origin "$BASE_REF"',
-            "          fi",
-            '          base="$BEFORE_SHA"',
-        ])
-        proc = self._run({"c.yml": fixture})
-        self.assertEqual(
-            proc.returncode, 0,
-            "env: 间接引用被误判：%s" % proc.stderr.decode("utf-8", "replace"))
-
-    def test_expression_outside_run_is_not_shell(self):
-        fixture = "\n".join([
-            "jobs:",
-            "  a:",
-            "    runs-on: ubuntu-latest",
-            '    if: github.base_ref != ""',
-            "    steps:",
-            "      - name: doc",
-            "        with:",
-            '          note: "${{ github.base_ref }}"',
-            "        run: echo ok",
-        ])
-        proc = self._run({"d.yml": fixture})
-        self.assertEqual(proc.returncode, 0, "if:/with: 不进 shell，不该判红")
-
-    def test_gate_is_wired_into_verify_and_tooling_gate(self):
-        with io.open(os.path.join(BASE, "server", "scripts", "verify.sh"),
-                     encoding="utf-8") as fh:
-            verify = fh.read()
-        calls = [ln for ln in verify.splitlines()
-                 if "workflow-run-interp-gate.sh" in ln
-                 and not ln.strip().startswith("#")]
-        self.assertTrue(calls, "server/scripts/verify.sh 没有真调用 workflow-run-interp-gate.sh")
-        with io.open(os.path.join(BASE, "scripts", "tooling-gate.sh"),
-                     encoding="utf-8") as fh:
-            tooling = fh.read()
-        self.assertIn("scripts/workflow-run-interp-gate.sh", tooling,
-                      "新脚本没登记进 tooling-gate 的 shellcheck 面")
 
 
 if __name__ == "__main__":

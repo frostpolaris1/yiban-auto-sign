@@ -210,7 +210,7 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push 都跑——
 **slow 行与长尾不再只靠本地全量覆盖**。
 
-**现量口径（2026-11-05 本树，增版本接线静态门后）**：全量 362 个文件 ＝ 快集 346 ＋ 慢集 14 ＋ 串行轨 2
+**现量口径（2026-11-05 本树，增版本接线静态门后；2026-11-27 PR1 拆门＋4 文件）**：全量 366 个文件 ＝ 快集 350 ＋ 慢集 14 ＋ 串行轨 2
 （串行轨含 `tests/test_verify_jobs.py`：该文件用真实墙钟等异步任务终态。2026-10-26 在快集里
 连续两次红后移入，理由见名册该行）
 （文件数口径：`tests/lane-roster.tsv` 的非注释行按车道计数；测量命令
