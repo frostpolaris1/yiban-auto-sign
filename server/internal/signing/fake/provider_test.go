@@ -481,6 +481,22 @@ func TestSeedOutcomeRejectsEmptyAttemptID(t *testing.T) {
 	}
 }
 
+// 词表外结果必须拒绝：写进 attemptFixed 后 Sign 会原样返回，
+// 而 checkSignRetry 对词表外结果直接跳过，typo 会变成静默空绿。
+func TestSeedOutcomeRejectsUnknownOutcome(t *testing.T) {
+	p := New("fake", contract.Capabilities{ImageRequired: true, DeviceBinding: true})
+	req := signRequest("attempt-unknown-outcome")
+	if p.SeedOutcome(&req, contract.Outcome("alreadyDone")) {
+		t.Fatal("词表外结果布种应返回 false")
+	}
+	if got, ok := p.ExpectedOutcome(req); ok {
+		t.Fatalf("词表外结果布种污染了期望：%q, %v", got, ok)
+	}
+	if len(p.attemptFixed) != 0 {
+		t.Fatalf("词表外结果布种写入了结果表：%d 项", len(p.attemptFixed))
+	}
+}
+
 // 布种不动脚本：脚本仍按序发牌，布种只固定单个 AttemptID。
 func TestSeedOutcomeKeepsScripts(t *testing.T) {
 	p := New("fake", contract.Capabilities{}).
