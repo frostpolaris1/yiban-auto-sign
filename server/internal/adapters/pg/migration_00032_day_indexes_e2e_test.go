@@ -48,6 +48,9 @@ func TestMigration00032AnalyzeBounded(t *testing.T) {
 // TestMigration00032DayIndexes 钉住迁移契约：幂等两次、索引有效、统计目标齐全。
 func TestMigration00032DayIndexes(t *testing.T) {
 	m := newMigrationDownEnv(t)
+	// 版本断言按嵌入版本走：后续迁移（如 00033）会抬高最新版本。
+	embedded, err := pg.EmbeddedVersion()
+	mustNotError(t, err, "embedded version")
 
 	first, err := pg.Migrate(m.ctx, m.dsn)
 	if err != nil {
@@ -57,12 +60,12 @@ func TestMigration00032DayIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second migrate (idempotency): %v", err)
 	}
-	if first != 32 || second != 32 {
-		t.Fatalf("migrate versions = (%d, %d), want (32, 32)", first, second)
+	if first != embedded || second != embedded {
+		t.Fatalf("migrate versions = (%d, %d), want (%d, %d)", first, second, embedded, embedded)
 	}
 	if got := m.scalarInt(
-		"SELECT max(version_id) FROM goose_db_version WHERE is_applied"); got != 32 {
-		t.Fatalf("goose applied version = %d, want 32", got)
+		"SELECT max(version_id) FROM goose_db_version WHERE is_applied"); got != embedded {
+		t.Fatalf("goose applied version = %d, want %d", got, embedded)
 	}
 
 	// 两索引存在且 indisvalid：INVALID 索引仍在 pg_class 里，
@@ -210,13 +213,15 @@ func TestMigration00032IndexRecovery(t *testing.T) {
 		t.Fatalf("healthy %s disappeared during simulation", dayIndexRunAt)
 	}
 
-	// goose 已记录 32：重跑只返回 32，不会执行 00032；IF NOT EXISTS 也不修 INVALID。
+	// goose 已记录最新版本：重跑不会再执行 00032；IF NOT EXISTS 也不修 INVALID。
+	embedded, err := pg.EmbeddedVersion()
+	mustNotError(t, err, "embedded version")
 	version, err := pg.Migrate(m.ctx, m.dsn)
 	if err != nil {
 		t.Fatalf("re-migrate: %v", err)
 	}
-	if version != 32 {
-		t.Fatalf("re-migrate version = %d, want 32", version)
+	if version != embedded {
+		t.Fatalf("re-migrate version = %d, want %d", version, embedded)
 	}
 	if indexIsValid(t, m, dayIndexState) {
 		t.Fatalf("re-running Migrate repaired %s; recovery would be unnecessary", dayIndexState)
