@@ -168,7 +168,10 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// （os.CreateTemp 原子写），实现由 cmd/cli 注入（P2-b，2026-11-11）。
 	// lease：env.get allow 增列 cmd/server/lease_double_e2e_test.go
 	// （租约双跑矩阵实验沿用 loop/p12/engine_pause 的 os.Getenv 读测试 DSN 口径）。
-	const want = "420e656c9987a9e6973564b1bea5e141cc9d96cfae4646749c060967daddb6fd"
+	// b7c：boundary.adapters allow 增列
+	// internal/adapters/pg/request_single_success_e2e_test.go
+	// （单日成功真库 e2e 需直接读 worker.Request 的 already_signed 结论）。
+	const want = "2278849d7d2c24ebb9c270a9a6d8b282f5d9e8866725f08b053678cc4dd6ef64"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}
