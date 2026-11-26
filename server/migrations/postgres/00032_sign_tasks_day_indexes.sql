@@ -47,6 +47,8 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sign_tasks_day_run_at_id
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sign_tasks_day_state
     ON sign_tasks (day, state);
 
+-- 与 server/internal/adapters/pg/migrate.go:101 的 lock_timeout=5s 保持同步；
+-- 改一处必须改另一处，否则 CIC 窗口后的行为会漂移。
 SET lock_timeout = '5s';
 
 ANALYZE sign_tasks;

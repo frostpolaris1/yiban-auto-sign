@@ -636,10 +636,10 @@ sudo systemctl restart yiban.service
 并发建索引不在事务里：连接中断或进程被杀会留下 `INVALID` 索引——
 索引定义还在，查询不选它。
 
-时机要分清：CIC 当场失败时 goose 通常还没写入版本行，重跑会再次执行
-`00032`；危险在重跑时 `IF NOT EXISTS` 看到同名 INVALID 直接跳过，随后
-版本落库为 32。版本一旦记录，`Migrate` 只会看到 32，不再执行本迁移，
-重跑也修不好这个索引。
+时机要分清：`00032` 是 NO TRANSACTION 分支，CIC 当场失败时 goose 不会
+写入版本行，重跑会再次执行 `00032`；危险在重跑时 `IF NOT EXISTS` 看到
+同名 INVALID 直接跳过，随后版本落库为 32。版本一旦记录，`Migrate` 只会
+看到 32，不再执行本迁移，重跑也修不好这个索引。
 
 迁移窗口（大表尤其）不要同时跑 `pg_dump`、长事务或另一份备份：旧快照
 会让 CIC 的等待阶段卡住。`update.sh` 的备份在停服前做完，迁移阶段不要
@@ -672,7 +672,9 @@ ANALYZE sign_tasks;
 
 **恢复 B（让 00032 重跑）**
 
-先只删 INVALID 那条，再把版本行退回到 31，然后跑 CLI 迁移（5 分钟预算）：
+先只删 INVALID 那条，再把版本行退回到 31，然后跑 CLI 迁移（5 分钟预算）。
+下面的 SQL 以 `idx_sign_tasks_day_state` 为示意，按实际 INVALID 的那条替换
+索引名：
 
 ```sql
 DROP INDEX CONCURRENTLY IF EXISTS idx_sign_tasks_day_state;
@@ -686,6 +688,7 @@ yiban-cli migrate
 
 `00032` 会重跑：`ALTER TABLE` 幂等，两索引 `IF NOT EXISTS` 只补缺的那条，
 `ANALYZE` 与两个 autovacuum 设置也会重新执行。若 CIC 又失败，重复本节。
+恢复 A 有 e2e 覆盖（模拟 INVALID 后手工重建）；恢复 B 仅文档核对，未做自动化。
 
 **升级大表时**
 
@@ -698,8 +701,9 @@ INVALID，失败日志会指向本节。
 - 若整体回滚该迁移：先删两条索引（无论健康与否），再
   `ALTER TABLE sign_tasks RESET (autovacuum_analyze_scale_factor, autovacuum_analyze_threshold);`。
 - 清理 INVALID 索引必须用 `DROP INDEX CONCURRENTLY`：普通 DROP 会长时间持写锁。
-- 迁移里两条 CIC 处在 `lock_timeout=0` 窗口；手工重建没有这个窗口，
-  旧快照长期存在时 CIC 可能再次失败，重试即可。
+- 迁移里两条 CIC 处在 `lock_timeout=0` 窗口：旧快照长期存在时 CIC 会
+  等待锁而不是失败，等待结束即完成。手工重建若直接在 psql 里跑，默认也是
+  `lock_timeout=0`，同样等待；会话若设了更短的超时，失败后按本节重试。
 
 ## 8. 部署判据
 
