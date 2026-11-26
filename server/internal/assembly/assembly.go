@@ -274,6 +274,11 @@ const (
 // 启动自愈只兜小步迁移；失败信息指向 deploy/README.md §7.1。
 const startupMigrateBudget = 10 * time.Minute
 
+// startupOpenBudget 只覆盖迁移之后的建池与 Ping，不与迁移共享预算。
+// 迁移合法地接近 10 分钟时，若复用同一 ctx，Ping 会以 deadline exceeded
+// 失败，表现为“迁移成功但服务起不来”；开池是短动作，单独 30s 即可。
+const startupOpenBudget = 30 * time.Second
+
 // newServerFromStack 用已装配好的 Stack 构造未启动的 server。
 //
 // closeOnShutdown 决定 HTTP 关闭是否释放连接池：
@@ -375,8 +380,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 				"(a cancelled CONCURRENTLY build may leave INVALID indexes; "+
 				"see deploy/README.md §7.1)", err)
 		}
+		cancel() // 迁移预算到此为止，建池不复用它。
+		openCtx, cancelOpen := context.WithTimeout(context.Background(), startupOpenBudget)
+		defer cancelOpen()
 		var err error
-		db, err = pg.Open(ctx, pg.Options{DSN: cfg.DatabaseURL})
+		db, err = pg.Open(openCtx, pg.Options{DSN: cfg.DatabaseURL})
 		if err != nil {
 			return nil, fmt.Errorf("assembly: open database: %w", err)
 		}

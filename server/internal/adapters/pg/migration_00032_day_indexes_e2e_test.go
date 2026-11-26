@@ -13,6 +13,7 @@ package pg_test
 // 测试载体。被测对象是 migrations/postgres/00032 与 pg 的按日查询面。
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -24,6 +25,25 @@ const (
 	dayIndexRunAt = "idx_sign_tasks_day_run_at_id"
 	dayIndexState = "idx_sign_tasks_day_state"
 )
+
+// TestMigration00032AnalyzeBounded 是静态守卫：ANALYZE 必须在恢复
+// statement_timeout 之后执行。该会话设置无法从迁移外部观察，但其失败
+// 后果（启动 ctx 被吃满、版本行不落、下次整段重跑）是真实的。
+func TestMigration00032AnalyzeBounded(t *testing.T) {
+	body, err := os.ReadFile("../../../migrations/postgres/00032_sign_tasks_day_indexes.sql")
+	if err != nil {
+		t.Fatalf("read 00032: %v", err)
+	}
+	sql := string(body)
+	reset := strings.Index(sql, "RESET statement_timeout;")
+	analyze := strings.Index(sql, "ANALYZE sign_tasks;")
+	if reset < 0 || analyze < 0 {
+		t.Fatalf("00032 missing RESET (%d) or ANALYZE (%d)", reset, analyze)
+	}
+	if reset > analyze {
+		t.Fatalf("00032 runs ANALYZE before restoring statement_timeout")
+	}
+}
 
 // TestMigration00032DayIndexes 钉住迁移契约：幂等两次、索引有效、统计目标齐全。
 func TestMigration00032DayIndexes(t *testing.T) {
