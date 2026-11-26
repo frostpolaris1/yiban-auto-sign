@@ -2,7 +2,7 @@ package settings_test
 
 // 全局执行暂停用例（批 3a）的单测。
 //
-// 判据：方向分闸（暂停 master/admin、恢复仅 master，user 一律 403）、
+// 判据：暂停与恢复都仅 master（admin 与 user 双向 403）、
 // 幂等重放仍恰一行审计、审计 detail 只含字段与目标状态、
 // 审计失败整体回滚、缺写端口失败关闭、读面缺行=false 故障上抛。
 
@@ -132,7 +132,7 @@ func newPauseActors() pauseActors {
 }
 
 // 暂停与恢复都仅 master：admin 双向 403、user 双向 403，被拒零写入零审计。
-func TestEnginePauseDirectionGates(t *testing.T) {
+func TestEnginePauseBothDirectionsMasterOnly(t *testing.T) {
 	actors := newPauseActors()
 
 	// admin：暂停与恢复都 403，零写入零审计。
