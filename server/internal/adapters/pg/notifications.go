@@ -387,7 +387,10 @@ func insertPending(ctx context.Context, q queryer, in corenotify.DeliveryInsert)
 }
 
 // ListDue 返回 next_retry_at <= now 的 pending 行，按到期时刻升序。
-// 单进程串行投递，故不需要 SKIP LOCKED。
+//
+// 只读诊断面，不写租约，**不得用于调度**：调度必须走
+// NotificationDeliveryRepo.ClaimDueForSend（claimed_until + SKIP LOCKED），
+// 否则多实例会重复投递同一行。
 func (r *NotificationDeliveryRepo) ListDue(ctx context.Context, now time.Time, limit int) ([]corenotify.Delivery, error) {
 	if now.IsZero() {
 		return nil, validationError("due timestamp is required")

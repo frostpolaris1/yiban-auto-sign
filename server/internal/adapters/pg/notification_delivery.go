@@ -200,7 +200,8 @@ func (r *NotificationDeliveryRepo) ListDueForSend(ctx context.Context, now time.
 // 「pending 且到期且不在租约内」的行，被别的实例锁住的行直接跳过而不是
 // 排队等待；claimed 把租约写成 now+lease 后返回认领成功的行。
 // 多实例并发时各自拿到不相交的行；崩溃没记终态的行最迟一个租约后重新
-// 可见，故投递是至少一次，重复由账本唯一键与终态记账吸收。
+// 可见，故投递是至少一次——发送成功后、MarkSent 前崩溃造成的重复外发
+// 由该语义接受，账本唯一键不覆盖它。
 //
 // claimed_until <= now 即视为租约过期（与写入侧 now+lease 同一时钟口径，
 // 时间来自调用方注入的 Clock，库内不再取 now() 算租约）。
@@ -257,6 +258,25 @@ func (r *NotificationDeliveryRepo) ClaimDueForSend(ctx context.Context,
 		return nil, mapError(err)
 	}
 	return items, nil
+}
+
+// ReleaseClaim 归还一条行的认领：只清 claimed_until，不改 status、
+// attempts 与 next_retry_at。
+//
+// 发送前的瞬时读错误（RecipientActive、CountSentOnDay）走这里，让行在
+// 下一轮 30 秒内即可重新认领，而不是等满租约。释放幂等：对未认领行或
+// 终态行是空操作（WHERE status = 'pending' 兜住并发终态记账）。
+func (r *NotificationDeliveryRepo) ReleaseClaim(ctx context.Context, id string) error {
+	if id == "" {
+		return validationError("delivery id is required")
+	}
+	if _, err := r.db.Exec(ctx, `
+		UPDATE notification_deliveries
+		   SET claimed_until = NULL, updated_at = now()
+		 WHERE id = $1::uuid AND status = 'pending'`, id); err != nil {
+		return err
+	}
+	return nil
 }
 
 // scanDueDelivery 读一行到期投递（账本列 + 通知正文 + 收件地址）。

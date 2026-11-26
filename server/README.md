@@ -453,7 +453,12 @@ only.
 
 The retry loop claims due ledger rows instead of reading them: each claim
 writes a 15-minute `claimed_until` lease, and `FOR UPDATE SKIP LOCKED`
-splits due rows between instances so two of them never send the same row in
-one round. A row whose terminal ledger write is lost in a crash becomes
-visible again at most one lease later, so delivery stays at-least-once; the
-ledger's unique keys and terminal states absorb the duplicates.
+splits due rows between instances, so two instances do not share a row while
+their clocks stay far below the lease. A row whose terminal ledger write is
+lost in a crash becomes visible again at most one lease later, so delivery
+stays at-least-once. If the send succeeded but the process died before
+`MarkSent`, the row is sent again: the unique keys stop one event from
+enqueuing twice, not the same row from being delivered twice. Two transient
+reads between claim and send (recipient status, webhook daily budget) release
+the claim on error, so the row is retried on the next round instead of
+waiting out the lease.
