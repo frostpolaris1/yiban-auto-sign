@@ -47,6 +47,11 @@ var errStreamingUnsupported = errors.New("events: streaming writer unsupported")
 // （/api/admin/events 的 '429' → TooManyRequestsError，sfr 挂账结清）。
 const MaxConcurrentStreams = 10
 
+// MaxConcurrentStreamsPerUser 是同一用户同时打开的 SSE 连接上限。
+// 取 1 是刻意的产品取舍：事件流是单页读面，一个账号同一时刻只需一条；
+// 多标签同时订阅会受限（第二个标签 429），换取单账号无法占满全局 10 条。
+const MaxConcurrentStreamsPerUser = 1
+
 // AdminEvents 实现 GET /api/admin/events（master/admin）。
 // master 订阅全部院校（schools 传 nil）；admin 按绑定校过滤，
 // 过滤在总线侧完成，不是客户端过滤。
@@ -64,14 +69,15 @@ func (h *Handler) AdminEvents(c *gin.Context, params oapi.AdminEventsParams) {
 		return
 	}
 	// 连接预算：先占槽再订阅。超限请求不碰总线，也不写流式响应头。
+	// 两层上限：同一用户只能开一条（防独占），全局最多 10 条（防压垮）。
 	// 429 与限流中间件同码（rate_limited），Retry-After 给客户端一个重试节奏。
-	if n := h.activeStreams.Add(1); n > MaxConcurrentStreams {
-		h.activeStreams.Add(-1)
+	// 槽位在成功占用后立刻 defer 归还，后面任何早退路径都不会泄漏。
+	if !h.streams.acquire(session.User.ID) {
 		c.Header("Retry-After", "5")
 		fail(c, errs.New(errs.CodeRateLimited, "too many concurrent event streams"))
 		return
 	}
-	defer h.activeStreams.Add(-1)
+	defer h.streams.release(session.User.ID)
 	var schools []string
 	if scope.Kind() == corescope.KindAdmin {
 		schools = scope.SchoolIDs()

@@ -276,6 +276,13 @@ The account quota counts every live account row (`deleted_at IS NULL`),
 including pending and rejected accounts. This is intentional: a phone
 already on file must never be re-created as a new account.
 
+The photo upload quota is per user and rolling: at most 50 new digests in
+24 hours, counted from `photos.created_at` and including soft-deleted rows.
+Re-uploading the same bytes returns the existing photo and consumes no new
+quota. The admin event stream accepts one concurrent connection per user and
+ten process-wide; a second connection for the same user, or the eleventh
+process-wide, answers 429.
+
 A user time preference is read at the next daily plan build (00:10, or the
 startup backfill). A value saved after that build applies to the following
 business day; the API does not rebuild today's rows on save.

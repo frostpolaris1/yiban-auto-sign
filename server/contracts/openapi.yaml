@@ -3744,7 +3744,9 @@ paths:
         multipart/form-data with a single `image` file part. The server
         decodes, rotates, strips metadata, re-encodes and stores the bytes.
         The raw upload limit is 10 MiB. Uploading the same bytes again
-        returns the same photo id and restores a deleted photo.
+        returns the same photo id and restores a deleted photo. New digests
+        are capped at 50 per user in a rolling 24-hour window; exceeding the
+        quota answers 429 and duplicate digests do not consume it.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -3765,6 +3767,7 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/me/photos/{id}:
     get:

@@ -29,7 +29,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -87,19 +87,69 @@ type Handler struct {
 	// 未接线时心跳一律断开（失败关闭）。
 	sessions   coreauth.SessionIssuer
 	cookieName string
-	// activeStreams 是当前在途的 SSE 连接数。
-	// 一个进程只装配一个 Handler，故它等价于全局并发上限。
-	activeStreams atomic.Int32
+	// streams 是当前在途的 SSE 连接预算：全局与每用户各一份计数。
+	streams *streamLimiter
+}
+
+// streamLimiter 同时约束全局与每用户的 SSE 并发条数。
+//
+// 全局上限防止所有账号一起压垮进程；每用户上限防止单个账号
+// 占满全局配额（一个账号开满 10 条，其他账号就再也订阅不到）。
+// 计数只在锁内变动，acquire 与 release 必须成对调用。
+type streamLimiter struct {
+	mu      sync.Mutex
+	global  int
+	perUser map[string]int
+}
+
+// newStreamLimiter 构造空的连接预算。
+func newStreamLimiter() *streamLimiter {
+	return &streamLimiter{perUser: make(map[string]int)}
+}
+
+// acquire 在全局与用户配额都尚有余量时占一个槽位。
+// 用户为空时只按全局上限放行（正常路径不会发生，防御性兜底）。
+func (l *streamLimiter) acquire(userID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.global >= MaxConcurrentStreams {
+		return false
+	}
+	if userID != "" && l.perUser[userID] >= MaxConcurrentStreamsPerUser {
+		return false
+	}
+	l.global++
+	if userID != "" {
+		l.perUser[userID]++
+	}
+	return true
+}
+
+// release 归还槽位；用户最后一个槽位释放后从 map 删除，
+// 避免长期运行下 perUser 随历史用户无界增长。
+func (l *streamLimiter) release(userID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.global--
+	if userID == "" {
+		return
+	}
+	if n := l.perUser[userID] - 1; n > 0 {
+		l.perUser[userID] = n
+	} else {
+		delete(l.perUser, userID)
+	}
 }
 
 // NewHandler 构造事件流处理器。timer 为 nil 时用真计时器。
 func NewHandler(broker Broker, diag Diagnostics, authz Authorizer, clk coreclock.Clock, timer Timer) *Handler {
 	return &Handler{
-		broker: broker,
-		diag:   diag,
-		authz:  authz,
-		clock:  clk,
-		timer:  timer,
+		broker:  broker,
+		diag:    diag,
+		authz:   authz,
+		clock:   clk,
+		timer:   timer,
+		streams: newStreamLimiter(),
 	}
 }
 
