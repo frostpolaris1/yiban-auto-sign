@@ -1,0 +1,47 @@
+name: Update rollback drill (privileged)
+
+# ---- 一键更新失败矩阵 R1..R10（U2）的完整轨道 ------------------------------
+# 判据与跑法：scripts/e2e/update-rollback-e2e.sh 的 host 驱动模式（自己起一次性
+# systemd 容器）与 docs/dev/deploy-e2e.md §8。
+#
+# 为什么是「手动 + 自托管 runner」：
+#   ① 矩阵需要 `docker --privileged` + host cgroup + 真 systemd PID1。GitHub
+#      托管 runner 上起不来，旧接法把这种环境错误打印成跳过并放绿（P1-6）。
+#   ② 自托管 runner 由运维自管，跑的是真内核与真 systemd；环境错误必须判红，
+#      脚本任何非 0 退出（含 rc=2 环境错误）都原样冒泡，不做任何降级。
+#
+# 使用前提：注册 runner 时打标签 yiban-privileged（与 runs-on 对齐），runner
+# 用户能访问 docker，且 /etc/yiban-e2e-container 守卫按脚本要求配置。发布前
+# 手跑项与环境要求见 docs/dev/deploy-e2e.md。
+on:
+  workflow_dispatch:
+
+# 最小权限：只读代码
+permissions:
+  contents: read
+
+# 演练会停/起 systemd 单元并独占 docker：同一时间只保留一份，且不取消在跑的
+# 那份（中途取消会在宿主留下半态容器）。
+concurrency:
+  group: update-rollback-privileged
+  cancel-in-progress: false
+
+jobs:
+  update-rollback-privileged:
+    # 自托管：真 systemd + docker --privileged（见文件头）
+    runs-on: [self-hosted, linux, x64, yiban-privileged]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Runner 前置检查（go / docker / 磁盘）
+        run: |
+          command -v go >/dev/null 2>&1 || { echo "go not found on the self-hosted runner"; exit 1; }
+          command -v docker >/dev/null 2>&1 || { echo "docker not found on the self-hosted runner"; exit 1; }
+          docker info >/dev/null 2>&1 || { echo "docker daemon not reachable on the self-hosted runner"; exit 1; }
+          df -h "$RUNNER_TEMP"
+
+      - name: 一键更新失败矩阵 R1..R10（一次性 systemd 容器）
+        run: |
+          bash scripts/e2e/update-rollback-e2e.sh host --log-dir "$RUNNER_TEMP/update-rollback-e2e"

@@ -282,10 +282,15 @@ check_backup() {
 #   数据库回滚成功/失败）与 install_update_e2e_test.go（.bak 回滚、签名）。
 #   演练正本＝scripts/e2e/update-rollback-e2e.sh（R1..R10 全矩阵，一次性
 #   systemd 容器真跑 update.sh；容器外跑 run 被守卫拒绝，exit 2 零写入）。
-#   2026-11-04（U2 审查）：失败矩阵已进 CI——deploy-gate.yml 的
-#   update-rollback-e2e job 先真跑 update.sh 干跑契约，再跑容器演练；
-#   环境起不来时显性 SKIP（写进 step summary，不算绿）。本项仍记 POINTER：
-#   CI 的 SKIP 不是绿，发布前要按下面那条命令手跑一遍。
+#   2026-11 CI 接线（P1-6 修正）：拆成两条轨，都必须 fail-closed——
+#     ① deploy-gate.yml 的 update-rollback-e2e job（required，托管 runner）
+#        只跑 update.sh 干跑契约（TestUpdateSh|TestInstallSh），不依赖 docker，
+#        任何非 0 判红；
+#     ② update-rollback-privileged.yml（手动 workflow_dispatch、自托管
+#        yiban-privileged runner）跑 R1..R10 全矩阵，脚本非 0 原样判红。
+#   旧写法在脚本 rc=2 时打印跳过并退出 0，等于把环境错误洗成绿（P1-6），已删：
+#   deploy-gate.yml 不得再出现演练调用，两条轨都不得有降级分支。本项仍记
+#   POINTER：全矩阵只在自托管 runner 上跑，发布前按下面那条命令手跑一遍。
 #   旧线 deploy_gate.sh --phase B：本项不再指向；脚本与旧线 CI 仍在
 #   （phase B 未删）。
 check_rollback() {
@@ -319,17 +324,39 @@ check_rollback() {
         REASON_rollback="rollback e2e guard missing in install_update_e2e_test.go"; return
     fi
     [ -f "$guard" ] || { REASON_rollback="missing $guard"; return; }
-    # CI 接线：job 必须在，且真的调用演练（不是只在注释里）。
+    # CI 接线（P1-6）：required job 只跑干跑契约；全矩阵必须在手动自托管
+    # workflow 里。两条轨都不许出现把非 0 洗成绿的降级分支。
     local wf="$ROOT/.github/workflows/deploy-gate.yml"
     [ -f "$wf" ] || { REASON_rollback="missing $wf"; return; }
     if ! grep -q '^  update-rollback-e2e:' "$wf"; then
         REASON_rollback="deploy-gate.yml has no update-rollback-e2e job"; return
     fi
-    if ! grep -q 'bash scripts/e2e/update-rollback-e2e.sh host' "$wf"; then
-        REASON_rollback="update-rollback-e2e job does not invoke the drill"; return
+    if ! grep -q "go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh'" "$wf"; then
+        REASON_rollback="update-rollback-e2e job does not run the update.sh dry-run contract"; return
+    fi
+    if grep -q 'update-rollback-e2e.sh host' "$wf"; then
+        REASON_rollback="deploy-gate.yml still runs the privileged matrix on a hosted runner"; return
+    fi
+    if grep -qE 'exit 0|::warning|continue-on-error' "$wf"; then
+        REASON_rollback="deploy-gate.yml turns a non-zero exit into a pass"; return
+    fi
+    local priv="$ROOT/.github/workflows/update-rollback-privileged.yml"
+    [ -f "$priv" ] || { REASON_rollback="missing $priv"; return; }
+    for marker in 'workflow_dispatch:' 'self-hosted' 'yiban-privileged' 'update-rollback-e2e.sh host'; do
+        if ! grep -q "$marker" "$priv"; then
+            REASON_rollback="privileged workflow is missing: $marker"; return
+        fi
+    done
+    if grep -qE 'exit 0|::warning|continue-on-error' "$priv"; then
+        REASON_rollback="privileged workflow degrades failures instead of failing"; return
+    fi
+    if grep -qE '^\s{2}(push|pull_request):' "$priv"; then
+        REASON_rollback="privileged workflow must stay manual (auto trigger found)"; return
     fi
     STATUS_rollback=POINTER; REASON_rollback="not executed here"
     echo "rollback: POINTER — mechanism exists (update.sh .bak swap-back; DB restore into a new database; no down migrations)."
+    echo "  CI: deploy-gate.yml#update-rollback-e2e runs the update.sh dry-run contract (required, hosted);"
+    echo "      update-rollback-privileged.yml runs R1..R10 on a manual self-hosted runner (no downgrade)."
     echo "  release operator runs:"
     echo "  bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>   # R1..R10 全矩阵真跑（docker --privileged；守卫只许容器内跑 run）"
     echo "  go test ./cmd/cli/ -run 'TestUpdateSh' -count=1"

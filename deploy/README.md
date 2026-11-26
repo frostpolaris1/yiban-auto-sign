@@ -417,10 +417,11 @@ sudo systemctl start yiban.service
 
 **自动验证**
 
-`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` job 先真跑 update.sh
-的干跑契约（`go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh'`），再跑
-一次性 systemd 容器里的失败矩阵 R1..R10。托管 runner 起不了特权容器时该 job
-显性打印 SKIP（不算绿），发布前仍按 `docs/dev/deploy-e2e.md` §8 手跑一遍。
+`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` job 是 required
+检查，真跑 update.sh 的干跑契约（`go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh'`），
+任何非 0 退出判红。需要特权 systemd 容器的完整失败矩阵 R1..R10 不在托管 runner
+上跑：它由 `.github/workflows/update-rollback-privileged.yml` 承载（手动触发、
+自托管 runner），同样 fail-closed。发布前仍按 `docs/dev/deploy-e2e.md` §8 手跑一遍。
 
 ## 5. 反向代理
 

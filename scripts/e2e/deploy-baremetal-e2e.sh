@@ -21,6 +21,7 @@
 #   B1 前置与干净环境      B2 OS 镜像（systemd + dbus + openssl + curl）
 #   B3 干净 PostgreSQL 18   B4 构建二进制（golang 容器，真编译）
 #   B4c 构建前端产物（node 容器，真 npm run build）
+#   B4b 签名发布物          B4d 更新器 UI 签名链（本地用例）
 #   B5 一次性 OS 容器       B6 install.sh 真装（含 --ui-dir）
 #   B6b 单元加固            B6c 照片目录白名单负向
 #   B6d 重装重启            B7 服务状态
@@ -304,14 +305,25 @@ done
 e2e_step "B4b" "签名发布物"
 SIGN_DIR="$BIN_OUT/signing"
 mkdir -p "$SIGN_DIR"
-bash "$REPO/scripts/release/make-manifest.sh" "e2e-B4b"     "$BIN_OUT/yiban-server" "$BIN_OUT/yiban-cli" > "$SIGN_DIR/manifest.json"
+bash "$REPO/scripts/release/make-ui-sums.sh" "$UI_OUT" "$SIGN_DIR/ui-SHA256SUMS"     >> "$E2E_STEP_LOG" 2>&1     || e2e_die "make-ui-sums.sh 生成 UI 清单失败"
+bash "$REPO/scripts/release/make-manifest.sh" "e2e-B4b"     "$BIN_OUT/yiban-server" "$BIN_OUT/yiban-cli" "$SIGN_DIR/ui-SHA256SUMS" > "$SIGN_DIR/manifest.json"
 openssl genpkey -algorithm ED25519 -out "$SIGN_DIR/key.pem" >>"$E2E_STEP_LOG" 2>&1     || e2e_die "openssl 生成 Ed25519 私钥失败"
 openssl pkey -in "$SIGN_DIR/key.pem" -pubout -out "$SIGN_DIR/pub.pem" >>"$E2E_STEP_LOG" 2>&1     || e2e_die "openssl 导出公钥失败"
 bash "$REPO/scripts/release/sign.sh" --key "$SIGN_DIR/key.pem"     --in "$SIGN_DIR/manifest.json" --out "$SIGN_DIR/manifest.sig" >>"$E2E_STEP_LOG" 2>&1     || e2e_die "sign.sh 签名失败"
 if ! bash "$REPO/scripts/release/verify.sh" --pubkey "$SIGN_DIR/pub.pem"     --manifest "$SIGN_DIR/manifest.json" --signature "$SIGN_DIR/manifest.sig" >>"$E2E_STEP_LOG" 2>&1; then
     e2e_die "正路径验签失败"
 fi
-e2e_ok "真二进制清单签发与验签通过"
+e2e_ok "真二进制 + UI 清单签发与验签通过"
+
+# ---- B4d 更新器 UI 签名链（本地用例，不需要 docker） -----------------------
+# 纯本地干跑真 update.sh：篡改 index、清单外文件、软链、互锁都必须先于
+# 停服/换件被拒；正常 UI 必须换新并留 ui.bak。单跑同一脚本即可迭代。
+e2e_step "B4d" "更新器 UI 签名链"
+if ! bash "$REPO/scripts/e2e/ui-signing-e2e.sh" \
+    --log-dir "$LOG_DIR/ui-signing-e2e" >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "ui-signing-e2e.sh 失败（篡改/清单外文件/正常 UI 用例）"
+fi
+e2e_ok "篡改 index.html、清单外文件、软链与互锁被拒；正常 UI 通过"
 
 # ---- B5 一次性 OS 容器 -----------------------------------------------------
 e2e_step "B5" "一次性 OS 容器（真 systemd）"

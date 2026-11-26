@@ -106,14 +106,20 @@ jobs:
       # Go/UI/文档改动不再为旧线套件付 6 分钟。分类口径唯一住 scripts/ci-scope.sh。
       - name: Classify change surface
         id: scope
+        # base_ref / event.before 是外部输入：先映射成 env，再在 shell 里以带引号
+        # 变量使用。表达式直接插进 run 会被 GitHub 展开成裸文本、不经 shell 转义，
+        # 因此构成注入面（git fetch 的参数可被分支名影响）。
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           # 取 base 分支尖端（浅拉一层即可），不要按 SHA 拉——GitHub 不允许按
           # 任意提交号 fetch，失败后会静默退 mixed（实测导致该门从未生效）。
-          if [ -n "${{ github.base_ref }}" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" >/dev/null 2>&1 || true
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1 || true
             base="FETCH_HEAD"
           else
-            base="${{ github.event.before }}"
+            base="$BEFORE_SHA"
             if [ -n "$base" ]; then git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true; fi
           fi
           if [ -z "$base" ] || ! git rev-parse --verify "$base" >/dev/null 2>&1; then
@@ -184,14 +190,20 @@ jobs:
 
       - name: Classify change surface
         id: scope
+        # base_ref / event.before 是外部输入：先映射成 env，再在 shell 里以带引号
+        # 变量使用。表达式直接插进 run 会被 GitHub 展开成裸文本、不经 shell 转义，
+        # 因此构成注入面（git fetch 的参数可被分支名影响）。
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           # 取 base 分支尖端（浅拉一层即可），不要按 SHA 拉——GitHub 不允许按
           # 任意提交号 fetch，失败后会静默退 mixed（实测导致该门从未生效）。
-          if [ -n "${{ github.base_ref }}" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" >/dev/null 2>&1 || true
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1 || true
             base="FETCH_HEAD"
           else
-            base="${{ github.event.before }}"
+            base="$BEFORE_SHA"
             if [ -n "$base" ]; then git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true; fi
           fi
           if [ -z "$base" ] || ! git rev-parse --verify "$base" >/dev/null 2>&1; then
@@ -298,14 +310,20 @@ jobs:
 
       - name: Classify change surface
         id: scope
+        # base_ref / event.before 是外部输入：先映射成 env，再在 shell 里以带引号
+        # 变量使用。表达式直接插进 run 会被 GitHub 展开成裸文本、不经 shell 转义，
+        # 因此构成注入面（git fetch 的参数可被分支名影响）。
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           # base：PR 事件取 base 分支尖端（浅拉一层），push 事件取 event.before。
           # 与 verify / slow-lane / ui-e2e 的 Classify 步骤同一写法。
-          if [ -n "${{ github.base_ref }}" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" >/dev/null 2>&1 || true
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1 || true
             base="FETCH_HEAD"
           else
-            base="${{ github.event.before }}"
+            base="$BEFORE_SHA"
             if [ -n "$base" ]; then git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true; fi
           fi
           # base 不可解析时分两种：
@@ -314,8 +332,8 @@ jobs:
           base_ok=0
           if git rev-parse --verify "$base" >/dev/null 2>&1; then
             base_ok=1
-          elif [ -n "${{ github.base_ref }}" ]; then
-            base="origin/${{ github.base_ref }}"
+          elif [ -n "$BASE_REF" ]; then
+            base="origin/$BASE_REF"
           else
             base=""
           fi
@@ -519,14 +537,20 @@ jobs:
 
       - name: Classify change surface
         id: scope
+        # base_ref / event.before 是外部输入：先映射成 env，再在 shell 里以带引号
+        # 变量使用。表达式直接插进 run 会被 GitHub 展开成裸文本、不经 shell 转义，
+        # 因此构成注入面（git fetch 的参数可被分支名影响）。
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           # base：PR 事件取 base 分支尖端（浅拉一层），push 事件取 event.before。
           # 与 verify / slow-lane 的 Classify 步骤同一写法；取不到 base 或 diff 失败即默认跑（fail-closed）。
-          if [ -n "${{ github.base_ref }}" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" >/dev/null 2>&1 || true
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1 || true
             base="FETCH_HEAD"
           else
-            base="${{ github.event.before }}"
+            base="$BEFORE_SHA"
             if [ -n "$base" ]; then git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true; fi
           fi
           # 取不到 base → 默认跑（fail-closed）。

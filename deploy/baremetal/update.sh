@@ -24,7 +24,7 @@
 #
 # 用法：
 #   sudo bash deploy/baremetal/update.sh --server-bin NEW [--cli-bin NEW] \
-#       [--ui-dir NEW_DIST] \
+#       [--ui-dir NEW_DIST] [--ui-checksums FILE] \
 #       --manifest M --signature S --pubkey K [--expect-version V] \
 #       [--no-restore-db] [--backup-dir DIR] [--keep-backups N] \
 #       [--backup-passphrase-file FILE]
@@ -33,6 +33,11 @@
 #   只给 --server-bin 时迁移用已安装的 yiban-cli；--ui-dir 给新的前端构建
 #   产物，旧目录留 .bak 供人工回退。--expect-version 要求清单版本严格相等
 #   （防已签名旧包重放）。
+#   UI 入清单（P1-6）：签名清单里有 ui-SHA256SUMS 条目时，--ui-dir 必给、
+#   且逐文件 sha256 与「清单外文件」都在验签后、停服前校验；--ui-checksums
+#   缺省取 --manifest 同目录的 ui-SHA256SUMS。清单无 ui 条目却给 --ui-dir
+#   是显性失败（exit 1）：签名覆盖了什么就必须按什么装。未签名升级路径
+#   （--allow-unsigned）保持旧行为：--ui-dir 仍可用，但不校验 UI 清单。
 #   旧布局保护：仅存 /etc/yiban/.env（旧名）而无 server.env 时 exit 2 并打印
 #   迁移步骤——生成新 server.env 会产生新密钥，旧凭据密文将不可解密。
 #
@@ -120,6 +125,9 @@
 #   三件必须同时给。给了 → 在任何文件替换之前先钉公钥指纹、再跑
 #   scripts/release/verify.sh 验签，并把清单里的 sha256 逐一与本地新件对账
 #   （server 必须，cli 给了也算）；任一失败即非 0 退出，不碰旧件。
+#   清单若含 ui-SHA256SUMS（构建链用 make-ui-sums.sh 生成、与被签名的
+#   manifest 同居发布 staging），则必须同时给 --ui-dir：先快照 UI 树，再
+#   用清单逐文件 sha256sum -c，并拒绝清单外的多余文件、软链与路径逃逸。
 #   未给三件 → 默认拒绝（exit 2，发生在停服务之前）。
 #   逃生口：显式给 --allow-unsigned 才放行未签名升级，放行时打印一行
 #   显性 WARN（跳过 ≠ 绿）。--allow-unsigned 与三件互斥，同给即 exit 2。
@@ -162,6 +170,7 @@ dest() { printf '%s%s' "$ROOT" "$1"; }
 SERVER_BIN=""
 CLI_BIN=""
 UI_DIR=""
+UI_CHECKSUMS=""
 MANIFEST=""
 SIGNATURE=""
 PUBKEY=""
@@ -185,6 +194,7 @@ while [ $# -gt 0 ]; do
         --server-bin) need_value "$@"; SERVER_BIN="$2"; shift 2 ;;
         --cli-bin) need_value "$@"; CLI_BIN="$2"; shift 2 ;;
         --ui-dir) need_value "$@"; UI_DIR="$2"; shift 2 ;;
+        --ui-checksums) need_value "$@"; UI_CHECKSUMS="$2"; shift 2 ;;
         --manifest) need_value "$@"; MANIFEST="$2"; shift 2 ;;
         --signature) need_value "$@"; SIGNATURE="$2"; shift 2 ;;
         --pubkey) need_value "$@"; PUBKEY="$2"; shift 2 ;;
@@ -1575,6 +1585,14 @@ if [ -n "$UI_DIR" ]; then
     [ -f "$UI_DIR/index.html" ] \
         || { echo "update: --ui-dir has no index.html: $UI_DIR" >&2; exit 2; }
 fi
+# UI 清单是签名发布物的一部分：只在验签路径里有意义。
+if [ -n "$UI_CHECKSUMS" ]; then
+    [ -n "$MANIFEST" ] || { echo "update: --ui-checksums requires --manifest/--signature/--pubkey (the ui list is part of the signed release)" >&2; exit 2; }
+    [ -n "$UI_DIR" ] || { echo "update: --ui-checksums requires --ui-dir (the list describes the ui tree being installed)" >&2; exit 2; }
+elif [ -n "$MANIFEST" ] && [ -n "$UI_DIR" ]; then
+    # 发布 staging 约定：ui-SHA256SUMS 与 manifest 同目录（与 ui-dist 平级）。
+    UI_CHECKSUMS="$(dirname "$MANIFEST")/ui-SHA256SUMS"
+fi
 ENV_EXAMPLE="${ENV_EXAMPLE:-$REPO_ROOT/deploy/baremetal/server.env.example}"
 [ -f "$ENV_EXAMPLE" ] || { echo "update: server.env template missing: $ENV_EXAMPLE" >&2; exit 2; }
 
@@ -1652,6 +1670,30 @@ if [ -n "$MANIFEST" ]; then
         || ! install -m 0600 "$PUBKEY" "$SNAP_PUB"; then
         echo "update: signing verification FAILED (step: signing) — cannot stage release inputs" >&2
         exit 1
+    fi
+fi
+# UI 树与其清单一起快照（与二进制同理）：校验开始后原路径可被改写（TOCTOU），
+# 之后只读快照，激活也从快照换名。
+SNAP_UI=""
+SNAP_UI_SUMS=""
+if [ -n "$UI_DIR" ]; then
+    SNAP_UI="$STAGE/ui"
+    mkdir -p "$SNAP_UI" || {
+        echo "update: signing verification FAILED (step: ui) — cannot create ui snapshot directory" >&2
+        exit 1
+    }
+    if ! cp -R "$UI_DIR/." "$SNAP_UI/"; then
+        echo "update: signing verification FAILED (step: ui) — cannot snapshot ui dir: $UI_DIR" >&2
+        exit 1
+    fi
+    # 清单文件可能缺席（例如清单里没有 ui 条目）：不在这里判死，
+    # 交给验签块按「有/无 ui 条目」给准确结论。
+    if [ -n "$MANIFEST" ] && [ -f "$UI_CHECKSUMS" ]; then
+        SNAP_UI_SUMS="$STAGE/ui-SHA256SUMS"
+        if ! install -m 0600 "$UI_CHECKSUMS" "$SNAP_UI_SUMS"; then
+            echo "update: signing verification FAILED (step: ui) — cannot snapshot ui checksums: $UI_CHECKSUMS" >&2
+            exit 1
+        fi
     fi
 fi
 
@@ -1763,6 +1805,83 @@ if [ -n "$MANIFEST" ]; then
     fi
     if [ -n "$SNAP_CLI" ] && ! local_check "yiban-cli" "$SNAP_CLI"; then
         exit 1
+    fi
+
+    # UI 入清单（P1-6 ③）：清单里的 ui-SHA256SUMS 条目锁住 UI 清单本身，
+    # 再由清单逐文件对账 UI 树。互锁：清单有条目就必须给 --ui-dir，反之亦然。
+    ui_fail() {
+        echo "update: signing verification FAILED (step: ui) — $1" >&2
+    }
+    ui_in_manifest=""
+    if grep -q '"name":"ui-SHA256SUMS"' "$SNAP_MANIFEST" 2>/dev/null; then
+        ui_in_manifest=1
+    fi
+    if [ -n "$ui_in_manifest" ] && [ -z "$SNAP_UI" ]; then
+        ui_fail "manifest lists ui-SHA256SUMS but --ui-dir was not given"
+        exit 1
+    fi
+    if [ -z "$ui_in_manifest" ] && [ -n "$SNAP_UI" ]; then
+        ui_fail "manifest has no ui-SHA256SUMS entry but --ui-dir was given"
+        exit 1
+    fi
+    if [ -n "$SNAP_UI" ]; then
+        # 缺件优先于对账：错在「找不到清单」时要点名操作员给的路径。
+        [ -f "$SNAP_UI_SUMS" ] || { ui_fail "ui checksum list missing: $UI_CHECKSUMS"; exit 1; }
+        if ! local_check "ui-SHA256SUMS" "$SNAP_UI_SUMS"; then
+            exit 1
+        fi
+        UI_EXPECT="$STAGE/ui-expected.txt"
+        UI_ACTUAL="$STAGE/ui-actual.txt"
+        : > "$UI_EXPECT"
+        ui_total=0
+        while IFS= read -r uline || [ -n "$uline" ]; do
+            [ -n "$uline" ] || continue
+            case "$uline" in
+                *"  "*) ;;
+                *) ui_fail "malformed ui checksum line: $uline"; exit 1 ;;
+            esac
+            uh="${uline%%  *}"
+            urel="${uline#*  }"
+            printf '%s' "$uh" | grep -Eq '^[0-9a-f]{64}$' \
+                || { ui_fail "bad sha256 in ui checksum line: $uline"; exit 1; }
+            case "$urel" in
+                ''|/*|..|../*|*/..|*/../*) ui_fail "ui checksum path escapes the ui dir: $urel"; exit 1 ;;
+            esac
+            printf '%s\n' "$urel" >> "$UI_EXPECT"
+            ui_total=$((ui_total + 1))
+        done < "$SNAP_UI_SUMS"
+        [ "$ui_total" -gt 0 ] || { ui_fail "ui checksum list is empty: $SNAP_UI_SUMS"; exit 1; }
+        grep -qxF 'index.html' "$UI_EXPECT" \
+            || { ui_fail "ui checksum list does not cover index.html"; exit 1; }
+        : > "$UI_ACTUAL"
+        while IFS= read -r apath; do
+            arel="${apath#"$SNAP_UI"/}"
+            if [ -L "$apath" ]; then
+                ui_fail "refusing symlink in ui dir: $arel"
+                exit 1
+            fi
+            if [ -d "$apath" ]; then
+                continue
+            fi
+            if [ ! -f "$apath" ]; then
+                ui_fail "refusing non-regular file in ui dir: $arel"
+                exit 1
+            fi
+            printf '%s\n' "$arel" >> "$UI_ACTUAL"
+        done < <(find "$SNAP_UI" -mindepth 1 -print)
+        LC_ALL=C sort -o "$UI_EXPECT" "$UI_EXPECT"
+        LC_ALL=C sort -o "$UI_ACTUAL" "$UI_ACTUAL"
+        ui_dup="$(uniq -d "$UI_EXPECT" | head -n1 || true)"
+        [ -z "$ui_dup" ] || { ui_fail "duplicate entry in ui checksum list: $ui_dup"; exit 1; }
+        ui_missing="$(comm -23 "$UI_EXPECT" "$UI_ACTUAL" | head -n1 || true)"
+        [ -z "$ui_missing" ] || { ui_fail "ui checksum list names a missing file: $ui_missing"; exit 1; }
+        ui_extra="$(comm -13 "$UI_EXPECT" "$UI_ACTUAL" | head -n1 || true)"
+        [ -z "$ui_extra" ] || { ui_fail "ui dir has a file outside the signed list: $ui_extra"; exit 1; }
+        if ! ( cd "$SNAP_UI" && sha256sum -c --quiet -- "$SNAP_UI_SUMS" ); then
+            ui_fail "ui file contents do not match the signed list"
+            exit 1
+        fi
+        echo "update: ui verification ok ($ui_total files)"
     fi
     echo "update: signing verification ok"
 else
@@ -1892,7 +2011,8 @@ if [ -n "$UI_DIR" ]; then
     if [ -z "$ROOT" ]; then
         chown root:root "$UI_STAGE" || { rm -rf -- "$UI_STAGE"; exit 1; }
     fi
-    if ! cp -R "$UI_DIR/." "$UI_STAGE/"; then
+    # 从快照复制（不回读操作员给的路径）：验签/清单校验只认快照。
+    if ! cp -R "$SNAP_UI/." "$UI_STAGE/"; then
         rm -rf -- "$UI_STAGE"
         echo "update: cannot stage new ui; installed files unchanged" >&2
         exit 1
