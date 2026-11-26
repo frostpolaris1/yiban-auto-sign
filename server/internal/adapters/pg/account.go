@@ -473,6 +473,15 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
 		return coreaccount.Record{}, mapError(err)
 	}
+	// 与 SoftDeleteSelf 的 UPDATE users 串行：只查 EXISTS 是语句快照，
+	// 挡不住「属主正在被软删」的并发提交。先对属主行取共享锁，
+	// 软删事务要么先提交（随后 EXISTS 失败），要么排在恢复之后。
+	if _, err := r.db.q(ctx).Exec(ctx, `
+		SELECT id FROM users
+		 WHERE id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)
+		   FOR SHARE`, id); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
 	scopeSQL, scopeArgs, err := scopePredicate(s, 3, "")
 	if err != nil {
 		return coreaccount.Record{}, err
@@ -526,6 +535,13 @@ func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by
 		return coreaccount.Record{}, validationError("limit must not be negative")
 	}
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	// 与 Restore 同理：先锁属主行，避免恢复与软删并发提交出双活号。
+	if _, err := r.db.q(ctx).Exec(ctx, `
+		SELECT id FROM users
+		 WHERE id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)
+		   FOR SHARE`, id); err != nil {
 		return coreaccount.Record{}, mapError(err)
 	}
 	scopeSQL, scopeArgs, err := scopePredicate(s, 5, "")
