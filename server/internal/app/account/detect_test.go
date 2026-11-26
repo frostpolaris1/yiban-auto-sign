@@ -24,11 +24,17 @@ type fakeIdentity struct {
 	err     error
 	calls   int
 	lastReq contract.VerifyRequest
+	// onVerify 在返回前跑一次，用来在核验进行中制造并发写入
+	// （例如凭据被替换）。nil 即无钩子。
+	onVerify func()
 }
 
 func (f *fakeIdentity) Verify(_ context.Context, req contract.VerifyRequest) (contract.Profile, error) {
 	f.calls++
 	f.lastReq = req
+	if f.onVerify != nil {
+		f.onVerify()
+	}
 	return f.profile, f.err
 }
 

@@ -49,13 +49,23 @@ func (f autoSchools) Get(context.Context, string) (coreschool.Record, error) {
 
 type autoRepo struct {
 	Repo
-	record      Record
-	cred        Credential
-	statusCalls int
-	createCalls int
+	record             Record
+	cred               Credential
+	statusCalls        int
+	versionStatusCalls int
+	createCalls        int
+	getCalls           int
+	// flipAfter > 0 时，第 flipAfter 次之后的 Get 返回 flipRecord：
+	// 模拟两次读之间人工已把行改成终态。
+	flipAfter  int
+	flipRecord Record
 }
 
 func (r *autoRepo) Get(context.Context, corescope.Scope, string) (Record, error) {
+	r.getCalls++
+	if r.flipAfter > 0 && r.getCalls > r.flipAfter {
+		return r.flipRecord, nil
+	}
 	return r.record, nil
 }
 
@@ -68,6 +78,17 @@ func (r *autoRepo) SetStatus(_ context.Context, _ corescope.Scope, _ string, fro
 		return Record{}, errs.New(errs.CodeConflict, "status changed")
 	}
 	r.statusCalls++
+	r.record.Status = to
+	return r.record, nil
+}
+
+// SetStatusIfCredentialVersion 是自动审批激活用的版本 CAS 替身：
+// 状态与凭据版本都匹配才迁移，否则冲突。旧实现在核验后只做状态 CAS。
+func (r *autoRepo) SetStatusIfCredentialVersion(_ context.Context, _ corescope.Scope, _ string, from, to Status, expectedVersion int32, _ time.Time, _ string) (Record, error) {
+	r.versionStatusCalls++
+	if r.record.Status != from || r.cred.Version != expectedVersion {
+		return Record{}, errs.New(errs.CodeConflict, "status or credential version changed")
+	}
 	r.record.Status = to
 	return r.record, nil
 }
@@ -224,6 +245,89 @@ func TestRunAutoApprovePlatformFailureAuditsResult(t *testing.T) {
 				t.Fatalf("result = %v, want platform_error", entry.Detail["result"])
 			}
 		}
+	}
+}
+
+// TestRunAutoApproveCredentialVersionChangedStaysPending 钉住读凭据→核验→激活
+// 之间的凭据版本 CAS：核验期间凭据被替换（version+1）时不得激活账号。
+// 账号必须留 pending，只写 account.auto_check_failed（result=credential_changed），
+// 不写 account.auto_approve。旧实现激活时只做状态 CAS，本用例红。
+func TestRunAutoApproveCredentialVersionChangedStaysPending(t *testing.T) {
+	repo := &autoRepo{record: Record{ID: "acc-v1", SchoolID: "school-1", Status: StatusPending}}
+	identity := &fakeIdentity{profile: contract.Profile{UniversityID: "U1"}}
+	svc, audits := newAutoService(t, repo,
+		autoSchools{record: coreschool.Record{ID: "school-1", Status: coreschool.StatusActive, PlatformUniversityID: "U1"}},
+		&autoSettings{enabled: true}, identity)
+	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-v1")
+	if repo.cred.Version != 1 {
+		t.Fatalf("sealed credential version = %d, want 1", repo.cred.Version)
+	}
+	// 平台核验期间凭据被替换：用例读到的版本已经过期。
+	identity.onVerify = func() { repo.cred.Version++ }
+
+	svc.runAutoApprove(context.Background(), "acc-v1", "school-1", false)
+
+	if repo.record.Status != StatusPending {
+		t.Fatalf("status = %q, want pending（版本已变不得激活）", repo.record.Status)
+	}
+	if repo.statusCalls != 0 {
+		t.Fatalf("status-only CAS calls = %d, want 0", repo.statusCalls)
+	}
+	if repo.versionStatusCalls != 1 {
+		t.Fatalf("version CAS attempts = %d, want 1", repo.versionStatusCalls)
+	}
+	if count := auditActionCount(audits, "account.auto_approve"); count != 0 {
+		t.Fatalf("auto approve audit rows = %d, want 0", count)
+	}
+	if count := auditActionCount(audits, "account.auto_check_failed"); count != 1 {
+		t.Fatalf("auto check failed rows = %d, want 1", count)
+	}
+	for _, entry := range audits.entries {
+		if string(entry.Action) == "account.auto_check_failed" {
+			if len(entry.Detail) != 1 || entry.Detail["result"] != "credential_changed" {
+				t.Fatalf("detail = %#v, want only result=credential_changed", entry.Detail)
+			}
+		}
+	}
+}
+
+// TestRunAutoApproveVersionConflictAfterManualReviewStaysSilent 是否定手臂：
+// 版本冲突的判定读到 pending，但 recordAutoCheckFailed 内部的复核发现人工
+// 已通过——两类审计都不写，也不得补发待审通知（N1：通知只跟审计走）。
+// flipAfter=2 让第 3 次 Get（复核那次）返回 active：第 1 次是
+// SigningCredential，第 2 次是冲突判定。
+func TestRunAutoApproveVersionConflictAfterManualReviewStaysSilent(t *testing.T) {
+	repo := &autoRepo{
+		record:     Record{ID: "acc-v2", SchoolID: "school-1", Status: StatusPending},
+		flipAfter:  2,
+		flipRecord: Record{ID: "acc-v2", SchoolID: "school-1", Status: StatusActive},
+	}
+	identity := &fakeIdentity{profile: contract.Profile{UniversityID: "U1"}}
+	alerts := &recordingReviewAlerts{}
+	svc := newAutoServiceAlerts(t, repo,
+		autoSchools{record: coreschool.Record{ID: "school-1", Status: coreschool.StatusActive, PlatformUniversityID: "U1"}},
+		&autoSettings{enabled: true}, identity, alerts)
+	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-v2")
+	identity.onVerify = func() { repo.cred.Version++ }
+
+	// ownsAlert=true：若实现仍无条件补发通知，这里会留下事件。
+	svc.runAutoApprove(context.Background(), "acc-v2", "school-1", true)
+
+	audits, ok := svc.deps.Audit.(*reviewFakeAudit)
+	if !ok {
+		t.Fatalf("audit fake = %T, want *reviewFakeAudit", svc.deps.Audit)
+	}
+	if repo.getCalls < 3 {
+		t.Fatalf("Get calls = %d, want >= 3（冲突判定 + 复核各读一次）", repo.getCalls)
+	}
+	if count := auditActionCount(audits, "account.auto_approve"); count != 0 {
+		t.Fatalf("auto approve audit rows = %d, want 0", count)
+	}
+	if count := auditActionCount(audits, "account.auto_check_failed"); count != 0 {
+		t.Fatalf("auto check failed rows = %d, want 0（人工已通过，不写失败词）", count)
+	}
+	if len(alerts.events) != 0 {
+		t.Fatalf("通知 = %+v, want 0（审计未落地不得发通知）", alerts.events)
 	}
 }
 
