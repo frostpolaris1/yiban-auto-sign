@@ -192,8 +192,9 @@ func (h *Handler) Create(c *gin.Context, _ oapi.AccountCreateParams) {
 }
 
 // Detect 实现 POST /api/accounts/detect。
-// 凭据只进用例；本层不记录、不回显。限流键用手机号摘要：
-// 桶里不出现明文号码，同一号码的变体仍落同一键。
+// 凭据只进用例；本层不记录、不回显。限流键绑定调用者与手机号摘要：
+// 桶里不出现明文号码，同一号码的变体仍落同一键，且他人探测
+// 不能消耗调用者自己的探测桶。
 func (h *Handler) Detect(c *gin.Context) {
 	scope, _, ok := h.principal(c)
 	if !ok {
@@ -203,7 +204,12 @@ func (h *Handler) Detect(c *gin.Context) {
 	if !decode(c, &body) {
 		return
 	}
-	if h.detectRateLimited(c, body.Phone) {
+	session, ok := coreauth.FromContext(c.Request.Context())
+	if !ok {
+		fail(c, errs.New(errs.CodeUnauthorized, "authentication required"))
+		return
+	}
+	if h.detectRateLimited(c, session.User.ID, body.Phone) {
 		return
 	}
 	result, err := h.svc.Detect(c.Request.Context(), scope, appaccount.DetectInput{
@@ -229,13 +235,14 @@ func (h *Handler) Detect(c *gin.Context) {
 	respond.JSON(c.Writer, http.StatusOK, out)
 }
 
-// detectRateLimited 按提交手机号的摘要限制探测频率。
-// 与账号/签到桶分开：detect 发生在账号存在之前，键面是平台手机号。
-func (h *Handler) detectRateLimited(c *gin.Context, phone string) bool {
+// detectRateLimited 按“调用者 + 提交手机号摘要”限制探测频率。
+// 与账号/签到桶分开：detect 发生在账号存在之前；绑定调用者后
+// 同一手机号的不同登录用户各用各的桶，无法互相打满。
+func (h *Handler) detectRateLimited(c *gin.Context, userID, phone string) bool {
 	if h.limiter == nil {
 		return false
 	}
-	ok, wait := h.limiter.AllowAccount(detectRateKey(phone))
+	ok, wait := h.limiter.AllowAccount(detectRateKey(userID, phone))
 	if ok {
 		return false
 	}
@@ -248,10 +255,11 @@ func (h *Handler) detectRateLimited(c *gin.Context, phone string) bool {
 	return true
 }
 
-// detectRateKey 返回不含明文手机号的限流键。
-func detectRateKey(phone string) string {
+// detectRateKey 返回“调用者 + 手机号摘要”的限流键：
+// 不含明文手机号，也不允许他人共享调用者的探测桶。
+func detectRateKey(userID, phone string) string {
 	sum := sha256.Sum256([]byte("detect:" + strings.TrimSpace(phone)))
-	return "detect:" + hex.EncodeToString(sum[:16])
+	return "detect:" + userID + ":" + hex.EncodeToString(sum[:16])
 }
 
 // Get 实现 GET /api/accounts/{id}。
