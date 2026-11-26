@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
+	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
@@ -53,6 +55,8 @@ func TestOverrideRollsBackWhenPlanWriteFails(t *testing.T) {
 		Accounts: e.sched,
 		Tx:       e.db,
 		Discover: fixedWindowDiscoverer{},
+		// 审计同事务落库：这里注入真实仓储，确保失败点仍是 InsertPlan。
+		Audit: e.audits,
 	})
 	if err != nil {
 		t.Fatalf("new schedule service: %v", err)
@@ -64,7 +68,10 @@ func TestOverrideRollsBackWhenPlanWriteFails(t *testing.T) {
 	}
 	start := time.Date(2026, 10, 29, 10, 0, 0, 0, loc)
 	end := time.Date(2026, 10, 29, 11, 0, 0, 0, loc)
-	if _, err := svc.Override(e.ctx, corescope.Master(), in, start, end, "调整", actor.ID); err == nil {
+	entryActor := appaudit.NewActor(coreauth.User{
+		ID: actor.ID, Email: "override-actor@example.com", Role: coreauth.RoleMaster,
+	})
+	if _, err := svc.Override(e.ctx, corescope.Master(), in, start, end, "调整", entryActor); err == nil {
 		t.Fatal("InsertPlan 失败必须上抛")
 	}
 

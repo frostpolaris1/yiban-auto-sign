@@ -32,6 +32,7 @@ import (
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
@@ -554,7 +555,7 @@ func (s *Service) overrideActive(ctx context.Context, taskID, day string) (bool,
 // 预览按请求窗口算（Input.override），不读库内旧覆盖；版本竞争
 // （ErrWindowStale）时整体重试一次。
 // 停用任务拒写覆盖（k0y-6）：判据在写库之前，回 conflict 且不留覆盖行。
-func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input, start, end time.Time, reason, actorID string) (Preview, error) {
+func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input, start, end time.Time, reason string, actor coreaudit.Actor) (Preview, error) {
 	if err := requireScheduleScope(scope); err != nil {
 		return Preview{}, err
 	}
@@ -598,7 +599,7 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 		Start:        start,
 		End:          end,
 		Reason:       reason,
-		CreatedBy:    actorID,
+		CreatedBy:    actor.UserID,
 	}
 	in.override = &ov
 	b, err := s.prepareBuild(ctx, in)

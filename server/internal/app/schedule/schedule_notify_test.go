@@ -164,7 +164,7 @@ func TestOverridePublishesWindowChanged(t *testing.T) {
 	start := time.Date(2026, 10, 29, 7, 0, 0, 0, shanghai)
 	end := time.Date(2026, 10, 29, 7, 40, 0, 0, shanghai)
 	scope := corescope.Master()
-	if _, err := svc.Override(context.Background(), scope, in, start, end, "调度调整", "master-1"); err != nil {
+	if _, err := svc.Override(context.Background(), scope, in, start, end, "调度调整", testActor("master-1")); err != nil {
 		t.Fatalf("Override: %v", err)
 	}
 	if len(n.events) == 0 || n.events[0].kind != appevents.TypeWindowChanged {
