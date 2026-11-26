@@ -158,6 +158,7 @@ class EgressBucket:
 
     def __init__(self, egress: str, rate: Any = RATE_DEFAULT, burst: float = DEFAULT_BURST,
                  tat: float = 0.0, rate_min: float | None = None) -> None:
+        """初始化单个出口的 GCRA 令牌桶（钳制速率、突发容量与初始理论到达时刻）。"""
         self.egress = egress
         self.rate = clamp_rate(rate, rate_min)
         self.burst = float(burst)
@@ -227,6 +228,7 @@ class EgressLimiter:
     def __init__(self, rate: Any = RATE_DEFAULT, burst: float = DEFAULT_BURST,
                  on_change: Callable[[str, float, float, str], Any] | None = None,
                  manual: bool = False, shares: int = 1) -> None:
+        """初始化多出口自适应限流器（配置出口级速率、突发额度、上限及并发份额）。"""
         self.shares = max(1, int(shares))
         #: **出口级**速率（attempt/s）：AIMD 与落库用它；子桶速率 = 本值 ÷ shares
         self.rate = clamp_rate(rate)
@@ -464,6 +466,7 @@ class GlobalLimiter:
     """
 
     def __init__(self, lam: str | None) -> None:
+        """解析全局速率上界配置；空值或非正值归为不限，非法非数值置位告警标记。"""
         self.invalid = False
         text = lam.strip() if isinstance(lam, str) else lam
         if text is None or text == "":
@@ -497,6 +500,7 @@ class AccountGapGate:
     """
 
     def __init__(self, gap_sec: float, enabled: bool = True) -> None:
+        """初始化单账号最小尝试间隔守卫（支持按开关启用并记录各账号下次放行时刻）。"""
         self.gap_sec = max(0.0, float(gap_sec))
         self.enabled = bool(enabled)
         self._tat: dict[str, float] = {}

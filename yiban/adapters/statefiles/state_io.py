@@ -242,6 +242,7 @@ class _StateBuf:
     __slots__ = ("last_flush", "ops", "view")
 
     def __init__(self):
+        """初始化进程内签到状态批处理缓冲区（空操作队列、未加载视图与刷盘计时点）。"""
         self.ops = []          # list[(phone, status, message, scheduled, dur, only_if_absent, now)]
         self.view = None       # 累积视图（CAS 与 scheduled 继承据此判；落盘后刷新）
         self.last_flush = time.monotonic()
@@ -753,6 +754,7 @@ def need_second_run(state_dir=None, day=None):
 
 
 def _cred_state_path():
+    """返回当前状态目录下账密状态文件的完整路径。"""
     state_dir = _state_dir()
     return os.path.join(state_dir, "cred-state.json")
 
@@ -774,6 +776,7 @@ def _save_cred_state(data, touched=None):
     try:
         if touched is None:
             def _replace(d):  # 整体覆盖（兼容入口：仅测试与极端场景使用）
+                """以传入快照整体替换账密状态字典并返回已变更标记。"""
                 d.clear()
                 d.update(data)
                 return True
@@ -788,6 +791,7 @@ def _save_cred_state(data, touched=None):
 # 兜底执行体心跳（读侧：告警据此判断"后面还有没有人接着跑"）
 # ---------------------------------------------------------------------------
 def _fallback_alive_path():
+    """返回当前状态目录下兜底执行体心跳文件的完整路径。"""
     return os.path.join(_state_dir(), FALLBACK_ALIVE_FILE)
 
 
@@ -810,6 +814,7 @@ def _write_fallback_alive(at=None):
 
 
 def _clear_fallback_alive():
+    """删除兜底执行体心跳文件；文件不存在或删除失败时静默忽略。"""
     with contextlib.suppress(OSError):
         os.remove(_fallback_alive_path())
 

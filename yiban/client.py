@@ -154,6 +154,7 @@ class _SessionCache:
     """
 
     def __init__(self, client):
+        """绑定所属易班客户端实例，用于读写该账号的持久化会话缓存。"""
         self._client = client
 
     def restore(self):
@@ -228,6 +229,7 @@ class YibanClient:
     _policy = security.ProtocolPolicy()
 
     def __init__(self, account):
+        """初始化单个账号的易班客户端、可变口令缓冲区、登录策略与会话对象。"""
         self.account = account
         # 密码缓冲用可变 bytearray 持有（str 不可原位清零），单次签到尝试结束由
         # _wipe_credentials 原位清零（attempt_signin 的 finally）
@@ -447,12 +449,15 @@ class YibanClient:
 
     # ---- 会话缓存（供既有调用方与测试直接使用；动作实现见 _SessionCache）----
     def _restore_session_cache(self):
+        """尝试从持久化缓存恢复当前账号会话，命中返回 True，否则返回 False。"""
         return bool(self._session_store.restore())
 
     def _save_session_cache(self):
+        """将当前账号的活跃会话与防伪令牌写入持久化缓存。"""
         self._session_store.save(self.session, self.csrf)
 
     def _clear_session_cache(self):
+        """清除当前账号的持久化会话缓存。"""
         self._session_store.clear()
 
     def _ensure_sign_session(self):

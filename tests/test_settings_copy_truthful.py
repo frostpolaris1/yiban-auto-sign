@@ -93,11 +93,11 @@ CLAIM_ALLOWLIST = {
         "full 档保存时需口令确认", "设置卡档位文案：risk 同出口直接保存，full 才要"),
     ("scripts/backup.sh", 259): (
         "无需口令", "GPG 公钥无口令，非本站登录口令门"),
-    ("web/app.py", 2308): (
+    ("web/app.py", 2340): (
         "同出口也必须当次输口令", "risk_always 四类：同出口也要口令"),
-    ("web/app.py", 2351): (
+    ("web/app.py", 2383): (
         "full 档下必须当次输口令", "门禁参数说明：full 才要，risk 同出口免"),
-    ("web/app.py", 2388): (
+    ("web/app.py", 2420): (
         "在 full 档都要当次输口令", "高危门禁说明：full 才要，risk 同出口免"),
     ("web/routes/accounts_api.py", 609): (
         "同出口也必须当次口令", "改他人易班凭据属 risk_always 四类；609＝#193 详情端点改版后行号，2026-10-25 订正"),
