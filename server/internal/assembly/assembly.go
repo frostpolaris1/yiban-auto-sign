@@ -1224,9 +1224,15 @@ func publicOrigin(raw string) string {
 
 // buildRateLimit 构造入站限流面。
 // 关闭开关时返回 nil：路由层把 nil Guard 视为不限流。
+// production 例外：nil Guard 会静默关掉全部入站限速，误配
+// YIBAN_RATE_LIMIT_ENABLE=false 必须启动失败；不自动改回 true，
+// 否则运维看不到误配。development/test/staging 仍可关闭，供本地与压测。
 // 可信代理表非法即启动失败：静默忽略会让限流按代理 IP 计数。
 func buildRateLimit(cfg *config.Config) (*ratelimit.Guard, error) {
 	if !cfg.RateLimitEnabled {
+		if cfg.Env == "production" {
+			return nil, errors.New("assembly: YIBAN_RATE_LIMIT_ENABLE=false is not allowed in production; inbound rate limiting must stay on")
+		}
 		return nil, nil
 	}
 	trusted, err := ratelimit.ParseTrustedProxies(cfg.TrustedProxies)
