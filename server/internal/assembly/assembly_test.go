@@ -583,8 +583,10 @@ func TestScheduleEnvFromConfig(t *testing.T) {
 	}
 }
 
-// 人机验证装配：私钥与两个可选的令牌绑定期望同源进校验器，
+// 人机验证装配的传参：私钥与两个可选的令牌绑定期望同源进校验器，
 // 回执主机名不符按「令牌不合格」处理，不是服务不可达。
+// 本测试只钉 newHumanVerifier 的传参；Build 在 humanOn 分支的调用由
+// config 装配测试与启动路径覆盖。
 func TestNewHumanVerifierWiresTokenBindings(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"success":true,"hostname":"other.example","action":"register"}`))
