@@ -16,7 +16,10 @@
 // 到期判据从 COALESCE(deleted_at, created_at) 起算。
 package photo
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // retentionDays 是允许的保留期闭集（天），严格升序。
 // 不导出：ValidRetention 与错误文案都从本表派生，外部只能拿副本。
@@ -36,7 +39,15 @@ const (
 	DefaultRetentionDays = 90
 	// MaxBytes 是单张图片的原始上传上限（10 MiB）。
 	MaxBytes = 10 << 20
+	// MaxDailyUploads 是每用户滚动 24 小时内的新摘要上传上限。
+	// 按 owner_user_id 统计 photos.created_at；重复摘要（同 owner+sha256）
+	// 不占新配额。50 张/24h 是产品取舍，改值只改这一处。
+	MaxDailyUploads = 50
 )
+
+// ErrDailyUploadQuota 表示用户滚动 24 小时的上传配额已用尽。
+// 存储实现返回它，用例层映射为 429 rate_limited；必须 errors.Is 可用。
+var ErrDailyUploadQuota = errors.New("photo upload daily quota exceeded")
 
 // ValidRetention 报告 days 是否属于允许的保留期闭集。
 func ValidRetention(days int) bool {

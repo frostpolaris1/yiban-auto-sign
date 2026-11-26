@@ -47,6 +47,11 @@ var errStreamingUnsupported = errors.New("events: streaming writer unsupported")
 // （/api/admin/events 的 '429' → TooManyRequestsError，sfr 挂账结清）。
 const MaxConcurrentStreams = 10
 
+// MaxConcurrentStreamsPerUser 是同一用户同时打开的 SSE 连接上限。
+// 取 1 是刻意的产品取舍：事件流是单页读面，一个账号同一时刻只需一条；
+// 多标签同时订阅会受限（第二个标签 429），换取单账号无法占满全局 10 条。
+const MaxConcurrentStreamsPerUser = 1
+
 // AdminEvents 实现 GET /api/admin/events（master/admin）。
 // master 订阅全部院校（schools 传 nil）；admin 按绑定校过滤，
 // 过滤在总线侧完成，不是客户端过滤。

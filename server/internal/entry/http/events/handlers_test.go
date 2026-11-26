@@ -83,25 +83,33 @@ func (f *fakeAuthorizer) setScope(scope corescope.Scope) {
 	f.mu.Unlock()
 }
 
+// fakeIssuer 按用户签发互相独立的令牌：SSE 配额用例需要同时持有
+// 多个不同用户的会话，单令牌替身无法表达"同一用户 vs 不同用户"。
 type fakeIssuer struct {
-	secret  []byte
-	token   string
-	sess    coreauth.Session
-	revoked map[string]bool
+	secret   []byte
+	token    string
+	sess     coreauth.Session
+	sessions map[string]coreauth.Session
+	revoked  map[string]bool
 }
 
 func (f *fakeIssuer) Issue(_ context.Context, user coreauth.User) (coreauth.Issued, error) {
-	const token = "test-session-token"
+	if f.sessions == nil {
+		f.sessions = map[string]coreauth.Session{}
+	}
+	token := "test-session-token-" + user.ID
 	session := coreauth.Session{User: user, CSRFToken: coreauth.CSRFToken(f.secret, token)}
 	f.token, f.sess = token, session
+	f.sessions[token] = session
 	return coreauth.Issued{Token: token, Session: session}, nil
 }
 
 func (f *fakeIssuer) Resolve(_ context.Context, token string) (coreauth.Session, error) {
-	if token != f.token || f.revoked[token] {
+	session, ok := f.sessions[token]
+	if !ok || f.revoked[token] {
 		return coreauth.Session{}, errs.New(errs.CodeUnauthorized, "unknown session")
 	}
-	return f.sess, nil
+	return session, nil
 }
 
 func (f *fakeIssuer) Revoke(_ context.Context, token string) error {

@@ -42,6 +42,11 @@ type fakeStore struct {
 	// refsEntered/refsRelease 让并发用例卡在引用查询里。
 	refsEntered chan struct{}
 	refsRelease chan struct{}
+	// quotaErr 非 nil 时 CreateWithinQuota 直接返回它（配额拒绝用例）。
+	quotaErr error
+	// quotaSince/quotaLimit 记录最近一次配额参数，供断言。
+	quotaSince time.Time
+	quotaLimit int
 }
 
 func newFakeStore() *fakeStore {
@@ -70,6 +75,16 @@ func (f *fakeStore) Create(_ context.Context, rec corephoto.Record) (corephoto.R
 	f.recs[rec.ID] = rec
 	f.byKey[key] = rec.ID
 	return rec, nil
+}
+
+// CreateWithinQuota 记录窗口参数；quotaErr 非 nil 时模拟配额拒绝，
+// 否则转调 Create 保持既有去重行为。
+func (f *fakeStore) CreateWithinQuota(ctx context.Context, rec corephoto.Record, since time.Time, limit int) (corephoto.Record, error) {
+	f.quotaSince, f.quotaLimit = since, limit
+	if f.quotaErr != nil {
+		return corephoto.Record{}, f.quotaErr
+	}
+	return f.Create(ctx, rec)
 }
 
 func (f *fakeStore) Get(_ context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
@@ -582,6 +597,30 @@ func TestUploadDedupesPerOwner(t *testing.T) {
 	}
 	if other.ID == first.ID {
 		t.Fatal("不同所有者不应共用行")
+	}
+}
+
+// 配额拒绝：Store 返回 corephoto.ErrDailyUploadQuota 时 Upload 映射为
+// 429 rate_limited，不写 photo.upload 审计；窗口参数是 now-24h 与 50。
+// blob Put 允许已发生：实现顺序是先写 blob 再入库，未引用 blob 由 GC 回收。
+func TestUploadDailyQuotaMapsToRateLimited(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	store.quotaErr = corephoto.ErrDailyUploadQuota
+	svc, audits := newService(t, store, blobs)
+	if _, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 8, 8)); err == nil {
+		t.Fatal("超配额必须报错")
+	} else if code := errs.From(err).Code; code != errs.CodeRateLimited {
+		t.Fatalf("错误码 = %q, want rate_limited", code)
+	}
+	if len(audits.entries) != 0 {
+		t.Fatalf("配额拒绝仍写了 %d 行审计", len(audits.entries))
+	}
+	wantSince := fixedNow.Add(-24 * time.Hour)
+	if !store.quotaSince.Equal(wantSince) {
+		t.Fatalf("窗口起点 = %v, want %v", store.quotaSince, wantSince)
+	}
+	if store.quotaLimit != corephoto.MaxDailyUploads {
+		t.Fatalf("配额上限 = %d, want %d", store.quotaLimit, corephoto.MaxDailyUploads)
 	}
 }
 

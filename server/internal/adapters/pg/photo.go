@@ -53,6 +53,12 @@ func (r *PhotoRepo) Create(ctx context.Context, rec corephoto.Record) (corephoto
 	return scanPhoto(row)
 }
 
+// CreateWithinQuota 在滚动 24 小时配额内幂等写入一张用户图片。
+// 必须在事务内运行：advisory lock、计数与写入同属一个事务。
+func (r *PhotoRepo) CreateWithinQuota(context.Context, corephoto.Record, time.Time, int) (corephoto.Record, error) {
+	return corephoto.Record{}, errors.New("pg: CreateWithinQuota is not implemented")
+}
+
 // RegisterSchoolOwned 把源照片的字节复制登记为本校资产行（内容寻址，
 // 磁盘零增量）。(school, sha256) 幂等：已存在（含已软删）时恢复为未删，
 // 尺寸形状按本次源行刷新。与指针写入同事务（调用方负责）。
