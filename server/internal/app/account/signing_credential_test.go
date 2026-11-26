@@ -90,6 +90,9 @@ func TestSigningCredentialDecrypts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
+	// ReplaceCredential 会自增版本：SigningCredential 必须原样透出仓储里的版本，
+	// 供自动核验做激活前的版本 CAS。
+	sealed.Version = 4
 	repo := &fakeAccountRepo{
 		record: Record{ID: "acc-1", SchoolID: "school-1", Phone: "13800000000"},
 		cred:   sealed,
@@ -102,6 +105,9 @@ func TestSigningCredentialDecrypts(t *testing.T) {
 	if got.SchoolID != "school-1" || got.Phone != "13800000000" ||
 		got.Password != "secret" || got.DeviceCode != "device-code" || got.PhoneModel != "Model-X" {
 		t.Fatalf("credential = %+v", got)
+	}
+	if got.CredentialVersion != 4 {
+		t.Fatalf("credential version = %d, want 4（原样透出仓储版本）", got.CredentialVersion)
 	}
 	if repo.lastScope.Kind() != corescope.KindMaster {
 		t.Fatalf("scope was not forwarded: %+v", repo.lastScope)

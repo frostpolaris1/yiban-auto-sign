@@ -164,12 +164,15 @@ type UpdateInput struct {
 
 // SigningCredential 是签到链需要的明文凭据。
 // 只在本进程内交给 provider；入口层不得记录或回显。
+// CredentialVersion 是读到的凭据行版本：自动核验用它做激活前的
+// 版本 CAS，防止用核验期间已被替换的旧凭据把账号推成 active。
 type SigningCredential struct {
-	SchoolID   string
-	Phone      string
-	Password   string
-	DeviceCode string
-	PhoneModel string
+	SchoolID          string
+	Phone             string
+	Password          string
+	DeviceCode        string
+	PhoneModel        string
+	CredentialVersion int32
 }
 
 // NewService 构造账号用例。缺依赖即失败。
@@ -364,11 +367,12 @@ func (s *Service) SigningCredential(ctx context.Context, scope corescope.Scope, 
 		return SigningCredential{}, err
 	}
 	return SigningCredential{
-		SchoolID:   record.SchoolID,
-		Phone:      record.Phone,
-		Password:   payload.Password,
-		DeviceCode: payload.DeviceCode,
-		PhoneModel: payload.PhoneModel,
+		SchoolID:          record.SchoolID,
+		Phone:             record.Phone,
+		Password:          payload.Password,
+		DeviceCode:        payload.DeviceCode,
+		PhoneModel:        payload.PhoneModel,
+		CredentialVersion: credential.Version,
 	}, nil
 }
 
