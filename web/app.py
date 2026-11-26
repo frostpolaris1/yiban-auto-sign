@@ -1882,7 +1882,7 @@ def create_app(host=None):
 
     @app.before_request
     def check_csrf():
-        """保护 `/api/*` 写请求（POST/PUT/DELETE）：未登录入口做同源校验，登录态比对 `X-CSRF-Token`。"""
+        """保护 `/api/*` 写请求（POST/PUT/DELETE）：未登录入口做同源校验，登录态比对会话防伪令牌。"""
         if request.method not in ("POST", "PUT", "DELETE"):
             return
         if not request.path.startswith("/api/"):
