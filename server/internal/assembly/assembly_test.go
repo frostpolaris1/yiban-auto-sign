@@ -252,6 +252,52 @@ func TestBuildWarnsWhenWorkersFarAboveRateKnee(t *testing.T) {
 	wantRecordInt(t, warn, "workers", 10)
 }
 
+// 出口拐点告警是严格大于：rate=1、avg=3s 的拐点是 6 个 worker，
+// 6 不告警，7 才告警。边界写错成 >= 会让默认附近的配置平白多一条噪声。
+func TestBuildCapacityRateBoundWarnStrictlyAboveKnee(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		workers int
+		want    bool
+	}{
+		{name: "at_threshold_6", workers: 6, want: false},
+		{name: "above_threshold_7", workers: 7, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := capacityConfig(t)
+			cfg.Workers = tc.workers
+			h := &recordHandler{}
+			stack, err := Build(cfg, slog.New(h))
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			defer stack.Close()
+
+			info := h.event("assembly.capacity_configured")
+			if info == nil {
+				t.Fatalf("缺启动容量 Info：%v", h.records)
+			}
+			wantRecordInt(t, info, "workers", tc.workers)
+
+			got := h.warnEvents("assembly.capacity_rate_bound")
+			if !tc.want {
+				if got != 0 {
+					t.Fatalf("%d worker 恰在拐点，不得告警，got %d 条", tc.workers, got)
+				}
+				return
+			}
+			if got != 1 {
+				t.Fatalf("%d worker 已超过拐点，必须恰好 1 条 Warn，got %d", tc.workers, got)
+			}
+			warn := h.event("assembly.capacity_rate_bound")
+			if warn == nil {
+				t.Fatalf("缺 rate_bound Warn：%v", h.records)
+			}
+			wantRecordInt(t, warn, "workers", tc.workers)
+		})
+	}
+}
+
 // TestBuildWithoutDatabaseServesHealthz 是装配冒烟。
 // 无数据库是受支持的启动形态：Engine 必须可用、Worker 必须为 nil、
 // Close 可重复调用不 panic，且 /healthz 应答 200。
