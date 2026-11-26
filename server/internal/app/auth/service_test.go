@@ -325,6 +325,15 @@ type fakeTx struct{}
 
 func (fakeTx) InTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 
+// countingTx 记录事务次数；未知邮箱被抑制的尝试也必须走一次空事务，
+// 保证与已存在账号失败付同量级的数据库往返。
+type countingTx struct{ calls atomic.Int64 }
+
+func (c *countingTx) InTx(ctx context.Context, fn func(context.Context) error) error {
+	c.calls.Add(1)
+	return fn(ctx)
+}
+
 type harness struct {
 	users         *fakeUsers
 	sessions      *fakeSessions
@@ -332,6 +341,7 @@ type harness struct {
 	registrations *fakeRegistrations
 	audits        *fakeAudits
 	kdf           *countingKDF
+	tx            *countingTx
 	svc           *appauth.Service
 }
 
@@ -369,6 +379,7 @@ func newHarnessWith(t *testing.T, tune func(*appauth.Deps)) *harness {
 		registrations: &fakeRegistrations{},
 		audits:        &fakeAudits{},
 		kdf:           &countingKDF{},
+		tx:            &countingTx{},
 	}
 	deps := appauth.Deps{
 		Users:         h.users,
@@ -377,7 +388,7 @@ func newHarnessWith(t *testing.T, tune func(*appauth.Deps)) *harness {
 		Resets:        h.resets,
 		Registrations: h.registrations,
 		Audits:        h.audits,
-		Tx:            fakeTx{},
+		Tx:            h.tx,
 		Clock:         testClock,
 		Quota:         fixedQuota(10000),
 		KDF:           h.kdf,

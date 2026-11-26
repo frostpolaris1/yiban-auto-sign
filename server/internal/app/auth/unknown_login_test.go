@@ -197,6 +197,26 @@ func TestUnknownEmailLoginAuditsOncePerIPPerMinute(t *testing.T) {
 	}
 }
 
+// 被抑制的未知邮箱尝试仍付一次数据库往返，不能靠「有无事务」区分邮箱是否存在。
+func TestUnknownEmailSuppressedAttemptStillPaysTx(t *testing.T) {
+	h := newSamplingHarness(t, newMutableClock(), &warnCapture{})
+	ctx := t.Context()
+
+	if err := loginFromIP(ctx, h, "203.0.113.40", "nobody@example.com"); err != appauth.ErrInvalidCredentials {
+		t.Fatalf("first attempt = %v, want ErrInvalidCredentials", err)
+	}
+	before := h.tx.calls.Load()
+	if err := loginFromIP(ctx, h, "203.0.113.40", "nobody@example.com"); err != appauth.ErrInvalidCredentials {
+		t.Fatalf("suppressed attempt = %v, want ErrInvalidCredentials", err)
+	}
+	if got := h.tx.calls.Load(); got != before+1 {
+		t.Fatalf("suppressed attempt tx calls = %d, want %d", got, before+1)
+	}
+	if len(h.audits.entries) != 1 {
+		t.Fatalf("audit rows = %d, want 1", len(h.audits.entries))
+	}
+}
+
 // 不同 IP 各自成桶：各写 1 条审计。
 func TestUnknownEmailLoginAuditsPerDistinctIP(t *testing.T) {
 	h := newSamplingHarness(t, newMutableClock(), &warnCapture{})
@@ -260,26 +280,47 @@ func TestUnknownEmailLoginWithoutMetaUsesFallbackBucket(t *testing.T) {
 		t.Fatalf("warn rows = %d, want 3", len(warns))
 	}
 	for _, r := range warns {
-		if got := wantUnknownWarn(t, r); got != "unknown" {
-			t.Fatalf("fallback ip_hash = %q, want unknown", got)
+		if r.Level != slog.LevelWarn {
+			t.Fatalf("log level = %v, want warn", r.Level)
+		}
+		if _, ok := attrOf(r, unknownLoginIPHashKey); ok {
+			t.Fatalf("fallback warn carries ip_hash: %v", r)
+		}
+		if reason, ok := attrOf(r, "reason"); !ok || reason != "unknown_email" {
+			t.Fatalf("reason = %v, want unknown_email", reason)
 		}
 	}
 }
 
-// 抽样审计写失败第一次返回错误；同 IP 第二次被抑制，回到同形 401。
-func TestUnknownEmailAuditFailureFailsClosedThenSuppresses(t *testing.T) {
+// 抽样审计写失败后，同窗口被抑制的尝试继续 fail-closed，不能变成
+// 「未知邮箱 401、已知邮箱 500」的可枚举差异；恢复后只补写一条再静默。
+func TestUnknownEmailAuditFailureKeepsFailingClosed(t *testing.T) {
 	h := newSamplingHarness(t, newMutableClock(), &warnCapture{})
 	ctx := t.Context()
 	auditErr := errors.New("audit store down")
 
 	h.audits.err = auditErr
-	if err := loginFromIP(ctx, h, "203.0.113.30", "nobody@example.com"); !errors.Is(err, auditErr) {
-		t.Fatalf("first attempt = %v, want the audit error", err)
-	}
-	if err := loginFromIP(ctx, h, "203.0.113.30", "nobody@example.com"); err != appauth.ErrInvalidCredentials {
-		t.Fatalf("suppressed attempt = %v, want ErrInvalidCredentials (not the audit error)", err)
+	for i := 0; i < 3; i++ {
+		if err := loginFromIP(ctx, h, "203.0.113.30", "nobody@example.com"); !errors.Is(err, auditErr) {
+			t.Fatalf("attempt %d = %v, want the audit error", i+1, err)
+		}
 	}
 	if len(h.audits.entries) != 0 {
 		t.Fatalf("audit rows = %d, want 0", len(h.audits.entries))
+	}
+
+	h.audits.err = nil
+	if err := loginFromIP(ctx, h, "203.0.113.30", "nobody@example.com"); err != appauth.ErrInvalidCredentials {
+		t.Fatalf("recovered attempt = %v, want ErrInvalidCredentials", err)
+	}
+	if len(h.audits.entries) != 1 {
+		t.Fatalf("audit rows after recovery = %d, want 1", len(h.audits.entries))
+	}
+	wantUnknownLoginAudit(t, h.audits.entries[0])
+	if err := loginFromIP(ctx, h, "203.0.113.30", "nobody@example.com"); err != appauth.ErrInvalidCredentials {
+		t.Fatalf("suppressed after recovery = %v, want ErrInvalidCredentials", err)
+	}
+	if len(h.audits.entries) != 1 {
+		t.Fatalf("audit rows after second recovery attempt = %d, want 1", len(h.audits.entries))
 	}
 }
