@@ -959,7 +959,8 @@ func (s *Service) authScene(ctx context.Context, task corescheduleTask, dur time
 //
 // 结论语义（与入口层错误码一一对应）：
 //   - 关窗 → ErrWindowClosed；
-//   - 已成功 → ErrAlreadySigned；
+//   - 已成功 → ErrAlreadySigned（同账号同日任一任务 success 即拦下，
+//     先于 resolveTask，不为兄弟任务建行）；
 //   - 正在执行 → ErrSignRunning；
 //   - 当日 failed 或 skipped → 放回队列（Rearm）并写审计，这是用户
 //     "再试一次"的正当动作；
@@ -981,6 +982,17 @@ func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.
 	}
 	now := s.deps.Clock.Now()
 	day := now.In(s.deps.Location).Format("2006-01-02")
+	// 决策 2A：同账号同日任一任务 success 即今日已签到，直接 already_signed。
+	// 必须早于 resolveTask/EnsureTask：否则会先为兄弟任务建出一行，
+	// 手动签到就把"今日已签到"变成了"又排了一个任务"。
+	// 查询故障上抛，不得读成「未成功」。
+	signed, err := s.deps.Store.HasSuccessOn(ctx, accountID, day)
+	if err != nil {
+		return "", err
+	}
+	if signed {
+		return "", ErrAlreadySigned
+	}
 	schoolTaskID, err := s.resolveTask(ctx, accountID, day)
 	if err != nil {
 		return "", err
@@ -1004,6 +1016,7 @@ func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.
 	case corestatus.TaskRunning:
 		return "", ErrSignRunning
 	case corestatus.TaskSuccess:
+		// 兜底：前置 HasSuccessOn 之后、EnsureTask 之前并发落了 success。
 		return "", ErrAlreadySigned
 	case corestatus.TaskFailed, corestatus.TaskSkipped:
 		if err := s.deps.Store.Rearm(ctx, row.ID, now, actor); err != nil {
