@@ -20,6 +20,7 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
@@ -115,6 +116,8 @@ type Service struct {
 	throttle resetThrottle
 	// reauth 按用户限制危险操作二次口令的失败次数（见 reauthenticate.go）。
 	reauth *reauthThrottle
+	// unknownLogins 按 IP 采样未知邮箱登录失败的审计（见 unknown_login.go）。
+	unknownLogins *unknownLoginSampler
 	// human 是注册的人机验证端口；nil 表示 off 档。
 	human HumanVerifier
 	// humanSiteKey 只在 human 非 nil 时非空。
@@ -175,6 +178,7 @@ func NewService(d Deps) (*Service, error) {
 		log:           log,
 		mailSlots:     make(chan struct{}, maxConcurrentResetMails),
 		reauth:        newReauthThrottle(d.Clock, ReauthFailureLimit, ReauthWindow),
+		unknownLogins: newUnknownLoginSampler(d.Clock),
 		human:         d.Human,
 		humanSiteKey:  strings.TrimSpace(d.HumanSiteKey),
 		humanEnforce:  d.HumanEnforce,
@@ -215,7 +219,9 @@ func (s *Service) Login(ctx context.Context, email, password string) (coreauth.I
 		if err := s.verifyDummyPassword(ctx, password); err != nil {
 			return coreauth.Issued{}, err
 		}
-		if err := s.recordLoginFailure(ctx, "", coreauth.RoleUser, email, "invalid_credentials", now); err != nil {
+		// 未知邮箱每次都付 dummy KDF 与 Warn；审计按 IP 每分钟最多 1 条。
+		meta, _ := coreauth.ClientMetaFromContext(ctx)
+		if err := s.recordUnknownLoginFailure(ctx, meta.IP, now); err != nil {
 			return coreauth.Issued{}, err
 		}
 		return coreauth.Issued{}, ErrInvalidCredentials
@@ -272,6 +278,36 @@ func (s *Service) recordLoginFailure(ctx context.Context, userID string, role co
 			TargetType:  "user",
 			TargetID:    userID,
 			Detail:      map[string]any{"reason": reason},
+		})
+		return err
+	})
+}
+
+// recordUnknownLoginFailure 记录一次「未知邮箱」登录失败。
+// 每次都写 Warn（ip_hash + reason，无邮箱/IP）；采样器放行时才写一条汇总审计。
+// 审计形状：Actor 全空、ActorLabel=unknown、TargetType=user、TargetID 空、
+// Detail={reason:unknown_email,count:1}——与已存在账号失败可区分，且无 PII。
+// 审计写失败返回错误（fail-closed）；被抑制的尝试根本不接触审计，
+// 因而不改变 401 形状。采样器不回滚：同一窗口内不因审计故障重试放大写入。
+func (s *Service) recordUnknownLoginFailure(ctx context.Context, ip string, now time.Time) error {
+	allowed, fingerprint := s.unknownLogins.allow(ip)
+	s.log.Warn("appauth: unknown email login failed",
+		logfield.KeyIPHash, fingerprint,
+		logfield.KeyReason, "unknown_email",
+	)
+	if !allowed {
+		return nil
+	}
+	return s.tx.InTx(ctx, func(ctx context.Context) error {
+		_, err := s.audits.Append(ctx, coreaudit.Entry{
+			TS:          now,
+			ActorUserID: "",
+			ActorRole:   "",
+			ActorLabel:  mask.EmailLabel(""),
+			Action:      coreaudit.ActionAuthLoginFailed,
+			TargetType:  "user",
+			TargetID:    "",
+			Detail:      map[string]any{"reason": "unknown_email", "count": 1},
 		})
 		return err
 	})

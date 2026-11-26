@@ -111,6 +111,7 @@ const (
 	KeyPort             = "port"
 	KeyPollInterval     = "poll_interval"
 	KeyHost             = "host"
+	KeyIPHash           = "ip_hash"
 	KeyTLSMode          = "tls_mode"
 	KeyMethod           = "method"
 	KeyPath             = "path"
@@ -174,6 +175,7 @@ var All = []Field{
 	{Key: KeyPort, Const: "KeyPort", Kind: KindText, Meaning: "SMTP 端口（配置标量）"},
 	{Key: KeyPollInterval, Const: "KeyPollInterval", Kind: KindText, Meaning: "轮询间隔（时长串，如 2s）"},
 	{Key: KeyHost, Const: "KeyHost", Kind: KindText, Meaning: "SMTP 主机名"},
+	{Key: KeyIPHash, Const: "KeyIPHash", Kind: KindText, Meaning: "客户端 IP 的进程盐哈希前 16 位；不含明文 IP"},
 	{Key: KeyTLSMode, Const: "KeyTLSMode", Kind: KindEnum, Meaning: "SMTP TLS 模式（封闭词表）"},
 	{Key: KeyMethod, Const: "KeyMethod", Kind: KindEnum, Meaning: "HTTP 方法"},
 	{Key: KeyPath, Const: "KeyPath", Kind: KindText, Meaning: "请求路径（不含查询串）"},

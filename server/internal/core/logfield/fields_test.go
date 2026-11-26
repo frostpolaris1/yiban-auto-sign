@@ -110,6 +110,7 @@ func TestKeysArePinned(t *testing.T) {
 		"failed_days",
 		"history_available",
 		"host",
+		"ip_hash",
 		"kind",
 		"last_success_day",
 		"method",
