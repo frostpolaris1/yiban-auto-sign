@@ -191,3 +191,61 @@ func TestClaimDueSuccessScopeIsAccountAndDay(t *testing.T) {
 		}
 	})
 }
+
+// TestHasSuccessOnOnlyCountsSuccess 钉住仓储判据本身：
+// 只有 success 算今日已签到；skipped/failed 不算，跨日/跨账号不算。
+//
+// 把 SQL 条件放宽成 state <> 'pending' 时 skipped 用例红；
+// 丢掉 day 条件时 other-day 用例红；丢掉 account_id 时 other-account 红。
+func TestHasSuccessOnOnlyCountsSuccess(t *testing.T) {
+	e := newEnv(t)
+	day := singleSuccessDay
+	schoolID, taskID, accountID := e.seedTask(
+		"has-success", "晨间签到", "has-success@example.com", "13800060007")
+	at := singleSuccessAt()
+
+	if ok, err := e.sched.HasSuccessOn(e.ctx, accountID, day); err != nil || ok {
+		t.Fatalf("HasSuccessOn without rows = (%v,%v), want (false,nil)", ok, err)
+	}
+
+	if _, err := e.sched.InsertPlan(e.ctx, []coreschedule.PlanRow{
+		{AccountID: accountID, SchoolTaskID: taskID, Day: day, RunAt: at},
+	}); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+
+	for _, tc := range []struct {
+		state corestatus.TaskState
+		want  bool
+	}{
+		{corestatus.TaskSkipped, false},
+		{corestatus.TaskFailed, false},
+		{corestatus.TaskRunning, false},
+		{corestatus.TaskSuccess, true},
+	} {
+		t.Run(string(tc.state), func(t *testing.T) {
+			setSignTaskState(t, e, accountID, taskID, day, tc.state)
+			ok, err := e.sched.HasSuccessOn(e.ctx, accountID, day)
+			if err != nil || ok != tc.want {
+				t.Fatalf("HasSuccessOn(state=%s) = (%v,%v), want (%v,nil)", tc.state, ok, err, tc.want)
+			}
+		})
+	}
+
+	t.Run("other-day", func(t *testing.T) {
+		ok, err := e.sched.HasSuccessOn(e.ctx, accountID, "2026-10-28")
+		if err != nil || ok {
+			t.Fatalf("HasSuccessOn(yesterday) = (%v,%v), want (false,nil)", ok, err)
+		}
+	})
+
+	t.Run("other-account", func(t *testing.T) {
+		sibling := e.createAccount(schoolID,
+			e.createUser("has-success-other@example.com").ID, "13800060008")
+		e.activateAccount(sibling.ID)
+		ok, err := e.sched.HasSuccessOn(e.ctx, sibling.ID, day)
+		if err != nil || ok {
+			t.Fatalf("HasSuccessOn(other account) = (%v,%v), want (false,nil)", ok, err)
+		}
+	})
+}

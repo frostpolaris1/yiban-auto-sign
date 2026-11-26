@@ -888,6 +888,26 @@ func (r *ScheduleRepo) DayTasks(ctx context.Context, accountID, day string) ([]s
 		 ORDER BY st.name, st.id`, accountID, day)
 }
 
+// HasSuccessOn 判账号在业务日 day 是否已有 success 行（决策 2A）。
+//
+// 只认 state='success'。skipped 是"今天不做"的明确结论，failed 是失败，
+// 两者都不是成功，不能拦住同账号同日的兄弟任务。already_done 在 worker
+// 落库时写的就是 success，因此自然计入。
+// 索引走 uq_sign_tasks_account_task_day 的 account_id 前导列，
+// 与 00032 的 day/state 索引组合即可，无需新增迁移。
+func (r *ScheduleRepo) HasSuccessOn(ctx context.Context, accountID, day string) (bool, error) {
+	var ok bool
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM sign_tasks
+		     WHERE account_id = $1::uuid AND day = $2::date AND state = 'success'
+		)`, accountID, day).Scan(&ok)
+	if err != nil {
+		return false, mapError(err)
+	}
+	return ok, nil
+}
+
 // AccountEnabledTasks 返回账号所属学校的全部启用任务 ID（按名称序）。
 // 零行表示账号不可用（停用、软删、不存在）、学校 disabled 或学校没有
 // 启用任务；调用方对两者都给 404，故不再区分。

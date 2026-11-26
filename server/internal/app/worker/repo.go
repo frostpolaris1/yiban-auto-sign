@@ -85,6 +85,12 @@ type Store interface {
 	// DayTasks 返回账号当日已有 sign_tasks 行的启用任务 ID。
 	// 只算启用任务：停用任务的行永远不会被认领。
 	DayTasks(ctx context.Context, accountID, day string) ([]string, error)
+	// HasSuccessOn 判账号在业务日 day 是否已有 success 行（决策 2A：
+	// 同账号同日任一任务成功即视为今日已签到，兄弟任务不再认领）。
+	// 只认 state='success'：skipped 是一次明确的"今天不做"，不算成功，
+	// 不拦兄弟任务；failed 同理。already_done 由 worker 落 state=success，
+	// 因此也算成功。
+	HasSuccessOn(ctx context.Context, accountID, day string) (bool, error)
 	// EnabledTasks 返回账号所属学校的全部启用任务 ID。
 	// 账号不可用（停用、软删、不存在）返回 errs.ErrNotFound。
 	AccountEnabledTasks(ctx context.Context, accountID string) ([]string, error)
