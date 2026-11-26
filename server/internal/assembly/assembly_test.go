@@ -130,6 +130,8 @@ func capacityConfig(t *testing.T) *config.Config {
 		Workers:       4,
 		AvgAttempt:    3 * time.Second,
 		EgressRate:    1,
+		EdgeFront:     60 * time.Second,
+		EdgeBack:      60 * time.Second,
 	}
 }
 
@@ -219,8 +221,8 @@ func TestBuildLogsConfiguredDailyCapacity(t *testing.T) {
 	}
 	wantRecordInt(t, info, "workers", 4)
 	wantRecordInt(t, info, "duration_ms", 3000)
-	wantRecordInt(t, info, "window_s", 4800)
-	wantRecordInt(t, info, "capacity", 3840)
+	wantRecordInt(t, info, "window_s", 4680)
+	wantRecordInt(t, info, "capacity", 3744)
 	if got := info["binding"]; got != "egress_rate" {
 		t.Fatalf("binding = %v, want egress_rate（4/3 已超过 rate=1）", got)
 	}

@@ -325,7 +325,13 @@ const (
 // reportConfiguredCapacity 在启动时记录默认签到窗口的配置容量，并在
 // worker 明显超过出口拐点时告警。只写日志，不阻断启动，不读取凭据。
 func reportConfiguredCapacity(log *slog.Logger, cfg *config.Config) {
-	window := startupCapacityWindow
+	// 真实计划会按 EdgeFront/EdgeBack 从窗口两端各让出一段，启动报告
+	// 也扣掉这两段，避免和日切 capacity_shortfall 的口径相差一分钟以上。
+	// DB 覆盖仍只在计划构建时生效，启动阶段只报默认参数口径。
+	window := startupCapacityWindow - cfg.EdgeFront - cfg.EdgeBack
+	if window <= 0 {
+		window = startupCapacityWindow
+	}
 	util := corecapacity.UtilDefault
 	capacity := corecapacity.Capacity(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
 	binding := corecapacity.BindingOf(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
