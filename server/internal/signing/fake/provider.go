@@ -136,9 +136,10 @@ func (p *Provider) OnAttempt(attemptID string, result contract.Result) *Provider
 // want 不在契约结果词表内；未声明 ImageRequired 时没有 photo_missing；
 // 未声明 DeviceBinding 时没有 device_unbound；req 为 nil 或 AttemptID
 // 为空时没有可固定的身份。
-// 前两者是契约豁免，第三者是用错接口——返回 true 会让调用方
-// 误以为「已复现该结果」，实际什么都没布：Sign 与 ExpectedOutcome
-// 都只按非空 AttemptID 查表，写进 attemptFixed[""] 永远读不到。
+// 词表外结果与空身份是用错接口；中间两者是提供方能力不支持的契约豁免。
+// 返回 true 会让调用方误以为「已复现该结果」，实际什么都没布：
+// Sign 与 ExpectedOutcome 都只按非空 AttemptID 查表，
+// 写进 attemptFixed[""] 永远读不到。
 func (p *Provider) SeedOutcome(req *contract.SignRequest, want contract.Outcome) bool {
 	// 词表外结果拒绝布种：写进 attemptFixed 后 Sign 原样返回，
 	// 调用方会误以为「已复现」，而检查器对词表外结果直接跳过。
