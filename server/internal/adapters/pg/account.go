@@ -461,6 +461,9 @@ func (r *AccountRepo) setStatus(ctx context.Context, s corescope.Scope, id strin
 	row := r.db.q(ctx).QueryRow(ctx, query, args...)
 	record, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if expectedCredentialVersion > 0 {
+			return r.classifyMissIfCredentialVersion(ctx, s, id)
+		}
 		return r.classifyMiss(ctx, s, id)
 	}
 	return record, mapError(err)
@@ -803,11 +806,23 @@ func (r *AccountRepo) fetch(ctx context.Context, s corescope.Scope, id string, i
 
 // classifyMiss 解释一次零行比较并交换：
 // 不可见的行报 not_found，可见但状态不同的行报冲突。
+// Review/SetStatus 不校验凭据版本，文案只提状态，不得暗示版本已变。
 func (r *AccountRepo) classifyMiss(ctx context.Context, s corescope.Scope, id string) (coreaccount.Record, error) {
+	return r.classifyMissAs(ctx, s, id, "account status changed")
+}
+
+// classifyMissIfCredentialVersion 解释一次带凭据版本谓词的零行：
+// 可见行的落空既可能来自状态变化，也可能来自版本被换，文案两者都点出。
+func (r *AccountRepo) classifyMissIfCredentialVersion(ctx context.Context, s corescope.Scope, id string) (coreaccount.Record, error) {
+	return r.classifyMissAs(ctx, s, id, "account status or credential version changed")
+}
+
+// classifyMissAs 先确认行在作用域内可见，再按调用方给的文案报冲突。
+func (r *AccountRepo) classifyMissAs(ctx context.Context, s corescope.Scope, id, message string) (coreaccount.Record, error) {
 	if _, err := r.fetch(ctx, s, id, false); err != nil {
 		return coreaccount.Record{}, err
 	}
-	return coreaccount.Record{}, conflictError("account status or credential version changed")
+	return coreaccount.Record{}, conflictError(message)
 }
 
 // classifyRestoreMiss 解释一次零行恢复。
