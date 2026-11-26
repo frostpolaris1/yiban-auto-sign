@@ -627,6 +627,37 @@ sudo systemctl restart yiban.service
 | 进程起不来 | `YIBAN_UI_DIR` 指向的目录缺 `index.html` 时服务端**拒绝启动**。这是有意行为 |
 | 上传/读取照片失败（裸机） | `server.env` 的 `YIBAN_PHOTO_DIR` 是否等于单元里 `ReadWritePaths` 的路径；改目录后重跑 `install.sh` 再 `systemctl restart` |
 
+### 7.1 00032 索引失败处理
+
+`00032` 用 `CREATE INDEX CONCURRENTLY` 给 `sign_tasks` 建两个按日索引。
+并发建索引不在事务里：进程被杀或连接中断会留下 `INVALID` 索引——
+索引定义还在，查询不用它，而迁移版本已经记为已应用。
+
+先查有效性（连部署库执行）：
+
+```sql
+SELECT c.relname, i.indisvalid
+  FROM pg_index i
+  JOIN pg_class c ON c.oid = i.indexrelid
+ WHERE c.relname IN ('idx_sign_tasks_day_run_at_id', 'idx_sign_tasks_day_state');
+```
+
+`indisvalid = false` 即 INVALID。**只**对 INVALID 索引执行：
+
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS idx_sign_tasks_day_run_at_id;
+DROP INDEX CONCURRENTLY IF EXISTS idx_sign_tasks_day_state;
+```
+
+然后重跑迁移（重启服务或迁移工具）。`00032` 的 `IF NOT EXISTS` 会补建缺失索引，
+`ANALYZE` 与两个 autovacuum 设置也会重新执行。
+
+- `ALTER TABLE sign_tasks SET (...)` 已成功时无需回滚：两个值只影响统计刷新
+  频率，不损坏数据，保留即可。
+- 若整体回滚该迁移：删两个索引后，还要
+  `ALTER TABLE sign_tasks RESET (autovacuum_analyze_scale_factor, autovacuum_analyze_threshold);`。
+- 清理 INVALID 索引必须用 `DROP INDEX CONCURRENTLY`：普通 DROP 会长时间持写锁。
+
 ## 8. 部署判据
 
 可发布＝全新干净环境按本文从零装成，一次完成。
