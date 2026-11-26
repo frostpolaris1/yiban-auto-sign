@@ -82,6 +82,17 @@ type fakeStore struct {
 	dayCountsErr  error
 	dayCountCalls []string
 
+	// hasSuccess / hasSuccessErr 注入「同账号同日已有 success」的答复；
+	// 零值时按 tasks 里的 success 行推导（与库语义同形）。
+	// hasSuccessCalls 记录查询键，供「先于 resolveTask」的顺序断言。
+	hasSuccess      bool
+	hasSuccessErr   error
+	hasSuccessCalls []string
+	// 手动签到解析面的调用计数：成功已被拦下时，三者都必须为零。
+	dayTasksCalls    int
+	enabledTaskCalls int
+	ensureCalls      int
+
 	// 观测面
 	claimed      []string
 	finished     map[string]corestatus.TaskState
@@ -310,6 +321,7 @@ func (f *fakeStore) GetWindow(_ context.Context, schoolTaskID, day string) (core
 func (f *fakeStore) EnsureTask(_ context.Context, accountID, schoolTaskID, day string, runAt time.Time) (coreschedule.TaskRow, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ensureCalls++
 	for _, t := range f.tasks {
 		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
 			return t, false, nil
@@ -328,13 +340,36 @@ func (f *fakeStore) EnsureTask(_ context.Context, accountID, schoolTaskID, day s
 func (f *fakeStore) DayTasks(context.Context, string, string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.dayTasksCalls++
 	return f.dayTasks, nil
 }
 
 func (f *fakeStore) AccountEnabledTasks(context.Context, string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.enabledTaskCalls++
 	return f.enabledTasks, nil
+}
+
+// HasSuccessOn 判「同账号同日已有 success」。
+// 注入的答复优先；未注入时按 tasks 里的 success 行推导——与仓储只认
+// state='success' 的口径同形，skipped/failed 不拦。
+func (f *fakeStore) HasSuccessOn(_ context.Context, accountID, day string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hasSuccessCalls = append(f.hasSuccessCalls, accountID+"|"+day)
+	if f.hasSuccessErr != nil {
+		return false, f.hasSuccessErr
+	}
+	if f.hasSuccess {
+		return true, nil
+	}
+	for _, t := range f.tasks {
+		if t.AccountID == accountID && t.Day == day && t.State == string(corestatus.TaskSuccess) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // signHistory 是放弃行现场用的历史切片。
