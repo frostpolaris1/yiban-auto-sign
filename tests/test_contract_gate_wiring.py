@@ -13,7 +13,8 @@
    SKIP 行同时进 stdout 与 `$GITHUB_STEP_SUMMARY`。
 4. 早退之后的重步（装 spectral、装 oasdiff、跑门）都挂 `!= 'skip'` 条件。
 5. PR 事件拿不到底本时 fail-closed（保留 ref，入口脚本 exit 2）；push
-   事件才显性 SKIP。
+   事件才显性 SKIP。base_ref 经 env 的 BASE_REF 承接、shell 内带引号使用
+   （不直插 run，见 scripts/workflow-run-interp-gate.sh）。
 6. 工具钉版：spectral 6.17.0 在 `server/contracts/tools` 的清单与锁里；
    oasdiff 按 `v1.35.0` 安装；`npm ci` 带 `--ignore-scripts`（阻断
    postinstall 联网）。
@@ -174,12 +175,18 @@ def _violations(block):
             bad.append("SKIP 行只进 stdout 不进 $GITHUB_STEP_SUMMARY：聚合页看不见")
 
     # PR 事件拿不到底本时必须 fail-closed（保留 ref 交给入口脚本 exit 2）。
-    if not any('base="origin/${{ github.base_ref }}"' in ln
+    # base_ref 走 env 的 BASE_REF（表达式不直插 run，见
+    # scripts/workflow-run-interp-gate.sh），这里钉的是 shell 侧的 fail-closed 分支。
+    if not any('base="origin/$BASE_REF"' in ln
                for s in steps for ln in s["run"]):
         bad.append("PR 事件底本取不到时没有 fail-closed 分支：契约 PR 会降级为绿")
-    elif not any('elif [ -n "${{ github.base_ref }}" ]; then' in ln
+    elif not any('elif [ -n "$BASE_REF" ]; then' in ln
                  for s in steps for ln in s["run"]):
-        bad.append("fail-closed 分支没有挂在 base_ref 非空的条件上：push 事件也会变红")
+        bad.append("fail-closed 分支没有挂在 BASE_REF 非空的条件上：push 事件也会变红")
+    if not any("BASE_REF: ${{ github.base_ref }}" in ln
+               for ln in block.splitlines()
+               if not ln.strip().startswith("#")):
+        bad.append("job 没有把 github.base_ref 映射成 env 的 BASE_REF：shell 拿不到 PR 底本")
 
     scope_hit = any("server/contracts/" in ln and "grep -E" in ln
                     for s in steps for ln in s["run"])
@@ -223,14 +230,16 @@ class WiringCheckerMutationTest(unittest.TestCase):
         "    timeout-minutes: 10\n"
         "    steps:\n"
         "      - name: Classify change surface\n"
+        "        env:\n"
+        '          BASE_REF: ${{ github.base_ref }}\n'
         "        run: |\n"
         "          changed=$(git diff --name-only base HEAD)\n"
         "          printf '%s\\n' \"$changed\" | grep -E '^server/contracts/' >/dev/null\n"
         "          base_ok=0\n"
         "          if git rev-parse --verify \"$base\" >/dev/null 2>&1; then\n"
         "            base_ok=1\n"
-        "          elif [ -n \"${{ github.base_ref }}\" ]; then\n"
-        "            base=\"origin/${{ github.base_ref }}\"\n"
+        "          elif [ -n \"$BASE_REF\" ]; then\n"
+        "            base=\"origin/$BASE_REF\"\n"
         "          else\n"
         "            base=\"\"\n"
         "          fi\n"
@@ -287,9 +296,16 @@ class WiringCheckerMutationTest(unittest.TestCase):
 
     def test_failclosed_without_base_ref_condition_is_red(self):
         block = self.GOOD_STEPS.replace(
-            'elif [ -n "${{ github.base_ref }}" ]; then', "elif true; then")
+            'elif [ -n "$BASE_REF" ]; then', "elif true; then")
         bad = _violations(block)
         self.assertTrue(any("push 事件" in b for b in bad), bad)
+
+    def test_missing_base_ref_env_mapping_is_red(self):
+        block = self.GOOD_STEPS.replace(
+            '          BASE_REF: ${{ github.base_ref }}\n', "")
+        bad = _violations(block)
+        self.assertTrue(any("BASE_REF" in b for b in bad),
+                        "env 没把 github.base_ref 映射成 BASE_REF，PR 底本取不到：%r" % bad)
 
     def test_job_level_if_is_red(self):
         bad = _violations(self.GOOD_STEPS.replace(
@@ -311,7 +327,7 @@ class WiringCheckerMutationTest(unittest.TestCase):
         self.assertTrue(any("早退是假的" in b for b in bad), bad)
 
     def test_missing_failclosed_branch_is_red(self):
-        block = self.GOOD_STEPS.replace('          base="origin/${{ github.base_ref }}"\n', "")
+        block = self.GOOD_STEPS.replace('          base="origin/$BASE_REF"\n', "")
         bad = _violations(block)
         self.assertTrue(any("fail-closed" in b for b in bad), bad)
 

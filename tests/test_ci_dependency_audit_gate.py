@@ -28,12 +28,16 @@ PyYAML 不在运行依赖里，门禁不得为一条注释引入一个新依赖�
 import io
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(BASE, ".github", "workflows")
+INTERP_GATE = os.path.join(BASE, "scripts", "workflow-run-interp-gate.sh")
+BASH = shutil.which("bash")
 DOCKERFILE = os.path.join(BASE, "docker", "Dockerfile")
 CI = os.path.join(WORKFLOWS, "ci.yml")
 E2E_DIR = os.path.join(BASE, "frontend", "e2e")
@@ -367,6 +371,122 @@ class FrontendE2eCiWiringTest(unittest.TestCase):
                 and ln.strip().startswith("run:")
                 and ("playwright test" in ln or "test:e2e" in ln)]
         self.assertEqual(runs, [], "被注释掉的执行行仍被判成调用点：本门的判据写反了")
+
+
+class WorkflowRunInterpGateTest(unittest.TestCase):
+    """P1-6：run 段内直插 ${{ github.base_ref }} / ${{ github.event.before }} 必须判红。
+
+    这两个表达式先由 GitHub 展开成裸文本再交给 shell，不经过 shell 转义；取值来自
+    base 分支名与 commit sha，属外部输入。正确形态是 job/step 的 env: 映射成
+    BASE_REF / BEFORE_SHA，shell 内以带引号的变量使用。门接在
+    server/scripts/verify.sh（stacks 车道），并登记进 tooling-gate 的 shellcheck 面。
+    """
+
+    def _run(self, workflows):
+        if not BASH:
+            self.skipTest("bash 不在 PATH")
+        tmp = tempfile.mkdtemp(prefix="wf-interp-")
+        try:
+            for name, text in workflows.items():
+                with io.open(os.path.join(tmp, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            return subprocess.run(
+                [BASH, INTERP_GATE, tmp], cwd=BASE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_real_workflows_are_clean(self):
+        if not BASH:
+            self.skipTest("bash 不在 PATH")
+        proc = subprocess.run([BASH, INTERP_GATE], cwd=BASE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=120)
+        self.assertEqual(
+            proc.returncode, 0,
+            "run 段仍有直插：%s" % proc.stderr.decode("utf-8", "replace"))
+
+    def test_direct_interpolation_inside_run_block_is_red(self):
+        fixture = "\n".join([
+            "name: t",
+            "on: [pull_request]",
+            "jobs:",
+            "  a:",
+            "    runs-on: ubuntu-latest",
+            "    steps:",
+            "      - name: classify",
+            "        run: |",
+            '          if [ -n "${{ github.base_ref }}" ]; then',
+            '            git fetch origin "${{ github.base_ref }}"',
+            "          fi",
+        ])
+        proc = self._run({"a.yml": fixture})
+        self.assertEqual(proc.returncode, 1, "run 块内直插没有被判红")
+        err = proc.stderr.decode("utf-8", "replace")
+        self.assertIn("a.yml:", err, "命中没有按 file:line 报出来")
+        self.assertIn("github.base_ref", err)
+
+    def test_inline_run_value_is_red(self):
+        fixture = "\n".join([
+            "jobs:",
+            "  a:",
+            "    runs-on: ubuntu-latest",
+            "    steps:",
+            '      - run: git fetch origin "${{ github.event.before }}"',
+        ])
+        proc = self._run({"b.yml": fixture})
+        self.assertEqual(proc.returncode, 1, "run: 行内直插没有被判红")
+        self.assertIn(b"github.event.before", proc.stderr)
+
+    def test_env_indirection_is_green(self):
+        fixture = "\n".join([
+            "jobs:",
+            "  a:",
+            "    runs-on: ubuntu-latest",
+            "    env:",
+            "      BASE_REF: ${{ github.base_ref }}",
+            "      BEFORE_SHA: ${{ github.event.before }}",
+            "    steps:",
+            "      - name: classify",
+            "        run: |",
+            '          if [ -n "$BASE_REF" ]; then',
+            '            git fetch --no-tags --depth=1 origin "$BASE_REF"',
+            "          fi",
+            '          base="$BEFORE_SHA"',
+        ])
+        proc = self._run({"c.yml": fixture})
+        self.assertEqual(
+            proc.returncode, 0,
+            "env: 间接引用被误判：%s" % proc.stderr.decode("utf-8", "replace"))
+
+    def test_expression_outside_run_is_not_shell(self):
+        fixture = "\n".join([
+            "jobs:",
+            "  a:",
+            "    runs-on: ubuntu-latest",
+            '    if: github.base_ref != ""',
+            "    steps:",
+            "      - name: doc",
+            "        with:",
+            '          note: "${{ github.base_ref }}"',
+            "        run: echo ok",
+        ])
+        proc = self._run({"d.yml": fixture})
+        self.assertEqual(proc.returncode, 0, "if:/with: 不进 shell，不该判红")
+
+    def test_gate_is_wired_into_verify_and_tooling_gate(self):
+        with io.open(os.path.join(BASE, "server", "scripts", "verify.sh"),
+                     encoding="utf-8") as fh:
+            verify = fh.read()
+        calls = [ln for ln in verify.splitlines()
+                 if "workflow-run-interp-gate.sh" in ln
+                 and not ln.strip().startswith("#")]
+        self.assertTrue(calls, "server/scripts/verify.sh 没有真调用 workflow-run-interp-gate.sh")
+        with io.open(os.path.join(BASE, "scripts", "tooling-gate.sh"),
+                     encoding="utf-8") as fh:
+            tooling = fh.read()
+        self.assertIn("scripts/workflow-run-interp-gate.sh", tooling,
+                      "新脚本没登记进 tooling-gate 的 shellcheck 面")
 
 
 if __name__ == "__main__":

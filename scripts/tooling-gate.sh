@@ -34,6 +34,7 @@ SHELL_FILES=(
     scripts/e2e/update-rollback-e2e.sh
     scripts/e2e/lib/deploy-e2e.sh
     scripts/verify-stacks.sh
+    scripts/workflow-run-interp-gate.sh
     scripts/tooling-gate.sh
     scripts/contract-gate.sh
     server/scripts/build-release.sh
