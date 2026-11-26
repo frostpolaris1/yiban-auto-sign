@@ -173,8 +173,25 @@ func TestUIIndexHasNoInlineScripts(t *testing.T) {
 // must_change_password 门的放行判断必须按 Gin 注册形状精确匹配：
 // 方法不符、以允许路径为前缀的路径都不得漏过。
 // 该门是强制改密的唯一硬门；用前缀匹配会让 /api/auth/me/xxx 之类漏进去。
+// 放行项还要对着 router.New 的真实注册表核一遍：契约删了路由而门
+// 还在放行、或方法注册变了，这里都会先红，避免手写路径自我印证。
 func TestMustChangePasswordAllowedMatchesExactRouteAndMethod(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	wired, err := New(Options{Sessions: cspWiringIssuer{}})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	registered := make(map[string]bool, len(wired.Routes()))
+	for _, route := range wired.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+	if !registered["GET /api/auth/password-policy"] {
+		t.Fatal("GET /api/auth/password-policy 未注册：门放行它，契约却没有该路由")
+	}
+	if registered["POST /api/auth/password-policy"] {
+		t.Fatal("POST /api/auth/password-policy 已注册：方法不符用例不再证明方法匹配")
+	}
+
 	engine := gin.New()
 	decisions := make(map[string]bool)
 	probe := func(name string) gin.HandlerFunc {
@@ -187,6 +204,9 @@ func TestMustChangePasswordAllowedMatchesExactRouteAndMethod(t *testing.T) {
 	engine.GET("/api/auth/me/extra", probe("me extra"))
 	engine.POST("/api/auth/change-password", probe("post change-password"))
 	engine.GET("/api/auth/change-password", probe("get change-password"))
+	engine.GET("/api/auth/password-policy", probe("get password-policy"))
+	engine.POST("/api/auth/password-policy", probe("post password-policy"))
+	engine.GET("/api/auth/password-policy/extra", probe("password-policy extra"))
 	engine.POST("/api/auth/logout", probe("logout"))
 	engine.POST("/api/me/restore", probe("restore"))
 	engine.GET("/api/accounts", probe("accounts"))
@@ -204,6 +224,9 @@ func TestMustChangePasswordAllowedMatchesExactRouteAndMethod(t *testing.T) {
 		{"me extra", http.MethodGet, "/api/auth/me/extra", false},
 		{"post change-password", http.MethodPost, "/api/auth/change-password", true},
 		{"get change-password", http.MethodGet, "/api/auth/change-password", false},
+		{"get password-policy", http.MethodGet, "/api/auth/password-policy", true},
+		{"post password-policy", http.MethodPost, "/api/auth/password-policy", false},
+		{"password-policy extra", http.MethodGet, "/api/auth/password-policy/extra", false},
 		{"logout", http.MethodPost, "/api/auth/logout", true},
 		{"restore", http.MethodPost, "/api/me/restore", true},
 		{"accounts", http.MethodGet, "/api/accounts", false},
@@ -221,5 +244,12 @@ func TestMustChangePasswordAllowedMatchesExactRouteAndMethod(t *testing.T) {
 				t.Fatalf("%s %s allowed = %v, want %v", tc.method, tc.path, got, tc.want)
 			}
 		})
+	}
+	// 放行的形状必须是契约里真有的：门放行一个不存在的路由，
+	// 请求永远到不了处理器，放行就是假的。
+	for _, tc := range cases {
+		if tc.want && !registered[tc.method+" "+tc.path] {
+			t.Fatalf("放行面 %s %s 不在真实路由表内", tc.method, tc.path)
+		}
 	}
 }
