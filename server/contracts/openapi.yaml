@@ -1407,7 +1407,7 @@ paths:
       description: |
         Runs one platform authentication with the submitted phone and
         password and then reads back the device registration registered on
-        the platform. Nothing is persisted: the phone, password and device
+        the platform. No submitted credential is persisted: the phone, password and device
         code never reach storage, logs, audit or the response. The response
         carries the device code only as a presence bit; the code itself
         never leaves the server.
