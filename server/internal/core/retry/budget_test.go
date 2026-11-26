@@ -187,6 +187,8 @@ func TestNextDelayAfterWindow(t *testing.T) {
 		t.Fatal("窗口已过不该给落点")
 	}
 	// 恰在终点：与 core/window.Closed 同为 >= 口径，必须放弃。
+	// 注意：旧实现 remaining<=0 也会放弃，故本例是等价性守门，不是回归保护；
+	// 真正的 >= 口径由 window.TestClosedAtBoundary 钉住。
 	if _, ok := NextDelay(p, 1, Window{End: time.Unix(1000, 0)}, time.Unix(1000, 0)); ok {
 		t.Fatal("恰在终点不该给落点")
 	}
