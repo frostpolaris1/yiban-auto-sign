@@ -2,9 +2,9 @@
 
 > 工单 6jk。判据来源：AGENTS.md §六 第 16/17 条。
 > 可发布＝全新干净环境按部署件从零装成。
-> 本文给出三条 e2e 的命令、断言与 CI 状态。
+> 本文给出五组 e2e 的命令、断言与 CI 状态。
 
-## 1. 三条命令
+## 1. 五组命令
 
 容器路径（自动轨）：
 
@@ -31,7 +31,7 @@ bash scripts/e2e/ui-signing-e2e.sh success
 bash scripts/e2e/ui-signing-e2e.sh tampered extra symlink no-ui-entry
 ```
 
-四条都在仓库根目录执行，且都在 WSL 或 Linux 上跑。前三条的容器资源
+五组都在仓库根目录执行，且都在 WSL 或 Linux 上跑。前三组涉及容器的资源
 与日志都走 `--log-dir`，不碰生产路径；UI 用例只需要 bash、openssl、
 sha256sum（不碰 docker，单跑一例只需几秒）。
 

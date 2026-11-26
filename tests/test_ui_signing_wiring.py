@@ -307,6 +307,49 @@ class BuildReleaseUIWiringTest(unittest.TestCase):
                      env=self.env)
         self.assertEqual(r.returncode, 2, "缺值必须判用法错误：" + r.stdout + r.stderr)
 
+    def test_bad_ui_dir_fails_before_build_and_leaves_no_partial_out(self):
+        # 先成功构建一次，拿到可对照的旧产物。
+        ui = os.path.join(self.tmp, "ui-good")
+        make_ui_tree(ui, "good")
+        out = os.path.join(self.tmp, "out-atomic")
+        r = run_bash([self.script, out, "--ui-dir", ui], env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        with open(os.path.join(out, "yiban-server"), "rb") as f:
+            server_before = f.read()
+        with open(os.path.join(out, "ui-SHA256SUMS"), "rb") as f:
+            sums_before = f.read()
+
+        # 坏 --ui-dir 必须零写入，旧产物原样保留。
+        bad = os.path.join(self.tmp, "ui-bad")
+        os.makedirs(bad)
+        r = run_bash([self.script, out, "--ui-dir", bad], env=self.env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        with open(os.path.join(out, "yiban-server"), "rb") as f:
+            self.assertEqual(f.read(), server_before)
+        with open(os.path.join(out, "ui-SHA256SUMS"), "rb") as f:
+            self.assertEqual(f.read(), sums_before)
+        self.assertEqual(
+            [n for n in os.listdir(out) if n.startswith(".build-release.")], [],
+            "失败必须清掉 staging，不得留半成品目录")
+
+        # 全新 outdir 也不能先落二进制再失败。
+        fresh = os.path.join(self.tmp, "out-fresh-bad")
+        r = run_bash([self.script, fresh, "--ui-dir", bad], env=self.env)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(os.listdir(fresh) if os.path.isdir(fresh) else [], [])
+
+    def test_no_ui_build_removes_stale_ui_checksums(self):
+        ui = os.path.join(self.tmp, "ui-stale")
+        make_ui_tree(ui, "stale")
+        out = os.path.join(self.tmp, "out-stale")
+        r = run_bash([self.script, out, "--ui-dir", ui], env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(os.path.isfile(os.path.join(out, "ui-SHA256SUMS")))
+        r = run_bash([self.script, out], env=self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(os.path.isfile(os.path.join(out, "ui-SHA256SUMS")),
+                         "无 UI 构建必须清掉上次的清单，避免混进新 manifest")
+
 
 class UpdateShUIWiringTest(unittest.TestCase):
     """静态：update.sh 的 UI 校验接线（行为由 Go 干跑 e2e 证）。"""

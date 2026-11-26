@@ -200,11 +200,12 @@ R8c 状态目录软链、R9b 备份件被篡改）全 PASS
   显式 `--allow-unsigned` 才跳过验签，逃生口与三件互斥。
 - UI 与二进制同批入清单：清单里有 `ui-SHA256SUMS` 条目时，`update.sh` 必须
   同时给 `--ui-dir`（缺则 exit 1 显性失败），并从 `--ui-checksums`（缺省
-  `$(dirname` manifest`)/ui-SHA256SUMS`）读逐文件清单；校验 =
+  与 manifest 同目录的 `ui-SHA256SUMS`）读逐文件清单；校验 =
   对清单自身做 sha256 对账 + `sha256sum -c` 全量 + 拒绝清单外多余文件、
   软链、非普通文件、路径逃逸。反过来，清单没有 ui 条目却给 `--ui-dir` 也
   exit 1（不许把未签名的页面塞进已签名升级）。任一项红即 exit 1 且零写入
-  （发生在停服/换件之前）；`--allow-unsigned` 不降级 UI 清单校验。
+  （发生在停服/换件之前）。`--allow-unsigned` 走无签名逃生口，整体跳过
+  签名清单校验（含 UI 清单），不属于已签名升级路径。
 
 ## 已登记缺口（待立项，本清单不现场补造）
 
