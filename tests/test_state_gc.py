@@ -224,6 +224,8 @@ ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀�
     "line-": "layout.py 的 HTML 内联样式属性名（style=\"line-height:{_LEAD}\"）",
     "vertical-": "layout.py 的 HTML 内联样式属性名（style=\"vertical-align:top;…{…}\"）",
     "word-": "layout.py 的 HTML 内联样式属性名（style=\"word-break:break-word;…{…}\"）",
+    "workflow-run-interp-": "scripts/workflow-run-interp-gate.sh 的诊断文案（含 GitHub base_ref 表达式）"
+                            "被按日文件名正则误命中；它是脚本名/日志前缀，不是状态文件",
 }
 
 

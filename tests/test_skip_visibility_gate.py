@@ -761,6 +761,42 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "skipTest",
    "需要 git 创建临时仓库；私钥门自证 DID NOT run"
   ]
+ ],
+ "tests/test_ci_dependency_audit_gate.py": [
+  [
+   "skipTest",
+   "bash 不在 PATH"
+  ]
+ ],
+ "tests/test_ui_signing_wiring.py": [
+  [
+   "skipTest",
+   "\u0000DYNAMIC"
+  ],
+  [
+   "skipTest",
+   "SKIP: 没有 bash"
+  ],
+  [
+   "skipTest",
+   "SKIP: 没有 bash，UI 清单无法真跑"
+  ],
+  [
+   "skipTest",
+   "SKIP: 没有 git，无法构造发布检出"
+  ],
+  [
+   "skipTest",
+   "SKIP: 没有 sha256sum"
+  ],
+  [
+   "skipTest",
+   "SKIP: 没有 sha256sum，清单无法生成/校验"
+  ],
+  [
+   "skipTest",
+   "no bash"
+  ]
  ]
 }
 """)
