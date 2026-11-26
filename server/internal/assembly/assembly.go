@@ -282,6 +282,11 @@ const startupMigrateBudget = 10 * time.Minute
 // 失败，表现为“迁移成功但服务起不来”；开池是短动作，单独 30s 即可。
 const startupOpenBudget = 30 * time.Second
 
+// startupRecoverBudget 只覆盖启动时的孤儿任务回收（workerSvc.Recover）。
+// Recover 在迁移之后运行；复用迁移 ctx 会在迁移接近预算时把它一起取消，
+// 表现为 context.Canceled 导致整进程起不来。独立 30s 足够重置 running 行。
+const startupRecoverBudget = 30 * time.Second
+
 // newServerFromStack 用已装配好的 Stack 构造未启动的 server。
 //
 // closeOnShutdown 决定 HTTP 关闭是否释放连接池：
@@ -420,16 +425,16 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		logger.Warn("auth endpoints are disabled: YIBAN_DATABASE_URL is empty")
 		logger.Warn("user, school, admin and account endpoints return 501: YIBAN_DATABASE_URL is empty")
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), startupMigrateBudget)
-		defer cancel()
+		migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), startupMigrateBudget)
+		defer cancelMigrate()
 
-		if _, err := pg.Migrate(ctx, cfg.DatabaseURL); err != nil {
+		if _, err := pg.Migrate(migrateCtx, cfg.DatabaseURL); err != nil {
 			// 被取消的 CONCURRENTLY 可能留下 INVALID 索引，恢复步骤在 §7.1。
 			return nil, fmt.Errorf("assembly: migrate: %w "+
 				"(a cancelled CONCURRENTLY build may leave INVALID indexes; "+
 				"see deploy/README.md §7.1)", err)
 		}
-		cancel() // 迁移预算到此为止，建池不复用它。
+		cancelMigrate() // 迁移预算到此为止，建池与回收不复用它。
 		openCtx, cancelOpen := context.WithTimeout(context.Background(), startupOpenBudget)
 		defer cancelOpen()
 		var err error
@@ -877,7 +882,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: worker service: %w", err)
 		}
-		if n, recErr := workerSvc.Recover(ctx); recErr != nil {
+		recoverCtx, cancelRecover := context.WithTimeout(context.Background(), startupRecoverBudget)
+		defer cancelRecover()
+		if n, recErr := workerSvc.Recover(recoverCtx); recErr != nil {
 			closeFn()
 			return nil, fmt.Errorf("assembly: recover orphan tasks: %w", recErr)
 		} else if n > 0 {
