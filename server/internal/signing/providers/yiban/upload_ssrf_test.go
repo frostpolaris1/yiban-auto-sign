@@ -99,6 +99,9 @@ func TestProductionRejectsNonPublicUploadTargets(t *testing.T) {
 		}},
 		{"loopback-https", func(*upstream) string { return "https://127.0.0.1/upload/x.jpg" }},
 		{"loopback-ipv6-https", func(*upstream) string { return "https://[::1]/upload/x.jpg" }},
+		// zone-id 变体：[::1%25lo] 的 Hostname() 是 "::1%lo"，net.ParseIP 不认，
+		// 必须在解析 IP 之前按字符串拦下（复审 B1）。
+		{"loopback-ipv6-zone-https", func(*upstream) string { return "https://[::1%25lo]/upload/x.jpg" }},
 		{"localhost-https", func(*upstream) string { return "https://localhost/upload/x.jpg" }},
 		{"subdomain-localhost-https", func(*upstream) string { return "https://upload.localhost/x.jpg" }},
 		{"private-10-https", func(*upstream) string { return "https://10.1.2.3/upload/x.jpg" }},
