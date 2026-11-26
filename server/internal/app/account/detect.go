@@ -14,6 +14,7 @@ package account
 // # 口径
 // 平台失败（含身份字段不全）统一 upstream；入口层映射为中性 502。
 // disabled 绑定校视同未命中：不建第二所校，响应 school 为 null。
+// 普通用户只复用已登记学校：未登记回 not_found，由管理员先建校。
 
 import (
 	"context"
@@ -37,8 +38,9 @@ type IdentityVerifier interface {
 
 // PlatformSchoolProjector 把平台院校标识投影到本地学校。
 // 活跃命中或自动建校返回 active 行；disabled 命中原样返回 disabled 行。
+// allowCreate 为假时未登记校回 not_found，调用方不得自造校。
 type PlatformSchoolProjector interface {
-	EnsurePlatformSchool(ctx context.Context, universityID, name string) (coreschool.Record, error)
+	EnsurePlatformSchool(ctx context.Context, universityID, name string, allowCreate bool) (coreschool.Record, error)
 }
 
 // DetectInput 是平台探测的输入。凭据只在本次调用内使用。
@@ -117,7 +119,10 @@ func (s *Service) Detect(ctx context.Context, scope corescope.Scope, in DetectIn
 		return DetectResult{}, platformCallFailure(err, "platform detection failed")
 	}
 
-	school, err := s.deps.SchoolProjection.EnsurePlatformSchool(ctx, universityID, universityName)
+	// 探测本身不授予建校权：master/admin 保留自动建校，
+	// 普通用户只能命中已登记学校，未登记按 not_found 上抛。
+	allowCreate := scope.Kind() != corescope.KindUser
+	school, err := s.deps.SchoolProjection.EnsurePlatformSchool(ctx, universityID, universityName, allowCreate)
 	if err != nil {
 		return DetectResult{}, err
 	}

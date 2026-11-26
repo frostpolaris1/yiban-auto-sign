@@ -125,7 +125,7 @@ either side drifts.
 | POST | `/api/accounts` | master/admin/user | P1 |
 |  |  |  | 可选 `confirm_defaults`：客户端声明建号全部沿用 detect 返回的默认值。它是声明而非授权——开关开时服务端仍用存储凭据重登平台并复核 `UniversityId` 与学校绑定；未带、false、开关关或复核失败都留在 pending 走人工；复核通过写 `account.auto_approve` 审计并通知管理员，失败写 `account.auto_check_failed`（detail 只含结果词）。 |
 | POST | `/api/accounts/detect` | master/admin/user | ykxf |
-|  |  |  | 用提交的手机号与口令做一次平台认证并读回设备登记：凭据零落库、零日志、零审计值；平台院校按 `schools.platform_university_id` 投影到本地学校——活跃校复用，未绑定则自动建校（名称取平台、编码自动生成、status active）并写 `school.auto_create` 审计（detail 只含 `university_id`），disabled 校视同未命中（不重复建校，`school` 回 null）；响应只回设备码状态位 `device_code_present`，不回设备码本体；平台失败统一 502 中性信封；按客户端 IP 与提交手机号限流，429 带 `Retry-After`。 |
+|  |  |  | 用提交的手机号与口令做一次平台认证并读回设备登记：凭据零落库、零日志、零审计值；平台院校按 `schools.platform_university_id` 投影到本地学校并分角色——活跃校对所有角色复用；master/admin 未绑定则自动建校（名称取平台、编码自动生成、status active）并写 `school.auto_create` 审计（detail 只含 `university_id`）；user 只复用已登记校，未登记返回 404 `not_found` 并提示联系管理员创建，零建校零审计；disabled 校对任何角色都视同未命中（不重复建校、不写审计、`school` 回 null）；响应只回设备码状态位 `device_code_present`，不回设备码本体；平台失败统一 502 中性信封；按客户端 IP 与提交手机号限流，429 带 `Retry-After`。 |
 | GET | `/api/accounts/summary` | master/admin | N190 |
 |  |  |  | 只数未软删账号：`pending` 与 `rejected` 两计数，供看板待处理 KPI 与账号页提示条。 |
 | POST | `/api/accounts/batch` | master/admin | 870 |

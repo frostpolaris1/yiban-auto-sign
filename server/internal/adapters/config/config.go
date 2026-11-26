@@ -190,6 +190,12 @@ type Config struct {
 	// TurnstileSecret 是 siteverify 的服务端私钥。敏感值：不得出现在
 	// 日志、审计与错误文本里。
 	TurnstileSecret string
+	// TurnstileExpectedHostname 是可选的主机名绑定：非空时 siteverify
+	// 回执的 hostname 必须与它相等（忽略大小写）。空表示不校验。
+	TurnstileExpectedHostname string
+	// TurnstileExpectedAction 是可选的 action 绑定：非空时回执的 action
+	// 必须与它逐字节相等（区分大小写）。空表示不校验。
+	TurnstileExpectedAction string
 	// TurnstileMode 是定型后的档位，只取 TurnstileModeOff/Log/On。
 	// 输入键另接受 auto：两把密钥齐备即 on，否则 off。
 	TurnstileMode string
@@ -394,10 +400,13 @@ var (
 	keyTrustedProxies    = stringKey{"YIBAN_TRUSTED_PROXIES", ""}
 	keyKDFConcurrency    = intKey{"YIBAN_KDF_CONCURRENCY", 4, 1, 64}
 
-	// 人机验证三键。站点密钥是公开值；私钥只在服务端使用。
-	keyTurnstileSiteKey = stringKey{"YIBAN_TURNSTILE_SITE_KEY", ""}
-	keyTurnstileSecret  = stringKey{"YIBAN_TURNSTILE_SECRET", ""}
-	keyTurnstileMode    = enumKey{"YIBAN_TURNSTILE_MODE", "auto", turnstileModes}
+	// 人机验证键。站点密钥是公开值；私钥只在服务端使用；
+	// 两个 EXPECTED_* 是可选的令牌绑定期望，空表示不校验该维度。
+	keyTurnstileSiteKey          = stringKey{"YIBAN_TURNSTILE_SITE_KEY", ""}
+	keyTurnstileSecret           = stringKey{"YIBAN_TURNSTILE_SECRET", ""}
+	keyTurnstileExpectedHostname = stringKey{"YIBAN_TURNSTILE_EXPECTED_HOSTNAME", ""}
+	keyTurnstileExpectedAction   = stringKey{"YIBAN_TURNSTILE_EXPECTED_ACTION", ""}
+	keyTurnstileMode             = enumKey{"YIBAN_TURNSTILE_MODE", "auto", turnstileModes}
 )
 
 // configSpecs 汇总静态缺省/域的读取规格。
@@ -446,6 +455,8 @@ func configSpecs() []keySpec {
 		keyKDFConcurrency.spec(),
 		keyTurnstileSiteKey.spec(),
 		keyTurnstileSecret.spec(),
+		keyTurnstileExpectedHostname.spec(),
+		keyTurnstileExpectedAction.spec(),
 		keyTurnstileMode.spec(),
 	}
 }
@@ -651,11 +662,19 @@ func LoadFrom(src Source) (*Config, error) {
 	// 而服务端无从校验（或反之），启动即失败，不进入半套状态。
 	cfg.TurnstileSiteKey = strings.TrimSpace(keyTurnstileSiteKey.read(src))
 	cfg.TurnstileSecret = strings.TrimSpace(keyTurnstileSecret.read(src))
+	cfg.TurnstileExpectedHostname = strings.TrimSpace(keyTurnstileExpectedHostname.read(src))
+	cfg.TurnstileExpectedAction = strings.TrimSpace(keyTurnstileExpectedAction.read(src))
 	mode, err := keyTurnstileMode.read(src)
 	if err != nil {
 		return nil, err
 	}
 	if cfg.TurnstileMode, err = resolveTurnstileMode(mode, cfg.TurnstileSiteKey, cfg.TurnstileSecret); err != nil {
+		return nil, err
+	}
+	// 期望绑定是令牌校验条件；没有私钥就永远不会被执行。与 mode 无关：
+	// off 档同样拒绝「设了绑定却没私钥」的半套配置。
+	if err := checkTurnstileExpectations(cfg.TurnstileSecret,
+		cfg.TurnstileExpectedHostname, cfg.TurnstileExpectedAction); err != nil {
 		return nil, err
 	}
 	if cfg.ResetMailEnabled {
@@ -714,6 +733,29 @@ func resolveTurnstileMode(mode, siteKey, secret string) (string, error) {
 	default:
 		return "", fmt.Errorf("config: unknown turnstile mode %q", mode)
 	}
+}
+
+// checkTurnstileExpectations 钉住「期望绑定必须有私钥」。
+//
+// 期望值是 siteverify 回执的校验条件；私钥为空时根本不会问 siteverify，
+// 静默忽略等于让部署方以为绑定已生效。因此任一期望非空而私钥为空即
+// 启动失败，点名已设置的期望键与缺的私钥键。
+func checkTurnstileExpectations(secret, hostname, action string) error {
+	if secret != "" {
+		return nil
+	}
+	var configured []string
+	if hostname != "" {
+		configured = append(configured, keyTurnstileExpectedHostname.key)
+	}
+	if action != "" {
+		configured = append(configured, keyTurnstileExpectedAction.key)
+	}
+	if len(configured) == 0 {
+		return nil
+	}
+	return fmt.Errorf("config: %s requires %s",
+		strings.Join(configured, " and "), keyTurnstileSecret.key)
 }
 
 // checkDatabasePresence 钉住「有库才跑业务」的启动判据。

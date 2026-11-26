@@ -15,6 +15,8 @@
  * 重挂载会先 `remove` 旧控件，避免 StrictMode 双执行留下两个。
  * 令牌是短时凭据：只存在组件状态里，不写 localStorage，也不进控制台。
  * 未配置站点密钥时返回 null：不显示控件、不显示占位、也不占版面高度。
+ * 控件固定携带 action=register；服务端配置 YIBAN_TURNSTILE_EXPECTED_ACTION 时必须与之同值，
+ * 留空则不校验 action。
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -22,8 +24,16 @@ import { useTheme } from '@/lib/theme'
 
 const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
 
+/**
+ * 控件动作名。必须与服务端 `YIBAN_TURNSTILE_EXPECTED_ACTION` 同值：
+ * 启用该期望后，action 不匹配的令牌会被服务端判为不合格，注册开档会直接 400。
+ * 界面只有一个注册控件，动作固定为 register；服务端期望留空则不校验 action。
+ */
+export const TURNSTILE_ACTION = 'register'
+
 type TurnstileRenderOptions = {
   sitekey: string
+  action?: string
   theme?: 'light' | 'dark' | 'auto'
   callback?: (token: string) => void
   'expired-callback'?: () => void
@@ -132,6 +142,7 @@ export function TurnstileSlot({
         hostRef.current.replaceChildren()
         widgetId = api.render(hostRef.current, {
           sitekey: siteKey,
+          action: TURNSTILE_ACTION,
           theme,
           callback: (token) => {
             if (cancelled) return

@@ -4,7 +4,7 @@ package main
 //
 // # 功能
 // 用真实 PostgreSQL 与 w2c 的假 provider 钉住：
-// detect 首次建校、二次命中、disabled 视同未命中、并发建校 409 回落；
+// detect 首次建校、二次命中、disabled 视同未命中、user 未登记 404 且零建校、并发建校 409 回落；
 // create + 开关开 + confirm_defaults → 自动 active + 审计 + 管理员通知；
 // 身份不匹配 / 开关关 / 未带 confirm_defaults → 留 pending。
 //
@@ -183,6 +183,28 @@ func TestYkxfDetectDisabledSchoolIsTreatedAsAbsent(t *testing.T) {
 	}
 	if got := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'school.auto_create'"); got != 0 {
 		t.Fatalf("disabled hit wrote %d auto create audits, want 0", got)
+	}
+}
+
+// 未登记校：user 的投影只复用、不建校，404 且零学校零审计。
+func TestYkxfDetectUserUnknownSchoolIsNotFound(t *testing.T) {
+	e := w2cNewEnv(t)
+	user := e.user("detect-user@example.com", coreauth.RoleUser)
+	e.provider.profile = contract.Profile{
+		DisplayName: "测*生", SchoolName: "未登记大学", UniversityID: "0000000069",
+	}
+
+	rec := e.do(http.MethodPost, "/api/accounts/detect",
+		map[string]any{"phone": "13800138069", "password": "secret"}, e.login(user))
+	w2cWantStatus(t, rec, http.StatusNotFound)
+	if code := e.errorCode(rec); code != "not_found" {
+		t.Fatalf("code = %q, want not_found", code)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM schools WHERE platform_university_id = '0000000069'"); got != 0 {
+		t.Fatalf("user detect created %d schools, want 0", got)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'school.auto_create'"); got != 0 {
+		t.Fatalf("user detect wrote %d auto create audits, want 0", got)
 	}
 }
 

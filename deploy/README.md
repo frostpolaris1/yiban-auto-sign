@@ -491,6 +491,7 @@ sudo systemctl restart yiban.service
 | `YIBAN_PHOTO_DIR` | 照片目录 | `data/photos` |
 | `YIBAN_AUDIT_ANCHOR_FILE` | 库外审计锚点文件（append-only，0600） | 空：巡检端点不做锚点比对 |
 | `YIBAN_TURNSTILE_MODE` / `_SITE_KEY` / `_SECRET` | 公开注册的人机验证（auto/off/log/on）；两把密钥成对设置，开启时 CSP 放开 Cloudflare 源 | `auto`：缺密钥即关闭 |
+| `YIBAN_TURNSTILE_EXPECTED_HOSTNAME` / `_EXPECTED_ACTION` | 可选的令牌绑定：回执 hostname（忽略大小写）或 action（区分大小写）不匹配即判令牌不合格；留空不校验。开启 action 时必须设为 `register`——注册界面控件已固定携带该动作，设成别的值会让开档注册必 400。任一期望非空而私钥为空即启动错误 | 两项都空 |
 
 完整名册与每键说明见 `server/internal/configdata/registry.json`（编译期嵌入二进制）。
 
@@ -610,6 +611,11 @@ sudo systemctl restart yiban.service
      `--env-file` 注入；不要写进 `docker-compose.yml`）。
    仓库里三份 `*.env.example` 只留空占位；`TestTemplatesMatchRegistry`
    会钉住键面与「sensitive 键必须为空」，改动模板即红。
+   还可选配 `YIBAN_TURNSTILE_EXPECTED_HOSTNAME` 与 `YIBAN_TURNSTILE_EXPECTED_ACTION`
+   把令牌绑到站点与动作：留空不校验；填了就必须与回执一致，否则算令牌不合格
+   （`on` 档 400，不是 502）。**开 `_EXPECTED_ACTION` 时必须填 `register`**：
+   注册界面控件固定带 `action: 'register'`，填别的值会让开档注册全部失败。
+   任一期望非空而私钥为空是启动错误。
 3. `YIBAN_TURNSTILE_MODE`：缺省 `auto`（两把齐备即强制校验）；先设 `log`
    观察几天（只记 outcome/codes，不拦注册），确认无误再设 `on`；
    `off` 等于关闭，CSP 回到不含 Cloudflare 源的旧基线。

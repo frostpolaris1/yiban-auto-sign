@@ -906,19 +906,28 @@ export interface paths {
          * @description Runs one platform authentication with the submitted phone and
          *     password and then reads back the device registration registered on
          *     the platform. Nothing is persisted: the phone, password and device
-         *     code never reach storage, logs, audit or the response. The platform
-         *     university is projected onto the local school: an active school
-         *     bound to the platform university id is reused; a missing binding
-         *     creates one school (name from the platform, generated code, status
-         *     active) and appends a school.auto_create audit row carrying only the
-         *     platform university id; a disabled school bound to the id is treated
-         *     as absent, no second school is created and school is null. The
-         *     response carries the device code only as a presence bit; the code
-         *     itself never leaves the server. A platform failure answers 502 with
-         *     a neutral envelope; missing phone or password answers 400. The
-         *     request is rate limited per client IP and per submitted phone; a
-         *     429 carries Retry-After. While the global engine pause is in effect
-         *     the request answers 503 (capacity_exceeded with the message "engine is paused") and makes no platform call.
+         *     code never reach storage, logs, audit or the response. The response
+         *     carries the device code only as a presence bit; the code itself
+         *     never leaves the server.
+         *
+         *     The platform university is projected onto the local school by role.
+         *     An active school bound to the platform university id is reused for
+         *     every role. For master and admin a missing binding creates one
+         *     school (name from the platform, generated code, status active) and
+         *     appends a school.auto_create audit row carrying only the platform
+         *     university id. For user the projection is reuse-only: a missing
+         *     binding answers 404 not_found with the message "school is not
+         *     registered; ask an administrator to create it", creates no school,
+         *     writes no audit and returns no result. A disabled school bound to
+         *     the id is treated as absent for every role: no second school is
+         *     created, no audit is written and school is null.
+         *
+         *     A platform failure answers 502 with a neutral envelope; missing
+         *     phone or password answers 400. The request is rate limited per
+         *     client IP and per submitted phone; a 429 carries Retry-After. While
+         *     the global engine pause is in effect the request answers 503
+         *     (capacity_exceeded with the message "engine is paused") and makes no
+         *     platform call.
          */
         post: operations["AccountDetect"];
         delete?: never;
@@ -5982,6 +5991,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             502: components["responses"]["DefaultError"];

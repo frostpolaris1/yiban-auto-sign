@@ -140,12 +140,16 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in New, act
 // EnsurePlatformSchool 把平台院校标识投影到本地学校（ykxf）。
 //
 // 活跃绑定命中直接复用；disabled 绑定视同未命中并原样返回 disabled 行，
-// 调用方据此不再建校；未命中则按平台院校名自动建校：
+// 调用方据此不再建校。未命中时只在 allowCreate 为真时按平台院校名自动建校：
 // 编码由 university_id 哈希生成，status 固定 active，
 // school.auto_create 审计与建校同事务，detail 只含 university_id。
 // 并发建校由部分唯一索引拦下（409），随后按 university_id 重读并复用赢家。
-// 本方法不接受作用域：它只服务平台投影，调用方必须是已完成鉴权的用例。
-func (s *Service) EnsurePlatformSchool(ctx context.Context, universityID, name string) (Record, error) {
+//
+// allowCreate 为假时未命中回 not_found，零建校、零审计：普通用户探测
+// 只能复用管理员已登记的学校，不能凭一次平台登录自造校。已命中
+// （含 disabled）的行为与 allowCreate 无关。
+// 本方法不接受作用域：调用方必须先判角色，再以 allowCreate 表达授权。
+func (s *Service) EnsurePlatformSchool(ctx context.Context, universityID, name string, allowCreate bool) (Record, error) {
 	universityID = strings.TrimSpace(universityID)
 	if universityID == "" || utf8.RuneCountInString(universityID) > 128 {
 		return Record{}, errs.New(errs.CodeValidation,
@@ -165,6 +169,10 @@ func (s *Service) EnsurePlatformSchool(ctx context.Context, universityID, name s
 	}
 	if errs.From(err).Code != errs.CodeNotFound {
 		return Record{}, err
+	}
+	if !allowCreate {
+		return Record{}, errs.New(errs.CodeNotFound,
+			"school is not registered; ask an administrator to create it")
 	}
 
 	newSchool := New{

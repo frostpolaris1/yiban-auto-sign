@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
+	turnstileadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/turnstile"
 	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
@@ -579,6 +580,42 @@ func TestScheduleEnvFromConfig(t *testing.T) {
 	}
 	if !got.AllowTimePref.Value || got.AllowTimePref.Source != appsettings.ScheduleSourceEnv {
 		t.Fatalf("AllowTimePref = %+v, want true/env", got.AllowTimePref)
+	}
+}
+
+// 人机验证装配的传参：私钥与两个可选的令牌绑定期望同源进校验器，
+// 回执主机名不符按「令牌不合格」处理，不是服务不可达。
+// 本测试只钉 newHumanVerifier 的传参；Build 的 humanOn 分支当前无单测
+// 覆盖，只有启动路径实际走到，不要把它算作已测。
+func TestNewHumanVerifierWiresTokenBindings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"hostname":"other.example","action":"register"}`))
+	}))
+	defer srv.Close()
+
+	human, siteKey, err := newHumanVerifier(&config.Config{
+		TurnstileSiteKey:          "site-key",
+		TurnstileSecret:           "secret",
+		TurnstileExpectedHostname: "reg.example",
+		TurnstileExpectedAction:   "register",
+	})
+	if err != nil {
+		t.Fatalf("newHumanVerifier: %v", err)
+	}
+	if siteKey != "site-key" {
+		t.Fatalf("site key = %q, want the configured key", siteKey)
+	}
+	verifier, ok := human.(*turnstileadapter.Verifier)
+	if !ok {
+		t.Fatalf("human verifier = %T, want *turnstile.Verifier", human)
+	}
+	verifier.Endpoint = srv.URL
+	passed, codes, verr := verifier.Verify(context.Background(), "token", "")
+	if verr != nil {
+		t.Fatalf("binding mismatch must be a token verdict, not an availability error: %v", verr)
+	}
+	if passed || len(codes) != 1 || codes[0] != "hostname-mismatch" {
+		t.Fatalf("Verify = (%v, %v), want a hostname mismatch", passed, codes)
 	}
 }
 

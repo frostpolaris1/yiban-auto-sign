@@ -660,8 +660,10 @@ test('register: without a site key renders no widget and no placeholder', async 
  * 往挂载点塞一个按钮，点一下就把令牌交给 `options.callback`。
  * `window.turnstile` 由这段脚本定义，前端就不再请求真实端点。
  */
-const TURNSTILE_STUB = `window.turnstile = {
+const TURNSTILE_STUB = `window.__turnstileOptions = null
+window.turnstile = {
   render: function (container, options) {
+    window.__turnstileOptions = options
     var button = document.createElement('button')
     button.type = 'button'
     button.textContent = 'stub-turnstile'
@@ -701,6 +703,13 @@ test('register: a configured site key renders the widget and submits its token',
   await expect(page.locator('[data-turnstile-slot="register"]')).toHaveCount(1)
   const widget = page.getByRole('button', { name: 'stub-turnstile' })
   await expect(widget).toBeVisible()
+  // 服务端按 action 绑定令牌：注册控件必须带 register，否则开档必 400。
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { __turnstileOptions?: { action?: string } }).__turnstileOptions?.action,
+    ),
+  ).toBe('register')
 
   await fillRegisterForm(page)
   await widget.click()
