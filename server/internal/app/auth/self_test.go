@@ -249,7 +249,9 @@ func TestRestoreSelfKeepsUserWhenAccountSkipped(t *testing.T) {
 
 // TestRestoreSelfFailsClosedWhenAuditWriteFails 钉住审计失败即整体失败：
 // Append 返回错误时必须把错误上抛，不得把已恢复的用户当成功返回。
-// 替身无回滚语义；真库事务回滚由 cmd/server e2e 与 pg 事务边界保证。
+// 替身无回滚语义；真库事务回滚由 cmd/server 的
+// TestSelfRestoreAuditFailureRollsBack 钉住，一人一号跳过路径由
+// TestSelfRestoreWithLiveSibling 钉住。
 func TestRestoreSelfFailsClosedWhenAuditWriteFails(t *testing.T) {
 	h := newHarness(t)
 	user := seedSelfUser(t, h, "audit-down@example.com", "right-pass", coreauth.RoleUser)
