@@ -36,7 +36,7 @@ func (f *fakeOutlet) Send(_ context.Context, push corewebhook.Push) error {
 func newWebhookHandler(t *testing.T, hook corewebhook.Sender, cooldown appsettings.Cooldown) *systemhttp.Handler {
 	t.Helper()
 	roster, err := appsettings.NewRoster([]appsettings.Entry{
-		{Key: "YIBAN_WORKERS", Group: "调度", Default: float64(1), HasDefault: true},
+		{Key: "YIBAN_WORKERS", Group: "调度", Default: float64(4), HasDefault: true},
 	}, mapSource{})
 	if err != nil {
 		t.Fatalf("roster: %v", err)

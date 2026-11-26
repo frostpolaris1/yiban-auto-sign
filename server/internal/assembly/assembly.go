@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -289,6 +290,70 @@ func newServerFromStack(cfg *config.Config, stack *Stack, closeOnShutdown bool) 
 	return srv
 }
 
+const (
+	// startupCapacityWindow 是启动容量报告的评估窗口：一个业务日。
+	startupCapacityWindow = 24 * time.Hour
+	// startupCapacityTarget 是启动告警对照的日任务规模（10k 档）。
+	startupCapacityTarget = 10000
+	// rateKneeSlack 是 worker 超过出口拐点 rate*avg 多少倍才告警。默认
+	// 4 个 worker 对拐点 3 只多 1 个，属于合理的延迟余量，不打扰启动；
+	// 翻倍以上说明可能误以为加 worker 能加日容量。
+	rateKneeSlack = 2.0
+)
+
+// reportConfiguredCapacity 在启动时记录配置容量，并在低于 10k 目标或
+// worker 明显超过出口拐点时告警。只写日志，不阻断启动，不读取凭据。
+func reportConfiguredCapacity(log *slog.Logger, cfg *config.Config) {
+	window := startupCapacityWindow
+	util := corecapacity.UtilDefault
+	capacity := corecapacity.Capacity(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
+	binding := corecapacity.BindingOf(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
+	log.Info("configured daily schedule capacity",
+		logfield.KeyEvent, "assembly.capacity_configured",
+		logfield.KeyWorkers, cfg.Workers,
+		logfield.KeyDurationMS, cfg.AvgAttempt.Milliseconds(),
+		logfield.KeyRate, cfg.EgressRate,
+		logfield.KeyUtil, util,
+		logfield.KeyWindowSeconds, int(window.Seconds()),
+		logfield.KeyCapacity, capacity,
+		logfield.KeyBinding, string(binding),
+	)
+	if capacity < startupCapacityTarget {
+		suggested := corecapacity.SuggestedWorkers(startupCapacityTarget, window, cfg.AvgAttempt, util)
+		attrs := []any{
+			logfield.KeyEvent, "assembly.capacity_below_target",
+			logfield.KeyTarget, startupCapacityTarget,
+			logfield.KeyCapacity, capacity,
+			logfield.KeyShortfall, startupCapacityTarget - capacity,
+			logfield.KeyWorkers, cfg.Workers,
+			logfield.KeySuggestedWorkers, suggested,
+			logfield.KeyBinding, string(binding),
+		}
+		// 64 通道仍装不下 10k 时，单靠加 worker 已无解，给出速率下界：
+		// 取“通道吞吐拐点”和“窗口净需求”的较大者，向上取到两位小数。
+		if cfg.AvgAttempt > 0 && util > 0 &&
+			corecapacity.Capacity(window, suggested, cfg.AvgAttempt, cfg.EgressRate, util) < startupCapacityTarget {
+			needRate := math.Max(float64(suggested)/cfg.AvgAttempt.Seconds(),
+				float64(startupCapacityTarget)/(window.Seconds()*util))
+			attrs = append(attrs, logfield.KeySuggestedRate, math.Ceil(needRate*100)/100)
+		}
+		log.Warn("daily capacity is below the 10,000-attempt target; raise workers, egress rate, or add instances", attrs...)
+	}
+	if cfg.AvgAttempt > 0 && cfg.EgressRate > 0 {
+		knee := cfg.EgressRate * cfg.AvgAttempt.Seconds()
+		if float64(cfg.Workers) > rateKneeSlack*knee {
+			log.Warn("workers are above the egress-rate knee; extra workers add latency headroom, not daily capacity",
+				logfield.KeyEvent, "assembly.capacity_rate_bound",
+				logfield.KeyWorkers, cfg.Workers,
+				logfield.KeyDurationMS, cfg.AvgAttempt.Milliseconds(),
+				logfield.KeyRate, cfg.EgressRate,
+				logfield.KeyCapacity, capacity,
+				logfield.KeyBinding, string(binding),
+			)
+		}
+	}
+}
+
 // Build 装配数据库、用例与路由。
 //
 // 有 DSN 时：迁移 → 连接池 → 仓储 → 认证与全部业务域用例。
@@ -353,6 +418,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	if err != nil {
 		return nil, err
 	}
+	reportConfiguredCapacity(logger, cfg)
 
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		issuer = session.NewMemory(clk, cfg.HashPepper)

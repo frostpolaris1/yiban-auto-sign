@@ -334,7 +334,7 @@ Canonical runtime files:
 | `YIBAN_TASK_LEASE_SEC` | no | `120` | lease in seconds for a claimed signing task (30..3600). A running row past its lease is returned to pending by the reclaim pass. Keep it well above the slowest provider round trip: it is the only bound that works when a provider ignores context cancellation. |
 | `YIBAN_RECLAIM_GRACE_SEC` | no | `60` | delay in seconds before a reclaimed row is claimable again (0..3600, 0 = immediate). It does not "save" the expired holder — the lease table has already returned the row to pending, so that holder's settlement is rejected by the claim-seq fence. The grace turns a concurrent double run into a delayed sequential re-run. |
 | `YIBAN_ATTEMPT_BUDGET_SEC` | no | `0` | total deadline in seconds for one attempt (discovery + submit, 0..3600). `0` means derive `0.8 × YIBAN_TASK_LEASE_SEC` (96 s at the default lease); a value above the lease is rejected at startup; at run time the budget is further capped by the remaining lease. An exhausted budget settles as one `transient` attempt with reason `attempt_budget_exceeded`. If preceding stages already consumed the lease, the row is requeued without any platform request and without spending an attempt (reason `wait_lease_spent`). |
-| `YIBAN_WORKERS` | no | `1` | execution concurrency (1..64). The same number is the claim batch size, the capacity channel count and the in-batch parallelism. |
+| `YIBAN_WORKERS` | no | `4` | execution concurrency (1..64). The same number is the claim batch size, the capacity channel count and the in-batch parallelism. |
 | `YIBAN_AVG_ATTEMPT_SEC` | no | `3` | average duration of one account attempt in seconds (1..300); a capacity input. |
 | `YIBAN_EGRESS_RATE` | no | `1.0` | target attempts per second per egress (0.2..4.0). It caps the capacity formula and sets the execution rate gate: both read this one field. |
 
@@ -361,6 +361,23 @@ password.
 The admin event stream (`GET /api/admin/events`) has a process-wide cap of 10
 concurrent streams. The 11th connection gets 429 `rate_limited` with
 `Retry-After`; a slot is released as soon as any stream ends.
+
+Daily capacity is `24h × min(workers / avg_attempt, egress_rate) × util`,
+with `util = 0.8`. The default configuration already carries far more than
+10,000 attempts per day:
+
+| `YIBAN_WORKERS` | `YIBAN_EGRESS_RATE` | `YIBAN_AVG_ATTEMPT_SEC` | attempts/day |
+| --- | --- | --- | --- |
+| 4 (default) | 1.0 | 3 | 69,120 |
+| 10 | 3.0 | 3 | 207,360 |
+| 8 | 2.6 | 3 | 179,712 |
+
+Concurrency stops buying daily capacity at the rate knee
+`workers = egress_rate × avg_attempt` (3 at the defaults). A fourth worker at
+`egress_rate = 1` only buys latency headroom: capacity is already pinned by
+the egress rate. Above 64 workers is not more capacity either — that is the
+in-process concurrency and connection-pool boundary; raise the egress rate or
+run more instances instead.
 
 A plan build does not refuse a capacity shortfall. When the demand exceeds
 what the window can carry at the configured concurrency, average duration and

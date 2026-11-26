@@ -173,7 +173,7 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return built, err
 		}
-		_, err := b.Service.Build(ctx, Input{
+		preview, err := b.Service.Build(ctx, Input{
 			SchoolID:      task.SchoolID,
 			SchoolTaskID:  task.ID,
 			Day:           day,
@@ -195,6 +195,24 @@ func (b *DailyBuilder) BuildToday(ctx context.Context) (int, error) {
 			continue
 		}
 		built++
+		if preview.Shortfall > 0 {
+			log := b.Logger
+			if log == nil {
+				log = slog.Default()
+			}
+			// 铺行成功，但窗口装不下全部需求：构建结论不变，只把缺口
+			// 留在启动/日切日志里，便于运维按容量建议扩容。
+			log.Warn("schedule: daily capacity shortfall; plan rows stay valid",
+				logfield.KeyEvent, "schedule.capacity_shortfall",
+				logfield.KeyDay, day,
+				logfield.KeySchoolTaskID, task.ID,
+				logfield.KeyBuilt, built,
+				logfield.KeyCapacity, preview.Capacity,
+				logfield.KeyDemand, preview.Demand,
+				logfield.KeyShortfall, preview.Shortfall,
+				logfield.KeyBinding, string(preview.Binding),
+			)
+		}
 	}
 	// P0-3：只有真的铺了行才刷新统计。ANALYZE 失败不改构建结论——
 	// 计划行已经落库，陈旧统计只会让后续查询慢，不该让日切报错重试。

@@ -126,7 +126,8 @@ func TestBindingOf(t *testing.T) {
 	}
 }
 
-// 建议值 = ceil(需求 × 平均耗时 ÷ (窗口 × util))；非正输入归 0。
+// 建议值 = ceil(需求 × 平均耗时 ÷ (窗口 × util))，建议面夹到 [1, MaxWorkers]；
+// 窗口/耗时/利用系数非法时无可计算，归 0。
 func TestSuggestedWorkers(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -140,12 +141,18 @@ func TestSuggestedWorkers(t *testing.T) {
 		{"向上取整", 100, 80 * time.Minute, 60 * time.Second, 0.8, 2},
 		// 64×60 ÷ (4800×0.8) = 1，整除不多要一个。
 		{"整除不多要", 64, 80 * time.Minute, 60 * time.Second, 0.8, 1},
-		{"零需求", 0, 80 * time.Minute, 60 * time.Second, 0.8, 0},
+		// 需求为 0 或负时建议面保底 1：建议值必须可执行，0 不是可配置值。
+		{"零需求保底", 0, 80 * time.Minute, 60 * time.Second, 0.8, 1},
+		{"负需求保底", -100, 80 * time.Minute, 60 * time.Second, 0.8, 1},
 		{"零窗口", 100, 0, 60 * time.Second, 0.8, 0},
 		{"零平均耗时", 100, 80 * time.Minute, 0, 0.8, 0},
 		{"零利用系数", 100, 80 * time.Minute, 60 * time.Second, 0, 0},
-		// 100000×60 ÷ (4800×0.8) = 1562.5 → 1563，超过 64 由调用方决定不给建议。
-		{"超过上限也如实返回", 100000, 80 * time.Minute, 60 * time.Second, 0.8, 1563},
+		// 4096×60 ÷ (4800×0.8) = 64，恰好在上限。
+		{"上限边界", 4096, 80 * time.Minute, 60 * time.Second, 0.8, 64},
+		// 4160×60 ÷ (4800×0.8) = 65，建议面夹到 64。
+		{"超过上限夹取", 4160, 80 * time.Minute, 60 * time.Second, 0.8, 64},
+		// 100000×60 ÷ (4800×0.8) = 1562.5 → 1563，建议面同样夹到 64。
+		{"远超上限也夹取", 100000, 80 * time.Minute, 60 * time.Second, 0.8, 64},
 		// util 与 Capacity 同口径夹到 1：100×60 ÷ 4800 = 1.25 → 2。
 		{"util 越界夹取", 100, 80 * time.Minute, 60 * time.Second, 2.0, 2},
 	}

@@ -348,7 +348,7 @@ func (k enumKey) spec() keySpec {
 // 浮点键的域取 core/rate 的常量，不在本包复写 0.2/4.0。
 var (
 	keyAllowNoDB        = boolKey{"YIBAN_ALLOW_NO_DB", false}
-	keyWorkers          = intKey{"YIBAN_WORKERS", 1, 1, 64}
+	keyWorkers          = intKey{"YIBAN_WORKERS", 4, 1, 64}
 	keyAvgAttemptSec    = intKey{"YIBAN_AVG_ATTEMPT_SEC", 3, 1, 300}
 	keyWindowEdgeFront  = intKey{"YIBAN_WINDOW_EDGE_FRONT_SEC", 60, 0, 300}
 	keyWindowEdgeBack   = intKey{"YIBAN_WINDOW_EDGE_BACK_SEC", 60, 0, 300}
