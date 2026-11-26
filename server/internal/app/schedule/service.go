@@ -34,6 +34,7 @@ import (
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
@@ -155,6 +156,9 @@ func NewService(deps Deps) (*Service, error) {
 	}
 	if deps.Tx == nil {
 		return nil, errors.New("schedule: nil transaction manager")
+	}
+	if deps.Clock == nil {
+		deps.Clock = coreclock.System{}
 	}
 	log := deps.Logger
 	if log == nil {
@@ -633,7 +637,7 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	// 审计是事务最后一条语句：覆盖、缓存、重排、补插、容量释放全落才追加；
 	// Append 失败整批回滚，覆盖不留在库里（fail-closed）。
 	appendAudit := func(ctx context.Context) error {
-		_, err := s.deps.Audit.Append(ctx, windowOverrideEntry(in, ov, prev, actor, time.Now().UTC()))
+		_, err := s.deps.Audit.Append(ctx, windowOverrideEntry(in, ov, prev, actor, s.deps.Clock.Now().UTC()))
 		return err
 	}
 	changed, err := s.writeBuild(ctx, in, b, putOverride, appendAudit)

@@ -924,6 +924,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			// P2-3 注入面：人工窗口覆盖与审计链同事务。缺端口时写覆盖面
 			// fail-closed 回内部错误（不得静默跳过审计）。
 			Audit: audits,
+			Clock: clk,
 			// P6 注入面：计划事件发布。缺端口时不发事件。
 			Notifier: ScheduleNotifier{Broker: broker, Clock: clk},
 			// 0v8 B 注入面：容量缺口通知。缺端口时不投递。
