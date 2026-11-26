@@ -204,7 +204,11 @@ func (h *Handler) Detect(c *gin.Context) {
 	if !decode(c, &body) {
 		return
 	}
-	session, _ := coreauth.FromContext(c.Request.Context()) // principal 已判非空
+	session, ok := coreauth.FromContext(c.Request.Context())
+	if !ok {
+		fail(c, errs.New(errs.CodeUnauthorized, "authentication required"))
+		return
+	}
 	if h.detectRateLimited(c, session.User.ID, body.Phone) {
 		return
 	}

@@ -194,8 +194,8 @@ const batchSignLimit = 10
 // BatchSign 实现 POST /api/accounts/batch/sign。
 //
 // master 与 admin 可用，user 整批 403。逐条走单条签到同一条路：
-// 账号键限流（与单条端点同口径，命中项 per-item rate_limited）→
-// 可见面（跨校/非本人 per-item not_found）→ 非 active 拒入队（per-item
+// 可见面（跨校/非本人 per-item not_found）→ 账号键限流（与单条端点
+// 同口径，命中项 per-item rate_limited）→ 非 active 拒入队（per-item
 // conflict）→ 入队（worker 稳定码 already_signed / sign_running /
 // window_closed）。多任务由 worker 随机选一个，不再报冲突。
 // 一条失败只写进该项，不中断批次；
