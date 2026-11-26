@@ -173,7 +173,10 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// （单日成功真库 e2e 需直接读 worker.Request 的 already_signed 结论）。
 	// p3m：新增 window.closedat 规则，关窗判据收敛到 core/window.ClosedAt
 	// （retry.Window 只持有终点，P3-11⑤）；概念级登记口径写入规则表内注释。
-	const want = "d43e06468770939d33d0349cb613cefaea788ab888a2039db53bd65bdfd5014f"
+	// p2m/p2b：status.literal allow 增列 engine_snapshot_e2e_test.go、
+	// notify_release_claim_e2e_test.go、delivery_claim_test.go
+	// （既有任务态/账本态字面量断言，不是新词表）。
+	const want = "4b922724a1f42c4477d71ffb54de4e93ebd32f214e4f8c90a8218d38f0769b91"
 
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
