@@ -981,7 +981,7 @@ func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.
 		return "", ErrPaused
 	}
 	now := s.deps.Clock.Now()
-	day := now.In(s.deps.Location).Format("2006-01-02")
+	day := now.In(s.deps.Location).Format(dayLayout)
 	// 决策 2A：同账号同日任一任务 success 即今日已签到，直接 already_signed。
 	// 必须早于 resolveTask/EnsureTask：否则会先为兄弟任务建出一行，
 	// 手动签到就把"今日已签到"变成了"又排了一个任务"。
