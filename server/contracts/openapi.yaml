@@ -5722,7 +5722,10 @@ components:
           type: string
           minLength: 1
           maxLength: 200
-          description: Recorded with the override for later review.
+          description: >-
+            Recorded with the override for later review. Reason is written to
+            the audit chain and must not contain phone numbers or email
+            addresses.
     CapacityReport:
       type: object
       required:

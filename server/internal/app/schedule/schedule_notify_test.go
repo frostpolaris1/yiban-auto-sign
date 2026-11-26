@@ -44,8 +44,11 @@ func (n *recordingPlanNotifier) kinds() []string {
 
 func newNotifyingSchedule(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a fakeAccounts, d *fakeDiscover, n appschedule.Notifier) *appschedule.Service {
 	t.Helper()
+	// 写覆盖面（Override 用例）要求审计端口：缺端口 fail-closed。
+	tx := &fakeTx{}
 	svc, err := appschedule.NewService(appschedule.Deps{
-		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: &fakeTx{}, Notifier: n,
+		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: tx, Notifier: n,
+		Audit: &fakeAuditRepo{tx: tx},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

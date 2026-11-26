@@ -2287,7 +2287,7 @@ type ScheduleOverrideRequest struct {
 	Day string    `json:"day"`
 	End time.Time `json:"end"`
 
-	// Reason Recorded with the override for later review.
+	// Reason Recorded with the override for later review. Reason is written to the audit chain and must not contain phone numbers or email addresses.
 	Reason   string    `json:"reason"`
 	SchoolId string    `json:"school_id"`
 	Start    time.Time `json:"start"`

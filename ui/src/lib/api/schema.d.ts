@@ -3942,7 +3942,7 @@ export interface components {
             start: string;
             /** Format: date-time */
             end: string;
-            /** @description Recorded with the override for later review. */
+            /** @description Recorded with the override for later review. Reason is written to the audit chain and must not contain phone numbers or email addresses. */
             reason: string;
         };
         CapacityReport: {
