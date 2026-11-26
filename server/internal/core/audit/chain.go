@@ -364,6 +364,9 @@ var detailKeys = map[string]bool{
 	// 配置会变：事后判"回收后多久被重领"必须看当时的值，不是现值。
 	// 整数、四位数以内，无自由文本容量，不构成隐私面。
 	"grace_sec": true,
+	// 自助恢复用户时账号是否一并恢复：属主名下已有 live 账号时为 false。
+	// 只有布尔，无自由文本容量，不构成隐私面。
+	"account_restored": true,
 	// 设置写回（sett2/3b/3c 调度、r4r 配额、smtp4 SMTP）：changes 是
 	// 键→[旧,新]对。键限 settings 键形状；值限 nil/布尔/整数标量、
 	// 状态词形状字符串（调度域 [0,300]/[0,1439]/true-false/front-uniform，
@@ -373,6 +376,13 @@ var detailKeys = map[string]bool{
 }
 
 // cropPercentKeys 是裁切比例 detail 键集。取值限 0..10 闭区间。
+// boolOnlyKeys 是只收布尔值的 detail 键集。
+// 这些键不接受 nil：null 会让"未恢复"与"没记录"在审计里不可区分。
+// 校验先于通用类型分支，字符串/数字即使形似布尔也一律 ErrDetailType。
+var boolOnlyKeys = map[string]bool{
+	"account_restored": true,
+}
+
 var cropPercentKeys = map[string]bool{
 	"crop_l": true,
 	"crop_r": true,
@@ -441,6 +451,14 @@ func EncodeDetail(values map[string]any) (string, error) {
 
 // validateDetailValue 对单个值应用类型白名单。
 func validateDetailValue(key string, value any) error {
+	// 布尔专用键先于类型分支校验：nil 也在 switch 的 nil 分支放行，
+	// 故必须在入口就拒绝，不能等到 case bool。
+	if boolOnlyKeys[key] {
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("%w: %q must be a bool", ErrDetailType, key)
+		}
+		return nil
+	}
 	switch typed := value.(type) {
 	case nil:
 		return nil

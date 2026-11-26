@@ -25,8 +25,8 @@ import (
 )
 
 // Restore 恢复一个软删账号。
-// 作用域外与不存在的账号 404；未删行 409（适配器口径）；
-// 全局容量满或属主名下已有 live 账号 429（既有零行分类）。
+// 作用域外与不存在的账号 404；未删行、属主已软删、属主名下已有
+// live 账号 409（一人一号与属主存活判据）；只有全局容量满 429。
 // status 保持删除前原值。
 func (s *Service) Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (Record, error) {
 	if err := app.RequireScope(scope); err != nil {

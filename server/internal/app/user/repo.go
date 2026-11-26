@@ -79,9 +79,9 @@ type New = coreuser.New
 //
 // RestoreSelfAccount 恢复该用户注销时刻仍生效的那一行账号：
 // 只认 deleted_by=ownerID（管理员删除的行不复活）且 deleted_at 与用户行
-// 同一时间戳，故至多一行；并同样受活跃账号容量约束。
-// 无候选返回 (false, nil)；有候选但容量满返回 capacity。
-// **必须在事务内运行**。
+// 同一时间戳，故至多一行；并同样受一人一号与活跃账号容量约束。
+// 无候选或属主名下已有 live 账号返回 (false, nil)；
+// 有候选但容量满返回 capacity。**必须在事务内运行**。
 //
 // Purge 物理删除用户行与名下账号及从属行，**必须在事务内运行**；
 // 调用方先用 GetDeleted 锁行并校验软删状态。
@@ -120,7 +120,7 @@ type Repo interface {
 	// RestoreSelfUser 在宽限与容量判据下恢复软删用户；**必须在事务内运行**。
 	RestoreSelfUser(ctx context.Context, id string, notBefore time.Time, limit int) (Record, error)
 	// RestoreSelfAccount 恢复注销时刻仍生效的那一行账号；
-	// **必须在事务内运行**。无候选返回 false。
+	// **必须在事务内运行**。无候选或属主名下已有 live 账号返回 false。
 	RestoreSelfAccount(ctx context.Context, ownerID string, deletedAt time.Time, limit int) (bool, error)
 	Restore(ctx context.Context, id string, limit int) (Record, error)
 	// Purge 物理删除用户行与名下账号及从属行

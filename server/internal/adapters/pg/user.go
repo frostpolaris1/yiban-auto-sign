@@ -509,8 +509,9 @@ func (r *UserRepo) RestoreSelfUser(ctx context.Context, id string, notBefore tim
 
 // RestoreSelfAccount 恢复该用户注销时刻仍生效的那一行账号。
 // 只认 deleted_by=ownerID（管理员删除的行不复活）且 deleted_at 与用户行
-// 同一时刻（注销连带软删的唯一时间戳）；无候选返回 (false, nil)，
-// 候选存在但容量满返回 capacity。limit=0 是「不限」哨兵：容量判据跳过。
+// 同一时刻（注销连带软删的唯一时间戳）；无候选或属主名下已有 live 账号
+// 都返回 (false, nil)，候选存在但容量满返回 capacity。
+// limit=0 是「不限」哨兵：容量判据跳过。
 // **必须在事务内运行**。
 func (r *UserRepo) RestoreSelfAccount(ctx context.Context, ownerID string, deletedAt time.Time, limit int) (bool, error) {
 	if !r.db.hasTx(ctx) {
@@ -540,6 +541,17 @@ func (r *UserRepo) RestoreSelfAccount(ctx context.Context, ownerID string, delet
 	if err != nil {
 		return false, mapError(err)
 	}
+	// 一人一号是结构判据：候选已锁定，属主名下若已有 live 号就不能再复活。
+	// 这不是错误：用户恢复的主流程继续，审计记 account_restored=false。
+	var ownerLive int
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM accounts WHERE owner_user_id = $1::uuid AND deleted_at IS NULL`,
+		ownerID).Scan(&ownerLive); err != nil {
+		return false, mapError(err)
+	}
+	if ownerLive > 0 {
+		return false, nil
+	}
 	var live int
 	if err := r.db.q(ctx).QueryRow(ctx,
 		`SELECT count(*) FROM accounts WHERE deleted_at IS NULL`).Scan(&live); err != nil {
@@ -551,12 +563,27 @@ func (r *UserRepo) RestoreSelfAccount(ctx context.Context, ownerID string, delet
 	tag, err := r.db.q(ctx).Exec(ctx, `
 		UPDATE accounts
 		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
-		 WHERE id = $1::uuid AND deleted_at IS NOT NULL`, accountID)
+		 WHERE id = $1::uuid
+		   AND deleted_at IS NOT NULL
+		   AND NOT EXISTS (SELECT 1 FROM accounts live
+		                    WHERE live.owner_user_id = accounts.owner_user_id
+		                      AND live.deleted_at IS NULL)`, accountID)
 	if err != nil {
 		return false, mapError(err)
 	}
 	if tag.RowsAffected() == 0 {
-		return false, coreerrNotFound()
+		var candidateStillDeleted bool
+		if err := r.db.q(ctx).QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM accounts WHERE id = $1::uuid AND deleted_at IS NOT NULL)`,
+			accountID).Scan(&candidateStillDeleted); err != nil {
+			return false, mapError(err)
+		}
+		// 候选已不在（并发恢复/清理）→ not_found；候选仍在却被
+		// 上面的 NOT EXISTS 挡住 → 属主已有 live 号，按无候选处理。
+		if !candidateStillDeleted {
+			return false, coreerrNotFound()
+		}
+		return false, nil
 	}
 	return true, nil
 }

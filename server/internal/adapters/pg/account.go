@@ -511,12 +511,15 @@ func (r *AccountRepo) Purge(ctx context.Context, id string) error {
 	return nil
 }
 
-// Restore 在有空余容量且属主名下没有其他 live 账号时清除软删标记。
+// Restore 在属主存活、有空余容量且名下没有其他 live 账号时清除软删标记。
 // limit=0 是「不限」哨兵：全局容量判据跳过（一人一号判据不动）。
 //
 // **必须在事务内运行**。软删行不计入上限，
 // 故恢复必须在锁下重新计数；
 // 提前计数会让两个并发恢复把总数推过上限。
+//
+// 零行分类：未删除、属主已软删、属主已有 live 账号都是结构性冲突；
+// 只剩全局容量不足才报 capacity_exceeded。
 func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string, limit int) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
@@ -540,7 +543,10 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 		   AND ($2 = 0 OR (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2)
 		   AND NOT EXISTS (SELECT 1 FROM accounts live
 		                    WHERE live.owner_user_id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)
-		                      AND live.deleted_at IS NULL)`+scopeSQL+`
+		                      AND live.deleted_at IS NULL)
+		   AND EXISTS (SELECT 1 FROM users owner
+		                WHERE owner.id = accounts.owner_user_id
+		                  AND owner.deleted_at IS NULL)`+scopeSQL+`
 		RETURNING `+accountColumns, args...)
 	record, err := scanAccount(row)
 	if err == nil {
@@ -561,8 +567,8 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 // 在同一个容量 advisory lock 下重数。
 //
 // 零行分类：不可见或不存在 → not_found；未删 → conflict；
-// 删除者不是本人 → forbidden；超窗 → conflict；名下已有生效账号 →
-// validation；其余按容量不足报 capacity_exceeded。
+// 删除者不是本人 → forbidden；超窗 → conflict；属主已软删 → conflict；
+// 名下已有生效账号 → validation；其余按容量不足报 capacity_exceeded。
 func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by string, notBefore time.Time, limit int) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
@@ -594,6 +600,9 @@ func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by
 		   AND NOT EXISTS (SELECT 1 FROM accounts live
 		                    WHERE live.owner_user_id = accounts.owner_user_id
 		                      AND live.deleted_at IS NULL)
+		   AND EXISTS (SELECT 1 FROM users owner
+		                WHERE owner.id = accounts.owner_user_id
+		                  AND owner.deleted_at IS NULL)
 		   AND ($2 = 0 OR (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2)`+scopeSQL+`
 		RETURNING `+accountColumns, args...)
 	record, err := scanAccount(row)
@@ -621,6 +630,15 @@ func (r *AccountRepo) classifySelfRestoreMiss(ctx context.Context, s corescope.S
 			"only a self-deleted account can be restored")
 	case record.DeletedAt.Before(notBefore):
 		return coreaccount.Record{}, conflictError("the self-restore grace period has expired")
+	}
+	var ownerDeleted bool
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT deleted_at IS NOT NULL FROM users WHERE id = $1::uuid`,
+		record.OwnerUserID).Scan(&ownerDeleted); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	if ownerDeleted {
+		return coreaccount.Record{}, conflictError("account owner is deleted")
 	}
 	var live int
 	if err := r.db.q(ctx).QueryRow(ctx,
@@ -764,7 +782,8 @@ func (r *AccountRepo) classifyMiss(ctx context.Context, s corescope.Scope, id st
 }
 
 // classifyRestoreMiss 解释一次零行恢复。
-// 行未删除报冲突；已删除但无空位报容量超限。
+// 行未删除、属主已软删、属主名下已有 live 账号都是结构性冲突；
+// 只剩全局容量不足才报容量超限。
 func (r *AccountRepo) classifyRestoreMiss(ctx context.Context, s corescope.Scope, id string) (coreaccount.Record, error) {
 	record, err := r.fetch(ctx, s, id, true)
 	if err != nil {
@@ -772,6 +791,24 @@ func (r *AccountRepo) classifyRestoreMiss(ctx context.Context, s corescope.Scope
 	}
 	if record.DeletedAt == nil {
 		return coreaccount.Record{}, conflictError("account is not deleted")
+	}
+	var ownerDeleted bool
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT deleted_at IS NOT NULL FROM users WHERE id = $1::uuid`,
+		record.OwnerUserID).Scan(&ownerDeleted); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	if ownerDeleted {
+		return coreaccount.Record{}, conflictError("account owner is deleted")
+	}
+	var live int
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM accounts WHERE owner_user_id = $1::uuid AND deleted_at IS NULL`,
+		record.OwnerUserID).Scan(&live); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	if live > 0 {
+		return coreaccount.Record{}, conflictError("owner already has a live account")
 	}
 	return coreaccount.Record{}, capacityError()
 }
