@@ -48,10 +48,17 @@ func (w Window) Open(now time.Time) bool {
 	return !now.Before(w.Start)
 }
 
+// ClosedAt 报告 now 是否已到或超过终点 end（now >= end，闭区间口径）。
+// 只持有终点的调用方（如 retry.Window）也必须用本函数，
+// 不得在别处自写 Sub/Before 比较：关窗判据只留这一份。
+func ClosedAt(end, now time.Time) bool {
+	return !now.Before(end)
+}
+
 // Closed 报告窗口是否已关（now >= End，闭区间口径）。
 // 排计划与判关闭必须用本谓词，不得各写一份比较。
 func (w Window) Closed(now time.Time) bool {
-	return !now.Before(w.End)
+	return ClosedAt(w.End, now)
 }
 
 // Remaining 返回从 now 到窗口终点的剩余秒；可为负。
