@@ -53,8 +53,9 @@ type StatusCounts = coreaccount.StatusCounts
 //
 // Create 执行全局活跃账号上限与一人一号结构不变量
 // （属主名下没有 live 账号才可建）。Restore 与 Create 同判据：
-// 属主已软删或名下已有 live 行报 conflict，只有全局容量满报
-// capacity_exceeded。两者**必须在事务内运行**：
+// 名下已有 live 行报 conflict，只有全局容量满报 capacity_exceeded；
+// Restore 另要求属主存活（已软删报 conflict），Create 的属主存活由用例层把关。
+// 两者**必须在事务内运行**：
 // 在同一事务里先取账号容量 advisory lock，再统计活跃行。
 // 条件语句命中零行时报 capacity_exceeded 或 conflict（errs.Code）。
 //

@@ -383,7 +383,6 @@ var detailKeys = map[string]bool{
 	"changes": true,
 }
 
-// cropPercentKeys 是裁切比例 detail 键集。取值限 0..10 闭区间。
 // boolOnlyKeys 是只收布尔值的 detail 键集。
 // 这些键不接受 nil：null 会让"未恢复"与"没记录"在审计里不可区分。
 // 校验先于通用类型分支，字符串/数字即使形似布尔也一律 ErrDetailType。
@@ -391,6 +390,7 @@ var boolOnlyKeys = map[string]bool{
 	"account_restored": true,
 }
 
+// cropPercentKeys 是裁切比例 detail 键集。取值限 0..10 闭区间。
 var cropPercentKeys = map[string]bool{
 	"crop_l": true,
 	"crop_r": true,

@@ -52,6 +52,57 @@ func TestRestoreAdminRejectsDeletedOwner(t *testing.T) {
 	}
 }
 
+// TestRestoreAdminWaitsForOwnerSoftDelete 钉住恢复与属主软删的串行化：
+// 软删事务未提交时，恢复必须等属主行锁，不能凭语句快照把账号复活成
+// 「已软删属主名下的活号」。
+func TestRestoreAdminWaitsForOwnerSoftDelete(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("restore-race-owner@example.com")
+	school := e.createSchool("restore-race-owner")
+	account := e.createAccount(school.ID, owner.ID, "13900002009")
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE accounts SET deleted_at = now() WHERE id = $1::uuid", account.ID); err != nil {
+		t.Fatalf("soft delete account: %v", err)
+	}
+
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	ownerErr := make(chan error, 1)
+	go func() {
+		ownerErr <- e.db.InTx(e.ctx, func(ctx context.Context) error {
+			if _, err := e.db.Exec(ctx,
+				"UPDATE users SET deleted_at = now() WHERE id = $1::uuid", owner.ID); err != nil {
+				return err
+			}
+			close(ready)
+			<-release
+			return nil
+		})
+	}()
+	<-ready
+
+	started := time.Now()
+	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		_, err := e.accts.Restore(ctx, corescope.Master(), account.ID, 10000)
+		return err
+	})
+	elapsed := time.Since(started)
+	close(release)
+	if err == nil {
+		t.Fatal("restore revived an account while the owner soft delete was uncommitted")
+	}
+	if elapsed < time.Second {
+		t.Fatalf("restore returned after %v; it did not wait for the owner row lock", elapsed)
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM accounts WHERE id = $1::uuid AND deleted_at IS NOT NULL", account.ID); got != 1 {
+		t.Fatal("failed restore changed the account row")
+	}
+	if err := <-ownerErr; err != nil {
+		t.Fatalf("owner soft delete: %v", err)
+	}
+}
+
 // TestRestoreAdminRejectsOwnerWithLiveAccount 覆盖属主名下已有 live 账号时
 // 管理员恢复另一条软删账号：必须报 conflict（一人一号），不是 capacity。
 func TestRestoreAdminRejectsOwnerWithLiveAccount(t *testing.T) {
