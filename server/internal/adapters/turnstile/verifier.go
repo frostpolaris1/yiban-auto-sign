@@ -16,6 +16,8 @@
 // 超时 5s、不重试：注册是交互请求，重试只会放大用户等待。
 // 判定三分：令牌无效回 (false, codes, nil)；网络故障、非 2xx、回执不是
 // JSON、Cloudflare 自报 internal-error 回 error（可重试的暂时故障）。
+// 可选的令牌绑定：期望主机名/动作非空时，回执必须匹配，不匹配按
+// 「令牌不合格」回 (false, [{hostname,action}-mismatch], nil)，不是 error。
 // 错误文本只含状态码与原因，不含令牌与私钥。
 package turnstile
 
@@ -46,19 +48,27 @@ type Verifier struct {
 	// 只有测试会替换它，故不提供环境变量入口。
 	Endpoint string
 	secret   string
-	client   *http.Client
+	// expectedHostname/expectedAction 是可选绑定：非空时回执必须匹配。
+	// 空表示不校验——未配置绑定时的行为与引入绑定前完全一致。
+	expectedHostname string
+	expectedAction   string
+	client           *http.Client
 }
 
 // New 构造校验器。私钥为空即失败关闭：没有私钥的校验器只会永远拒绝。
-func New(secret string) (*Verifier, error) {
+// expectedHostname 与 expectedAction 为空表示不校验该维度；期望值只是
+// 校验条件，仍需私钥才能问出结果，故私钥为空时期望值无意义（由配置层拒绝）。
+func New(secret, expectedHostname, expectedAction string) (*Verifier, error) {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		return nil, errors.New("turnstile: secret must not be empty")
 	}
 	return &Verifier{
-		Endpoint: DefaultEndpoint,
-		secret:   secret,
-		client:   &http.Client{Timeout: VerifyTimeout},
+		Endpoint:         DefaultEndpoint,
+		secret:           secret,
+		expectedHostname: strings.TrimSpace(expectedHostname),
+		expectedAction:   strings.TrimSpace(expectedAction),
+		client:           &http.Client{Timeout: VerifyTimeout},
 	}, nil
 }
 
@@ -103,11 +113,23 @@ func (v *Verifier) Verify(ctx context.Context, token, remoteIP string) (bool, []
 	var answer struct {
 		Success    bool     `json:"success"`
 		ErrorCodes []string `json:"error-codes"`
+		Hostname   string   `json:"hostname"`
+		Action     string   `json:"action"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAnswerBytes)).Decode(&answer); err != nil {
 		return false, nil, errors.New("turnstile: siteverify answer is not JSON")
 	}
 	if answer.Success {
+		// 令牌绑定：回执带 siteverify 判定的 hostname 与 action。期望非空
+		// 而回执不匹配，说明这枚令牌不是本站/本动作签发的：按「令牌不合格」
+		// 回 codes（on 档 400），不能报成 error（on 档会变 502）。
+		if v.expectedHostname != "" &&
+			!strings.EqualFold(strings.TrimSpace(answer.Hostname), v.expectedHostname) {
+			return false, []string{"hostname-mismatch"}, nil
+		}
+		if v.expectedAction != "" && answer.Action != v.expectedAction {
+			return false, []string{"action-mismatch"}, nil
+		}
 		return true, nil, nil
 	}
 	// 这几档都是服务端故障或配置错，不是令牌问题：按不可达上报，

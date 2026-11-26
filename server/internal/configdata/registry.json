@@ -306,6 +306,22 @@
     "sensitive": false,
     "scope": "server"
   },
+  "YIBAN_TURNSTILE_EXPECTED_ACTION": {
+    "type": "string",
+    "default": "",
+    "group": ["安全"],
+    "doc": "可选：要求 siteverify 回执的 action 完全等于该值（区分大小写）。空表示不校验；非空而私钥为空即启动错误",
+    "sensitive": false,
+    "scope": "server"
+  },
+  "YIBAN_TURNSTILE_EXPECTED_HOSTNAME": {
+    "type": "string",
+    "default": "",
+    "group": ["安全"],
+    "doc": "可选：要求 siteverify 回执的 hostname 等于该值（忽略大小写）。空表示不校验；非空而私钥为空即启动错误",
+    "sensitive": false,
+    "scope": "server"
+  },
   "YIBAN_TURNSTILE_MODE": {
     "type": "enum",
     "domain": ["auto", "off", "log", "on"],

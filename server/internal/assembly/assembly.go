@@ -597,13 +597,13 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		var human appauth.HumanVerifier
 		humanSiteKey := ""
 		if humanOn {
-			verifier, verr := turnstileadapter.New(cfg.TurnstileSecret)
+			verifier, siteKey, verr := newHumanVerifier(cfg)
 			if verr != nil {
 				closeFn()
 				return nil, fmt.Errorf("assembly: turnstile verifier: %w", verr)
 			}
 			human = verifier
-			humanSiteKey = cfg.TurnstileSiteKey
+			humanSiteKey = siteKey
 			logger.Info("auth: human verification enabled",
 				logfield.KeyReason, cfg.TurnstileMode)
 		}
@@ -1260,6 +1260,18 @@ func buildMailTestThrottle() (*ratelimit.Throttle, error) {
 		return nil, fmt.Errorf("assembly: mail test throttle: %w", err)
 	}
 	return throttle, nil
+}
+
+// newHumanVerifier 按配置造人机验证端口与站点密钥。
+// 私钥与两个可选的令牌绑定期望同源在这里读取：配置项漏传会让绑定
+// 静默失效，故集中一处并由装配测试钉住传参。
+func newHumanVerifier(cfg *config.Config) (appauth.HumanVerifier, string, error) {
+	verifier, err := turnstileadapter.New(cfg.TurnstileSecret,
+		cfg.TurnstileExpectedHostname, cfg.TurnstileExpectedAction)
+	if err != nil {
+		return nil, "", err
+	}
+	return verifier, cfg.TurnstileSiteKey, nil
 }
 
 // egressBurst 是每出口令牌桶的突发深度（账号尝试数）。
