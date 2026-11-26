@@ -53,6 +53,10 @@ func (c *manualClock) Advance(d time.Duration) {
 // clock 可为 nil；非 nil 时 MarkSent 用它记 UpdatedAt（额度计数口径）。
 // failEmailInsert 让 email 渠道的 InsertWithPending 返回错误：
 // P3-15 判据用它证明「邮件账本失败不连带跳过 webhook」。
+// claimed 模拟 claimed_until 租约：只返回未认领或租约已过期的行，
+// 认领写入 now+lease；三种终态记账删除该行的认领。
+// failClaim 让 ClaimDueForSend 返回错误（认领失败上抛的判据）。
+// claimLease 记录最近一次认领传入的租约（钉住 SendDue 的 15 分钟常量）。
 type fakeStore struct {
 	mu              sync.Mutex
 	notifications   map[string]*corenotify.Notification
@@ -60,9 +64,12 @@ type fakeStore struct {
 	deliveries      map[string]*corenotify.DueDelivery
 	deliveryOrder   []string
 	emails          map[string]string
+	claimed         map[string]time.Time
 	seq             int
 	clock           *manualClock
 	failEmailInsert bool
+	failClaim       error
+	claimLease      time.Duration
 }
 
 func newFakeStore() *fakeStore {
@@ -70,6 +77,7 @@ func newFakeStore() *fakeStore {
 		notifications: map[string]*corenotify.Notification{},
 		deliveries:    map[string]*corenotify.DueDelivery{},
 		emails:        map[string]string{},
+		claimed:       map[string]time.Time{},
 	}
 }
 
@@ -170,6 +178,51 @@ func (s *fakeStore) ListDueForSend(_ context.Context, now time.Time, limit int) 
 	return out, nil
 }
 
+// ClaimDueForSend 与 pg 同语义：只取 pending、next_retry_at<=now、
+// 且不在租约内的行，并在同一临界区写入 now+lease。
+// 保留 ListDueForSend 作为只读诊断面；调度只走本方法。
+func (s *fakeStore) ClaimDueForSend(_ context.Context, now time.Time, limit int, lease time.Duration) ([]corenotify.DueDelivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.claimLease = lease
+	if s.failClaim != nil {
+		return nil, s.failClaim
+	}
+	var out []corenotify.DueDelivery
+	for _, key := range s.deliveryOrder {
+		if len(out) >= limit {
+			break
+		}
+		item := s.deliveries[key]
+		if item.Status != corenotify.DeliveryStatusPending || item.NextRetryAt == nil ||
+			item.NextRetryAt.After(now) {
+			continue
+		}
+		if until, ok := s.claimed[item.ID]; ok && until.After(now) {
+			continue
+		}
+		s.claimed[item.ID] = now.Add(lease)
+		row := *item
+		row.Title, row.Body = s.copyText(item.NotificationID)
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// claimPresent 报告某行是否仍持有未过期的认领（判据只看存在性）。
+func (s *fakeStore) claimPresent(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	until, ok := s.claimed[id]
+	if !ok {
+		return false
+	}
+	if s.clock == nil {
+		return true
+	}
+	return until.After(s.clock.Now())
+}
+
 // copyText 取通知的落库文本。调用方已持锁。
 func (s *fakeStore) copyText(notificationID string) (string, string) {
 	for _, key := range s.order {
@@ -187,6 +240,7 @@ func (s *fakeStore) MarkSent(_ context.Context, id string) error {
 		item.Attempts++
 		item.SkipReason = ""
 		item.NextRetryAt = nil
+		delete(s.claimed, id)
 		if s.clock != nil {
 			item.UpdatedAt = s.clock.Now()
 		}
@@ -204,6 +258,7 @@ func (s *fakeStore) MarkFailed(_ context.Context, id, kind string, next *time.Ti
 		item.LastErrorKind = kind
 		item.SkipReason = ""
 		item.NextRetryAt = next
+		delete(s.claimed, id)
 	})
 }
 
@@ -216,6 +271,7 @@ func (s *fakeStore) MarkSkipped(_ context.Context, id, reason string) error {
 		item.SkipReason = reason
 		item.LastErrorKind = ""
 		item.NextRetryAt = nil
+		delete(s.claimed, id)
 	})
 }
 
@@ -278,6 +334,8 @@ type fakeAudience struct {
 	phones      map[string]string
 	owners      map[string]corenotify.Owner
 	inactive    map[string]bool
+	// activeErr 让指定用户的收件人复核失败（单行投递错误不挡其余行的判据）。
+	activeErr map[string]error
 }
 
 func (a *fakeAudience) AdminSubscribers(context.Context, string) ([]corenotify.Subscriber, error) {
@@ -301,6 +359,9 @@ func (a *fakeAudience) FailureOwner(_ context.Context, accountID string) (coreno
 }
 
 func (a *fakeAudience) RecipientActive(_ context.Context, userID string) (bool, error) {
+	if err, ok := a.activeErr[userID]; ok {
+		return false, err
+	}
 	return !a.inactive[userID], nil
 }
 
