@@ -437,15 +437,30 @@ func TestSeedOutcomeExemptionsFollowCapabilities(t *testing.T) {
 		if want == contract.OutcomePhotoMissing || want == contract.OutcomeDeviceUnbound {
 			continue
 		}
-		if !weak.SeedOutcome(nil, want) {
+		req := signRequest("attempt-weak-" + string(want))
+		if !weak.SeedOutcome(&req, want) {
 			t.Fatalf("%q 不属于能力豁免，应返回 true", want)
 		}
 	}
-	if !New("fake", contract.Capabilities{ImageRequired: true}).SeedOutcome(nil, contract.OutcomePhotoMissing) {
+	imageMissing := signRequest("attempt-image-missing")
+	if !New("fake", contract.Capabilities{ImageRequired: true}).SeedOutcome(&imageMissing, contract.OutcomePhotoMissing) {
 		t.Fatal("声明 ImageRequired 后 photo_missing 应返回 true")
 	}
-	if !New("fake", contract.Capabilities{DeviceBinding: true}).SeedOutcome(nil, contract.OutcomeDeviceUnbound) {
+	deviceUnbound := signRequest("attempt-device-unbound")
+	if !New("fake", contract.Capabilities{DeviceBinding: true}).SeedOutcome(&deviceUnbound, contract.OutcomeDeviceUnbound) {
 		t.Fatal("声明 DeviceBinding 后 device_unbound 应返回 true")
+	}
+}
+
+// nil 请求无法定位 AttemptID：返回 false，且不得登记任何结果。
+// 依据：返回 true 会让调用方以为「已复现该结果」，实际什么都没布。
+func TestSeedOutcomeNilRequestIsUnsupported(t *testing.T) {
+	p := New("fake", contract.Capabilities{ImageRequired: true, DeviceBinding: true})
+	if p.SeedOutcome(nil, contract.OutcomeSuccess) {
+		t.Fatal("nil 请求布种应返回 false：没有 AttemptID 可固定")
+	}
+	if got, ok := p.ExpectedOutcome(signRequest("attempt-nil")); ok {
+		t.Fatalf("nil 请求布种污染了结果表：ExpectedOutcome = %q, %v", got, ok)
 	}
 }
 

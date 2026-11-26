@@ -132,9 +132,11 @@ func (p *Provider) OnAttempt(attemptID string, result contract.Result) *Provider
 // 约定：不清空 OnSign 脚本——布种结果按 AttemptID 优先命中，
 // 调用方仍需为每个结果使用独立的 Provider 实例，避免串味。
 //
-// 返回 false 表示本能力下无法产生该结果，且仅限契约豁免：
-// 未声明 ImageRequired 时没有 photo_missing，
-// 未声明 DeviceBinding 时没有 device_unbound。其余一律返回 true。
+// 返回 false 表示本次无法布种，只有三种情形：
+// 未声明 ImageRequired 时没有 photo_missing；未声明 DeviceBinding 时
+// 没有 device_unbound；req 为 nil 时没有 AttemptID 可固定。
+// 前两者是契约豁免，第三者是用错接口——返回 true 会让调用方
+// 误以为「已复现该结果」，实际什么都没布。
 func (p *Provider) SeedOutcome(req *contract.SignRequest, want contract.Outcome) bool {
 	if want == contract.OutcomePhotoMissing && !p.caps.ImageRequired {
 		return false
@@ -142,10 +144,11 @@ func (p *Provider) SeedOutcome(req *contract.SignRequest, want contract.Outcome)
 	if want == contract.OutcomeDeviceUnbound && !p.caps.DeviceBinding {
 		return false
 	}
-	if req != nil {
-		// 不在持锁状态下回调：OnAttempt 自己会取 p.mu。
-		p.OnAttempt(req.AttemptID, ResultFor(want))
+	if req == nil {
+		return false
 	}
+	// 不在持锁状态下回调：OnAttempt 自己会取 p.mu。
+	p.OnAttempt(req.AttemptID, ResultFor(want))
 	return true
 }
 

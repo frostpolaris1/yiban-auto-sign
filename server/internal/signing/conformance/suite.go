@@ -71,6 +71,7 @@ type Expecter interface {
 // 未声明 ImageRequired 时做不出 photo_missing，
 // 未声明 DeviceBinding 时做不出 device_unbound。
 // 其余 false 一律判红——否则「做不出就返回 false」能把空绿洗成通过。
+// req 为 nil 时一律返回 false：没有 AttemptID 可固定，返回 true 是假布种。
 type OutcomeSeeder interface {
 	SeedOutcome(req *contract.SignRequest, want contract.Outcome) (supported bool)
 }
@@ -557,7 +558,10 @@ func checkSignRetry(newProvider NewProvider) error {
 	if err != nil {
 		return err
 	}
-	for i, item := range seeded {
+	// 报观察到的结果词名而不是序号：photo_missing 被豁免后下标会整体偏移，
+	// 序号无法直接对应到契约结果表。用 actual 而非 want，
+	// 是因为布种错配时（变异用例）报告必须描述**实际拿到**的结果。
+	for _, item := range seeded {
 		result := item.actual
 		if !result.Outcome.Valid() {
 			continue // sign.result 负责报告词表越界。
@@ -565,18 +569,18 @@ func checkSignRetry(newProvider NewProvider) error {
 		switch result.Outcome {
 		case contract.OutcomeTransient:
 			if !result.Retry.Retryable {
-				return failf(CheckSignRetry, "第 %d 次 transient 必须可重试", i+1)
+				return failf(CheckSignRetry, "结果 %q：transient 必须可重试", result.Outcome)
 			}
 			if result.Retry.MaxAttempts < 1 {
-				return failf(CheckSignRetry, "第 %d 次 transient 可重试但 MaxAttempts 为 0", i+1)
+				return failf(CheckSignRetry, "结果 %q：transient 可重试但 MaxAttempts 为 0", result.Outcome)
 			}
 		case contract.OutcomeChallenge:
 			if result.Retry.Retryable && result.Retry.MaxAttempts < 1 {
-				return failf(CheckSignRetry, "第 %d 次 challenge 可重试但 MaxAttempts 为 0", i+1)
+				return failf(CheckSignRetry, "结果 %q：challenge 可重试但 MaxAttempts 为 0", result.Outcome)
 			}
 		default:
 			if result.Retry.Retryable {
-				return failf(CheckSignRetry, "第 %d 次 %s 不可自动重试，却标记可重试", i+1, result.Outcome)
+				return failf(CheckSignRetry, "结果 %q 不可自动重试，却标记可重试", result.Outcome)
 			}
 		}
 	}
@@ -589,10 +593,10 @@ func checkSignUnknown(newProvider NewProvider) error {
 	if err != nil {
 		return err
 	}
-	for i, item := range seeded {
+	for _, item := range seeded {
 		result := item.actual
 		if result.Outcome == contract.OutcomeUnknown && result.Retry.Retryable {
-			return failf(CheckSignUnknown, "第 %d 次 unknown 被标记可重试", i+1)
+			return failf(CheckSignUnknown, "结果 %q：unknown 被标记可重试", result.Outcome)
 		}
 	}
 	return nil
