@@ -195,11 +195,13 @@ func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID stri
 	}
 	where += accountSearchWhere(search, &args)
 	query, args, err := appendKeyset(`SELECT `+accountColumns+` FROM accounts`+where,
-		args, cursor, "created_at", "id")
+		args, cursor, "accounts.created_at", "accounts.id")
 	if err != nil {
 		return nil, "", err
 	}
-	query += ` ORDER BY created_at DESC, id DESC`
+	// 必须限定 accounts.id：选择列把 id 输出成 text，裸 id 会解析到输出列，
+	// 令 (created_at DESC, id DESC) 索引的第二列失去有序性。
+	query += ` ORDER BY accounts.created_at DESC, accounts.id DESC`
 	query, args = appendLimit(query, args, limit)
 
 	rows, err := r.db.q(ctx).Query(ctx, query, args...)
@@ -227,6 +229,57 @@ func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID stri
 		return rec.CreatedAt, rec.ID
 	})
 	return items, next, nil
+}
+
+// discoveryCandidateMax 是窗口发现候选查询允许的上限。
+//
+// 发现路径本身只轮换 discoveryCandidates（3）个候选；仓储再放宽到 10，
+// 让调用方按需扩大轮换而不必改 SQL。候选再多只是多余的行。
+const discoveryCandidateMax = 10
+
+// DiscoveryCandidatesForSchool 返回某校可用于窗口发现的活跃账号，
+// 最多 limit 行，按建号时间升序（更早建立的老号先探）。
+//
+// 排序不读 credentials.last_verified_at：全仓没有该列的写入方，
+// Insert/Replace 都不写、构建 Credential 的调用方也不设，列恒为 NULL；
+// 拿它当主排序键只会制造「最近验证优先」的虚假保证。老号优先配合
+// 组合根最多 3 个候选轮换，已能挡住「新注册坏号排在首位污染全校」的旧缺陷；
+// 等真正有验证时间写入方时再加回该键，不要只改 ORDER BY。
+//
+// 只查 accounts、不 JOIN credentials：credentials 也有 created_at/
+// updated_at 列，直接 JOIN 会让 accountColumns 里的裸列名 ambiguous；
+// 本查询不需要凭据字段，跳过 JOIN 也避免全表聚合。
+//
+// 只取 active 且未软删的账号；停用、待审、已删行不参与发现。
+func (r *AccountRepo) DiscoveryCandidatesForSchool(ctx context.Context, schoolID string, limit int) ([]coreaccount.Record, error) {
+	if limit < 1 || limit > discoveryCandidateMax {
+		return nil, validationError(fmt.Sprintf("limit must be between 1 and %d", discoveryCandidateMax))
+	}
+	query := `SELECT ` + accountColumns + `
+		FROM accounts
+		WHERE accounts.school_id = $1::uuid
+			AND accounts.status = 'active'
+			AND accounts.deleted_at IS NULL
+		ORDER BY accounts.created_at ASC, accounts.id ASC
+		LIMIT $2`
+	rows, err := r.db.q(ctx).Query(ctx, query, schoolID, limit)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	items := make([]coreaccount.Record, 0, limit)
+	for rows.Next() {
+		record, err := scanAccount(rows)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		items = append(items, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return items, nil
 }
 
 // StatusCounts 按作用域统计未软删账号的 pending 与 rejected 行数。
@@ -337,6 +390,24 @@ func (r *AccountRepo) Review(ctx context.Context, s corescope.Scope, id string, 
 // to 为 pending 时同时清空驳回理由与审核戳：pending 行不属于任何已审轮次。
 // 零行由 classifyMiss 区分：越权报 not_found，状态已变报冲突。
 func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id string, from, to coreaccount.Status, at time.Time, reason string) (coreaccount.Record, error) {
+	return r.setStatus(ctx, s, id, from, to, at, reason, 0)
+}
+
+// SetStatusIfCredentialVersion 在状态 CAS 上再加凭据版本谓词：
+// 仅当该账号的 credentials.version 仍等于 expectedVersion 才迁移。
+// 核验期间凭据被替换（version+1）时零行、报 conflict，账号保持原状态。
+// expectedVersion 非正报 validation：调用方必须带上核验时的版本，
+// 否则这个 CAS 会悄悄退化成纯状态 CAS。
+func (r *AccountRepo) SetStatusIfCredentialVersion(ctx context.Context, s corescope.Scope, id string, from, to coreaccount.Status, expectedVersion int32, at time.Time, reason string) (coreaccount.Record, error) {
+	if expectedVersion < 1 {
+		return coreaccount.Record{}, validationError("expected credential version must be positive")
+	}
+	return r.setStatus(ctx, s, id, from, to, at, reason, expectedVersion)
+}
+
+// setStatus 是两种状态迁移的共享实现：expectedCredentialVersion > 0 时
+// 追加凭据版本 EXISTS 谓词；0 表示只做状态 CAS（SetStatus 的旧行为）。
+func (r *AccountRepo) setStatus(ctx context.Context, s corescope.Scope, id string, from, to coreaccount.Status, at time.Time, reason string, expectedCredentialVersion int32) (coreaccount.Record, error) {
 	if !from.Valid() || !to.Valid() {
 		return coreaccount.Record{}, validationError("unknown account status")
 	}
@@ -349,6 +420,14 @@ func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id strin
 	}
 	args := append([]any{id}, scopeArgs...)
 	next := 2 + len(scopeArgs)
+	credentialSQL := ""
+	if expectedCredentialVersion > 0 {
+		credentialSQL = fmt.Sprintf(`
+		   AND EXISTS (
+		       SELECT 1 FROM credentials c
+		        WHERE c.account_id = accounts.id
+		          AND c.version = $%d)`, next+4)
+	}
 	query := fmt.Sprintf(`
 		UPDATE accounts
 		   SET status = $%d::account_status,
@@ -368,13 +447,19 @@ func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id strin
 		       updated_at = $%d
 		 WHERE id = $1::uuid
 		   AND status = $%d::account_status
-		   AND deleted_at IS NULL%s
+		   AND deleted_at IS NULL%s%s
 		RETURNING %s`,
-		next, next, next+1, next, next, next, next+2, next+3, scopeSQL, accountColumns)
+		next, next, next+1, next, next, next, next+2, next+3, scopeSQL, credentialSQL, accountColumns)
 	args = append(args, string(to), reason, at, string(from))
+	if expectedCredentialVersion > 0 {
+		args = append(args, expectedCredentialVersion)
+	}
 	row := r.db.q(ctx).QueryRow(ctx, query, args...)
 	record, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if expectedCredentialVersion > 0 {
+			return r.classifyMissIfCredentialVersion(ctx, s, id)
+		}
 		return r.classifyMiss(ctx, s, id)
 	}
 	return record, mapError(err)
@@ -454,12 +539,15 @@ func (r *AccountRepo) Purge(ctx context.Context, id string) error {
 	return nil
 }
 
-// Restore 在有空余容量且属主名下没有其他 live 账号时清除软删标记。
+// Restore 在属主存活、有空余容量且名下没有其他 live 账号时清除软删标记。
 // limit=0 是「不限」哨兵：全局容量判据跳过（一人一号判据不动）。
 //
 // **必须在事务内运行**。软删行不计入上限，
 // 故恢复必须在锁下重新计数；
 // 提前计数会让两个并发恢复把总数推过上限。
+//
+// 零行分类：未删除、属主已软删、属主已有 live 账号都是结构性冲突；
+// 只剩全局容量不足才报 capacity_exceeded。
 func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string, limit int) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
@@ -468,6 +556,15 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 		return coreaccount.Record{}, validationError("limit must not be negative")
 	}
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	// 与 SoftDeleteSelf 的 UPDATE users 串行：只查 EXISTS 是语句快照，
+	// 挡不住「属主正在被软删」的并发提交。先对属主行取共享锁，
+	// 软删事务要么先提交（随后 EXISTS 失败），要么排在恢复之后。
+	if _, err := r.db.q(ctx).Exec(ctx, `
+		SELECT id FROM users
+		 WHERE id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)
+		   FOR SHARE`, id); err != nil {
 		return coreaccount.Record{}, mapError(err)
 	}
 	scopeSQL, scopeArgs, err := scopePredicate(s, 3, "")
@@ -483,7 +580,10 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 		   AND ($2 = 0 OR (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2)
 		   AND NOT EXISTS (SELECT 1 FROM accounts live
 		                    WHERE live.owner_user_id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)
-		                      AND live.deleted_at IS NULL)`+scopeSQL+`
+		                      AND live.deleted_at IS NULL)
+		   AND EXISTS (SELECT 1 FROM users owner
+		                WHERE owner.id = accounts.owner_user_id
+		                  AND owner.deleted_at IS NULL)`+scopeSQL+`
 		RETURNING `+accountColumns, args...)
 	record, err := scanAccount(row)
 	if err == nil {
@@ -504,8 +604,8 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 // 在同一个容量 advisory lock 下重数。
 //
 // 零行分类：不可见或不存在 → not_found；未删 → conflict；
-// 删除者不是本人 → forbidden；超窗 → conflict；名下已有生效账号 →
-// validation；其余按容量不足报 capacity_exceeded。
+// 删除者不是本人 → forbidden；超窗 → conflict；属主已软删 → conflict；
+// 名下已有生效账号 → validation；其余按容量不足报 capacity_exceeded。
 func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by string, notBefore time.Time, limit int) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
@@ -520,6 +620,13 @@ func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by
 		return coreaccount.Record{}, validationError("limit must not be negative")
 	}
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	// 与 Restore 同理：先锁属主行，避免恢复与软删并发提交出双活号。
+	if _, err := r.db.q(ctx).Exec(ctx, `
+		SELECT id FROM users
+		 WHERE id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)
+		   FOR SHARE`, id); err != nil {
 		return coreaccount.Record{}, mapError(err)
 	}
 	scopeSQL, scopeArgs, err := scopePredicate(s, 5, "")
@@ -537,6 +644,9 @@ func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by
 		   AND NOT EXISTS (SELECT 1 FROM accounts live
 		                    WHERE live.owner_user_id = accounts.owner_user_id
 		                      AND live.deleted_at IS NULL)
+		   AND EXISTS (SELECT 1 FROM users owner
+		                WHERE owner.id = accounts.owner_user_id
+		                  AND owner.deleted_at IS NULL)
 		   AND ($2 = 0 OR (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2)`+scopeSQL+`
 		RETURNING `+accountColumns, args...)
 	record, err := scanAccount(row)
@@ -564,6 +674,15 @@ func (r *AccountRepo) classifySelfRestoreMiss(ctx context.Context, s corescope.S
 			"only a self-deleted account can be restored")
 	case record.DeletedAt.Before(notBefore):
 		return coreaccount.Record{}, conflictError("the self-restore grace period has expired")
+	}
+	var ownerDeleted bool
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT deleted_at IS NOT NULL FROM users WHERE id = $1::uuid`,
+		record.OwnerUserID).Scan(&ownerDeleted); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	if ownerDeleted {
+		return coreaccount.Record{}, conflictError("account owner is deleted")
 	}
 	var live int
 	if err := r.db.q(ctx).QueryRow(ctx,
@@ -699,15 +818,28 @@ func (r *AccountRepo) fetch(ctx context.Context, s corescope.Scope, id string, i
 
 // classifyMiss 解释一次零行比较并交换：
 // 不可见的行报 not_found，可见但状态不同的行报冲突。
+// Review/SetStatus 不校验凭据版本，文案只提状态，不得暗示版本已变。
 func (r *AccountRepo) classifyMiss(ctx context.Context, s corescope.Scope, id string) (coreaccount.Record, error) {
+	return r.classifyMissAs(ctx, s, id, "account status changed")
+}
+
+// classifyMissIfCredentialVersion 解释一次带凭据版本谓词的零行：
+// 可见行的落空既可能来自状态变化，也可能来自版本被换，文案两者都点出。
+func (r *AccountRepo) classifyMissIfCredentialVersion(ctx context.Context, s corescope.Scope, id string) (coreaccount.Record, error) {
+	return r.classifyMissAs(ctx, s, id, "account status or credential version changed")
+}
+
+// classifyMissAs 先确认行在作用域内可见，再按调用方给的文案报冲突。
+func (r *AccountRepo) classifyMissAs(ctx context.Context, s corescope.Scope, id, message string) (coreaccount.Record, error) {
 	if _, err := r.fetch(ctx, s, id, false); err != nil {
 		return coreaccount.Record{}, err
 	}
-	return coreaccount.Record{}, conflictError("account status changed")
+	return coreaccount.Record{}, conflictError(message)
 }
 
 // classifyRestoreMiss 解释一次零行恢复。
-// 行未删除报冲突；已删除但无空位报容量超限。
+// 行未删除、属主已软删、属主名下已有 live 账号都是结构性冲突；
+// 只剩全局容量不足才报容量超限。
 func (r *AccountRepo) classifyRestoreMiss(ctx context.Context, s corescope.Scope, id string) (coreaccount.Record, error) {
 	record, err := r.fetch(ctx, s, id, true)
 	if err != nil {
@@ -715,6 +847,24 @@ func (r *AccountRepo) classifyRestoreMiss(ctx context.Context, s corescope.Scope
 	}
 	if record.DeletedAt == nil {
 		return coreaccount.Record{}, conflictError("account is not deleted")
+	}
+	var ownerDeleted bool
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT deleted_at IS NOT NULL FROM users WHERE id = $1::uuid`,
+		record.OwnerUserID).Scan(&ownerDeleted); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	if ownerDeleted {
+		return coreaccount.Record{}, conflictError("account owner is deleted")
+	}
+	var live int
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM accounts WHERE owner_user_id = $1::uuid AND deleted_at IS NULL`,
+		record.OwnerUserID).Scan(&live); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	if live > 0 {
+		return coreaccount.Record{}, conflictError("owner already has a live account")
 	}
 	return coreaccount.Record{}, capacityError()
 }

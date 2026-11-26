@@ -138,7 +138,8 @@ PR 上的全部检查绿，才进入人工审查。活跃线 `develop` 上共 12
 | `ui-e2e (shots)` | 同上 | 新栈 Playwright 截图分片 |
 | `deploy-gate` | `.github/workflows/deploy-gate.yml` | 干净环境按 README 从零装成 |
 | `container-deploy-e2e` | 同上 | 容器部署 e2e |
-| `update-rollback-e2e` | 同上 | 一键更新的失败矩阵与回滚 |
+| `update-rollback-e2e` | 同上 | 一键更新的干跑契约（required；全矩阵见下行） |
+| `update-rollback-privileged` | `.github/workflows/update-rollback-privileged.yml` | R1..R10 全矩阵（手动、自托管 runner，不在 PR 检查里） |
 
 任一检查红都会阻塞合并。修完推送后等 CI 重跑；不要靠反复重试掩盖抖动。
 （`main` 上另有定时 workflow，不在 PR 检查里。）

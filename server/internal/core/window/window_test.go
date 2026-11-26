@@ -48,6 +48,23 @@ func TestOpenClosedThreeParts(t *testing.T) {
 	}
 }
 
+// ClosedAt 是只持有终点时的唯一关窗判据：恰在终点算已关（>=），
+// 早一纳秒算未关。retry.Window 必须调它，不得自写 Sub 比较。
+func TestClosedAtBoundary(t *testing.T) {
+	if ClosedAt(end, at(7, 49, 59)) {
+		t.Fatal("终点前一秒不该已关")
+	}
+	if !ClosedAt(end, end) {
+		t.Fatal("恰在终点该已关（>= 判定）")
+	}
+	if !ClosedAt(end, end.Add(time.Nanosecond)) {
+		t.Fatal("终点后一纳秒该已关")
+	}
+	if ClosedAt(end, end.Add(-time.Nanosecond)) {
+		t.Fatal("终点前一纳秒不该已关")
+	}
+}
+
 func TestRemaining(t *testing.T) {
 	if got := window.Remaining(at(6, 0, 0)); got != 110*time.Minute {
 		t.Fatalf("Remaining(06:00) = %v, want 110m", got)

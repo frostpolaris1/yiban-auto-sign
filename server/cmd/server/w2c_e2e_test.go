@@ -315,6 +315,8 @@ func w2cNewEnvWithAnchor(t *testing.T, anchorPath string) *w2cEnv {
 	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
 		Discover: e.discover, Prefs: e.prefs, Self: e.sched, Tx: db,
+		// 覆盖写面同事务追加审计（P2-3），与生产装配同形。
+		Audit:          e.audits,
 		Notifier:       assembly.ScheduleNotifier{Broker: e.broker, Clock: clk},
 		CapacityAlerts: capacityAlerts,
 	})
@@ -403,7 +405,7 @@ func w2cNewEnvWithAnchor(t *testing.T, anchorPath string) *w2cEnv {
 	if anchorPath != "" {
 		auditInspector.WithAnchor(anchoradapter.NewFile(anchorPath)).WithAnchorMeta(e.audits)
 	}
-	auditHandler := audithttp.NewHandler(auditReader).WithStatus(auditInspector)
+	auditHandler := audithttp.NewHandler(auditReader, adminSvc).WithStatus(auditInspector)
 
 	e.engine, err = router.New(router.Options{
 		Sessions:        e.sessions,

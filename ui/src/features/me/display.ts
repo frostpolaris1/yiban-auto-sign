@@ -10,6 +10,7 @@
  * 窗口轴范围取整点小时，band 画窗口、空心点画所选档、实心点画实际。
  * 没有时间片数据时不画空心点，轴不编造所选档。
  * 状态文案只描述下一步，不冒充平台原因。
+ * 错误文案按 HTTP 状态收敛为一句可行动提示，未知状态回落到通用文案。
  */
 
 import type { AccountStatus } from '@/lib/api/account'
@@ -345,6 +346,20 @@ export function todayKey(date: Date): string {
   }).formatToParts(date)
   const pick = (type: string) => parts.find((part) => part.type === type)?.value ?? ''
   return `${pick('year')}-${pick('month')}-${pick('day')}`
+}
+
+/** detect（平台探测）失败文案；404 表示平台院校尚未登记，需管理员先建校。 */
+export function detectErrorText(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 400) return '请填写正确的手机号与易班口令。'
+    if (error.status === 403) return '没有权限执行这个操作。'
+    if (error.status === 404) return '该学校尚未登记，请联系管理员创建后再试。'
+    if (error.status === 429) return '尝试过多，请稍后再试。'
+    if (error.status === 502) return '平台暂时不可用，请稍后再试或手动选学校。'
+    if (error.status === 503) return '系统维护中，请稍后再试或手动选学校。'
+    return '没有找到账号，请检查手机号与口令。'
+  }
+  return '网络异常，请稍后重试。'
 }
 
 export function photoUploadErrorText(error: unknown): string {

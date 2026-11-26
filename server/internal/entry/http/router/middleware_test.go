@@ -40,19 +40,23 @@ func TestRequestBodyLimitPerPath(t *testing.T) {
 	}
 }
 
-// 批量签到必须在 IP 限流白名单内：契约对整批声明 429，
+// 四条签名路由与 detect 必须在 IP 限流白名单内：契约声明 429，
 // 白名单漏行＝429 运行时不可达。直接断言注册表，漏行即红。
-func TestBatchSignPathIsIPRateLimited(t *testing.T) {
+// 账号键限流已移入 handler，但 IP 面白名单不能跟着删。
+func TestSigningPathsAreIPRateLimited(t *testing.T) {
 	for _, path := range []string{
 		"/api/accounts/:id/sign",
 		"/api/accounts/batch/sign",
+		"/api/accounts/:id/verify",
+		"/api/accounts/:id/person-name",
+		"/api/accounts/detect",
 	} {
 		if _, ok := rateLimitedPaths[path]; !ok {
 			t.Fatalf("%s 不在 rateLimitedPaths 白名单内", path)
 		}
 	}
-	if len(rateLimitedPaths) < 7 {
-		t.Fatalf("白名单 = %d 项, want at least 7（表被清空即红）", len(rateLimitedPaths))
+	if len(rateLimitedPaths) < 11 {
+		t.Fatalf("白名单 = %d 项, want at least 11（表被清空即红）", len(rateLimitedPaths))
 	}
 }
 
@@ -167,5 +171,89 @@ func TestUIIndexHasNoInlineScripts(t *testing.T) {
 	if tag == "" || strings.Contains(strings.ToLower(tag), "defer") ||
 		strings.Contains(strings.ToLower(tag), "async") {
 		t.Fatalf("主题引导必须同步加载（无 defer/async）: %q", tag)
+	}
+}
+
+// must_change_password 门的放行判断必须按 Gin 注册形状精确匹配：
+// 方法不符、以允许路径为前缀的路径都不得漏过。
+// 该门是强制改密的唯一硬门；用前缀匹配会让 /api/auth/me/xxx 之类漏进去。
+// 放行项还要对着 router.New 的真实注册表核一遍：契约删了路由而门
+// 还在放行、或方法注册变了，这里都会先红，避免手写路径自我印证。
+func TestMustChangePasswordAllowedMatchesExactRouteAndMethod(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	wired, err := New(Options{Sessions: cspWiringIssuer{}})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	registered := make(map[string]bool, len(wired.Routes()))
+	for _, route := range wired.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+	if !registered["GET /api/auth/password-policy"] {
+		t.Fatal("GET /api/auth/password-policy 未注册：门放行它，契约却没有该路由")
+	}
+	if registered["POST /api/auth/password-policy"] {
+		t.Fatal("POST /api/auth/password-policy 已注册：方法不符用例不再证明方法匹配")
+	}
+
+	engine := gin.New()
+	decisions := make(map[string]bool)
+	probe := func(name string) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			decisions[name] = mustChangePasswordAllowed(c)
+		}
+	}
+	engine.GET("/api/auth/me", probe("get me"))
+	engine.POST("/api/auth/me", probe("post me"))
+	engine.GET("/api/auth/me/extra", probe("me extra"))
+	engine.POST("/api/auth/change-password", probe("post change-password"))
+	engine.GET("/api/auth/change-password", probe("get change-password"))
+	engine.GET("/api/auth/password-policy", probe("get password-policy"))
+	engine.POST("/api/auth/password-policy", probe("post password-policy"))
+	engine.GET("/api/auth/password-policy/extra", probe("password-policy extra"))
+	engine.POST("/api/auth/logout", probe("logout"))
+	engine.POST("/api/me/restore", probe("restore"))
+	engine.GET("/api/accounts", probe("accounts"))
+	engine.POST("/api/me/delete", probe("me delete"))
+	engine.GET("/internal/probe", probe("non-public"))
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		want   bool
+	}{
+		{"get me", http.MethodGet, "/api/auth/me", true},
+		{"post me", http.MethodPost, "/api/auth/me", false},
+		{"me extra", http.MethodGet, "/api/auth/me/extra", false},
+		{"post change-password", http.MethodPost, "/api/auth/change-password", true},
+		{"get change-password", http.MethodGet, "/api/auth/change-password", false},
+		{"get password-policy", http.MethodGet, "/api/auth/password-policy", true},
+		{"post password-policy", http.MethodPost, "/api/auth/password-policy", false},
+		{"password-policy extra", http.MethodGet, "/api/auth/password-policy/extra", false},
+		{"logout", http.MethodPost, "/api/auth/logout", true},
+		{"restore", http.MethodPost, "/api/me/restore", true},
+		{"accounts", http.MethodGet, "/api/accounts", false},
+		{"me delete", http.MethodPost, "/api/me/delete", false},
+		{"non-public", http.MethodGet, "/internal/probe", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, tc.path, nil))
+			got, ok := decisions[tc.name]
+			if !ok {
+				t.Fatalf("探针未命中：%s %s 未注册", tc.method, tc.path)
+			}
+			if got != tc.want {
+				t.Fatalf("%s %s allowed = %v, want %v", tc.method, tc.path, got, tc.want)
+			}
+		})
+	}
+	// 放行的形状必须是契约里真有的：门放行一个不存在的路由，
+	// 请求永远到不了处理器，放行就是假的。
+	for _, tc := range cases {
+		if tc.want && !registered[tc.method+" "+tc.path] {
+			t.Fatalf("放行面 %s %s 不在真实路由表内", tc.method, tc.path)
+		}
 	}
 }

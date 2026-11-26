@@ -113,6 +113,13 @@ type Config struct {
 	TimePrefCooldown time.Duration
 	// TaskLease 是执行任务的租约时长。过期的 running 由回收器放回队列。
 	TaskLease time.Duration
+	// ReclaimGrace 是回收过期租约后的冷却：回收落点 = now + ReclaimGrace。
+	// 0 表示回收即可重领（旧行为）。
+	ReclaimGrace time.Duration
+	// AttemptBudget 是一次真实尝试（发现＋提交）的总截止时间。
+	// 0 表示按租约派生（装配层取 0.8×TaskLease）；显式值必须小于 TaskLease，
+	// 否则预算还没到期租约就先失效，回收器会在持有者仍活着时把行放回队列。
+	AttemptBudget time.Duration
 
 	// PhotoDir 是图片 blob 存储根目录。
 	PhotoDir string
@@ -183,6 +190,12 @@ type Config struct {
 	// TurnstileSecret 是 siteverify 的服务端私钥。敏感值：不得出现在
 	// 日志、审计与错误文本里。
 	TurnstileSecret string
+	// TurnstileExpectedHostname 是可选的主机名绑定：非空时 siteverify
+	// 回执的 hostname 必须与它相等（忽略大小写）。空表示不校验。
+	TurnstileExpectedHostname string
+	// TurnstileExpectedAction 是可选的 action 绑定：非空时回执的 action
+	// 必须与它逐字节相等（区分大小写）。空表示不校验。
+	TurnstileExpectedAction string
 	// TurnstileMode 是定型后的档位，只取 TurnstileModeOff/Log/On。
 	// 输入键另接受 auto：两把密钥齐备即 on，否则 off。
 	TurnstileMode string
@@ -341,12 +354,17 @@ func (k enumKey) spec() keySpec {
 // 浮点键的域取 core/rate 的常量，不在本包复写 0.2/4.0。
 var (
 	keyAllowNoDB        = boolKey{"YIBAN_ALLOW_NO_DB", false}
-	keyWorkers          = intKey{"YIBAN_WORKERS", 1, 1, 64}
+	keyWorkers          = intKey{"YIBAN_WORKERS", 4, 1, 64}
 	keyAvgAttemptSec    = intKey{"YIBAN_AVG_ATTEMPT_SEC", 3, 1, 300}
 	keyWindowEdgeFront  = intKey{"YIBAN_WINDOW_EDGE_FRONT_SEC", 60, 0, 300}
 	keyWindowEdgeBack   = intKey{"YIBAN_WINDOW_EDGE_BACK_SEC", 60, 0, 300}
 	keyTimePrefCooldown = intKey{"YIBAN_TIME_PREF_COOLDOWN_SEC", 30, 0, 3600}
 	keyTaskLeaseSec     = intKey{"YIBAN_TASK_LEASE_SEC", 120, 30, 3600}
+	// 回收冷却：租约到期后先等一段再重领（见 pg.ScheduleRepo.WithReclaimGrace）。
+	keyReclaimGraceSec = intKey{"YIBAN_RECLAIM_GRACE_SEC", 60, 0, 3600}
+	// 一次尝试的总截止时间：0 表示按 0.8×租约派生（见 assembly.workerAttemptBudget），
+	// 不是"不设限"——派生值永远小于租约，这是默认开启的行为收紧。
+	keyAttemptBudgetSec = intKey{"YIBAN_ATTEMPT_BUDGET_SEC", 0, 0, 3600}
 	keyEgressRate       = floatKey{"YIBAN_EGRESS_RATE", corerate.DefaultRate, corerate.RateMin, corerate.RateMax}
 	keyAllowTimePref    = boolKey{"YIBAN_ALLOW_TIME_PREF", false}
 	keyHTTPAddr         = stringKey{"YIBAN_HTTP_ADDR", DefaultHTTPAddr}
@@ -382,10 +400,13 @@ var (
 	keyTrustedProxies    = stringKey{"YIBAN_TRUSTED_PROXIES", ""}
 	keyKDFConcurrency    = intKey{"YIBAN_KDF_CONCURRENCY", 4, 1, 64}
 
-	// 人机验证三键。站点密钥是公开值；私钥只在服务端使用。
-	keyTurnstileSiteKey = stringKey{"YIBAN_TURNSTILE_SITE_KEY", ""}
-	keyTurnstileSecret  = stringKey{"YIBAN_TURNSTILE_SECRET", ""}
-	keyTurnstileMode    = enumKey{"YIBAN_TURNSTILE_MODE", "auto", turnstileModes}
+	// 人机验证键。站点密钥是公开值；私钥只在服务端使用；
+	// 两个 EXPECTED_* 是可选的令牌绑定期望，空表示不校验该维度。
+	keyTurnstileSiteKey          = stringKey{"YIBAN_TURNSTILE_SITE_KEY", ""}
+	keyTurnstileSecret           = stringKey{"YIBAN_TURNSTILE_SECRET", ""}
+	keyTurnstileExpectedHostname = stringKey{"YIBAN_TURNSTILE_EXPECTED_HOSTNAME", ""}
+	keyTurnstileExpectedAction   = stringKey{"YIBAN_TURNSTILE_EXPECTED_ACTION", ""}
+	keyTurnstileMode             = enumKey{"YIBAN_TURNSTILE_MODE", "auto", turnstileModes}
 )
 
 // configSpecs 汇总静态缺省/域的读取规格。
@@ -400,6 +421,8 @@ func configSpecs() []keySpec {
 		keyWindowEdgeBack.spec(),
 		keyTimePrefCooldown.spec(),
 		keyTaskLeaseSec.spec(),
+		keyReclaimGraceSec.spec(),
+		keyAttemptBudgetSec.spec(),
 		keyEgressRate.spec(),
 		keyAllowTimePref.spec(),
 		keyHTTPAddr.spec(),
@@ -432,6 +455,8 @@ func configSpecs() []keySpec {
 		keyKDFConcurrency.spec(),
 		keyTurnstileSiteKey.spec(),
 		keyTurnstileSecret.spec(),
+		keyTurnstileExpectedHostname.spec(),
+		keyTurnstileExpectedAction.spec(),
 		keyTurnstileMode.spec(),
 	}
 }
@@ -545,6 +570,24 @@ func LoadFrom(src Source) (*Config, error) {
 		return nil, err
 	}
 	cfg.TaskLease = time.Duration(lease) * time.Second
+	grace, err := keyReclaimGraceSec.read(src)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ReclaimGrace = time.Duration(grace) * time.Second
+	budget, err := keyAttemptBudgetSec.read(src)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AttemptBudget = time.Duration(budget) * time.Second
+	// 显式预算必须落在租约之内：预算晚于租约到期，等于没有预算——
+	// 回收器会在持有者还在跑的时候把行放回队列，同账号双跑照旧。
+	// 0 不是"不设限"：装配层按 0.8×租约派生，派生值自然满足这条校验。
+	// 运行面还会按认领租约的剩余时间再次封顶（worker.effectiveAttemptBudget）。
+	if cfg.AttemptBudget > 0 && cfg.AttemptBudget >= cfg.TaskLease {
+		return nil, fmt.Errorf("config: YIBAN_ATTEMPT_BUDGET_SEC (%ds) must be less than YIBAN_TASK_LEASE_SEC (%ds)",
+			int(cfg.AttemptBudget.Seconds()), int(cfg.TaskLease.Seconds()))
+	}
 
 	if cfg.RateLimitEnabled, err = keyRateLimitEnabled.read(src); err != nil {
 		return nil, err
@@ -619,11 +662,19 @@ func LoadFrom(src Source) (*Config, error) {
 	// 而服务端无从校验（或反之），启动即失败，不进入半套状态。
 	cfg.TurnstileSiteKey = strings.TrimSpace(keyTurnstileSiteKey.read(src))
 	cfg.TurnstileSecret = strings.TrimSpace(keyTurnstileSecret.read(src))
+	cfg.TurnstileExpectedHostname = strings.TrimSpace(keyTurnstileExpectedHostname.read(src))
+	cfg.TurnstileExpectedAction = strings.TrimSpace(keyTurnstileExpectedAction.read(src))
 	mode, err := keyTurnstileMode.read(src)
 	if err != nil {
 		return nil, err
 	}
 	if cfg.TurnstileMode, err = resolveTurnstileMode(mode, cfg.TurnstileSiteKey, cfg.TurnstileSecret); err != nil {
+		return nil, err
+	}
+	// 期望绑定是令牌校验条件；没有私钥就永远不会被执行。与 mode 无关：
+	// off 档同样拒绝「设了绑定却没私钥」的半套配置。
+	if err := checkTurnstileExpectations(cfg.TurnstileSecret,
+		cfg.TurnstileExpectedHostname, cfg.TurnstileExpectedAction); err != nil {
 		return nil, err
 	}
 	if cfg.ResetMailEnabled {
@@ -682,6 +733,29 @@ func resolveTurnstileMode(mode, siteKey, secret string) (string, error) {
 	default:
 		return "", fmt.Errorf("config: unknown turnstile mode %q", mode)
 	}
+}
+
+// checkTurnstileExpectations 钉住「期望绑定必须有私钥」。
+//
+// 期望值是 siteverify 回执的校验条件；私钥为空时根本不会问 siteverify，
+// 静默忽略等于让部署方以为绑定已生效。因此任一期望非空而私钥为空即
+// 启动失败，点名已设置的期望键与缺的私钥键。
+func checkTurnstileExpectations(secret, hostname, action string) error {
+	if secret != "" {
+		return nil
+	}
+	var configured []string
+	if hostname != "" {
+		configured = append(configured, keyTurnstileExpectedHostname.key)
+	}
+	if action != "" {
+		configured = append(configured, keyTurnstileExpectedAction.key)
+	}
+	if len(configured) == 0 {
+		return nil
+	}
+	return fmt.Errorf("config: %s requires %s",
+		strings.Join(configured, " and "), keyTurnstileSecret.key)
 }
 
 // checkDatabasePresence 钉住「有库才跑业务」的启动判据。

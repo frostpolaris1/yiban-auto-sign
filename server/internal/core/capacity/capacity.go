@@ -16,6 +16,8 @@
 // min(通道吞吐 channels/avg，出口速率 rate)。新线单进程：
 // 没有执行体数 K 这一维。窗口容不下一次尝试时容量为 0。
 // util 必须落在 [0,1]，越界值被夹取。
+// SuggestedWorkers 返回满足需求的总通道数，并夹在 [1, MaxWorkers]；
+// 超过上限应提高出口速率或多实例，而不是继续加 worker。
 // BindingOf 报当前瓶颈；Advise 按需求给出要抬的一侧与建议通道数：
 // 加通道（不超过 MaxWorkers）能装下需求才归 workers 并给数；
 // 所需通道数不超过 MaxWorkers、加了通道仍被出口速率封顶则归
@@ -31,7 +33,10 @@ import (
 // UtilDefault 是容量利用系数缺省：为重试与尾延迟降额。
 const UtilDefault = 0.8
 
-// MaxWorkers 是并发通道的建议上限，与配置 YIBAN_WORKERS 的上限一致。
+// MaxWorkers 是并发通道的上限，与配置 YIBAN_WORKERS 的上限一致。
+// 它不是“越大容量越高”的旋钮：单进程超过 64 个通道只会压到进程内
+// 并发/连接池边界，而窗口容量仍被出口速率封顶；需要更大窗口容量时提高
+// 出口速率或多实例部署。
 const MaxWorkers = 64
 
 // Binding 是容量瓶颈的归属。
@@ -107,10 +112,31 @@ func BindingOf(window time.Duration, channels int, avg time.Duration, rate, util
 
 // SuggestedWorkers 返回满足需求的并发通道数：ceil(需求 × 平均耗时 ÷ (窗口 × util))。
 //
-// 结果为满足需求所需的总通道数，不是增量。非正输入或利用系数为 0 归 0；
-// util 与 Capacity 同口径夹到 [0,1]。是否值得建议（大于当前值、不超过
-// MaxWorkers 且真的装得下需求）由 Advise 判定。
+// 结果为满足需求所需的总通道数，不是增量，并始终夹在 [1, MaxWorkers]：
+// 需求非正时保底 1（0 不是可配置值）；超过 MaxWorkers 时夹到 64。
+// 64 不是“更大容量”的旋钮，而是进程内并发/连接池边界；所需通道数超过 64
+// 时应提高出口速率或多实例部署，而不是继续加 worker。
+// window、平均耗时或利用系数为 0 时没有可计算的窗口，归 0；util 与
+// Capacity 同口径夹到 [0,1]。是否值得建议（大于当前值且真的装得下需求）
+// 由 Advise 判定。
 func SuggestedWorkers(demand int, window, avg time.Duration, util float64) int {
+	if window <= 0 || avg <= 0 || clampUtil(util) == 0 {
+		return 0
+	}
+	want := suggestedWorkersRaw(demand, window, avg, util)
+	if want < 1 {
+		return 1
+	}
+	if want > MaxWorkers {
+		return MaxWorkers
+	}
+	return want
+}
+
+// suggestedWorkersRaw 是未夹取的建议计算，供 Advise 判断“所需通道数
+// 超过 MaxWorkers、并发已到上限”。旧语义保持不变：需求非正或输入非法归 0，
+// 不设上限。导出面的保底 1 与上限 64 只服务可执行建议，不改变本函数。
+func suggestedWorkersRaw(demand int, window, avg time.Duration, util float64) int {
 	if demand <= 0 || window <= 0 || avg <= 0 {
 		return 0
 	}
@@ -140,13 +166,13 @@ type Advice struct {
 // want 不超过 MaxWorkers 但加了通道仍装不下时，出口速率是硬上界：
 // 归 egress_rate 且不给数字。
 // want 超过 MaxWorkers 时并发已到上限、无法给数：归 workers。
-// 非法输入下 SuggestedWorkers 归 0，此时保留当前瓶颈且不给建议。
+// 窗口、平均耗时或 util 非法，或需求非正时不给建议，保留当前瓶颈。
 func Advise(window time.Duration, channels int, avg time.Duration, rate, util float64, demand int) Advice {
 	binding := BindingOf(window, channels, avg, rate, util)
 	if Capacity(window, channels, avg, rate, util) >= demand {
 		return Advice{Binding: binding}
 	}
-	want := SuggestedWorkers(demand, window, avg, util)
+	want := suggestedWorkersRaw(demand, window, avg, util)
 	if want < 1 {
 		return Advice{Binding: binding}
 	}

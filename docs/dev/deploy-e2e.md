@@ -2,9 +2,9 @@
 
 > 工单 6jk。判据来源：AGENTS.md §六 第 16/17 条。
 > 可发布＝全新干净环境按部署件从零装成。
-> 本文给出三条 e2e 的命令、断言与 CI 状态。
+> 本文给出五组 e2e 的命令、断言与 CI 状态。
 
-## 1. 三条命令
+## 1. 五组命令
 
 容器路径（自动轨）：
 
@@ -24,8 +24,16 @@ bash scripts/e2e/deploy-baremetal-e2e.sh
 bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>
 ```
 
-三条都在仓库根目录执行。三条都在 WSL 或 Linux 上跑。
-三条都写 `--log-dir` 指定目录与 docker 资源，不碰生产路径。
+UI 签名链本地用例（不需要 docker，可按用例单跑）：
+
+```bash
+bash scripts/e2e/ui-signing-e2e.sh success
+bash scripts/e2e/ui-signing-e2e.sh tampered extra symlink no-ui-entry
+```
+
+五组都在仓库根目录执行，且都在 WSL 或 Linux 上跑。前三组涉及容器的资源
+与日志都走 `--log-dir`，不碰生产路径；UI 用例只需要 bash、openssl、
+sha256sum（不碰 docker，单跑一例只需几秒）。
 
 常用选项：
 
@@ -83,7 +91,8 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 | B3 | 全新 PostgreSQL 18；public 表数为 0 |
 | B4 | 用 `golang:1.27-alpine` 真编译 server 与 cli |
 | B4c | 用 `node:22-alpine` 真跑 `npm ci && npm run build`；产物含 `index.html` 与 `assets/*.js`（可复用外部产物排障） |
-| B4b | 对真编译产物签发清单→验签通过 |
+| B4b | 对真编译产物 + UI 清单（`ui-SHA256SUMS`）签发 manifest→验签通过 |
+| B4d | 本地跑 `ui-signing-e2e.sh`：篡改 `index.html`、清单外文件、软链、清单与目录互锁均被拒；正常 UI 换新并留 `ui.bak`；所有拒绝都发生在停服/换件之前 |
 | B5 | OS 容器 systemd 就绪；`/etc/yiban`、`yiban` 用户、二进制均不存在 |
 | B6 | `install.sh --ui-dir` 退出 0，输出 `install complete: healthz ok` |
 | B6b | `systemd-analyze verify` 通过；单元含 `NoNewPrivileges=true`/`PrivateTmp=true`/`UMask=0077`/`ProtectSystem=strict`/`ProtectHome=true`/`ReadWritePaths=-/var/lib/yiban/photos`；`systemctl show` 的 `NoNewPrivileges`/`PrivateTmp`/`ProtectSystem`/`ProtectHome`/`UMask` 与之一致；`ReadWritePaths` 含照片目录 |
@@ -112,6 +121,7 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 | 容器 | 自动轨 | `.github/workflows/deploy-gate.yml` 的 `container-deploy-e2e` 作业 |
 | 裸机 | **发布前手跑项** | 本文件 §1；脚本每次运行打印 MANUAL 行 |
 | 回滚演练 | **发布前手跑项** | 本文件 §1 与 §8；脚本每次运行打印 MANUAL 行 |
+| UI 签名链 | 随裸机演练手跑（可单跑） | 本文件 §1；`scripts/e2e/ui-signing-e2e.sh` |
 
 裸机与回滚演练不进自动轨的理由：它们要求 docker 的 `--privileged`
 与 host cgroup。该形态尚未在 GitHub 托管 runner 上实测。
@@ -301,15 +311,24 @@ sha256）、真 `systemctl` 停起 unit、真 goose 迁移成败、真
 
 ### 8.5 CI 接线
 
-`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` job 两步：
+`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` 是 required
+检查，只跑 update.sh 干跑契约，不依赖 docker：
 
 1. `go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh'`：update.sh 干跑契约
-   （自检门、统一备份、start 失败回滚、首次装页面回滚、argv 无口令、缺值 exit 2）。
-   不需要 docker，托管 runner 上必定真跑。
-2. `bash scripts/e2e/update-rollback-e2e.sh host ...`：R1..R10 全矩阵。
-   托管 runner 上 `--privileged` systemd 容器未实测：环境起不来时脚本 exit 2，
-   job 打印 `SKIP` 并写进 step summary 后退出 0 —— **SKIP 不算绿**，
-   release-check 项 7 仍记 POINTER，发布前按 §1 手跑一遍。
+   （自检门、统一备份、start 失败回滚、首次装页面回滚、argv 无口令、缺值退出 2）。
+   托管 runner 上必定真跑，**任何非 0 退出判红**，没有降级分支。
 
-`tests/test_deploy_e2e_wiring.py` 钉住这条接线：job 存在、有超时门、
-真的调用脚本、干跑契约在场、SKIP 路径写进 step summary。
+需要 `--privileged` systemd 的完整矩阵 R1..R10 不在托管 runner 上跑，拆到
+`.github/workflows/update-rollback-privileged.yml`：
+
+2. `bash scripts/e2e/update-rollback-e2e.sh host ...`：R1..R10 全矩阵，
+   一次性 systemd 容器真跑 update.sh。该 workflow 只接受手动
+   `workflow_dispatch`，`runs-on: [self-hosted, linux, x64, yiban-privileged]`，
+   权限只读；脚本任何非 0 退出（含退出码 2 = 环境错误）都原样判红，没有降级
+   分支（P1-6 前旧接法把 rc=2 打印成 `SKIP` 后退出 0，等于 required 检查可整条
+   失效，已删）。自托管 runner 的注册与前置条件见 workflow 文件头。
+
+`tests/test_deploy_e2e_wiring.py` 钉住这条接线：required job 存在、有超时门、
+干跑契约在场、块内没有 `-eq 2`/`SKIP`/`exit 0`/`::warning`/`continue-on-error` 之类降级；全矩阵只在唯一一条手动、自托管 workflow 里，
+带自托管标签与只读权限，且同样没有降级分支。release-check 项 7 仍记 POINTER：
+发布前按 §1 在目标机上再手跑一遍。

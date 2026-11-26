@@ -24,8 +24,8 @@ import { SESSION_CSRF, SESSION_EMAIL, DEFAULT_AUDIT_STATUS, type Role } from './
  * `/api/sign-stats`、`/api/sign-stats/failures`、`/api/time-prefs/stats`、
  * `/api/accounts/summary` 与 `/api/admin/audit-status`。
  * 响应体只用登记过的合成值：学校与任务带「合成」前缀，账号是 `acc-000N`。
- * 角色按契约 `x-roles` 判：sign-status 仅 user；windows、capacity、summary
- * 与 audit-status 仅 master/admin。
+ * 角色按契约 `x-roles` 判：sign-status 仅 user；windows、capacity、summary、
+ * engine 仅 master/admin；pause 与 audit-status 仅 master。
  * 调用记录供断言「零请求」「参数正确」与「轮询次数」。
  * 错误注入默认每次都失败；`once: true` 时只有第一次失败，用来验「重试」。
  */
@@ -561,7 +561,7 @@ export async function mockDashboardApi(
     }
 
     if (url.pathname === '/api/admin/audit-status' && request.method() === 'GET') {
-      if (!(await deny(route, ['master', 'admin']))) return
+      if (!(await deny(route, ['master']))) return
       const failure = takeFailure('auditStatus')
       if (failure) return fail(route, failure.status, failure.code, failure.message)
       return json(route, auditStatus)
@@ -580,13 +580,10 @@ export async function mockDashboardApi(
     }
 
     if (url.pathname === '/api/admin/engine/pause' && request.method() === 'PUT') {
-      if (!(await deny(route, ['master', 'admin']))) return
+      if (!(await deny(route, ['master']))) return
       const update = body as { paused?: boolean; current_password?: string }
-      // 方向门先于口令校验，与服务端同序。
+      // 角色门先于口令校验，与服务端同序；暂停与恢复都仅 master。
       if (typeof update.paused !== 'boolean') return fail(route, 400, 'validation_failed', '缺少目标状态')
-      if (update.paused === false && sessionRole !== 'master') {
-        return fail(route, 403, 'forbidden', '仅主管理员可恢复')
-      }
       if (!update.current_password) return fail(route, 400, 'validation_failed', '缺少口令')
       engineSnapshot = { ...engineSnapshot, paused: update.paused === true }
       return json(route, { paused: engineSnapshot.paused })

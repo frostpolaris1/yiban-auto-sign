@@ -52,6 +52,7 @@ const (
 	waitRate           = "wait_rate"           // 出口限速未放行
 	waitEgress         = "wait_egress"         // 出口不可用（无可用出口或分配失败）
 	waitBatchAborted   = "wait_batch_aborted"  // 本行前置步骤遇基础设施失败，退回队列
+	waitLeaseSpent     = "wait_lease_spent"    // 认领租约已被前置阶段耗尽，未发平台请求
 	windowMissingRetry = 10 * time.Minute      // 窗口未发现时的重试间隔
 	// requeueBackoff 是未提交失败退回队列的最小等待：DB 故障期不让同一行
 	// 每 2 秒热循环重领（P1-5）。
@@ -64,6 +65,12 @@ const (
 // 固定点落在目标围栏外且无原因说明。它不在 contract.Outcome 词表内——
 // 提供方永不返回它；确定结论不退避，落 skipped 档。
 const locationOutOfRange = "location_out_of_range" // 与 core/errs.CodeLocationOutside 同词：宿主自产结论，不经 contract.Outcome。
+
+// attemptBudgetReason 是一次尝试被自己的总预算截断时的日志原因。
+// 结论词仍是 transient（可重试面）：提供方没给出业务结论，只是没能及时答。
+// 必须与"基础设施故障"分开记：后者上抛退回队列、不计尝试数，
+// 前者是一次真实尝试的失败，要按预算计数，否则卡死的行会每轮重撞。
+const attemptBudgetReason = "attempt_budget_exceeded"
 
 // Service 是执行循环服务。
 type Service struct {
@@ -311,26 +318,61 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	// "平台快速拒绝"与"网络超时"（后者通常秒级以上）。
 	// 时间源走注入时钟：域内不直接读墙上时间（gate: clock.now）。
 	attemptStart := s.deps.Clock.Now()
+	// 一次尝试的总截止时间（YIBAN_ATTEMPT_BUDGET_SEC）：发现与提交共用一个预算。
+	// 没有它，卡住的提供方会持住租约直到过期；回收器把行放回队列后，
+	// 第二个执行体能在本执行体还活着时再认领同一账号——库层唯一索引只盖
+	// state='running'，挡不住这条路径（回收已把旧行改成 pending）。
+	// 预算还要受租约余量封顶：租约从认领时刻起算，预算从凭据就绪起算，
+	// 中间的窗口/出口/限速/凭据读取会吃掉租约；只按配置值限长仍可能晚于回收器。
+	// 零值不限尝试时长（装配层缺省非零）；租约余量护栏仍生效。
+	budget, leaseSpent := effectiveAttemptBudget(s.deps.AttemptBudget, task.LeaseExpiresAt, attemptStart)
+	if leaseSpent {
+		// 前序（窗口/出口/限速/凭据）已把租约吃光：不能再发平台请求，
+		// 也不能把这次"没发出去"记成账号失败一次。退回队列，不计数。
+		// 不写 outcome 日志：这不是一次尝试，别把 attempt/task.attempts 指标带偏。
+		// 冲突是良性的：走到这里时租约已过/将过，回收器可能已把行放回队列
+		// 并换了 claim_seq。退回失败不代表数据丢了，别让它升级成整轮提前收尾。
+		// 不另打日志：回收器侧已写 task.reclaim 审计，可作为这次冲突的旁证。
+		err := s.requeueWait(ctx, task, requeueRunAt(task.RunAt, s.deps.Clock.Now()), waitLeaseSpent)
+		if err != nil && coreerrs.From(err).Code != coreerrs.CodeConflict {
+			return false, err
+		}
+		return false, nil
+	}
+	attemptCtx, cancelAttempt := attemptDeadline(ctx, budget)
+	defer cancelAttempt()
 	ref := contract.AccountRef{ID: task.AccountID, SchoolID: task.SchoolID, Platform: "yiban"}
 
 	// 发现阶段可能直接给出业务结论（OutcomeError），例如 no_target、
 	// credential_invalid、challenge。契约要求宿主用 errors.As 取回；
 	// 把它当 transient 重试会让 challenge 被多打三次真实请求。
-	targets, err := s.deps.Signer.DiscoverTargets(ctx, contract.DiscoverRequest{
+	targets, err := s.deps.Signer.DiscoverTargets(attemptCtx, contract.DiscoverRequest{
 		Account: ref, Credential: cred,
 	})
 	if err != nil {
+		// 业务结论优先于预算判定：提供方已经给出 challenge/凭据错时，
+		// 不能因为同一时刻预算到期就降级成 transient——那会把确定的
+		// 当日结论重新打回可重试面，challenge 还会被多打三次。
 		if outcome, reason, ok := outcomeOf(err); ok {
 			s.logOutcome(ctx, task, stageDiscovery, outcome, reason)
-			return false, s.settleOutcome(ctx, task, win, now, outcome, reason, s.deps.Clock.Now().Sub(attemptStart))
+			return false, s.settleOutcome(ctx, task, win, outcome, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
+		}
+		if attemptBudgetExhausted(attemptCtx, ctx) {
+			// 预算截断是一次失败的尝试：按 transient 计一次并把落点交给退避。
+			// 不这么归会落进"其余（DB、KEK 等）：基础设施错误，上抛"那条路，
+			// 行每 tick 重领、每 tick 再卡满一个预算。
+			s.logOutcome(ctx, task, stageDiscovery, contract.OutcomeTransient, attemptBudgetReason)
+			return false, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, attemptBudgetReason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 		}
 		reason := mask.SafeErrorText(err)
 		s.logOutcome(ctx, task, stageDiscovery, contract.OutcomeTransient, reason)
-		return false, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart))
+		return false, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 	}
 	if len(targets) == 0 {
 		// Position 空是「平台没放数据」：等待型重扫，不当当日结论。
-		return false, s.waitTarget(ctx, task, win, now)
+		// 落点以发现结束时刻为基准：发现可能耗掉整个尝试预算，
+		// 用入口 now 会把下一次重扫排进过去（与 settleOutcome 同口径）。
+		return false, s.waitTarget(ctx, task, win, s.deps.Clock.Now())
 	}
 	// 定位先于选点：固定点可能只落在部分候选围栏内。
 	location := contract.Location{Mode: contract.LocationAuto}
@@ -379,7 +421,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		image = &ref
 	}
 
-	result, err := s.deps.Signer.Sign(ctx, contract.SignRequest{
+	result, err := s.deps.Signer.Sign(attemptCtx, contract.SignRequest{
 		AttemptID:  attemptID(task),
 		Account:    ref,
 		Credential: cred,
@@ -395,16 +437,21 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		Image:    image,
 	})
 	if err != nil {
+		// 同发现面：业务结论优先，预算到期只兜没有结论的错误。
 		if outcome, reason, ok := outcomeOf(err); ok {
 			s.logOutcome(ctx, task, stageSubmit, outcome, reason)
-			return true, s.settleOutcome(ctx, task, win, now, outcome, reason, s.deps.Clock.Now().Sub(attemptStart))
+			return true, s.settleOutcome(ctx, task, win, outcome, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
+		}
+		if attemptBudgetExhausted(attemptCtx, ctx) {
+			s.logOutcome(ctx, task, stageSubmit, contract.OutcomeTransient, attemptBudgetReason)
+			return true, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, attemptBudgetReason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 		}
 		reason := mask.SafeErrorText(err)
 		s.logOutcome(ctx, task, stageSubmit, contract.OutcomeTransient, reason)
-		return true, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart))
+		return true, s.settleOutcome(ctx, task, win, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart), contract.RetryAdvice{})
 	}
 	s.logOutcome(ctx, task, stageSubmit, result.Outcome, result.Message)
-	return true, s.settleOutcome(ctx, task, win, now, result.Outcome, result.Message, s.deps.Clock.Now().Sub(attemptStart))
+	return true, s.settleOutcome(ctx, task, win, result.Outcome, result.Message, s.deps.Clock.Now().Sub(attemptStart), result.Retry)
 }
 
 // settleOutcome 按结论词表落终态或退避重排。
@@ -418,35 +465,66 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 //   - 确定性失败：rejected、photo_rejected、blocked → failed；
 //   - 凭据错：credential_invalid → failed，并把账号移出排期；
 //   - 可重试面：transient、pending_upstream、unknown → 预算内退避。
-func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win corewindow.Window, now time.Time, outcome contract.Outcome, reason string, dur time.Duration) error {
+//
+// advice 是提供方在 contract.Result.Retry 里给的重试建议（错误路径传零值：
+// 拿不到平台结论时没有建议可听）。它只参与可重试面的两条判据：
+// 尝试次数上限（更小者为准）与等待下限（NextDelayWithFloor）。
+func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win corewindow.Window, outcome contract.Outcome, reason string, dur time.Duration, advice contract.RetryAdvice) error {
+	// 结算一律用"现在"，不用尝试开始时刻：一次尝试可能整段耗在预算里
+	// （缺省 0.8×租约 = 96s）。拿开始时刻算退避会让 run_at 落进过去，
+	// 下一次 tick 立刻重试（预算截断本来就会把尝试拖长）；
+	// 关窗判定也会拿旧时刻比，把本该 failed 的行留成 pending 再去撞一次窗口。
+	settleAt := s.deps.Clock.Now()
 	switch outcome {
 	case contract.OutcomeSuccess, contract.OutcomeAlreadyDone:
 		return s.finish(ctx, task, corestatus.TaskSuccess, string(outcome))
 	case contract.OutcomeNoPosition:
-		return s.waitTarget(ctx, task, win, now)
+		return s.waitTarget(ctx, task, win, settleAt)
 	case contract.OutcomeNoTarget, contract.OutcomeInvalidTarget,
 		contract.OutcomePhotoMissing, contract.OutcomeChallenge,
 		contract.OutcomeDeviceUnbound:
 		return s.finish(ctx, task, corestatus.TaskSkipped, string(outcome))
 	case contract.OutcomeRejected, contract.OutcomePhotoRejected,
 		contract.OutcomeBlocked:
-		return s.finishFailed(ctx, task, outcome, reason, dur, &win, now)
+		return s.finishFailed(ctx, task, outcome, reason, dur, &win, settleAt)
 	case contract.OutcomeCredentialBad:
-		return s.finishCredentialInvalid(ctx, task, reason, dur, &win, now)
+		return s.finishCredentialInvalid(ctx, task, reason, dur, &win, settleAt)
 	}
 	// 重试面：预算耗尽或窗口放不下即落 failed。
 	// 退避档位按"已发生的尝试序号"取：第 1 次失败取基础间隔，之后指数放大。
 	// 抖动与放大由 core/retry 统一计算，本处只判预算与窗口。
-	policy := coreretry.BudgetFor(string(outcome))
+	policy := advisePolicy(coreretry.BudgetFor(string(outcome)), advice)
 	if task.Attempts+1 >= policy.MaxAttempts {
-		return s.finishFailed(ctx, task, outcome, reason, dur, &win, now)
+		return s.finishFailed(ctx, task, outcome, reason, dur, &win, settleAt)
 	}
-	delay, ok := coreretry.NextDelay(policy, task.Attempts+1, coreretry.Window{End: win.End}, now)
+	delay, ok := coreretry.NextDelayWithFloor(policy, task.Attempts+1, coreretry.Window{End: win.End}, settleAt, advice.After)
 	if !ok {
-		return s.finishFailed(ctx, task, outcome, reason, dur, &win, now)
+		return s.finishFailed(ctx, task, outcome, reason, dur, &win, settleAt)
 	}
 	// 业务失败重排要计尝试数（与等待型 RequeueWait 区分）。
-	return s.requeueRetry(ctx, task, now.Add(delay), string(outcome))
+	return s.requeueRetry(ctx, task, settleAt.Add(delay), string(outcome))
+}
+
+// advisePolicy 用提供方的重试建议收口宿主的重试预算。
+//
+// 只做一件保守的事：建议次数（MaxAttempts >= 1）比宿主更小时压低 MaxAttempts。
+// 提供方比宿主更了解平台（例如"这个瞬态错误重试一次就够"），但建议
+// 不能把次数抬到宿主预算之上——宿主预算负责上限。
+//
+// **不看 Retryable**：它只服务 conformance 语义（transient 必须标 true，
+// challenge 可选），不是宿主的开关。MaxAttempts=0 是"没有建议"，老提供方
+// 不填 Retry 时照旧走宿主缺省；要表达"不重试"，正确写法是把上限写成 1
+// （宿主第一次失败就落 failed）。次数与 Retryable 解耦后，限次建议对
+// pending_upstream/unknown 同样合法——conformance 不允许它们标 Retryable，
+// 但从不校验它们的 MaxAttempts（issue #413）。
+//
+// After 不在这里处理：它是等待下限，交给 NextDelayWithFloor 与窗口判据
+// 一起算（见 core/retry）。
+func advisePolicy(p coreretry.Policy, advice contract.RetryAdvice) coreretry.Policy {
+	if advice.MaxAttempts >= 1 && advice.MaxAttempts < p.MaxAttempts {
+		p.MaxAttempts = advice.MaxAttempts
+	}
+	return p
 }
 
 // finishFailed 先落放弃行，再落 failed 终态。
@@ -513,6 +591,56 @@ const settlementTimeout = 800 * time.Millisecond
 // WithoutCancel，这里让结算走同一条纪律。
 func settlementContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), settlementTimeout)
+}
+
+// attemptLeaseReserve 是租约终点前留给结算写入的余量。
+// 结算本身有 800ms 上限（settlementTimeout）；再加 200ms 吸收时钟与调度抖动。
+const attemptLeaseReserve = settlementTimeout + 200*time.Millisecond
+
+// effectiveAttemptBudget 把配置的尝试预算压到租约余量之内。
+//
+// 租约从 ClaimDue 的 now 起算，而尝试预算从凭据就绪后的 attemptStart 起算。
+// 窗口读取、出口分配、限速、凭据读取都在两者之间；显式配置即使小于租约，
+// 加上这段前置时间也可能晚于 lease_expires_at，让回收器在持有者提交前放回行。
+// 因此截止时刻取 min(配置预算, 租约终点-结算余量)。
+//
+// configured<=0 表示不限尝试时长，但仍受租约余量护栏；租约终点为空
+// （测试/旧调用）时原样返回。第二个返回值 leaseSpent=true 表示前序已把
+// 租约耗尽：调用方不得再发平台请求，也不得把这次尝试记成业务失败
+// （见 execute 的 waitLeaseSpent 分支）。
+func effectiveAttemptBudget(configured time.Duration, leaseExpiresAt, now time.Time) (time.Duration, bool) {
+	if !leaseExpiresAt.IsZero() {
+		remaining := leaseExpiresAt.Sub(now) - attemptLeaseReserve
+		if remaining <= 0 {
+			return 0, true
+		}
+		if configured > 0 && remaining < configured {
+			return remaining, false
+		}
+	}
+	return configured, false
+}
+
+// attemptDeadline 给一次真实尝试（发现＋提交）加总截止时间。
+// budget<=0 返回原 ctx 与空取消函数：不设限，行为与引入预算前一致。
+// 取消函数必须由调用方 defer——预算到期后继续持有一个已取消的 ctx，
+// 后续结算读库会立刻失败（结算另走 settlementContext，不受影响）。
+func attemptDeadline(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	if budget <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
+// attemptBudgetExhausted 报告本次尝试是不是被自己的总预算截断。
+//
+// 两个条件缺一不可：
+//   - 子 ctx 是 DeadlineExceeded：父 ctx 停机是 Canceled，那是"还要重来"；
+//   - 父 ctx 仍然活着：调用方若自己传了更早的 deadline（本轮/本批截止），
+//     到点该由调用方决定怎么算，不能拿父的截止冒充"提供方没及时答"，
+//     否则一次请求会被白吃掉一次尝试预算。
+func attemptBudgetExhausted(attemptCtx, parent context.Context) bool {
+	return errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && parent.Err() == nil
 }
 
 // finish 落终态。终态只认 core/status 的三值。
@@ -689,18 +817,25 @@ func coreLocation(loc contract.Location) corelocation.Location {
 	}
 }
 
-// attemptID 生成"按尝试唯一"的幂等键。
+// attemptID 生成"一次认领周期一个"的幂等键。
 //
 // 为什么不能只用 task.ID：provider 按 (账号, AttemptID) 缓存结果（含
-// transient）。若每次重试都送同一个 ID，"重试"只会读回首次结果、不发请求。带上 attempts 后，每次真实尝试都有新键；
-// 同一尝试被重复调用时仍折叠（这正是幂等缓存要防的双发）。
-// 等待型重扫行再带重扫计数：提交面 no_position 已按旧键入缓存，
-// 重扫后点位回来了，旧键只会读回那份缓存，永远签不上。
+// transient）。若每次重试都送同一个 ID，"重试"只会读回首次结果、不发请求。
+// 带上 attempts 后，业务重试（RequeueRetry 会 bump）每次都是新键。
+//
+// 为什么还要带 claim_seq：租约被回收后重跑是**另一次执行**，而回收刻意
+// 不动 attempts（被回收不是一次结论尝试，见 ReclaimExpired）。只按
+// attempts 拼键会让第二次认领沿用上一次的键，于是提供方的结果缓存与
+// 同键串行锁会把"接管"折叠成"等旧调用"：要么直接读回旧结论、要么被
+// 分片锁挡在旧调用后面，回收形同虚设。claim_seq 在每次认领时递增
+// （pg.ScheduleRepo.ClaimDue 的 claim_seq = claim_seq + 1），故
+// **一次租约一个键**；同一租约内重复调用仍是同一个键——这正是幂等
+// 缓存要折叠的"同一尝试双发"。
+//
+// 等待型重扫不再额外拼重扫计数：重扫必经 RequeueWait → 重新认领 →
+// claim_seq 前进，键自动换新（提交面 no_position 的缓存因此不会命中）。
 func attemptID(task corescheduleTask) string {
-	if n := waitTargetRescanCount(task.Result); n > 0 {
-		return fmt.Sprintf("%s#%d.%d", task.ID, task.Attempts, n)
-	}
-	return fmt.Sprintf("%s#%d", task.ID, task.Attempts)
+	return fmt.Sprintf("%s#%d.%d", task.ID, task.Attempts, task.ClaimSeq)
 }
 
 // windowSource 归一窗口来源；空值兜底为 fallback（保守方向）。
@@ -824,7 +959,8 @@ func (s *Service) authScene(ctx context.Context, task corescheduleTask, dur time
 //
 // 结论语义（与入口层错误码一一对应）：
 //   - 关窗 → ErrWindowClosed；
-//   - 已成功 → ErrAlreadySigned；
+//   - 已成功 → ErrAlreadySigned（同账号同日任一任务 success 即拦下，
+//     先于 resolveTask，不为兄弟任务建行）；
 //   - 正在执行 → ErrSignRunning；
 //   - 当日 failed 或 skipped → 放回队列（Rearm）并写审计，这是用户
 //     "再试一次"的正当动作；
@@ -845,7 +981,18 @@ func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.
 		return "", ErrPaused
 	}
 	now := s.deps.Clock.Now()
-	day := now.In(s.deps.Location).Format("2006-01-02")
+	day := now.In(s.deps.Location).Format(dayLayout)
+	// 决策 2A：同账号同日任一任务 success 即今日已签到，直接 already_signed。
+	// 必须早于 resolveTask/EnsureTask：否则会先为兄弟任务建出一行，
+	// 手动签到就把"今日已签到"变成了"又排了一个任务"。
+	// 查询故障上抛，不得读成「未成功」。
+	signed, err := s.deps.Store.HasSuccessOn(ctx, accountID, day)
+	if err != nil {
+		return "", err
+	}
+	if signed {
+		return "", ErrAlreadySigned
+	}
 	schoolTaskID, err := s.resolveTask(ctx, accountID, day)
 	if err != nil {
 		return "", err
@@ -869,6 +1016,7 @@ func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.
 	case corestatus.TaskRunning:
 		return "", ErrSignRunning
 	case corestatus.TaskSuccess:
+		// 兜底：前置 HasSuccessOn 之后、EnsureTask 之前并发落了 success。
 		return "", ErrAlreadySigned
 	case corestatus.TaskFailed, corestatus.TaskSkipped:
 		if err := s.deps.Store.Rearm(ctx, row.ID, now, actor); err != nil {

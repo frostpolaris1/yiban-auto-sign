@@ -49,6 +49,9 @@ type fakeUsers struct {
 	// restoreAcctErr 非空时 RestoreSelfAccount 原样返回它且不记录调用，
 	// 用来模拟恢复撞唯一索引（注销后手机号被抢注）。
 	restoreAcctErr error
+	// restoreAcctFalse 为 true 时 RestoreSelfAccount 返回 (false, nil)，
+	// 模拟属主名下已有 live 账号：账号不复活，但用户恢复照常成功。
+	restoreAcctFalse bool
 }
 
 func newFakeUsers() *fakeUsers {
@@ -182,7 +185,7 @@ func (f *fakeUsers) RestoreSelfAccount(_ context.Context, ownerID string, _ time
 		return false, f.restoreAcctErr
 	}
 	f.restoredAccts = append(f.restoredAccts, ownerID)
-	return true, nil
+	return !f.restoreAcctFalse, nil
 }
 
 // GetDeleted 返回软删行；活行报 conflict，与 PostgreSQL 适配器同分类。
@@ -322,6 +325,15 @@ type fakeTx struct{}
 
 func (fakeTx) InTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 
+// countingTx 记录事务次数；未知邮箱被抑制的尝试也必须走一次空事务，
+// 保证与已存在账号失败付同量级的数据库往返。
+type countingTx struct{ calls atomic.Int64 }
+
+func (c *countingTx) InTx(ctx context.Context, fn func(context.Context) error) error {
+	c.calls.Add(1)
+	return fn(ctx)
+}
+
 type harness struct {
 	users         *fakeUsers
 	sessions      *fakeSessions
@@ -329,6 +341,7 @@ type harness struct {
 	registrations *fakeRegistrations
 	audits        *fakeAudits
 	kdf           *countingKDF
+	tx            *countingTx
 	svc           *appauth.Service
 }
 
@@ -366,6 +379,7 @@ func newHarnessWith(t *testing.T, tune func(*appauth.Deps)) *harness {
 		registrations: &fakeRegistrations{},
 		audits:        &fakeAudits{},
 		kdf:           &countingKDF{},
+		tx:            &countingTx{},
 	}
 	deps := appauth.Deps{
 		Users:         h.users,
@@ -374,7 +388,7 @@ func newHarnessWith(t *testing.T, tune func(*appauth.Deps)) *harness {
 		Resets:        h.resets,
 		Registrations: h.registrations,
 		Audits:        h.audits,
-		Tx:            fakeTx{},
+		Tx:            h.tx,
 		Clock:         testClock,
 		Quota:         fixedQuota(10000),
 		KDF:           h.kdf,

@@ -8,7 +8,7 @@ package pg
 // # 归属
 // pg 适配器的内部单测。e2e（cmd/server/users_list_e2e_test.go）验证行为，
 // 本文件验证 e2e 看不见的承重形状：并列时刻的稳定次序、键集条件形状、
-// LIKE 元字符转义。这些性质只在 SQL 文本里，换计划或换数据都不改变观察结果。
+// LIKE 元字符转义、先裁页再聚合账号、分组只依赖存在性谓词。
 //
 // # 复用
 // userListQuery、escapeLikePrefix、encodeCursor。
@@ -104,17 +104,22 @@ func TestUserListQueryEscapesLikeMetacharacters(t *testing.T) {
 	}
 }
 
-// TestUserListQueryGroupClauses 钉住三个分组的派生谓词。
-// 分组只读账号聚合，不读用户状态：pending 看 review、normal 看 review=0 且有账号、
-// vacant 看没有账号。
+// TestUserListQueryGroupClauses 钉住三个分组的相关存在性谓词。
+//
+// 分组在裁页之前求值，只能引用 users 与相关 EXISTS：聚合列尚未产生，
+// 任何 coalesce(c.*) 形状都会把聚合拉回全表，故逐字禁止。
 func TestUserListQueryGroupClauses(t *testing.T) {
+	const (
+		reviewExists = "EXISTS (SELECT 1 FROM accounts a WHERE a.owner_user_id = u.id AND a.deleted_at IS NULL AND a.status IN ('pending', 'rejected'))"
+		liveExists   = "EXISTS (SELECT 1 FROM accounts a WHERE a.owner_user_id = u.id AND a.deleted_at IS NULL)"
+	)
 	cases := []struct {
 		group coreuser.Group
 		want  string
 	}{
-		{coreuser.GroupPending, " AND coalesce(c.review_count, 0) > 0"},
-		{coreuser.GroupNormal, " AND coalesce(c.review_count, 0) = 0 AND coalesce(c.account_count, 0) > 0"},
-		{coreuser.GroupVacant, " AND coalesce(c.account_count, 0) = 0"},
+		{coreuser.GroupPending, " AND " + reviewExists},
+		{coreuser.GroupNormal, " AND NOT " + reviewExists + " AND " + liveExists},
+		{coreuser.GroupVacant, " AND NOT " + liveExists},
 	}
 	for _, tc := range cases {
 		sqlText, _, err := userListQuery("", "", "", tc.group, "", 10, false)
@@ -124,6 +129,51 @@ func TestUserListQueryGroupClauses(t *testing.T) {
 		if !strings.Contains(sqlText, tc.want) {
 			t.Fatalf("group %s clause is not %q:\n%s", tc.group, tc.want, sqlText)
 		}
+		// 分组谓词只能出现在 page CTE 的 WHERE 里；该区间止于 CTE 的 ORDER BY。
+		whereStart := strings.Index(sqlText, "WHERE")
+		whereEnd := strings.Index(sqlText, " ORDER BY u.created_at DESC, u.id DESC")
+		if whereStart < 0 || whereEnd <= whereStart {
+			t.Fatalf("group %s list query has no page WHERE region:\n%s", tc.group, sqlText)
+		}
+		if strings.Contains(sqlText[whereStart:whereEnd], "coalesce(c.") {
+			t.Fatalf("group %s still filters on aggregate columns:\n%s", tc.group, sqlText)
+		}
+	}
+}
+
+// TestUserListQueryPagesBeforeAccountAggregation 钉住 P2-8 的查询形状：
+// 先用只含 users 的过滤/键集/排序/LIMIT 裁出本页（page CTE），
+// 再对页内 owner 做 LEFT JOIN LATERAL 聚合账号。
+//
+// 两条承重性质：
+//  1. LIMIT 出现在账号聚合之前：空页不会触达 accounts；
+//  2. 全表 GROUP BY owner_user_id 的 account_counts CTE 已消失。
+func TestUserListQueryPagesBeforeAccountAggregation(t *testing.T) {
+	sqlText, _, err := userListQuery("", "", "", coreuser.GroupPending, "", 10, false)
+	if err != nil {
+		t.Fatalf("userListQuery: %v", err)
+	}
+	if !strings.Contains(sqlText, "WITH page AS") {
+		t.Fatalf("list query has no page CTE:\n%s", sqlText)
+	}
+	limit := strings.Index(sqlText, " LIMIT $")
+	if limit < 0 {
+		t.Fatalf("list query has no LIMIT:\n%s", sqlText)
+	}
+	join := strings.Index(sqlText, "LEFT JOIN LATERAL")
+	if join < 0 {
+		t.Fatalf("list query has no LEFT JOIN LATERAL account aggregate:\n%s", sqlText)
+	}
+	if limit > join {
+		t.Fatalf("LIMIT is applied after account aggregation; the page must be bounded first:\n%s", sqlText)
+	}
+	for _, banned := range []string{"GROUP BY owner_user_id", "account_counts"} {
+		if strings.Contains(sqlText, banned) {
+			t.Fatalf("list query still contains %q:\n%s", banned, sqlText)
+		}
+	}
+	if !strings.Contains(sqlText, "WHERE a.owner_user_id = u.id AND a.deleted_at IS NULL") {
+		t.Fatalf("lateral aggregate is not scoped to the row owner:\n%s", sqlText)
 	}
 }
 
@@ -131,5 +181,27 @@ func TestUserListQueryGroupClauses(t *testing.T) {
 func TestUserListQueryRejectsGroupWithDeleted(t *testing.T) {
 	if _, _, err := userListQuery("", "", "", coreuser.GroupPending, "", 10, true); err == nil {
 		t.Fatal("group + include_deleted was accepted")
+	}
+}
+
+// TestUserCountsQueryScansUsersOnce 钉住 Counts 的查询形状：
+// 单次扫描 users、LEFT JOIN LATERAL 按行聚合，绝不对 accounts 全表 GROUP BY。
+//
+// 直接断言包内常量：与 List 共用 userAccountAggregate，口径只此一处。
+func TestUserCountsQueryScansUsersOnce(t *testing.T) {
+	query := userCountsQuery
+	for _, banned := range []string{"GROUP BY", "account_counts"} {
+		if strings.Contains(query, banned) {
+			t.Fatalf("Counts still aggregates accounts globally with %q:\n%s", banned, query)
+		}
+	}
+	if !strings.Contains(query, "FROM users u") {
+		t.Fatalf("Counts does not scan users:\n%s", query)
+	}
+	if !strings.Contains(query, "LEFT JOIN LATERAL") {
+		t.Fatalf("Counts is not a single users scan with per-user lateral aggregate:\n%s", query)
+	}
+	if !strings.Contains(query, "WHERE a.owner_user_id = u.id AND a.deleted_at IS NULL") {
+		t.Fatalf("Counts lateral aggregate is not owner-scoped:\n%s", query)
 	}
 }

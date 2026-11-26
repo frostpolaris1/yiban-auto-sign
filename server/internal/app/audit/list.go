@@ -5,7 +5,9 @@
 // 口径：actor 过滤值先按写入口径掩码再匹配；target 精确匹配目标 id；
 // detail 出口过 mask.MaskText；不校验链、不导出。
 // total 是同过滤条件下忽略游标的总行数，供响应信封使用。
-// 旧线 parity：master 与 admin 看同一份全局列表，不按院校收窄。
+// 可见面（core/scope）：master 看全部；admin 只看绑定院校的行，school_id
+// IS NULL 的行对 admin 不可见；admin 空绑定必须是空页，不得退化成全量。
+// user 不是合法可见面：入口层已 403，本层再拒一次作为纵深防御。
 
 package audit
 
@@ -19,6 +21,7 @@ import (
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // LogRow 是一行审计记录（core/audit 的只读视图）。
@@ -29,6 +32,7 @@ type LogQuery = coreaudit.LogQuery
 
 // ListFilter 是列表筛选条件。Actor 是客户端原值，服务层负责掩码。
 // Target 是精确匹配的目标 id。From 与 To 是闭区间时间界。
+// Scope 是可见面，由入口层从会话解析后传入。
 type ListFilter struct {
 	Action string
 	Actor  string
@@ -37,6 +41,7 @@ type ListFilter struct {
 	To     *time.Time
 	Cursor string
 	Limit  int
+	Scope  corescope.Scope
 }
 
 // LogPage 是一页审计记录。
@@ -73,6 +78,14 @@ func NewReader(lister Lister) (*Reader, error) {
 // action 只做长度上界；未知动作返回空页，不报错。
 // actor 按写入口径掩码，故完整邮箱匹配其存储的掩码标签。
 func (r *Reader) List(ctx context.Context, filter ListFilter) (LogPage, error) {
+	if err := app.RequireScope(filter.Scope); err != nil {
+		return LogPage{}, err
+	}
+	// 审计列表只对 master/admin 有定义；user scope 在仓储层会拼错列，
+	// 因此在这里显式拒绝，且不得触达 lister。
+	if filter.Scope.Kind() == corescope.KindUser {
+		return LogPage{}, errs.New(errs.CodeForbidden, "audit logs are scoped to master and admin")
+	}
 	limit, err := app.NormalizeLimit(filter.Limit)
 	if err != nil {
 		return LogPage{}, err
@@ -100,6 +113,7 @@ func (r *Reader) List(ctx context.Context, filter ListFilter) (LogPage, error) {
 		To:     filter.To,
 		Cursor: filter.Cursor,
 		Limit:  limit,
+		Scope:  filter.Scope,
 	}
 	items, next, err := r.lister.ListLogs(ctx, query)
 	if err != nil {

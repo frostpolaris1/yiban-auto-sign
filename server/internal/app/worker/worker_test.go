@@ -59,6 +59,11 @@ type fakeStore struct {
 	windowErrFor map[string]error
 	// finishErr 注入结算失败（验证"已提交行不退回"）。
 	finishErr error
+	// requeueWaitErr 注入等待型退回失败（验证租约耗尽时撞回收器的冲突处理）。
+	requeueWaitErr error
+	// fixedLease 非零时让每次认领都用这个租约终点（模拟"认领时已过期"）；
+	// 零值时按 now+2min 刷新，避免多轮 Step 复用上一次的旧租约。
+	fixedLease time.Time
 	// dayTasks / enabledTasks 是手动签到的两个解析输入。
 	dayTasks     []string
 	enabledTasks []string
@@ -76,6 +81,17 @@ type fakeStore struct {
 	dayCounts     map[string]appworker.DayOutcomeCounts
 	dayCountsErr  error
 	dayCountCalls []string
+
+	// hasSuccess / hasSuccessErr 注入「同账号同日已有 success」的答复；
+	// 零值时按 tasks 里的 success 行推导（与库语义同形）。
+	// hasSuccessCalls 记录查询键，供「先于 resolveTask」的顺序断言。
+	hasSuccess      bool
+	hasSuccessErr   error
+	hasSuccessCalls []string
+	// 手动签到解析面的调用计数：成功已被拦下时，三者都必须为零。
+	dayTasksCalls    int
+	enabledTaskCalls int
+	ensureCalls      int
 
 	// 观测面
 	claimed      []string
@@ -127,6 +143,12 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, day string, limit
 		}
 		t.State = string(corestatus.TaskRunning)
 		t.ClaimSeq++
+		if !f.fixedLease.IsZero() {
+			t.LeaseExpiresAt = f.fixedLease
+		} else {
+			// 每次认领都刷新，模拟 pg.ClaimDue 重写 lease_expires_at。
+			t.LeaseExpiresAt = now.Add(2 * time.Minute)
+		}
 		runningAccount[t.AccountID] = true
 		f.claimed = append(f.claimed, t.ID)
 		out = append(out, *t)
@@ -213,6 +235,12 @@ func (f *fakeStore) requeue(ctx context.Context, taskID string, runAt time.Time,
 }
 
 func (f *fakeStore) RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
+	f.mu.Lock()
+	err := f.requeueWaitErr
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	return f.requeue(ctx, taskID, runAt, result, false, claimSeq)
 }
 
@@ -293,6 +321,7 @@ func (f *fakeStore) GetWindow(_ context.Context, schoolTaskID, day string) (core
 func (f *fakeStore) EnsureTask(_ context.Context, accountID, schoolTaskID, day string, runAt time.Time) (coreschedule.TaskRow, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ensureCalls++
 	for _, t := range f.tasks {
 		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
 			return t, false, nil
@@ -311,13 +340,36 @@ func (f *fakeStore) EnsureTask(_ context.Context, accountID, schoolTaskID, day s
 func (f *fakeStore) DayTasks(context.Context, string, string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.dayTasksCalls++
 	return f.dayTasks, nil
 }
 
 func (f *fakeStore) AccountEnabledTasks(context.Context, string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.enabledTaskCalls++
 	return f.enabledTasks, nil
+}
+
+// HasSuccessOn 判「同账号同日已有 success」。
+// 注入的答复优先；未注入时按 tasks 里的 success 行推导——与仓储只认
+// state='success' 的口径同形，skipped/failed 不拦。
+func (f *fakeStore) HasSuccessOn(_ context.Context, accountID, day string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hasSuccessCalls = append(f.hasSuccessCalls, accountID+"|"+day)
+	if f.hasSuccessErr != nil {
+		return false, f.hasSuccessErr
+	}
+	if f.hasSuccess {
+		return true, nil
+	}
+	for _, t := range f.tasks {
+		if t.AccountID == accountID && t.Day == day && t.State == string(corestatus.TaskSuccess) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // signHistory 是放弃行现场用的历史切片。
@@ -371,6 +423,8 @@ type fakeSigner struct {
 	discoverErr error
 	submitErr   error
 	signs       int
+	// retry 是 Result.Retry：提供方重试建议（issue #402 接线后的消费面）。
+	retry contract.RetryAdvice
 	// attemptIDs 记录每次提交的幂等键：重试必须每次不同。
 	attemptIDs []string
 	// requests 记录每次提交的完整请求：P5-C 断言 Location 与 Image。
@@ -408,7 +462,7 @@ func (f *fakeSigner) Sign(_ context.Context, req contract.SignRequest) (contract
 		hook()
 		f.mu.Lock()
 	}
-	return contract.Result{Outcome: f.outcome}, firstErr(f.submitErr, f.err)
+	return contract.Result{Outcome: f.outcome, Retry: f.retry}, firstErr(f.submitErr, f.err)
 }
 
 // firstErr 取第一个非 nil 错误：面级错误优先，未设则回落到通用 err。
@@ -754,6 +808,9 @@ func TestDiscoverOutcomeErrorSettlesByVocabulary(t *testing.T) {
 
 // 瞬时失败重试时，每次提交的 AttemptID 必须不同，否则 provider 幂等缓存
 // 会把"重试"折叠成首次结果。
+//
+// 键由 (attempts, claim_seq) 两段拼成（见 attemptID）：业务重试在
+// RequeueRetry 里 bump attempts、再次认领又 bump claim_seq，两段都前进。
 func TestRetryUsesFreshAttemptID(t *testing.T) {
 	st := newStore(baseTask())
 	st.windows["st-1|2026-10-29"] = openWindow()
@@ -780,8 +837,8 @@ func TestRetryUsesFreshAttemptID(t *testing.T) {
 	if signer.attemptIDs[0] == signer.attemptIDs[1] {
 		t.Fatalf("重试复用了同一 AttemptID: %q", signer.attemptIDs[0])
 	}
-	if signer.attemptIDs[0] != "t1#0" || signer.attemptIDs[1] != "t1#1" {
-		t.Fatalf("AttemptID 形状 = %v, want [t1#0 t1#1]", signer.attemptIDs)
+	if signer.attemptIDs[0] != "t1#0.1" || signer.attemptIDs[1] != "t1#1.2" {
+		t.Fatalf("AttemptID 形状 = %v, want [t1#0.1 t1#1.2]（attempts.claim_seq）", signer.attemptIDs)
 	}
 }
 

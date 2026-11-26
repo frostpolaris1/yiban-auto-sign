@@ -164,12 +164,15 @@ type UpdateInput struct {
 
 // SigningCredential 是签到链需要的明文凭据。
 // 只在本进程内交给 provider；入口层不得记录或回显。
+// CredentialVersion 是读到的凭据行版本：自动核验用它做激活前的
+// 版本 CAS，防止用核验期间已被替换的旧凭据把账号推成 active。
 type SigningCredential struct {
-	SchoolID   string
-	Phone      string
-	Password   string
-	DeviceCode string
-	PhoneModel string
+	SchoolID          string
+	Phone             string
+	Password          string
+	DeviceCode        string
+	PhoneModel        string
+	CredentialVersion int32
 }
 
 // NewService 构造账号用例。缺依赖即失败。
@@ -232,7 +235,11 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, filter ListFi
 	return Page{Items: items, NextCursor: next}, nil
 }
 
-// FirstActiveForSchool 返回学校首个活跃账号，供平台窗口发现借用登录态。
+// FirstActiveForSchool 返回学校首个活跃账号。
+//
+// Deprecated: 窗口发现已改用 DiscoveryCandidatesForSchool 轮换多个候选；
+// 本方法只剩测试在用，新调用方不要接回来，否则单个坏号会重新污染全校窗口。
+//
 // 内部复用 List：master 作用域、active 状态、按存储稳定序取第一条。
 // 空列表返回 not_found；文案沿用发现调用方的既有日志口径。
 func (s *Service) FirstActiveForSchool(ctx context.Context, schoolID string) (Record, error) {
@@ -246,6 +253,23 @@ func (s *Service) FirstActiveForSchool(ctx context.Context, schoolID string) (Re
 		return Record{}, errs.New(errs.CodeNotFound, "no active account for window discovery")
 	}
 	return page.Items[0], nil
+}
+
+// DiscoveryCandidatesForSchool 返回某校窗口发现的多候选账号，最近验证者在前。
+//
+// 供组合根轮换用：一个坏号只让它自己那一轮失败，不把全校拖进连续失败。
+// 排序与 limit 范围归仓储一处实现，用例层不再排一次。
+// 空候选沿用 FirstActiveForSchool 的 not_found 文案：计划层据此回退缓存
+// 或默认窗口，并与「无可用账号」区分于平台故障。
+func (s *Service) DiscoveryCandidatesForSchool(ctx context.Context, schoolID string, limit int) ([]Record, error) {
+	candidates, err := s.deps.Accounts.DiscoveryCandidatesForSchool(ctx, schoolID, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, errs.New(errs.CodeNotFound, "no active account for window discovery")
+	}
+	return candidates, nil
 }
 
 // Get 在作用域内读一个账号。跨校或已软删返回 404。
@@ -347,11 +371,12 @@ func (s *Service) SigningCredential(ctx context.Context, scope corescope.Scope, 
 		return SigningCredential{}, err
 	}
 	return SigningCredential{
-		SchoolID:   record.SchoolID,
-		Phone:      record.Phone,
-		Password:   payload.Password,
-		DeviceCode: payload.DeviceCode,
-		PhoneModel: payload.PhoneModel,
+		SchoolID:          record.SchoolID,
+		Phone:             record.Phone,
+		Password:          payload.Password,
+		DeviceCode:        payload.DeviceCode,
+		PhoneModel:        payload.PhoneModel,
+		CredentialVersion: credential.Version,
 	}, nil
 }
 

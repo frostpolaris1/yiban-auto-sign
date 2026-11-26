@@ -58,6 +58,9 @@ func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 		{"kid of the wrong length", map[string]any{"kid": "0123456789abcde"}, coreaudit.ErrDetailShape},
 		{"field with spaces", map[string]any{"field": "user name"}, coreaudit.ErrDetailShape},
 		{"from with a dash", map[string]any{"from": "not-a-status"}, coreaudit.ErrDetailShape},
+		{"grace seconds below zero", map[string]any{"grace_sec": int64(-1)}, coreaudit.ErrDetailShape},
+		{"grace seconds above the upper bound", map[string]any{"grace_sec": int64(3601)}, coreaudit.ErrDetailShape},
+		{"grace seconds as a float beyond the bound", map[string]any{"grace_sec": 3601.5}, coreaudit.ErrDetailShape},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := coreaudit.EncodeDetail(tc.detail)
@@ -109,6 +112,38 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 	}
 	if _, err := coreaudit.EncodeDetail(nil); err != nil {
 		t.Fatalf("an empty detail must be accepted: %v", err)
+	}
+	// 回收冷却秒数与配置同界：0 与 3600 是闭区间端点，必须接受。
+	for _, grace := range []int64{0, 3600} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{"grace_sec": grace}); err != nil {
+			t.Fatalf("grace_sec=%d must be accepted: %v", grace, err)
+		}
+	}
+}
+
+// TestEncodeDetailAccountRestored 钉住 account_restored 只收布尔。
+// 自助恢复用户的审计用它区分"账号一并恢复"与"属主已有活号"；
+// 字符串/数字即使形似布尔也拒绝，nil 同样拒绝（null 无法表达未恢复）。
+func TestEncodeDetailAccountRestored(t *testing.T) {
+	for _, value := range []bool{true, false} {
+		got, err := coreaudit.EncodeDetail(map[string]any{"account_restored": value})
+		if err != nil {
+			t.Fatalf("account_restored=%v rejected: %v", value, err)
+		}
+		want := `{"account_restored":` + strconv.FormatBool(value) + `}`
+		if got != want {
+			t.Fatalf("canonical detail = %s, want %s", got, want)
+		}
+	}
+	for _, value := range []any{"true", "false", 1, 0, nil} {
+		_, err := coreaudit.EncodeDetail(map[string]any{"account_restored": value})
+		if !errors.Is(err, coreaudit.ErrDetailType) {
+			t.Fatalf("account_restored=%#v error = %v, want ErrDetailType", value, err)
+		}
+	}
+	// 既有布尔键不受影响：retryable 仍按通用布尔规则接受。
+	if _, err := coreaudit.EncodeDetail(map[string]any{"retryable": true}); err != nil {
+		t.Fatalf("retryable must still accept a bool: %v", err)
 	}
 }
 
@@ -428,5 +463,50 @@ func TestEncodeDetailAcceptsScheduleWritebackChanges(t *testing.T) {
 		"field": map[string][2]any{"schedule.edge_back_sec": {nil, 1}},
 	}); err == nil {
 		t.Fatal("非 changes 键接受了映射形态")
+	}
+}
+
+// P2-3 人工窗口覆盖：changes 的 window.start/window.end 记 Unix 秒，
+// 旧值不存在时为 null。Unix 秒不是手机号；11 位 1 开头仍是 PII。
+// 这两个键位只证明「接受/拒绝」；业务语义由 app/schedule 与 e2e 钉住。
+func TestEncodeDetailAcceptsWindowOverrideChanges(t *testing.T) {
+	raw, err := coreaudit.EncodeDetail(map[string]any{
+		"changes": map[string][2]any{
+			"window.start": {nil, int64(1790000000)},
+			"window.end":   {int64(1790003600), int64(1790007200)},
+		},
+		"reason": "平台窗口错误",
+	})
+	if err != nil {
+		t.Fatalf("合法覆盖审计被拒绝: %v", err)
+	}
+	if !strings.Contains(raw, "\"window.start\":[null,1790000000]") {
+		t.Fatalf("changes 编码 = %s", raw)
+	}
+	// 键位只接受二元组里的 nil/布尔/整数：浮点、时间串都不是「旧值或新值」。
+	for _, bad := range []map[string][2]any{
+		{"window.start": {nil, 1790000000.5}},
+		{"window.start": {nil, "2026-10-29T01:00:00Z"}},
+	} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{"changes": bad}); err == nil {
+			t.Fatalf("changes %v 未被拒绝", bad)
+		}
+	}
+	// 手机号形态的数字不得借 Unix 秒键位进链。
+	for _, bad := range []any{13800138000, int64(13800138000)} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{
+			"changes": map[string][2]any{"window.start": {nil, bad}},
+		}); !errors.Is(err, coreaudit.ErrDetailPII) {
+			t.Fatalf("window.start %v（%T）err = %v, want ErrDetailPII", bad, bad, err)
+		}
+	}
+	// reason 仍走通用字符串规则：手机号与邮箱拒绝。
+	for _, bad := range []string{"联系 13800138000", "boss@example.com"} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{
+			"changes": map[string][2]any{"window.start": {nil, 1}},
+			"reason":  bad,
+		}); err == nil {
+			t.Fatalf("reason %q 未被拒绝", bad)
+		}
 	}
 }

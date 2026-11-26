@@ -287,10 +287,16 @@ func (f *fakeDiscover) DiscoverWindow(context.Context, string) (contract.Window,
 }
 
 // fakeTx 直接执行：事务原子的等价物在 pg；此处的判据是"三步都在同一闭包内"。
-type fakeTx struct{ calls int }
+type fakeTx struct {
+	calls int
+	// depth 在闭包执行期间为正：审计替身据此断言 Append 在事务内。
+	depth int
+}
 
 func (f *fakeTx) InTx(ctx context.Context, fn func(context.Context) error) error {
 	f.calls++
+	f.depth++
+	defer func() { f.depth-- }()
 	return fn(ctx)
 }
 
@@ -329,8 +335,11 @@ func newService(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a fakeAccoun
 
 func newServiceWithPrefs(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a fakeAccounts, d *fakeDiscover, prefs appschedule.TimePrefs) *appschedule.Service {
 	t.Helper()
+	tx := &fakeTx{}
 	svc, err := appschedule.NewService(appschedule.Deps{
-		Windows: w, Plans: p, Accounts: a, Discover: d, Prefs: prefs, Tx: &fakeTx{},
+		Windows: w, Plans: p, Accounts: a, Discover: d, Prefs: prefs, Tx: tx,
+		// 覆盖写面要求审计同事务；只读用例不会走到，但依赖必须齐。
+		Audit: &fakeAuditRepo{tx: tx},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -342,8 +351,10 @@ func newServiceWithPrefs(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a f
 func newServiceWithPaused(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a fakeAccounts,
 	d *fakeDiscover, paused func(context.Context) (bool, error)) *appschedule.Service {
 	t.Helper()
+	tx := &fakeTx{}
 	svc, err := appschedule.NewService(appschedule.Deps{
-		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: &fakeTx{}, Paused: paused,
+		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: tx, Paused: paused,
+		Audit: &fakeAuditRepo{tx: tx},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -1345,7 +1356,7 @@ func TestOverridePersistsAndRebuilds(t *testing.T) {
 	in := baseInput()
 	start := time.Date(2026, 10, 29, 10, 0, 0, 0, shanghai)
 	end := time.Date(2026, 10, 29, 11, 0, 0, 0, shanghai)
-	prev, err := svc.Override(context.Background(), corescope.Master(), in, start, end, "临时调整", "user-1")
+	prev, err := svc.Override(context.Background(), corescope.Master(), in, start, end, "临时调整", testActor("user-1"))
 	if err != nil {
 		t.Fatalf("Override: %v", err)
 	}
@@ -1383,7 +1394,7 @@ func TestOverrideValidation(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			w := &fakeWindowStore{task: task}
 			svc := newService(t, w, &fakePlanStore{}, fakeAccounts{}, &fakeDiscover{})
-			_, err := svc.Override(context.Background(), c.scope, baseInput(), c.start, c.end, c.reason, "user-1")
+			_, err := svc.Override(context.Background(), c.scope, baseInput(), c.start, c.end, c.reason, testActor("user-1"))
 			if err == nil {
 				t.Fatal("应报错")
 			}
@@ -1874,7 +1885,7 @@ func TestWeekendClosedStillValidates(t *testing.T) {
 	if _, err := svc.Build(ctx, in); coreerrs.From(err).Code != coreerrs.CodeConflict {
 		t.Fatalf("停用任务 Build err = %v, want conflict", err)
 	}
-	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", "u1"); coreerrs.From(err).Code != coreerrs.CodeConflict {
+	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", testActor("u1")); coreerrs.From(err).Code != coreerrs.CodeConflict {
 		t.Fatalf("停用任务 Override err = %v, want conflict", err)
 	}
 
@@ -1883,20 +1894,20 @@ func TestWeekendClosedStillValidates(t *testing.T) {
 	svc = newService(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}}, &fakeDiscover{})
 	cross := in
 	cross.SchoolID = "school-2"
-	if _, err := svc.Override(ctx, corescope.Master(), cross, start, end, "调整", "u1"); err == nil {
+	if _, err := svc.Override(ctx, corescope.Master(), cross, start, end, "调整", testActor("u1")); err == nil {
 		t.Fatal("跨校 Override 应 400")
 	}
 
 	// 坏 reason / 坏窗口：仍 400。
-	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "", "u1"); err == nil {
+	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "", testActor("u1")); err == nil {
 		t.Fatal("空 reason 应 400")
 	}
-	if _, err := svc.Override(ctx, corescope.Master(), in, end, start, "调整", "u1"); err == nil {
+	if _, err := svc.Override(ctx, corescope.Master(), in, end, start, "调整", testActor("u1")); err == nil {
 		t.Fatal("倒挂窗口应 400")
 	}
 
 	// 合法输入 + 门关：0 行、来源 weekend_closed、不写覆盖。
-	p, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", "u1")
+	p, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", testActor("u1"))
 	if err != nil {
 		t.Fatalf("合法 Override: %v", err)
 	}
@@ -1951,7 +1962,7 @@ func TestExplicitDiscoveryPropagatesPaused(t *testing.T) {
 		t.Fatalf("plan err = %v, want paused", err)
 	}
 	start := time.Date(2026, 10, 29, 9, 0, 0, 0, shanghai)
-	if _, err := svc.Override(ctx, corescope.Master(), in, start, start.Add(30*time.Minute), "调整", "u1"); !isPaused(err) {
+	if _, err := svc.Override(ctx, corescope.Master(), in, start, start.Add(30*time.Minute), "调整", testActor("u1")); !isPaused(err) {
 		t.Fatalf("override err = %v, want paused", err)
 	}
 
@@ -1989,7 +2000,7 @@ func TestPausedWinsOverWeekendAndOverride(t *testing.T) {
 	in.Day = "2026-10-31"
 	in.WeekendClosed = true
 	in.Explicit = true
-	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", "u1"); !isPaused(err) {
+	if _, err := svc.Override(ctx, corescope.Master(), in, start, end, "调整", testActor("u1")); !isPaused(err) {
 		t.Fatalf("paused×weekend×Override err = %v, want paused", err)
 	}
 	if w.overrideOK {

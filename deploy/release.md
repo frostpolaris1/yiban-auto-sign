@@ -147,8 +147,12 @@ bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>   # R1..R1
 go test ./cmd/cli/ -run 'TestUpdateSh' -count=1
 ```
 
-CI：`deploy-gate.yml` 的 `update-rollback-e2e` job 自动跑上面两条
-（第一条是干跑契约，必定真跑；第二条环境起不来时显性 SKIP，不算绿）。
+CI：拆成两条轨，都是 fail-closed（P1-6）：
+- `deploy-gate.yml` 的 `update-rollback-e2e` job（required，托管 runner）只跑
+  update.sh 干跑契约（上面第二条命令），任何非 0 退出判红；
+- `update-rollback-privileged.yml`（手动 `workflow_dispatch`、自托管
+  `yiban-privileged` runner、只读权限）跑上面第一条 R1..R10 全矩阵，脚本非 0
+  原样判红。全矩阵不在托管 runner 上跑，rc=2 环境错误不再被当作跳过。
 
 期望：演练脚本退出码 0，`run.log` 末尾 `result=PASS`，R1..R10（含 R8b install 重跑、
 R8c 状态目录软链、R9b 备份件被篡改）全 PASS
@@ -161,7 +165,8 @@ R8c 状态目录软链、R9b 备份件被篡改）全 PASS
 旧线 `deploy_gate.sh --phase B`（回滚 v0.6.2）：本项不再指向；
 脚本与旧线 CI 仍在（phase B 未删）。
 脚本侧红：`update.sh` 无 `.bak` 回滚路径、无自检门/统一备份/数据库恢复标记、
-`deploy-gate.yml` 没有 `update-rollback-e2e` job 或该 job 不调用演练，
+`deploy-gate.yml` 没有 `update-rollback-e2e` job 或没跑干跑契约、演练调用回流到
+托管 runner、`update-rollback-privileged.yml` 缺失或带自动触发/降级分支，
 或演练脚本/守卫用例名消失。
 
 ## 项 8　ed25519/SPA 发布件检查（item 名 `signing`，可执行门；2026-10-29 起）
@@ -183,10 +188,24 @@ R8c 状态目录软链、R9b 备份件被篡改）全 PASS
 - `--require-signing`（发布操作档）：上述 SKIP 全部升为 FAIL。发布操作必须用。
 - `--selftest` 含突变：「篡改一字节必红」「错指纹必红」「缺锚必红」
   「私钥不得被 `--out` 覆盖」（openssl 在时执行，否则显性跳过）。
+- 发布件目录现含第四件 `ui-SHA256SUMS`（与前端产物目录 `ui/dist` 平级，
+  由 `scripts/release/make-ui-sums.sh` 生成）：全部普通文件、相对路径、
+  `LC_ALL=C` 排序、`<sha256>  <相对路径>` 两空格格式，可被 `sha256sum -c`
+  直接吃。它是签名清单的第三项：
+  `make-manifest.sh <ver> yiban-server yiban-cli ui-SHA256SUMS`；
+  清单里以普通文件条目出现，不许重名、basename 只允许 `[A-Za-z0-9._-]`。
 - sha256 与本地二进制、版本与 `--expect-version` 的对账由
   `update.sh --manifest/--signature/--pubkey` 在升级时承担。
   未给三件时 `update.sh` 默认拒绝升级（exit 2，停服务之前）；
   显式 `--allow-unsigned` 才跳过验签，逃生口与三件互斥。
+- UI 与二进制同批入清单：清单里有 `ui-SHA256SUMS` 条目时，`update.sh` 必须
+  同时给 `--ui-dir`（缺则 exit 1 显性失败），并从 `--ui-checksums`（缺省
+  与 manifest 同目录的 `ui-SHA256SUMS`）读逐文件清单；校验 =
+  对清单自身做 sha256 对账 + `sha256sum -c` 全量 + 拒绝清单外多余文件、
+  软链、非普通文件、路径逃逸。反过来，清单没有 ui 条目却给 `--ui-dir` 也
+  exit 1（不许把未签名的页面塞进已签名升级）。任一项红即 exit 1 且零写入
+  （发生在停服/换件之前）。`--allow-unsigned` 走无签名逃生口，整体跳过
+  签名清单校验（含 UI 清单），不属于已签名升级路径。
 
 ## 已登记缺口（待立项，本清单不现场补造）
 

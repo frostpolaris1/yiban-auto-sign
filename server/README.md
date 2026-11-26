@@ -276,6 +276,13 @@ The account quota counts every live account row (`deleted_at IS NULL`),
 including pending and rejected accounts. This is intentional: a phone
 already on file must never be re-created as a new account.
 
+The photo upload quota is per user and rolling: at most 50 new digests in
+24 hours, counted from `photos.created_at` and including soft-deleted rows.
+Re-uploading the same bytes returns the existing photo and consumes no new
+quota. The admin event stream accepts one concurrent connection per user and
+ten process-wide; a second connection for the same user, or the eleventh
+process-wide, answers 429.
+
 A user time preference is read at the next daily plan build (00:10, or the
 startup backfill). A value saved after that build applies to the following
 business day; the API does not rebuild today's rows on save.
@@ -324,15 +331,19 @@ Canonical runtime files:
 | `YIBAN_TURNSTILE_MODE` | no | `auto` | public-registration human verification: `auto` turns it on only when both keys are set, `off` never verifies, `log` verifies and records the outcome but lets the request through, `on` rejects a missing or invalid token with `human_verification_failed` (HTTP 400), and an unreachable siteverify answers HTTP 502. Applies to `POST /api/auth/register` only. |
 | `YIBAN_TURNSTILE_SITE_KEY` | no | empty | Cloudflare Turnstile site key, returned by `GET /api/auth/registration` so the register form can render the widget. Must be set together with the secret. |
 | `YIBAN_TURNSTILE_SECRET` | no | empty | Cloudflare Turnstile secret used for `/siteverify`; never logged, audited or echoed in an error. Must be set together with the site key. |
-| `YIBAN_RATE_LIMIT_ENABLE` | no | `true` | inbound rate limiting for login, forgot/reset password, change password, verify and sign |
+| `YIBAN_TURNSTILE_EXPECTED_HOSTNAME` | no | empty | optional binding: when set, the `hostname` in the siteverify answer must equal it (case-insensitive), otherwise the token counts as invalid (`on` answers HTTP 400, not 502). Rejected at startup when set without the secret. |
+| `YIBAN_TURNSTILE_EXPECTED_ACTION` | no | empty | optional binding: when set, the `action` in the siteverify answer must equal it exactly (case-sensitive), otherwise the token counts as invalid. The register form pins `action: 'register'`, so set this to `register` when enabling the check; leave empty to skip it. Rejected at startup when set without the secret. |
+| `YIBAN_RATE_LIMIT_ENABLE` | no | `true` | inbound rate limiting for login, forgot/reset password, change password, verify and sign. It must stay `true` under `YIBAN_ENV=production`: `false` there is a startup error. development, test and staging may turn it off. |
 | `YIBAN_RATE_IP_PER_MIN` | no | `60` | requests per minute per client IP on those routes |
 | `YIBAN_RATE_IP_BURST` | no | `20` | burst bucket per client IP |
 | `YIBAN_RATE_ACCOUNT_PER_MIN` | no | `10` | requests per minute per account key: normalized email, token digest, user id or account id |
 | `YIBAN_RATE_ACCOUNT_BURST` | no | `5` | burst bucket per account key |
 | `YIBAN_TRUSTED_PROXIES` | no | empty | comma-separated CIDRs of reverse proxies allowed to set `X-Forwarded-For` and `X-Forwarded-Proto`. The proto decides the login origin scheme when TLS terminates outside the app. Empty trusts no header; a bare IP is a single-host prefix. An invalid value stops startup. |
 | `YIBAN_KDF_CONCURRENCY` | no | `4` | process-wide cap on concurrent Argon2id hashes (1..64). Each hash costs about 19 MiB, so the cap bounds memory. |
-| `YIBAN_TASK_LEASE_SEC` | no | `120` | lease in seconds for a claimed signing task (30..3600). A running row past its lease is returned to pending by the reclaim pass. |
-| `YIBAN_WORKERS` | no | `1` | execution concurrency (1..64). The same number is the claim batch size, the capacity channel count and the in-batch parallelism. |
+| `YIBAN_TASK_LEASE_SEC` | no | `120` | lease in seconds for a claimed signing task (30..3600). A running row past its lease is returned to pending by the reclaim pass. Keep it well above the slowest provider round trip: it is the only bound that works when a provider ignores context cancellation. |
+| `YIBAN_RECLAIM_GRACE_SEC` | no | `60` | delay in seconds before a reclaimed row is claimable again (0..3600, 0 = immediate). It does not "save" the expired holder — the lease table has already returned the row to pending, so that holder's settlement is rejected by the claim-seq fence. The grace turns a concurrent double run into a delayed sequential re-run. |
+| `YIBAN_ATTEMPT_BUDGET_SEC` | no | `0` | total deadline in seconds for one attempt (discovery + submit, 0..3600). `0` means derive `0.8 × YIBAN_TASK_LEASE_SEC` (96 s at the default lease); a value above the lease is rejected at startup; at run time the budget is further capped by the remaining lease. An exhausted budget settles as one `transient` attempt with reason `attempt_budget_exceeded`. If preceding stages already consumed the lease, the row is requeued without any platform request and without spending an attempt (reason `wait_lease_spent`). |
+| `YIBAN_WORKERS` | no | `4` | execution concurrency (1..64). The same number is the claim batch size, the capacity channel count and the in-batch parallelism. |
 | `YIBAN_AVG_ATTEMPT_SEC` | no | `3` | average duration of one account attempt in seconds (1..300); a capacity input. |
 | `YIBAN_EGRESS_RATE` | no | `1.0` | target attempts per second per egress (0.2..4.0). It caps the capacity formula and sets the execution rate gate: both read this one field. |
 
@@ -354,11 +365,37 @@ An inbound rate limit answers 429 with `Retry-After` in seconds. The per-IP
 check runs before session lookup; the per-account check runs before the
 password hash. Other 429 answers (time-preference cooldown, capacity) may omit
 `Retry-After`. The reset flow checks the one-time token before hashing the new
-password.
+password. `YIBAN_RATE_LIMIT_ENABLE=false` is rejected at startup under
+`YIBAN_ENV=production`: the router treats a nil guard as unlimited, so a
+mis-set switch would silently remove all inbound throttling. Non-production
+environments may still turn it off.
 
 The admin event stream (`GET /api/admin/events`) has a process-wide cap of 10
 concurrent streams. The 11th connection gets 429 `rate_limited` with
 `Retry-After`; a slot is released as soon as any stream ends.
+
+Daily capacity is
+`sign window × min(workers / avg_attempt, egress_rate) × util`, with
+`util = 0.8`. The default window is 06:30–07:50 (80 minutes = 4,800 seconds),
+not 24 hours: attempts can only run inside it. The default edge buffers give
+back 60 seconds at each end, so capacity is computed over the effective
+4,680 seconds. A window override stored in the DB changes the effective
+capacity for that plan; the startup report always uses the default parameters.
+The default configuration carries 3,744 attempts in that window, so 10,000
+needs either 10 workers at rate 3.0 or 9 workers at rate 2.7:
+
+| `YIBAN_WORKERS` | `YIBAN_EGRESS_RATE` | `YIBAN_AVG_ATTEMPT_SEC` | attempts per default window |
+| --- | --- | --- | --- |
+| 4 (default) | 1.0 | 3 | 3,744 |
+| 10 | 3.0 | 3 | 11,232 |
+| 8 | 2.6 | 3 | 9,734 (below 10,000) |
+
+Concurrency stops buying window capacity at the rate knee
+`workers = egress_rate × avg_attempt` (3 at the defaults). A fourth worker at
+`egress_rate = 1` only buys latency headroom: capacity is already pinned by
+the egress rate. Above 64 workers is not more capacity either — that is the
+in-process concurrency and connection-pool boundary; raise the egress rate or
+run more instances instead.
 
 A plan build does not refuse a capacity shortfall. When the demand exceeds
 what the window can carry at the configured concurrency, average duration and
@@ -414,3 +451,18 @@ and `reason=unsupported_address`. The same reason covers a registered address
 with a non-ASCII character or with a control character below 0x20 or equal to
 0x7F. The request still answers 204; the refusal appears in the delivery log
 only.
+
+The retry loop claims due ledger rows instead of reading them: each claim
+writes a 15-minute `claimed_until` lease, and `FOR UPDATE SKIP LOCKED`
+splits due rows between instances, so two instances do not share a row while
+their clocks stay far below the lease. A row whose terminal ledger write is
+lost in a crash becomes visible again at most one lease later, so delivery
+stays at-least-once. If the send succeeded but the process died before
+`MarkSent`, the row is sent again: the unique keys stop one event from
+enqueuing twice, not the same row from being delivered twice. Two transient
+reads between claim and send (recipient status, webhook daily budget) release
+the claim on error, so the row is retried on the next round instead of
+waiting out the lease. The release carries no claim token: if an owner stalls
+for longer than the lease and a new owner re-claims, the stale owner's release
+can clear the new lease. That only widens the at-least-once window; it does
+not lose a row.

@@ -380,6 +380,12 @@ func transientResult(message string, clearSession bool) contract.Result {
 	}
 }
 
+// retryFor 给出易班侧的重试建议。
+//
+// After 故意留 0（= 没有下限建议）：平台没有文档化的固定冷却，
+// 宿主 60s 基础间隔已经覆盖"重发一次"的节奏；凭空编一个数会让
+// 真实冷却短于建议值的情况下白等，或者反过来给出错误的安全感。
+// 只有观测到平台明确的等待语义（例如响应里带回 cool-down）时才填。
 func retryFor(outcome contract.Outcome) contract.RetryAdvice {
 	if outcome == contract.OutcomeTransient {
 		return contract.RetryAdvice{Retryable: true, MaxAttempts: 3}

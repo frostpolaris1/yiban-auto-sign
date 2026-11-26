@@ -22,6 +22,33 @@ import (
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 )
 
+// 派生缺省：配置 0 时按 0.8×租约（线上默认生效）；显式值原样返回。
+func TestWorkerAttemptBudgetDerivesFromLease(t *testing.T) {
+	cases := []struct {
+		name   string
+		budget time.Duration
+		lease  time.Duration
+		want   time.Duration
+	}{
+		{"derived", 0, 120 * time.Second, 96 * time.Second},
+		{"explicit", 70 * time.Second, 120 * time.Second, 70 * time.Second},
+		{"derived-short-lease", 0, 30 * time.Second, 24 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := workerAttemptBudget(&config.Config{
+				TaskLease: tc.lease, AttemptBudget: tc.budget,
+			})
+			if got != tc.want {
+				t.Fatalf("workerAttemptBudget = %v, want %v", got, tc.want)
+			}
+			if got >= tc.lease {
+				t.Fatalf("预算 %v 未小于租约 %v：回收器会在持有者还活着时回收", got, tc.lease)
+			}
+		})
+	}
+}
+
 func TestWorkerDepsMirrorsDeps(t *testing.T) {
 	depsT := reflect.TypeOf(appworker.Deps{})
 	wdT := reflect.TypeOf(workerDeps{})
@@ -76,6 +103,8 @@ func TestWorkerDepsPassesEveryFieldThrough(t *testing.T) {
 		logger:    logger,
 		paused:    pauseGateSentinel,
 		limiter:   corerate.NewLimiter(1, 1),
+		// 哨兵取非零：0 在端口语义里是"不设限"，用它测不出搬运。
+		attemptBudget: 7 * time.Second,
 	}
 	got := buildWorkerDeps(&config.Config{}, want)
 

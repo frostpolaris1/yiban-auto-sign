@@ -27,24 +27,49 @@ const userColumns = `id::text, email, password_hash, role::text, status::text,
 	must_change_password, password_changed_at, last_login_at, created_at,
 	updated_at, deleted_at, coalesce(deleted_by::text, ''), mail_notify`
 
-// accountCountsCTE 是用户列表与分组计数的唯一账号聚合口径。
-// 只数未软删账号：account 全部、pending 只 pending、review 含 pending 与 rejected。
-const accountCountsCTE = `WITH account_counts AS (
-		SELECT owner_user_id,
-		       count(*)::int AS account_count,
-		       count(*) FILTER (WHERE status = 'pending')::int AS pending_count,
-		       count(*) FILTER (WHERE status IN ('pending', 'rejected'))::int AS review_count
-		  FROM accounts
-		 WHERE deleted_at IS NULL
-		 GROUP BY owner_user_id
-	)`
+// userPageColumns 是列表 page CTE 的行字段，不含账号计数。
+// 先只按 users 的过滤/键集/排序/LIMIT 裁出本页，再对页内行聚合账号。
+const userPageColumns = `u.id, u.email, u.password_hash, u.role, u.status,
+	u.must_change_password, u.password_changed_at, u.last_login_at, u.created_at,
+	u.updated_at, u.deleted_at, u.deleted_by, u.mail_notify`
 
 // userListColumns 是列表专用列清单：行字段 + 名下账号计数。
-// 计数用 LEFT JOIN，未持账号的用户得到 0。
+// 计数来自页内 LEFT JOIN LATERAL 聚合，未持账号的用户得到 0。
 const userListColumns = `u.id::text, u.email, u.password_hash, u.role::text, u.status::text,
 	u.must_change_password, u.password_changed_at, u.last_login_at, u.created_at,
 	u.updated_at, u.deleted_at, coalesce(u.deleted_by::text, ''), u.mail_notify,
 	coalesce(c.account_count, 0), coalesce(c.pending_count, 0), coalesce(c.review_count, 0)`
+
+// userAccountAggregate 是页内每行（或 Counts 里每个用户）的账号聚合。
+// 口径：account 全部、pending 只 pending、review 含 pending 与 rejected；
+// 只数未软删账号。相关子查询按 (owner_user_id) 走 idx_accounts_owner，
+// 不再对 accounts 全表 GROUP BY。
+const userAccountAggregate = `LEFT JOIN LATERAL (
+		SELECT count(*)::int AS account_count,
+		       count(*) FILTER (WHERE a.status = 'pending')::int AS pending_count,
+		       count(*) FILTER (WHERE a.status IN ('pending', 'rejected'))::int AS review_count
+		  FROM accounts a
+		 WHERE a.owner_user_id = u.id AND a.deleted_at IS NULL
+	) c ON TRUE`
+
+// accountReviewExists / accountLiveExists 是分组过滤的相关存在性谓词。
+// 分组在裁页前求值，聚合列尚不存在，只能引用 users 与相关 EXISTS。
+// pending 组 = 存在 status IN ('pending','rejected') 的未软删账号；
+// normal 组 = 无待审账号且存在任一未软删账号；vacant 组 = 不存在未软删账号。
+const (
+	accountReviewExists = `EXISTS (SELECT 1 FROM accounts a WHERE a.owner_user_id = u.id AND a.deleted_at IS NULL AND a.status IN ('pending', 'rejected'))`
+	accountLiveExists   = `EXISTS (SELECT 1 FROM accounts a WHERE a.owner_user_id = u.id AND a.deleted_at IS NULL)`
+)
+
+// userCountsQuery 是四个分组计数的唯一口径。
+// 单次扫描 users：未软删用户按名下账号聚合分三组，Deleted 只数软删用户。
+const userCountsQuery = `SELECT
+		count(*) FILTER (WHERE u.deleted_at IS NULL AND c.review_count > 0)::int,
+		count(*) FILTER (WHERE u.deleted_at IS NULL AND c.review_count = 0 AND c.account_count > 0)::int,
+		count(*) FILTER (WHERE u.deleted_at IS NULL AND c.account_count = 0)::int,
+		count(*) FILTER (WHERE u.deleted_at IS NOT NULL)::int
+	  FROM users u
+	  ` + userAccountAggregate
 
 // Create 在活跃用户数低于 limit 时插入用户。
 // limit=0 是「不限」哨兵：计数判据整体跳过（不是数到 0 就全拒）；
@@ -253,16 +278,18 @@ func userListQuery(role coreauth.Role, status coreauth.Status, query string, gro
 	}
 	switch group {
 	case coreuser.GroupPending:
-		where += " AND coalesce(c.review_count, 0) > 0"
+		where += " AND " + accountReviewExists
 	case coreuser.GroupNormal:
-		where += " AND coalesce(c.review_count, 0) = 0 AND coalesce(c.account_count, 0) > 0"
+		where += " AND NOT " + accountReviewExists + " AND " + accountLiveExists
 	case coreuser.GroupVacant:
-		where += " AND coalesce(c.account_count, 0) = 0"
+		where += " AND NOT " + accountLiveExists
 	}
-	base := accountCountsCTE + `
-		SELECT ` + userListColumns + `
-		  FROM users u
-		  LEFT JOIN account_counts c ON c.owner_user_id = u.id` + where
+	// 先裁页：page CTE 只引用 users 的过滤、键集、排序与 LIMIT。
+	// 分组谓词必须在裁页前求值，所以只能引用 users 与相关 EXISTS，
+	// 不能引用聚合列（那会把聚合拉回全表）。
+	base := `WITH page AS (
+		SELECT ` + userPageColumns + `
+		  FROM users u` + where
 	sqlText, args, err := appendKeyset(base, args, cursor, "u.created_at", "u.id")
 	if err != nil {
 		return "", nil, err
@@ -272,24 +299,19 @@ func userListQuery(role coreauth.Role, status coreauth.Status, query string, gro
 	// 排序键会变成 text，与 idx_users_created_live 的 uuid 列不同型。
 	sqlText += ` ORDER BY u.created_at DESC, u.id DESC`
 	sqlText, args = appendLimit(sqlText, args, limit)
+	sqlText += `
+	)
+	SELECT ` + userListColumns + `
+	  FROM page u
+	  ` + userAccountAggregate + `
+	 ORDER BY u.created_at DESC, u.id DESC`
 	return sqlText, args, nil
 }
 
 // Counts 返回四个分组的全局计数。
 // 前三个只数未软删用户，Deleted 只数软删用户；与列表筛选和分页无关。
 func (r *UserRepo) Counts(ctx context.Context) (coreuser.Counts, error) {
-	row := r.db.q(ctx).QueryRow(ctx, accountCountsCTE+`
-		SELECT
-			count(*) FILTER (WHERE u.deleted_at IS NULL
-			                   AND coalesce(c.review_count, 0) > 0)::int,
-			count(*) FILTER (WHERE u.deleted_at IS NULL
-			                   AND coalesce(c.review_count, 0) = 0
-			                   AND coalesce(c.account_count, 0) > 0)::int,
-			count(*) FILTER (WHERE u.deleted_at IS NULL
-			                   AND coalesce(c.account_count, 0) = 0)::int,
-			count(*) FILTER (WHERE u.deleted_at IS NOT NULL)::int
-		  FROM users u
-		  LEFT JOIN account_counts c ON c.owner_user_id = u.id`)
+	row := r.db.q(ctx).QueryRow(ctx, userCountsQuery)
 	var counts coreuser.Counts
 	if err := row.Scan(&counts.Pending, &counts.Normal, &counts.Vacant, &counts.Deleted); err != nil {
 		return coreuser.Counts{}, mapError(err)
@@ -509,8 +531,9 @@ func (r *UserRepo) RestoreSelfUser(ctx context.Context, id string, notBefore tim
 
 // RestoreSelfAccount 恢复该用户注销时刻仍生效的那一行账号。
 // 只认 deleted_by=ownerID（管理员删除的行不复活）且 deleted_at 与用户行
-// 同一时刻（注销连带软删的唯一时间戳）；无候选返回 (false, nil)，
-// 候选存在但容量满返回 capacity。limit=0 是「不限」哨兵：容量判据跳过。
+// 同一时刻（注销连带软删的唯一时间戳）；无候选或属主名下已有 live 账号
+// 都返回 (false, nil)，候选存在但容量满返回 capacity。
+// limit=0 是「不限」哨兵：容量判据跳过。
 // **必须在事务内运行**。
 func (r *UserRepo) RestoreSelfAccount(ctx context.Context, ownerID string, deletedAt time.Time, limit int) (bool, error) {
 	if !r.db.hasTx(ctx) {
@@ -540,6 +563,17 @@ func (r *UserRepo) RestoreSelfAccount(ctx context.Context, ownerID string, delet
 	if err != nil {
 		return false, mapError(err)
 	}
+	// 一人一号是结构判据：候选已锁定，属主名下若已有 live 号就不能再复活。
+	// 这不是错误：用户恢复的主流程继续，审计记 account_restored=false。
+	var ownerLive int
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM accounts WHERE owner_user_id = $1::uuid AND deleted_at IS NULL`,
+		ownerID).Scan(&ownerLive); err != nil {
+		return false, mapError(err)
+	}
+	if ownerLive > 0 {
+		return false, nil
+	}
 	var live int
 	if err := r.db.q(ctx).QueryRow(ctx,
 		`SELECT count(*) FROM accounts WHERE deleted_at IS NULL`).Scan(&live); err != nil {
@@ -551,12 +585,27 @@ func (r *UserRepo) RestoreSelfAccount(ctx context.Context, ownerID string, delet
 	tag, err := r.db.q(ctx).Exec(ctx, `
 		UPDATE accounts
 		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
-		 WHERE id = $1::uuid AND deleted_at IS NOT NULL`, accountID)
+		 WHERE id = $1::uuid
+		   AND deleted_at IS NOT NULL
+		   AND NOT EXISTS (SELECT 1 FROM accounts live
+		                    WHERE live.owner_user_id = accounts.owner_user_id
+		                      AND live.deleted_at IS NULL)`, accountID)
 	if err != nil {
 		return false, mapError(err)
 	}
 	if tag.RowsAffected() == 0 {
-		return false, coreerrNotFound()
+		var candidateStillDeleted bool
+		if err := r.db.q(ctx).QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM accounts WHERE id = $1::uuid AND deleted_at IS NOT NULL)`,
+			accountID).Scan(&candidateStillDeleted); err != nil {
+			return false, mapError(err)
+		}
+		// 候选已不在（并发恢复/清理）→ not_found；候选仍在却被
+		// 上面的 NOT EXISTS 挡住 → 属主已有 live 号，按无候选处理。
+		if !candidateStillDeleted {
+			return false, coreerrNotFound()
+		}
+		return false, nil
 	}
 	return true, nil
 }
@@ -717,7 +766,7 @@ func (r *UserRepo) CountLiveAccountsByOwner(ctx context.Context, userID string) 
 }
 
 // OwnerCounts 按行聚合某用户名下未软删账号的三计数。
-// 口径与 accountCountsCTE 一致：account 全部、pending 只 pending、
+// 口径与列表/Counts 的账号聚合一致：account 全部、pending 只 pending、
 // review 含 pending 与 rejected。无账号或行不存在都返回零值，
 // 不报 not_found：调用方刚写成功过目标行。
 // 无锁需求；计数是展示面，调用方决定事务。

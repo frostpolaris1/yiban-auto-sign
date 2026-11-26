@@ -52,8 +52,9 @@ type StatusCounts = coreaccount.StatusCounts
 // Repo 是账号仓储端口。
 //
 // Create 执行全局活跃账号上限与一人一号结构不变量
-// （属主名下没有 live 账号才可建）。Restore 与 Create 同判据，
-// 但属主已有 live 行的恢复按既有零行分类报 capacity_exceeded。
+// （属主名下没有 live 账号才可建）。Restore 与 Create 同判据：
+// 名下已有 live 行报 conflict，只有全局容量满报 capacity_exceeded；
+// Restore 另要求属主存活（已软删报 conflict），Create 的属主存活由用例层把关。
 // 两者**必须在事务内运行**：
 // 在同一事务里先取账号容量 advisory lock，再统计活跃行。
 // 条件语句命中零行时报 capacity_exceeded 或 conflict（errs.Code）。
@@ -61,6 +62,12 @@ type StatusCounts = coreaccount.StatusCounts
 // SetStatus 是比较并交换：仅当当前状态等于 from 才改。
 // 零行报 conflict（errs.CodeConflict）。**状态迁移规则归用例层，不归本端口**。
 // 目标状态为 pending 时清空驳回理由与审核戳：pending 不属于任何已审轮次。
+//
+// SetStatusIfCredentialVersion 在状态 CAS 之上再加凭据版本 CAS：
+// 仅当 status=from **且**该账号 credentials.version=expectedVersion 才迁移。
+// 零行报 conflict。自动核验用它保证「核验用的凭据」与「激活时的凭据」
+// 同一版本：核验期间凭据被替换（ReplaceCredential 会 version+1），账号留 pending。
+// expectedVersion 必须 ≥ 1，否则报 validation。
 //
 // Get 与 GetIncludingDeleted 都套范围：Get 只回未软删行，
 // GetIncludingDeleted 也回软删行（本人自助面用它区分「不是我的」与「已删」）。
@@ -110,6 +117,10 @@ type Repo interface {
 	UpdatePhone(ctx context.Context, scope corescope.Scope, id, phone string, at time.Time) (Record, error)
 	UpdateName(ctx context.Context, scope corescope.Scope, id, name string, at time.Time) (Record, error)
 	SetStatus(ctx context.Context, scope corescope.Scope, id string, from, to Status, at time.Time, reason string) (Record, error)
+	// SetStatusIfCredentialVersion 仅当状态等于 from 且凭据版本仍等于
+	// expectedVersion 时迁移。零行与 SetStatus 同口径走 classifyMiss：
+	// 越权报 not_found，状态或版本已变报 conflict，账号保持 from。
+	SetStatusIfCredentialVersion(ctx context.Context, scope corescope.Scope, id string, from, to Status, expectedVersion int32, at time.Time, reason string) (Record, error)
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason, by string, at time.Time) (Record, error)
 	SoftDelete(ctx context.Context, scope corescope.Scope, id, by string, at time.Time) error
 	Restore(ctx context.Context, scope corescope.Scope, id string, limit int) (Record, error)
@@ -117,6 +128,11 @@ type Repo interface {
 	// 只处理已软删且已锁定的行；审计行不动。
 	Purge(ctx context.Context, id string) error
 	RestoreSelf(ctx context.Context, scope corescope.Scope, id, by string, notBefore time.Time, limit int) (Record, error)
+	// DiscoveryCandidatesForSchool 返回某校可用于窗口发现的活跃账号，
+	// 按 last_verified_at DESC NULLS LAST, created_at ASC, id ASC 排序。
+	// 从未验证的新号排在已验证行之后：单坏号不挡住全校发现。
+	// limit 由适配器限定在 1..N；非法值报 validation。
+	DiscoveryCandidatesForSchool(ctx context.Context, schoolID string, limit int) ([]Record, error)
 	Credential(ctx context.Context, scope corescope.Scope, accountID string) (Credential, error)
 	// Credentials 批量读多个账号的凭据，按账号 ID 建索引。
 	// 空 ids 回空 map；软删行与作用域外的行不出现在结果里。

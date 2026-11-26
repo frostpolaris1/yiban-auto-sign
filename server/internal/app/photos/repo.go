@@ -20,6 +20,12 @@ import (
 // 删掉后重新上传得到一行不可见记录。
 type Store interface {
 	Create(ctx context.Context, rec corephoto.Record) (corephoto.Record, error)
+	// CreateWithinQuota 在滚动窗口配额内原子写入一张用户图片。
+	// 窗口判据是 photos.created_at >= since；limit 是新摘要上限。
+	// 重复 (owner, sha256) 无论是否达到配额都必须成功并返回既有行。
+	// 新摘要达到 limit 返回 corephoto.ErrDailyUploadQuota。
+	// 并发安全，且必须在事务内调用：锁、计数与写入同属一个事务。
+	CreateWithinQuota(ctx context.Context, rec corephoto.Record, since time.Time, limit int) (corephoto.Record, error)
 	// Get 按作用域读一张；跨用户、跨校、已软删与不存在都返回 errs.ErrNotFound。
 	Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
 	// List 按作用域列一页，游标语义与账号列表一致。

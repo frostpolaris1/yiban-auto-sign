@@ -10,10 +10,9 @@
 // 入口层只做角色门与传输映射。
 //
 // # 口径
-// 按请求目标值分闸（非变化方向，消除幂等重放歧义）：
-// 暂停（paused=true）master 与 admin 皆可；恢复（paused=false）仅 master
-// ——对齐旧线急停先例（任意管理员可停，仅主管理员可复启）。
-// 入口层先 Role 判，本用例层 RequireScope＋方向分闸双门，#341 形态。
+// 暂停与恢复都仅 master（不看请求目标值，也不看变化方向）：
+// 两个方向对 admin 都 403，消除幂等重放歧义与「先停后复」绕过。
+// 入口层先 Role 判，本用例层 RequireScope＋角色门双门，#341 形态。
 // 缺行=false=不暂停（auto_approve 口径）；恢复写 false 不删行，
 // 本用例无删行语义（ClearSetting 留给 sett2 的显式 null 补丁）。
 // 幂等重放允许：重复写同一目标态仍落行、仍记一行审计——
@@ -47,13 +46,9 @@ func (s *Service) SetEnginePaused(ctx context.Context, scope corescope.Scope, ac
 	if err := app.RequireScope(scope); err != nil {
 		return err
 	}
-	// 方向分闸按请求目标值：暂停放行 master/admin，恢复仅 master。
-	// 放在事务与存储之前：越权角色零写入零审计。
-	if paused {
-		if kind := scope.Kind(); kind != corescope.KindMaster && kind != corescope.KindAdmin {
-			return coreerrs.New(coreerrs.CodeForbidden, "master or admin role is required")
-		}
-	} else if scope.Kind() != corescope.KindMaster {
+	// 暂停与恢复都仅 master（双向同一道门，不看请求目标值）。
+	// 放在事务与存储之前：admin/user 零写入零审计。
+	if scope.Kind() != corescope.KindMaster {
 		return coreerrs.New(coreerrs.CodeForbidden, "master role is required")
 	}
 	if s.deps.Schedule == nil {

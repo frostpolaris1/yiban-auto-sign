@@ -148,7 +148,8 @@ func TestNewInspectorRejectsNilChain(t *testing.T) {
 
 // ===== 库外锚点 =====
 
-func TestInspectorAnchorDisabled(t *testing.T) {
+// 未挂锚点读取器：与"锚点缺失"的新口径无关，链内自洽仍报健康。
+func TestInspectorAnchorDisabledStaysHealthy(t *testing.T) {
 	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
 	status, err := newInspector(t, chain).Status(context.Background())
 	if err != nil {
@@ -157,12 +158,17 @@ func TestInspectorAnchorDisabled(t *testing.T) {
 	if !status.OK || status.AnchorStatus != appaudit.AnchorStatusDisabled {
 		t.Fatalf("status = %+v, want ok with anchor disabled", status)
 	}
+	if status.AnchorReason != "" || status.AnchorOK {
+		t.Fatalf("anchor reason/ok = %q/%v, want empty/false", status.AnchorReason, status.AnchorOK)
+	}
 	if chain.anchor != nil {
 		t.Fatalf("chain received anchor %+v, want nil", chain.anchor)
 	}
 }
 
-func TestInspectorAnchorMissingKeepsChainVerdict(t *testing.T) {
+// 配置了锚点读取器却没有任何锚点证据（文件与高水位都缺）：不是"未启用"，
+// 必须失败关闭。链结论仍保留，但 ok 不得为 true。
+func TestInspectorAnchorMissingTurnsUnhealthy(t *testing.T) {
 	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 3, LastID: 3}}
 	reader := &fakeAnchorReader{}
 	status, err := newInspector(t, chain).WithAnchor(reader).
@@ -170,11 +176,36 @@ func TestInspectorAnchorMissingKeepsChainVerdict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !status.OK || status.AnchorStatus != appaudit.AnchorStatusMissing {
-		t.Fatalf("status = %+v, want ok with anchor missing", status)
+	if status.OK || status.AnchorStatus != appaudit.AnchorStatusMissing {
+		t.Fatalf("status = %+v, want unhealthy with anchor missing", status)
+	}
+	if status.AnchorReason != "anchor_not_initialized" {
+		t.Fatalf("anchor reason = %q, want anchor_not_initialized", status.AnchorReason)
+	}
+	if status.Empty || status.BrokenAt != nil || status.CheckedRows != 3 {
+		t.Fatalf("chain verdict was not preserved: %+v", status)
 	}
 	if chain.anchor != nil {
 		t.Fatalf("chain received anchor %+v, want nil", chain.anchor)
+	}
+}
+
+// 锚点缺失且链已断：两者都不得被洗白成健康，断链定位保留。
+func TestInspectorAnchorMissingOnBrokenChainStaysUnhealthy(t *testing.T) {
+	chain := &fakeChain{status: coreaudit.Status{CheckedRows: 2, BrokenAt: 3}}
+	status, err := newInspector(t, chain).WithAnchor(&fakeAnchorReader{}).
+		WithAnchorMeta(&fakeAnchorMetaReader{}).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.OK || status.AnchorStatus != appaudit.AnchorStatusMissing {
+		t.Fatalf("status = %+v, want unhealthy with anchor missing", status)
+	}
+	if status.BrokenAt == nil || *status.BrokenAt != 3 {
+		t.Fatalf("broken_at = %v, want 3", status.BrokenAt)
+	}
+	if status.AnchorReason != "anchor_not_initialized" {
+		t.Fatalf("anchor reason = %q, want anchor_not_initialized", status.AnchorReason)
 	}
 }
 

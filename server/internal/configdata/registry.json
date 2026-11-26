@@ -20,6 +20,15 @@
     "sensitive": false,
     "scope": "server"
   },
+  "YIBAN_ATTEMPT_BUDGET_SEC": {
+    "type": "seconds",
+    "domain": [0, 3600],
+    "default": 0,
+    "group": ["调度"],
+    "doc": "一次尝试（发现＋提交）的总截止秒数。0=按租约派生（0.8×YIBAN_TASK_LEASE_SEC）；显式值必须小于租约：预算先到期，本次尝试由自己结算，回收器才不会在持有者仍在跑时把行放回队列",
+    "sensitive": false,
+    "scope": "server"
+  },
   "YIBAN_AUDIT_ANCHOR_FILE": {
     "type": "string",
     "default": "",
@@ -242,7 +251,16 @@
     "type": "bool",
     "default": true,
     "group": ["节流"],
-    "doc": "入站限流总开关。关闭时登录、重置、改密、校验、签到不按 IP 与账号限速",
+    "doc": "入站限流总开关。production 必须为 true：=false 时启动失败；development/test/staging 可关闭，关闭后登录、重置、改密、校验、签到不按 IP 与账号限速",
+    "sensitive": false,
+    "scope": "server"
+  },
+  "YIBAN_RECLAIM_GRACE_SEC": {
+    "type": "seconds",
+    "domain": [0, 3600],
+    "default": 60,
+    "group": ["调度"],
+    "doc": "回收过期租约后的冷却秒数：回收落点 = 回收时刻 + 本值。租约到期不等于持有者已死，冷却让慢提交先写完终态，避免同一账号被两个执行体同时跑。0=回收即可重领",
     "sensitive": false,
     "scope": "server"
   },
@@ -285,6 +303,22 @@
     "default": "",
     "group": ["安全"],
     "doc": "可信反向代理 CIDR 表（逗号分隔）。空表示不信任 X-Forwarded-For；非法值即启动错误",
+    "sensitive": false,
+    "scope": "server"
+  },
+  "YIBAN_TURNSTILE_EXPECTED_ACTION": {
+    "type": "string",
+    "default": "",
+    "group": ["安全"],
+    "doc": "可选：要求 siteverify 回执的 action 完全等于该值（区分大小写）。空表示不校验；非空而私钥为空即启动错误",
+    "sensitive": false,
+    "scope": "server"
+  },
+  "YIBAN_TURNSTILE_EXPECTED_HOSTNAME": {
+    "type": "string",
+    "default": "",
+    "group": ["安全"],
+    "doc": "可选：要求 siteverify 回执的 hostname 等于该值（忽略大小写）。空表示不校验；非空而私钥为空即启动错误",
     "sensitive": false,
     "scope": "server"
   },
@@ -393,7 +427,7 @@
   "YIBAN_WORKERS": {
     "type": "int",
     "domain": [1, 64],
-    "default": 1,
+    "default": 4,
     "group": ["执行体"],
     "doc": "并行执行体数上限（1=单执行体）：认领批大小与计划容量通道数同源",
     "sensitive": false,

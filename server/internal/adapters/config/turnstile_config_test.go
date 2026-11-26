@@ -5,7 +5,8 @@ package config
 // # 功能
 // 钉住三档解析判据：两把密钥必须成对；auto 按密钥齐备落 on/off；
 // log/on 缺密钥即启动失败；未知档位拒绝。
-// 另钉住 LoadFrom 把三键读进 Config。
+// 另钉住 LoadFrom 把三键与两个可选的令牌绑定期望读进 Config：
+// 期望非空而私钥为空即启动失败，无论 mode 是否开启。
 //
 // # 口径
 // 只测本包解析，不测端点；端点行为见 adapters/turnstile。
@@ -66,11 +67,17 @@ func TestLoadFromTurnstileKeys(t *testing.T) {
 		t.Fatalf("default turnstile config = %q/%q/%q, want off and empty keys",
 			cfg.TurnstileMode, cfg.TurnstileSiteKey, cfg.TurnstileSecret)
 	}
+	if cfg.TurnstileExpectedHostname != "" || cfg.TurnstileExpectedAction != "" {
+		t.Fatalf("default token bindings = %q/%q, want empty expectations",
+			cfg.TurnstileExpectedHostname, cfg.TurnstileExpectedAction)
+	}
 
 	src := baseSource()
 	src["YIBAN_TURNSTILE_MODE"] = " auto "
 	src["YIBAN_TURNSTILE_SITE_KEY"] = " site-key "
 	src["YIBAN_TURNSTILE_SECRET"] = " secret "
+	src["YIBAN_TURNSTILE_EXPECTED_HOSTNAME"] = " reg.example.com "
+	src["YIBAN_TURNSTILE_EXPECTED_ACTION"] = " register "
 	cfg, err = LoadFrom(src)
 	if err != nil {
 		t.Fatalf("LoadFrom turnstile: %v", err)
@@ -79,10 +86,80 @@ func TestLoadFromTurnstileKeys(t *testing.T) {
 		t.Fatalf("turnstile config = %q/%q/%q, want on and trimmed keys",
 			cfg.TurnstileMode, cfg.TurnstileSiteKey, cfg.TurnstileSecret)
 	}
+	if cfg.TurnstileExpectedHostname != "reg.example.com" || cfg.TurnstileExpectedAction != "register" {
+		t.Fatalf("token bindings = %q/%q, want the trimmed expectations",
+			cfg.TurnstileExpectedHostname, cfg.TurnstileExpectedAction)
+	}
 
 	partial := baseSource()
 	partial["YIBAN_TURNSTILE_SITE_KEY"] = "site-key"
 	if _, err := LoadFrom(partial); err == nil {
 		t.Fatal("LoadFrom accepted a site key without a secret")
+	}
+}
+
+// 期望非空而私钥为空是配置错误：不静默降级为「不校验」，
+// 也不因 mode=off 而放过；错误点名已设置的期望键与缺的私钥键。
+func TestLoadFromRejectsTurnstileExpectationWithoutSecret(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     map[string]string
+		want    []string
+		notWant []string
+	}{
+		{
+			name:    "hostname without secret",
+			env:     map[string]string{"YIBAN_TURNSTILE_EXPECTED_HOSTNAME": "reg.example.com"},
+			want:    []string{"YIBAN_TURNSTILE_EXPECTED_HOSTNAME", "YIBAN_TURNSTILE_SECRET"},
+			notWant: []string{"YIBAN_TURNSTILE_EXPECTED_ACTION"},
+		},
+		{
+			name:    "action without secret",
+			env:     map[string]string{"YIBAN_TURNSTILE_EXPECTED_ACTION": "register"},
+			want:    []string{"YIBAN_TURNSTILE_EXPECTED_ACTION", "YIBAN_TURNSTILE_SECRET"},
+			notWant: []string{"YIBAN_TURNSTILE_EXPECTED_HOSTNAME"},
+		},
+		{
+			name: "both without secret",
+			env: map[string]string{
+				"YIBAN_TURNSTILE_EXPECTED_HOSTNAME": "reg.example.com",
+				"YIBAN_TURNSTILE_EXPECTED_ACTION":   "register",
+			},
+			want: []string{
+				"YIBAN_TURNSTILE_EXPECTED_HOSTNAME",
+				"YIBAN_TURNSTILE_EXPECTED_ACTION",
+				"YIBAN_TURNSTILE_SECRET",
+			},
+		},
+		{
+			name: "expectation is rejected even when the mode is off",
+			env: map[string]string{
+				"YIBAN_TURNSTILE_MODE":            "off",
+				"YIBAN_TURNSTILE_EXPECTED_ACTION": "register",
+			},
+			want: []string{"YIBAN_TURNSTILE_EXPECTED_ACTION", "YIBAN_TURNSTILE_SECRET"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := baseSource()
+			for k, v := range tc.env {
+				src[k] = v
+			}
+			_, err := LoadFrom(src)
+			if err == nil {
+				t.Fatal("LoadFrom accepted an expectation without a secret")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q must name %s", err, want)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(err.Error(), notWant) {
+					t.Fatalf("error %q must not name %s", err, notWant)
+				}
+			}
+		})
 	}
 }

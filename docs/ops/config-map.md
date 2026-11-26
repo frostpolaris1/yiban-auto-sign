@@ -43,7 +43,7 @@
 | 不可信代理 / 反代地址 | `YIBAN_TRUSTED_PROXIES` | 裸机写 `server.env` 后重启；容器可写 `compose.env`，也可 `export` 后 `up -d`（shell 环境 > `--env-file` > compose 缺省） |
 | 照片目录 | `YIBAN_PHOTO_DIR` | 裸机改 `server.env` 后**重跑 `install.sh`**：它按新值重写 `ReadWritePaths` 并 `restart`（目录必须在 `/var/lib/yiban/` 下且不是软链）；容器改 `compose.env` 后 `up -d`，并确认卷挂载点同步 |
 | 审计锚点 | `YIBAN_AUDIT_ANCHOR_FILE`（库外 append-only 文件，0600；空＝不做锚点比对） | 改 `server.env` / `compose.env` 后重启；写锚点用 `yiban-cli audit anchor`，裸机 systemd timer 示例见 `deploy/README.md` §6.1 |
-| 公开注册人机验证 | `YIBAN_TURNSTILE_MODE`（auto/off/log/on）、`YIBAN_TURNSTILE_SITE_KEY`、`YIBAN_TURNSTILE_SECRET` | 改 `server.env` / `compose.env` 后重启；`auto` 在缺密钥时即关闭，`log` 只记录不拦截，`on` 拒绝缺失或无效令牌；只作用于 `POST /api/auth/register`，开启时 CSP 放开 `challenges.cloudflare.com` |
+| 公开注册人机验证 | `YIBAN_TURNSTILE_MODE`（auto/off/log/on）、`YIBAN_TURNSTILE_SITE_KEY`、`YIBAN_TURNSTILE_SECRET`、可选绑定 `YIBAN_TURNSTILE_EXPECTED_HOSTNAME` / `YIBAN_TURNSTILE_EXPECTED_ACTION` | 改 `server.env` / `compose.env` 后重启；`auto` 在缺密钥时即关闭，`log` 只记录不拦截，`on` 拒绝缺失或无效令牌；只作用于 `POST /api/auth/register`，开启时 CSP 放开 `challenges.cloudflare.com`。绑定项留空不校验；`EXPECTED_ACTION` 开启时必须为 `register`（注册界面控件已固定该动作），设成别的值会让开档注册必 400；任一期望非空而私钥为空即启动错误 |
 | 备份落点 | 容器 `YIBAN_BACKUP_HOST_DIR`（宿主绝对路径，缺省 `./backups`） | 下一次 `--profile backup run` 生效；不在 Go 名册 |
 | 前端产物 | 裸机 `YIBAN_UI_DIR`（安装器写；`--ui-dir` 升级会一并换页面） | 重跑 `install.sh` 或 `update.sh --ui-dir`；手改后重启 |
 | 合规文档 | `YIBAN_DOCS_DIR`（含 `CHANGELOG.md`、`USER_AGREEMENT.md`、`PRIVACY_POLICY.md`；容器镜像自带 `/srv/docs`） | 改 `server.env` / `compose.env` 后重启；更新日志在进程内首读缓存，换文件要重启 |
@@ -68,6 +68,8 @@
 
 - 监听地址、时区、并发/节流/窗口、`YIBAN_TRUSTED_PROXIES`、
   `YIBAN_UI_DIR`、`YIBAN_DOCS_DIR`、`YIBAN_PHOTO_DIR`、`YIBAN_AUDIT_ANCHOR_FILE`、SMTP 主机/端口/模式、`YIBAN_BACKUP_HOST_DIR`。
+- `YIBAN_TURNSTILE_EXPECTED_HOSTNAME`、`YIBAN_TURNSTILE_EXPECTED_ACTION`
+  （令牌绑定的公开期望值；不含秘密，空表示不校验）。
 
 **邮件投递开关**
 

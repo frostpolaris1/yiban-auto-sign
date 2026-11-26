@@ -5,12 +5,14 @@ import { resolveLanding, landingForRole } from '../../src/lib/landing.ts'
 import { skyPaletteFor, SKY_PALETTES } from '../../src/features/auth/sky.ts'
 import {
   businessDateLabel,
+  detectErrorText,
   greetingFor,
   heroClock,
   homeState,
   windowGeometry,
   nextRunText,
 } from '../../src/features/me/display.ts'
+import { ApiError } from '../../src/lib/api/client.ts'
 
 /**
  * 用户端纯逻辑的不变式。
@@ -156,4 +158,21 @@ test('next run says today while the window is still ahead', () => {
   assert.equal(nextRunText(PREF, new Date('2026-11-11T07:00:00+09:00')), '今天 06:45 左右')
   // 无窗口时不编造时刻。
   assert.equal(nextRunText(undefined, beforeStart), '明天早上')
+})
+
+test('detect error text names an unregistered school and falls back for unknown status', () => {
+  assert.equal(
+    detectErrorText(new ApiError(404, { code: 'not_found', message: 'school is not registered' })),
+    '该学校尚未登记，请联系管理员创建后再试。',
+  )
+  assert.equal(
+    detectErrorText(new ApiError(502, { code: 'upstream_error', message: 'platform failed' })),
+    '平台暂时不可用，请稍后再试或手动选学校。',
+  )
+  // 未单列的状态回落到通用文案，不冒充 404。
+  assert.equal(
+    detectErrorText(new ApiError(409, { code: 'conflict', message: 'conflict' })),
+    '没有找到账号，请检查手机号与口令。',
+  )
+  assert.equal(detectErrorText(new Error('network down')), '网络异常，请稍后重试。')
 })

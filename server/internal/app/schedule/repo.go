@@ -6,6 +6,8 @@ import (
 	"log/slog"
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
@@ -135,6 +137,13 @@ type Deps struct {
 	// 暂停时零写入并回 PausedError（入口 503）。为 nil 时不判。
 	// 日切/自动路径不读它：暂停由发现错误回退处理（见 resolveWindow）。
 	Paused func(ctx context.Context) (bool, error)
+	// Audit 是人工覆盖的审计链。写覆盖面（Override）要求非 nil：
+	// 缺端口时 fail-closed 返回内部错误，不允许「写了覆盖却没有审计」。
+	// 只读路径（Preview/Report/栅栏）不读它，测试可只给读依赖。
+	Audit appaudit.Repo
+	// Clock 为审计时间戳与可测时间源。为 nil 时用系统时钟；
+	// 写覆盖面不得直接调 time.Now（canonical clock.now 门）。
+	Clock coreclock.Clock
 	// Logger 可为 nil：用 slog.Default。窗口发现失败的原因进日志。
 	Logger *slog.Logger
 }

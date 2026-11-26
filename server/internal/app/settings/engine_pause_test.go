@@ -2,7 +2,7 @@ package settings_test
 
 // 全局执行暂停用例（批 3a）的单测。
 //
-// 判据：方向分闸（暂停 master/admin、恢复仅 master，user 一律 403）、
+// 判据：暂停与恢复都仅 master（admin 与 user 双向 403）、
 // 幂等重放仍恰一行审计、审计 detail 只含字段与目标状态、
 // 审计失败整体回滚、缺写端口失败关闭、读面缺行=false 故障上抛。
 
@@ -131,41 +131,23 @@ func newPauseActors() pauseActors {
 	}
 }
 
-// 暂停：master 与 admin 都成功；恢复：仅 master，admin 403，user 一律 403。
-// 被拒请求零写入零审计。
-func TestEnginePauseDirectionGates(t *testing.T) {
+// 暂停与恢复都仅 master：admin 双向 403、user 双向 403，被拒零写入零审计。
+func TestEnginePauseBothDirectionsMasterOnly(t *testing.T) {
 	actors := newPauseActors()
 
-	// 暂停面：master 与 admin 皆可。
-	for _, tc := range []struct {
-		name  string
-		actor appaudit.Actor
-		scope corescope.Scope
-	}{
-		{"master 暂停", actors.master, corescope.Master()},
-		{"admin 暂停", actors.admin, corescope.Admin(nil)},
-	} {
-		f := newPauseFixture(t, nil)
-		if err := f.svc.SetEnginePaused(context.Background(), tc.scope, tc.actor, true); err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		if value := f.store.boolRows[appsettings.KeyEnginePaused]; value != "true" {
-			t.Fatalf("%s: row = %q, want true", tc.name, value)
-		}
-		if len(f.audits.entries) != 1 {
-			t.Fatalf("%s: audit rows = %d, want 1", tc.name, len(f.audits.entries))
-		}
-	}
-
-	// 恢复面：admin 403，零写入零审计。
+	// admin：暂停与恢复都 403，零写入零审计。
 	f := newPauseFixture(t, nil)
-	if err := f.svc.SetEnginePaused(context.Background(), corescope.Admin(nil), actors.admin, false); err == nil {
-		t.Fatal("admin resume must be forbidden")
-	} else if errs.From(err).Code != errs.CodeForbidden {
-		t.Fatalf("admin resume code = %v, want forbidden", errs.From(err).Code)
+	for _, paused := range []bool{true, false} {
+		err := f.svc.SetEnginePaused(context.Background(), corescope.Admin(nil), actors.admin, paused)
+		if err == nil {
+			t.Fatalf("admin paused=%v must be forbidden", paused)
+		}
+		if code := errs.From(err).Code; code != errs.CodeForbidden {
+			t.Fatalf("admin paused=%v code = %v, want forbidden", paused, code)
+		}
 	}
 	if f.store.writes != 0 || len(f.audits.entries) != 0 {
-		t.Fatalf("被拒恢复写了存储或审计: writes=%d audits=%d", f.store.writes, len(f.audits.entries))
+		t.Fatalf("被拒 admin 写了存储或审计: writes=%d audits=%d", f.store.writes, len(f.audits.entries))
 	}
 
 	// user：暂停与恢复都 403。
@@ -177,6 +159,24 @@ func TestEnginePauseDirectionGates(t *testing.T) {
 	}
 	if f.store.writes != 0 || len(f.audits.entries) != 0 {
 		t.Fatalf("user 被拒请求写了存储或审计: writes=%d audits=%d", f.store.writes, len(f.audits.entries))
+	}
+
+	// master 双向成功：各写一行、各记一行审计。
+	for _, paused := range []bool{true, false} {
+		f := newPauseFixture(t, nil)
+		if err := f.svc.SetEnginePaused(context.Background(), corescope.Master(), actors.master, paused); err != nil {
+			t.Fatalf("master paused=%v: %v", paused, err)
+		}
+		want := "false"
+		if paused {
+			want = "true"
+		}
+		if value := f.store.boolRows[appsettings.KeyEnginePaused]; value != want {
+			t.Fatalf("master paused=%v row = %q, want %s", paused, value, want)
+		}
+		if len(f.audits.entries) != 1 {
+			t.Fatalf("master paused=%v audit rows = %d, want 1", paused, len(f.audits.entries))
+		}
 	}
 }
 

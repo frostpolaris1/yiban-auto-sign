@@ -131,6 +131,19 @@ func wantReauthAudit(t *testing.T, h *harness, index int, outcome string, count 
 	}
 }
 
+// countReauthOutcomes 统计 reauth 审计里的 invalid 与 throttled 条数。
+func countReauthOutcomes(h *harness) (invalid, throttled int) {
+	for _, entry := range h.audits.entries {
+		switch entry.Detail["to"] {
+		case "invalid":
+			invalid++
+		case "throttled":
+			throttled++
+		}
+	}
+	return invalid, throttled
+}
+
 // 错误口令统一 forbidden；用户不存在同垫时同错误；两者都写无 PII 审计。
 func TestReauthenticateRejectsWrongAndUnknown(t *testing.T) {
 	h := newHarness(t)
@@ -229,6 +242,85 @@ func TestReauthenticateThrottlesAfterFiveFailures(t *testing.T) {
 	}
 }
 
+// 同一窗口只写一条 throttled 汇总审计；窗口滑过后重新计数并能再写一条。
+func TestReauthenticateThrottleAuditIsOncePerWindow(t *testing.T) {
+	clk := newMutableClock()
+	h := newHarnessWithClock(t, clk)
+	seedActiveUser(t, h, "u1")
+	ctx := t.Context()
+
+	for i := 0; i < appauth.ReauthFailureLimit; i++ {
+		if err := h.svc.Reauthenticate(ctx, "u1", "wrong-password-42"); err != appauth.ErrReauthFailed {
+			t.Fatalf("failure %d = %v, want ErrReauthFailed", i+1, err)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		err := h.svc.Reauthenticate(ctx, "u1", "wrong-password-42")
+		var throttled *appauth.ReauthThrottled
+		if !errors.As(err, &throttled) {
+			t.Fatalf("throttled attempt %d = %v, want *ReauthThrottled", i+1, err)
+		}
+	}
+	invalid, throttled := countReauthOutcomes(h)
+	if invalid != appauth.ReauthFailureLimit || throttled != 1 {
+		t.Fatalf("audit outcomes = %d invalid / %d throttled, want 5 / 1", invalid, throttled)
+	}
+
+	// 跨过一个完整窗口：旧计数清空，新的 5 次失败后第 6 次再写一条汇总。
+	clk.advance(appauth.ReauthWindow + time.Second)
+	for i := 0; i < appauth.ReauthFailureLimit; i++ {
+		if err := h.svc.Reauthenticate(ctx, "u1", "wrong-password-42"); err != appauth.ErrReauthFailed {
+			t.Fatalf("failure %d after the window = %v, want ErrReauthFailed", i+1, err)
+		}
+	}
+	err := h.svc.Reauthenticate(ctx, "u1", "wrong-password-42")
+	var again *appauth.ReauthThrottled
+	if !errors.As(err, &again) {
+		t.Fatalf("first throttled attempt after the window = %v, want *ReauthThrottled", err)
+	}
+	invalid, throttled = countReauthOutcomes(h)
+	if invalid != appauth.ReauthFailureLimit*2 || throttled != 2 {
+		t.Fatalf("audit outcomes after the window = %d invalid / %d throttled, want 10 / 2", invalid, throttled)
+	}
+}
+
+// 审计写失败回滚去重标记：同窗口下一次超限重试仍会写，且只成功留一条。
+func TestReauthenticateThrottleAuditFailureRollsBack(t *testing.T) {
+	h := newHarnessWithClock(t, newMutableClock())
+	seedActiveUser(t, h, "u1")
+	ctx := t.Context()
+
+	for i := 0; i < appauth.ReauthFailureLimit; i++ {
+		if err := h.svc.Reauthenticate(ctx, "u1", "wrong-password-42"); err != appauth.ErrReauthFailed {
+			t.Fatalf("failure %d = %v, want ErrReauthFailed", i+1, err)
+		}
+	}
+	auditErr := errors.New("audit store down")
+	h.audits.err = auditErr
+	if err := h.svc.Reauthenticate(ctx, "u1", "wrong-password-42"); !errors.Is(err, auditErr) {
+		t.Fatalf("first throttled attempt = %v, want the audit error", err)
+	}
+
+	h.audits.err = nil
+	err := h.svc.Reauthenticate(ctx, "u1", "wrong-password-42")
+	var throttled *appauth.ReauthThrottled
+	if !errors.As(err, &throttled) {
+		t.Fatalf("retry after the audit failure = %v, want *ReauthThrottled", err)
+	}
+	if invalid, gotThrottled := countReauthOutcomes(h); invalid != appauth.ReauthFailureLimit || gotThrottled != 1 {
+		t.Fatalf("audit outcomes = %d invalid / %d throttled, want 5 / 1", invalid, gotThrottled)
+	}
+
+	// 成功写入后去重标记保持置位，后续超限不再写。
+	err = h.svc.Reauthenticate(ctx, "u1", "wrong-password-42")
+	if !errors.As(err, &throttled) {
+		t.Fatalf("next throttled attempt = %v, want *ReauthThrottled", err)
+	}
+	if _, gotThrottled := countReauthOutcomes(h); gotThrottled != 1 {
+		t.Fatalf("throttled audit rows = %d, want 1", gotThrottled)
+	}
+}
+
 // 成功一次清零：3 次失败后成功，再 5 次失败才 429。
 func TestReauthenticateSuccessClearsCounter(t *testing.T) {
 	clk := newMutableClock()
@@ -308,19 +400,11 @@ func TestReauthenticateThrottleIsConcurrencySafe(t *testing.T) {
 	if h.kdf.verifies.Load() != appauth.ReauthFailureLimit {
 		t.Fatalf("KDF verifies = %d, want %d", h.kdf.verifies.Load(), appauth.ReauthFailureLimit)
 	}
-	// 每次尝试都留一条审计：5 条 invalid + 15 条 throttled。
-	invalidAudits, throttledAudits := 0, 0
-	for _, entry := range h.audits.entries {
-		switch entry.Detail["to"] {
-		case "invalid":
-			invalidAudits++
-		case "throttled":
-			throttledAudits++
-		}
-	}
-	if invalidAudits != appauth.ReauthFailureLimit || throttledAudits != attempts-appauth.ReauthFailureLimit {
-		t.Fatalf("audit outcomes = %d invalid / %d throttled, want %d / %d",
-			invalidAudits, throttledAudits, appauth.ReauthFailureLimit, attempts-appauth.ReauthFailureLimit)
+	// 5 条 invalid 各留一条；同一窗口只留 1 条 throttled 汇总。
+	invalidAudits, throttledAudits := countReauthOutcomes(h)
+	if invalidAudits != appauth.ReauthFailureLimit || throttledAudits != 1 {
+		t.Fatalf("audit outcomes = %d invalid / %d throttled, want %d / 1",
+			invalidAudits, throttledAudits, appauth.ReauthFailureLimit)
 	}
 }
 

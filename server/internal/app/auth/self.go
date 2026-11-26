@@ -106,6 +106,8 @@ func (s *Service) DeleteSelf(ctx context.Context, sess coreauth.Session, current
 // 口令错、账号不存在、超窗、管理员删除走同一条 401；口令已验对后撞
 // 活跃行唯一索引（邮箱被顶号创建、手机号被抢注）返回
 // ErrRestoreConflict（409），不再折叠成同一条 401。恢复成功不建立会话。
+// 属主名下已有 live 账号时账号不复活（一人一号优先），用户仍恢复，
+// 审计 Detail 记 account_restored=false，而不是把整次恢复判失败。
 func (s *Service) RestoreSelf(ctx context.Context, email, password string) error {
 	email = coreuser.NormalizeEmail(email)
 	if !coreuser.ValidEmail(email) || password == "" {
@@ -172,8 +174,10 @@ func (s *Service) RestoreSelf(ctx context.Context, email, password string) error
 			return err
 		}
 		// 注销时刻生效的那一行账号与用户行同一时间戳；管理员删除的行
-		// deleted_by 不是本人，不会被本方法复活。
-		if _, err := s.users.RestoreSelfAccount(ctx, restored.ID, *locked.DeletedAt, accountLimit); err != nil {
+		// deleted_by 不是本人，不会被本方法复活。属主名下已有 live 账号时
+		// 适配器返回 false,nil：用户恢复照常，审计记录账号没有一并恢复。
+		accountRestored, err := s.users.RestoreSelfAccount(ctx, restored.ID, *locked.DeletedAt, accountLimit)
+		if err != nil {
 			return err
 		}
 		actor := appaudit.NewActor(coreauth.User{
@@ -187,7 +191,7 @@ func (s *Service) RestoreSelf(ctx context.Context, email, password string) error
 			Action:      coreaudit.ActionUserSelfRestore,
 			TargetType:  "user",
 			TargetID:    restored.ID,
-			Detail:      map[string]any{"field": "deleted_at"},
+			Detail:      map[string]any{"field": "deleted_at", "account_restored": accountRestored},
 		})
 		return err
 	})

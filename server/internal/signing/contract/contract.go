@@ -155,6 +155,9 @@ type Profile struct {
 
 // SignRequest 是一次签到尝试。
 type SignRequest struct {
+	// AttemptID 是一次**认领周期**的幂等键：同一租约内重复调用必须同值，
+	// 租约被回收后重跑必须换新值（否则提供方的结果缓存与同键串行会把
+	// 接管折叠成"读回旧结论"）。生成规则见 app/worker 的 attemptID。
 	AttemptID  string
 	Account    AccountRef
 	Credential Credential
@@ -188,6 +191,31 @@ const (
 	OutcomePhotoRejected Outcome = "photo_rejected"
 	OutcomeUnknown       Outcome = "unknown"
 )
+
+// AllOutcomes 按契约顺序返回全部结果。
+//
+// 它是结果词表的唯一清单：判据、假 Provider 与各类报告都从这里取，
+// 不再各自手抄一份。新增结果时必须同步本函数——
+// contract_test 的 AST 门会比对本函数与常量块，漏登记直接判红。
+func AllOutcomes() []Outcome {
+	return []Outcome{
+		OutcomeSuccess,
+		OutcomeAlreadyDone,
+		OutcomePendingUpstream,
+		OutcomeNoTarget,
+		OutcomeNoPosition,
+		OutcomeInvalidTarget,
+		OutcomeCredentialBad,
+		OutcomeDeviceUnbound,
+		OutcomeChallenge,
+		OutcomeBlocked,
+		OutcomeTransient,
+		OutcomeRejected,
+		OutcomePhotoMissing,
+		OutcomePhotoRejected,
+		OutcomeUnknown,
+	}
+}
 
 // Valid 报告 o 是否为已知结果。
 func (o Outcome) Valid() bool {
@@ -232,7 +260,24 @@ type Evidence struct {
 	Raw         map[string]any
 }
 
-// RetryAdvice 告诉宿主是否重试、何时重试。
+// RetryAdvice 告诉宿主如何调整重试预算与等待落点。
+//
+// 宿主的消费口径（见 app/worker 的 advisePolicy 与 core/retry.NextDelayWithFloor）：
+//   - MaxAttempts 是**上限建议**：MaxAttempts >= 1 且比宿主预算更小时压低；
+//     宿主预算永远管上限，提供方不许把次数抬高。MaxAttempts=0 视为没填
+//     （不生效）。要表达"不重试"，写 MaxAttempts=1——宿主第一次失败就落
+//     终态，不依赖 Retryable（issue #413）。
+//   - Retryable 只服务 conformance 语义，宿主不看它：conformance 的 sign.retry
+//     要求 transient 必须标 true、challenge 可选，其余结果标 true 直接判红。
+//     所以"限次/不重试"只能靠 MaxAttempts 表达；Retryable=false 与"没有建议"
+//     不可区分，不能当作否决。
+//   - After 是**等待下限**：宿主退避曲线只许比它更慢；它受宿主硬上限
+//     （core/retry.MaxBackoff，600s）约束，After 超过该上限会永远放弃重试；
+//     窗口尾段放不下这个下限时当日放弃（不越窗）。
+//   - 零值（Retryable=false, MaxAttempts=0, After=0）表示"没有建议"，
+//     宿主完全走缺省预算——不要用零值表达"不重试"。
+//   - ClearSession 目前宿主尚未消费（app/worker 不读该字段），仅为记录；
+//     它不改变次数与落点。
 type RetryAdvice struct {
 	Retryable    bool
 	After        time.Duration

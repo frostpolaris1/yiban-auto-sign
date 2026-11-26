@@ -41,6 +41,9 @@ type ScheduleRepo struct {
 	audits *AuditRepo
 	// lease 是每次认领写入的租约时长。零值取 2 分钟。
 	lease time.Duration
+	// reclaimGrace 是回收已过期租约后的冷却：落点 = now + grace。
+	// 零值保持旧行为（落点 = now，立即可再领）。
+	reclaimGrace time.Duration
 }
 
 // NewScheduleRepo 构造排期仓储。未注入审计仓储时，
@@ -61,6 +64,26 @@ func (r *ScheduleRepo) WithLease(d time.Duration) *ScheduleRepo {
 	if d > 0 {
 		r.lease = d
 	}
+	return r
+}
+
+// WithReclaimGrace 覆盖回收过期租约后的冷却时长。d<0 夹到 0（立即重领）。
+// 返回同一实例：装配层在构造后立刻调用，之后只读。
+//
+// 冷却解决的是租约到期那一刻的窗口：租约到期不等于持有者已死——
+// 它可能只是卡在一次慢提交上（GC 停顿、对端半开、DNS 重试）。
+// 回收已把行置回 pending，旧持有者的结算会被 claim_seq 栅栏拒掉
+// （Finish 要求 state='running' 且序号相符），终态写不进去，也不会留下结论；
+// 若落点是 now，第二个执行体下一 tick 就能领走同一账号，于是
+// "两个进程同时在一个账号上跑"真实发生——库层唯一索引只盖 state='running'
+// （旧行已被回收改成 pending），拦不住这条路径。
+// 冷却把"并发重复"降级成"串行重复"：重放最多晚 grace 秒，代价是
+// 迟到的那次提交在平台上已经发生、撤不回来。它是可观测性缓冲，不是止损。
+func (r *ScheduleRepo) WithReclaimGrace(d time.Duration) *ScheduleRepo {
+	if d < 0 {
+		d = 0
+	}
+	r.reclaimGrace = d
 	return r
 }
 
@@ -493,8 +516,13 @@ func (r *ScheduleRepo) Task(ctx context.Context, taskID string) (coreschedule.Ta
 }
 
 // ClaimDue 认领到期任务：单条 UPDATE 批量领取。
+// 统计新鲜度由日切 BuildToday 在 built>0 后 ANALYZE sign_tasks 保证（P2-11），
+// 认领发生在窗口内，不另跑 ANALYZE。
 // 判据全在 SQL：pending、run_at 已到、day >= 当前业务日、账号活跃未删、
 // 任务启用、同账号当前无 running（I-7 的查询面，库层唯一索引仍是最终兜底）。
+// 同账号同业务日已有 success 的也不再认领（决策 2A：任一任务成功即视为
+// 今日已签到，兄弟任务不该再打一次平台）。只判 state='success'：
+// skipped/failed 不算成功，不拦兄弟任务。
 // **不按学校状态过滤**（D5 挡新不挡旧）：禁校前已铺的 pending 行照常执行。
 // day 过滤是跨日清理的兜底：日切前残留的旧行即使还在 pending 也不领（P1-6）。
 // FOR UPDATE SKIP LOCKED 让多 worker 不互等。
@@ -512,6 +540,9 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, day string, 
 		     AND NOT EXISTS (
 		       SELECT 1 FROM sign_tasks r
 		       WHERE r.account_id = s.account_id AND r.state = 'running')
+		     AND NOT EXISTS (
+		       SELECT 1 FROM sign_tasks d
+		       WHERE d.account_id = s.account_id AND d.day = s.day AND d.state = 'success')
 		     AND EXISTS (
 		       SELECT 1 FROM accounts a
 		       WHERE a.id = s.account_id AND a.status = 'active' AND a.deleted_at IS NULL)
@@ -532,7 +563,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, day string, 
 		           (SELECT st.school_id::text FROM school_tasks st WHERE st.id = t.school_task_id),
 		           t.day::text, t.run_at, t.state::text, t.attempts, t.claim_seq,
 		           (SELECT a.owner_user_id::text FROM accounts a WHERE a.id = t.account_id),
-		           t.result`,
+		           t.result, t.lease_expires_at`,
 		now, limit, r.lease.Seconds(), day)
 	if err != nil {
 		return nil, mapError(err)
@@ -541,7 +572,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, day string, 
 	var out []coreschedule.TaskRow
 	for rows.Next() {
 		var t coreschedule.TaskRow
-		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.ClaimSeq, &t.OwnerUserID, &t.Result); err != nil {
+		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.ClaimSeq, &t.OwnerUserID, &t.Result, &t.LeaseExpiresAt); err != nil {
 			return nil, mapError(err)
 		}
 		out = append(out, t)
@@ -650,6 +681,9 @@ func (r *ScheduleRepo) CountRunning(ctx context.Context) (int64, error) {
 // ReclaimExpired 把租约过期的 running 行放回 pending，并写 task.reclaim 审计。
 // 每行一条审计；UPDATE 与审计同事务。上限 limit 防止一次回收过多行占住锁。
 // 没有审计仓储时有行可回收即回滚；无行可回收时不需要审计。
+// 落点是 now + reclaimGrace（见 WithReclaimGrace）：回收已经把行置回 pending，
+// 旧持有者的 Finish 会被 claim_seq 栅栏拒掉、写不进终态；冷却只推迟
+// "下一次认领"，把并发重复降级为串行重复，不会让旧持有者"先写完"。
 func (r *ScheduleRepo) ReclaimExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
 	if limit < 1 {
 		limit = 1
@@ -668,11 +702,12 @@ func (r *ScheduleRepo) ReclaimExpired(ctx context.Context, now time.Time, limit 
 			)
 			UPDATE sign_tasks t
 			   SET state = 'pending', claimed_at = NULL,
-			       lease_expires_at = NULL, run_at = $1
+			       lease_expires_at = NULL,
+			       run_at = $1::timestamptz + make_interval(secs => $3::double precision)
 			 WHERE t.id IN (SELECT id FROM expired)
 			RETURNING t.id::text,
 			          (SELECT st.school_id::text FROM school_tasks st
-			            WHERE st.id = t.school_task_id)`, now, limit)
+			            WHERE st.id = t.school_task_id)`, now, limit, r.reclaimGrace.Seconds())
 		if err != nil {
 			return mapError(err)
 		}
@@ -703,7 +738,12 @@ func (r *ScheduleRepo) ReclaimExpired(ctx context.Context, now time.Time, limit 
 				Action:     coreaudit.ActionTaskReclaim,
 				TargetType: "task",
 				TargetID:   it.id,
-				Detail:     map[string]any{"reason": "lease_expired"},
+				Detail: map[string]any{
+					"reason": "lease_expired",
+					// 冷却秒数入审计：事后判"这次回收之后多久被重领"
+					// 要用当时的冷却值，配置会变。
+					"grace_sec": int64(r.reclaimGrace.Seconds()),
+				},
 			}); err != nil {
 				return err
 			}
@@ -856,6 +896,26 @@ func (r *ScheduleRepo) DayTasks(ctx context.Context, accountID, day string) ([]s
 		 ORDER BY st.name, st.id`, accountID, day)
 }
 
+// HasSuccessOn 判账号在业务日 day 是否已有 success 行（决策 2A）。
+//
+// 只认 state='success'。skipped 是"今天不做"的明确结论，failed 是失败，
+// 两者都不是成功，不能拦住同账号同日的兄弟任务。already_done 在 worker
+// 落库时写的就是 success，因此自然计入。
+// 索引走 uq_sign_tasks_account_task_day 的 account_id 前导列，
+// 与 00032 的 day/state 索引组合即可，无需新增迁移。
+func (r *ScheduleRepo) HasSuccessOn(ctx context.Context, accountID, day string) (bool, error) {
+	var ok bool
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM sign_tasks
+		     WHERE account_id = $1::uuid AND day = $2::date AND state = 'success'
+		)`, accountID, day).Scan(&ok)
+	if err != nil {
+		return false, mapError(err)
+	}
+	return ok, nil
+}
+
 // AccountEnabledTasks 返回账号所属学校的全部启用任务 ID（按名称序）。
 // 零行表示账号不可用（停用、软删、不存在）、学校 disabled 或学校没有
 // 启用任务；调用方对两者都给 404，故不再区分。
@@ -901,6 +961,18 @@ func (r *ScheduleRepo) AccountSignHistory(ctx context.Context, accountID, today 
 		return "", 0, mapError(err)
 	}
 	return last, failedDays, nil
+}
+
+// AnalyzeSignTasks 刷新 sign_tasks 的统计信息（P0-3）。
+//
+// 迁移 00032 已把该表的 autovacuum analyze 阈值收到 500 行 / 1%；
+// 日切构建铺完当日后主动 ANALYZE 一次，让新行的分布立刻进入计划。
+// 失败由调用方决定是否致命：日切只记 Warn，不阻断已落库的计划行。
+func (r *ScheduleRepo) AnalyzeSignTasks(ctx context.Context) error {
+	if _, err := r.db.q(ctx).Exec(ctx, "ANALYZE sign_tasks"); err != nil {
+		return mapError(err)
+	}
+	return nil
 }
 
 // DayOutcomeCounts 汇总某业务日的任务行状态与失败分布。

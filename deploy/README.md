@@ -264,6 +264,9 @@ sudo bash deploy/baremetal/update.sh \
 一条命令走完：**自检 → 备份（数据库＋照片）→ 停服 → 迁移 → 换件 → 健康检查 →
 失败回滚**。脚本不做静默自动应用：它是命令，不是守护进程。
 
+- 大表迁移（如 `00032` 的并发建索引）优先在停服窗口跑 `yiban-cli migrate`
+  （5 分钟预算）或本脚本，不要靠重启服务兜底：启动迁移预算 10 分钟，
+  被 systemd 取消的 CIC 可能留下 INVALID 索引，处理见 §7.1。
 - 签名是默认要求。未签名升级必须显式给 `--allow-unsigned`，脚本会打印 WARN。
 - 页面在二进制就位后激活，不会先于新 API 生效；回滚时页面一起换回，
   旧页面留在 `/var/lib/yiban/ui.bak`。
@@ -414,10 +417,11 @@ sudo systemctl start yiban.service
 
 **自动验证**
 
-`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` job 先真跑 update.sh
-的干跑契约（`go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh'`），再跑
-一次性 systemd 容器里的失败矩阵 R1..R10。托管 runner 起不了特权容器时该 job
-显性打印 SKIP（不算绿），发布前仍按 `docs/dev/deploy-e2e.md` §8 手跑一遍。
+`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` job 是 required
+检查，真跑 update.sh 的干跑契约（`go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh'`），
+任何非 0 退出判红。需要特权 systemd 容器的完整失败矩阵 R1..R10 不在托管 runner
+上跑：它由 `.github/workflows/update-rollback-privileged.yml` 承载（手动触发、
+自托管 runner），同样 fail-closed。发布前仍按 `docs/dev/deploy-e2e.md` §8 手跑一遍。
 
 ## 5. 反向代理
 
@@ -487,6 +491,7 @@ sudo systemctl restart yiban.service
 | `YIBAN_PHOTO_DIR` | 照片目录 | `data/photos` |
 | `YIBAN_AUDIT_ANCHOR_FILE` | 库外审计锚点文件（append-only，0600） | 空：巡检端点不做锚点比对 |
 | `YIBAN_TURNSTILE_MODE` / `_SITE_KEY` / `_SECRET` | 公开注册的人机验证（auto/off/log/on）；两把密钥成对设置，开启时 CSP 放开 Cloudflare 源 | `auto`：缺密钥即关闭 |
+| `YIBAN_TURNSTILE_EXPECTED_HOSTNAME` / `_EXPECTED_ACTION` | 可选的令牌绑定：回执 hostname（忽略大小写）或 action（区分大小写）不匹配即判令牌不合格；留空不校验。开启 action 时必须设为 `register`——注册界面控件已固定携带该动作，设成别的值会让开档注册必 400。任一期望非空而私钥为空即启动错误 | 两项都空 |
 
 完整名册与每键说明见 `server/internal/configdata/registry.json`（编译期嵌入二进制）。
 
@@ -606,6 +611,11 @@ sudo systemctl restart yiban.service
      `--env-file` 注入；不要写进 `docker-compose.yml`）。
    仓库里三份 `*.env.example` 只留空占位；`TestTemplatesMatchRegistry`
    会钉住键面与「sensitive 键必须为空」，改动模板即红。
+   还可选配 `YIBAN_TURNSTILE_EXPECTED_HOSTNAME` 与 `YIBAN_TURNSTILE_EXPECTED_ACTION`
+   把令牌绑到站点与动作：留空不校验；填了就必须与回执一致，否则算令牌不合格
+   （`on` 档 400，不是 502）。**开 `_EXPECTED_ACTION` 时必须填 `register`**：
+   注册界面控件固定带 `action: 'register'`，填别的值会让开档注册全部失败。
+   任一期望非空而私钥为空是启动错误。
 3. `YIBAN_TURNSTILE_MODE`：缺省 `auto`（两把齐备即强制校验）；先设 `log`
    观察几天（只记 outcome/codes，不拦注册），确认无误再设 `on`；
    `off` 等于关闭，CSP 回到不含 Cloudflare 源的旧基线。
@@ -626,6 +636,94 @@ sudo systemctl restart yiban.service
 | 注册回 `human verification failed` | 令牌是否 300 秒内、未重复使用；secret 与站点是否配对；`log` 档可先在日志看 outcome/codes |
 | 进程起不来 | `YIBAN_UI_DIR` 指向的目录缺 `index.html` 时服务端**拒绝启动**。这是有意行为 |
 | 上传/读取照片失败（裸机） | `server.env` 的 `YIBAN_PHOTO_DIR` 是否等于单元里 `ReadWritePaths` 的路径；改目录后重跑 `install.sh` 再 `systemctl restart` |
+
+### 7.1 00032/00033 索引失败处理
+
+`00032` 与 `00033` 都用 `CREATE INDEX CONCURRENTLY` 建索引；`00032` 给
+`sign_tasks` 建两个按日索引，`00033` 给全局账号列表建
+`idx_accounts_created_live`。
+并发建索引不在事务里：连接中断或进程被杀会留下 `INVALID` 索引——
+索引定义还在，查询不选它。
+
+时机要分清：`00032` 是 NO TRANSACTION 分支，CIC 当场失败时 goose 不会
+写入版本行，重跑会再次执行 `00032`；危险在重跑时 `IF NOT EXISTS` 看到
+同名 INVALID 直接跳过，随后版本落库为 32。版本一旦记录，`Migrate` 只会
+看到 32，不再执行本迁移，重跑也修不好这个索引。
+
+迁移窗口（大表尤其）不要同时跑 `pg_dump`、长事务或另一份备份：旧快照
+会让 CIC 的等待阶段卡住。`update.sh` 的备份在停服前做完，迁移阶段不要
+再手工备份。
+
+**第一步：逐条查有效性**（连部署库执行）
+
+```sql
+SELECT c.relname, i.indisvalid
+  FROM pg_index i
+  JOIN pg_class c ON c.oid = i.indexrelid
+ WHERE c.relname IN ('idx_sign_tasks_day_run_at_id', 'idx_sign_tasks_day_state',
+                     'idx_accounts_created_live');
+```
+
+只处理 `indisvalid = false` 的那一条。**禁止无条件同时 DROP 两条**：
+健康索引被误删后不会自动补，只能按恢复 A 重建。
+
+**恢复 A（推荐，手工重建）**
+
+只删 INVALID 那条，按 `00032` 原样重建对应索引，再 `ANALYZE sign_tasks;`：
+
+```sql
+-- 以 idx_sign_tasks_day_state 为例；若是 run_at 那条，换成
+-- ON sign_tasks (day, run_at DESC, id DESC)
+DROP INDEX CONCURRENTLY IF EXISTS idx_sign_tasks_day_state;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sign_tasks_day_state
+    ON sign_tasks (day, state);
+ANALYZE sign_tasks;
+```
+
+**恢复 B（让 00032 重跑）**
+
+先只删 INVALID 那条，再把版本行退回到 31，然后跑 CLI 迁移（5 分钟预算）。
+下面的 SQL 以 `idx_sign_tasks_day_state` 为示意，按实际 INVALID 的那条替换
+索引名：
+
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS idx_sign_tasks_day_state;
+DELETE FROM goose_db_version WHERE version_id = 32;
+```
+
+```bash
+set -a; . /etc/yiban/server.env; set +a
+yiban-cli migrate
+```
+
+`00032` 会重跑：`ALTER TABLE` 幂等，两索引 `IF NOT EXISTS` 只补缺的那条，
+`ANALYZE` 与两个 autovacuum 设置也会重新执行。若 CIC 又失败，重复本节。
+恢复 A 有 e2e 覆盖（模拟 INVALID 后手工重建）；恢复 B 仅文档核对，未做自动化。
+
+`00033` 的恢复同理：只删 INVALID 的 `idx_accounts_created_live`，按原定义重建并
+`ANALYZE accounts;`；版本行若要退回，是 `DELETE FROM goose_db_version WHERE version_id = 33;`。
+
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS idx_accounts_created_live;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_accounts_created_live
+    ON accounts (created_at DESC, id DESC) WHERE deleted_at IS NULL;
+ANALYZE accounts;
+```
+
+**升级大表时**
+
+优先在停服窗口跑 `yiban-cli migrate`（5 分钟预算）或 `update.sh`，不要靠
+重启服务触发启动迁移：启动预算 10 分钟，被 systemd 取消的 CIC 仍可能留
+INVALID，失败日志会指向本节。
+
+- `ALTER TABLE sign_tasks SET (...)` 已成功时无需回滚：两个值只影响统计刷新
+  频率，不损坏数据，保留即可。
+- 若整体回滚该迁移：先删两条索引（无论健康与否），再
+  `ALTER TABLE sign_tasks RESET (autovacuum_analyze_scale_factor, autovacuum_analyze_threshold);`。
+- 清理 INVALID 索引必须用 `DROP INDEX CONCURRENTLY`：普通 DROP 会长时间持写锁。
+- 迁移里两条 CIC 处在 `lock_timeout=0` 窗口：旧快照长期存在时 CIC 会
+  等待锁而不是失败，等待结束即完成。手工重建若直接在 psql 里跑，默认也是
+  `lock_timeout=0`，同样等待；会话若设了更短的超时，失败后按本节重试。
 
 ## 8. 部署判据
 

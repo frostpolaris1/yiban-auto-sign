@@ -46,6 +46,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	turnstileadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/turnstile"
 	webhookadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/webhook"
+	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
@@ -69,14 +70,17 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreimage "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/image"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
+	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	corewebhook "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/webhook"
+	corewindow "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/window"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	audithttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/audit"
@@ -267,6 +271,23 @@ const (
 	httpIdleTimeout       = 60 * time.Second
 )
 
+// startupMigrateBudget 是启动时应用迁移的总预算（P0-3）。
+// 00032 起迁移里有 CREATE INDEX CONCURRENTLY：大表建索引可能远超 30s，
+// 旧预算会取消 CIC、留下 INVALID 索引，systemd 重启环里反复失败。
+// 大表迁移仍应优先在停服窗口跑 yiban-cli migrate / update.sh（5 分钟预算），
+// 启动自愈只兜小步迁移；失败信息指向 deploy/README.md §7.1。
+const startupMigrateBudget = 10 * time.Minute
+
+// startupOpenBudget 只覆盖迁移之后的建池与 Ping，不与迁移共享预算。
+// 迁移合法地接近 10 分钟时，若复用同一 ctx，Ping 会以 deadline exceeded
+// 失败，表现为“迁移成功但服务起不来”；开池是短动作，单独 30s 即可。
+const startupOpenBudget = 30 * time.Second
+
+// startupRecoverBudget 只覆盖启动时的孤儿任务回收（workerSvc.Recover）。
+// Recover 在迁移之后运行；复用迁移 ctx 会在迁移接近预算时把它一起取消，
+// 表现为 context.Canceled 导致整进程起不来。独立 30s 足够重置 running 行。
+const startupRecoverBudget = 30 * time.Second
+
 // newServerFromStack 用已装配好的 Stack 构造未启动的 server。
 //
 // closeOnShutdown 决定 HTTP 关闭是否释放连接池：
@@ -287,6 +308,57 @@ func newServerFromStack(cfg *config.Config, stack *Stack, closeOnShutdown bool) 
 		srv.RegisterOnShutdown(stack.Close)
 	}
 	return srv
+}
+
+const (
+	// startupCapacityWindow 是启动容量报告的评估窗口：默认签到窗口
+	// 06:30-07:50。窗口可被 DB 设置覆盖，启动阶段只报默认窗口口径；
+	// 真实容量在每次计划 Build 时按生效窗口计算。
+	startupCapacityWindow = time.Duration(
+		coreschedule.DefaultSignWindowEndMinute-coreschedule.DefaultSignWindowStartMinute,
+	) * time.Minute
+	// rateKneeSlack 是 worker 超过出口拐点 rate*avg 多少倍才告警。默认
+	// 4 个 worker 对拐点 3 只多 1 个，属于合理的延迟余量，不打扰启动；
+	// 翻倍以上说明可能误以为加 worker 能加窗口容量。
+	rateKneeSlack = 2.0
+)
+
+// reportConfiguredCapacity 在启动时记录默认签到窗口的配置容量，并在
+// worker 明显超过出口拐点时告警。只写日志，不阻断启动，不读取凭据。
+func reportConfiguredCapacity(log *slog.Logger, cfg *config.Config) {
+	// 真实计划会按 EdgeFront/EdgeBack 从窗口两端各让出一段，启动报告
+	// 也扣掉这两段，避免和日切 capacity_shortfall 的口径相差一分钟以上。
+	// DB 覆盖仍只在计划构建时生效，启动阶段只报默认参数口径。
+	window := startupCapacityWindow - cfg.EdgeFront - cfg.EdgeBack
+	if window <= 0 {
+		window = startupCapacityWindow
+	}
+	util := corecapacity.UtilDefault
+	capacity := corecapacity.Capacity(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
+	binding := corecapacity.BindingOf(window, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, util)
+	log.Info("configured sign-window schedule capacity",
+		logfield.KeyEvent, "assembly.capacity_configured",
+		logfield.KeyWorkers, cfg.Workers,
+		logfield.KeyDurationMS, cfg.AvgAttempt.Milliseconds(),
+		logfield.KeyRate, cfg.EgressRate,
+		logfield.KeyUtil, util,
+		logfield.KeyWindowSeconds, int(window.Seconds()),
+		logfield.KeyCapacity, capacity,
+		logfield.KeyBinding, string(binding),
+	)
+	if cfg.AvgAttempt > 0 && cfg.EgressRate > 0 {
+		knee := cfg.EgressRate * cfg.AvgAttempt.Seconds()
+		if float64(cfg.Workers) > rateKneeSlack*knee {
+			log.Warn("workers are above the egress-rate knee; extra workers add latency headroom, not sign-window capacity",
+				logfield.KeyEvent, "assembly.capacity_rate_bound",
+				logfield.KeyWorkers, cfg.Workers,
+				logfield.KeyDurationMS, cfg.AvgAttempt.Milliseconds(),
+				logfield.KeyRate, cfg.EgressRate,
+				logfield.KeyCapacity, capacity,
+				logfield.KeyBinding, string(binding),
+			)
+		}
+	}
 }
 
 // Build 装配数据库、用例与路由。
@@ -324,7 +396,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		settingsSvc *appsettings.Service
 		db          *pg.DB
 		workerSvc   *appworker.Service
-		// authz 只给 master 专属的注册开关用。无数据库时为 nil，端点回 501。
+		// authz 驱动 master 专属写操作与审计可见面：注册开关、审计列表、
+		// 审计巡检都经它定 scope。无数据库时为 nil：注册开关回 501，
+		// 审计列表与巡检回 500（fail-closed）。
 		authz router.Authorizer
 		// engineState 是执行循环的进程内时刻记录，DB 分支构造：
 		// 循环（Run）写入，执行监控端点读取，两者共享同一实例。
@@ -353,20 +427,27 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	if err != nil {
 		return nil, err
 	}
+	reportConfiguredCapacity(logger, cfg)
 
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		issuer = session.NewMemory(clk, cfg.HashPepper)
 		logger.Warn("auth endpoints are disabled: YIBAN_DATABASE_URL is empty")
 		logger.Warn("user, school, admin and account endpoints return 501: YIBAN_DATABASE_URL is empty")
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), startupMigrateBudget)
+		defer cancelMigrate()
 
-		if _, err := pg.Migrate(ctx, cfg.DatabaseURL); err != nil {
-			return nil, fmt.Errorf("assembly: migrate: %w", err)
+		if _, err := pg.Migrate(migrateCtx, cfg.DatabaseURL); err != nil {
+			// 被取消的 CONCURRENTLY 可能留下 INVALID 索引，恢复步骤在 §7.1。
+			return nil, fmt.Errorf("assembly: migrate: %w "+
+				"(a cancelled CONCURRENTLY build may leave INVALID indexes; "+
+				"see deploy/README.md §7.1)", err)
 		}
+		cancelMigrate() // 迁移预算到此为止，建池与回收不复用它。
+		openCtx, cancelOpen := context.WithTimeout(context.Background(), startupOpenBudget)
+		defer cancelOpen()
 		var err error
-		db, err = pg.Open(ctx, pg.Options{DSN: cfg.DatabaseURL})
+		db, err = pg.Open(openCtx, pg.Options{DSN: cfg.DatabaseURL})
 		if err != nil {
 			return nil, fmt.Errorf("assembly: open database: %w", err)
 		}
@@ -476,9 +557,36 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, err
 		}
+		schoolRepo := pg.NewSchoolRepo(db)
+		schoolSvc, err := appschool.NewService(appschool.Deps{
+			Schools: schoolRepo,
+			Audit:   audits,
+			Tx:      db,
+			Clock:   clk,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: school service: %w", err)
+		}
+		// adminSvc 同时是三个域的作用域解析器：
+		// 入口层只认一个 Authorizer，故绑定校口径只有一份。
+		// 审计可见面与引擎暂停写面都不自建第二套院校判据。
+		adminSvc, err := appadmin.NewService(appadmin.Deps{
+			Admins:  pg.NewAdminSchoolRepo(db),
+			Users:   pg.NewUserRepo(db),
+			Schools: schoolRepo,
+			Audit:   audits,
+			Tx:      db,
+			Clock:   clk,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: admin service: %w", err)
+		}
+		authz = adminSvc
 		notifyLib, systemLib, auditLib, settingsSvc, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle,
 			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, settingsResolver,
-			scheduleEnvFromConfig(cfg, config.Env{}), mailResolver, cipher, cfg.AuditAnchorFile)
+			scheduleEnvFromConfig(cfg, config.Env{}), mailResolver, cipher, cfg.AuditAnchorFile, authz)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -496,13 +604,13 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		var human appauth.HumanVerifier
 		humanSiteKey := ""
 		if humanOn {
-			verifier, verr := turnstileadapter.New(cfg.TurnstileSecret)
+			verifier, siteKey, verr := newHumanVerifier(cfg)
 			if verr != nil {
 				closeFn()
 				return nil, fmt.Errorf("assembly: turnstile verifier: %w", verr)
 			}
 			human = verifier
-			humanSiteKey = cfg.TurnstileSiteKey
+			humanSiteKey = siteKey
 			logger.Info("auth: human verification enabled",
 				logfield.KeyReason, cfg.TurnstileMode)
 		}
@@ -542,32 +650,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeAuth()
 		}
 
-		schoolRepo := pg.NewSchoolRepo(db)
-		schoolSvc, err := appschool.NewService(appschool.Deps{
-			Schools: schoolRepo,
-			Audit:   audits,
-			Tx:      db,
-			Clock:   clk,
-		})
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("assembly: school service: %w", err)
-		}
-		// adminSvc 同时是三个域的作用域解析器：
-		// 入口层只认一个 Authorizer，故绑定校口径只有一份。
-		adminSvc, err := appadmin.NewService(appadmin.Deps{
-			Admins:  pg.NewAdminSchoolRepo(db),
-			Users:   pg.NewUserRepo(db),
-			Schools: schoolRepo,
-			Audit:   audits,
-			Tx:      db,
-			Clock:   clk,
-		})
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("assembly: admin service: %w", err)
-		}
-		authz = adminSvc
 		// 用户仓储先于账号服务构造：账号用例的属主活跃校验复用同一实例
 		//（仓储无状态）。Sessions 是会话撤销原语：重置口令与软删后立即
 		// 失效全部会话。OwnerAccounts 用同一份用户仓储：名下账号计数是
@@ -773,7 +855,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		// 排期仓储同时是 worker 的 Store：凭据错结算要写账号状态与引擎审计，
 		// 故注入审计仓储。缺它时结算报错（不静默跳过审计）。
-		scheduleRepo := pg.NewScheduleRepoWithAudit(db, audits).WithLease(cfg.TaskLease)
+		scheduleRepo := pg.NewScheduleRepoWithAudit(db, audits).
+			WithLease(cfg.TaskLease).
+			// 回收冷却：租约到期不等于持有者已死。落点=now+grace 让慢提交
+			// 先写完终态，否则回收来的行下一 tick 就被第二个执行体领走。
+			WithReclaimGrace(cfg.ReclaimGrace)
 		workerSvc, err = appworker.NewService(buildWorkerDeps(cfg, workerDeps{
 			store:    scheduleRepo,
 			creds:    workerCredentials{svc: accountSvc, kid: cipher.KID()},
@@ -798,12 +884,17 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			paused: pausedGate,
 			// 与交互面共用同一限速器实例：同闸同预算（批 abs R1 / F2）。
 			limiter: egressLimiter,
+			// 一次尝试的总截止：配置显式值优先，否则派生 0.8×租约。
+			// 必须早于租约到期，否则回收器会在持有者还在提交时把它放回去。
+			attemptBudget: workerAttemptBudget(cfg),
 		}))
 		if err != nil {
 			closeFn()
 			return nil, fmt.Errorf("assembly: worker service: %w", err)
 		}
-		if n, recErr := workerSvc.Recover(ctx); recErr != nil {
+		recoverCtx, cancelRecover := context.WithTimeout(context.Background(), startupRecoverBudget)
+		defer cancelRecover()
+		if n, recErr := workerSvc.Recover(recoverCtx); recErr != nil {
 			closeFn()
 			return nil, fmt.Errorf("assembly: recover orphan tasks: %w", recErr)
 		} else if n > 0 {
@@ -832,11 +923,15 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Windows:  scheduleRepo,
 			Plans:    scheduleRepo,
 			Accounts: scheduleRepo,
-			Discover: scheduleDiscoverer{provider: gated, accounts: accountSvc, tasks: scheduleRepo},
+			Discover: scheduleDiscoverer{provider: gated, accounts: accountSvc, tasks: scheduleRepo, Logger: logger},
 			Prefs:    prefRepo,
 			// 用户自选读面的当日账号/任务解析：与计划仓储同源。
 			Self: scheduleRepo,
 			Tx:   db,
+			// P2-3 注入面：人工窗口覆盖与审计链同事务。缺端口时写覆盖面
+			// fail-closed 回内部错误（不得静默跳过审计）。
+			Audit: audits,
+			Clock: clk,
 			// P6 注入面：计划事件发布。缺端口时不发事件。
 			Notifier: ScheduleNotifier{Broker: broker, Clock: clk},
 			// 0v8 B 注入面：容量缺口通知。缺端口时不投递。
@@ -894,7 +989,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			schedulehttp.Config{Location: loc, Clock: clk})
 		// 执行监控：快照用例与循环进程时刻同一实例（UX-5）。
 		// 3a：快照带全局暂停态（settings 行 engine.paused），写面挂二次口令
-		// （暂停 master/admin、恢复仅 master；写与审计同事务在用例层）。
+		// （暂停与恢复都仅 master；写与审计同事务在用例层）。
 		engineState = appworker.NewEngineState()
 		engineLib = schedulehttp.NewEngineHandler(
 			appschedule.NewEngineQuery(scheduleRepo, clk, loc), engineState, adminSvc).
@@ -902,6 +997,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 日切构建：启动补建 + 业务日 00:10 定时。参数与 HTTP 建计划同源。
 		daily, err := appschedule.NewDailyCron(&appschedule.DailyBuilder{
 			Service: scheduleSvc, Tasks: scheduleRepo, Clock: clk, Location: loc,
+			// P0-3：日切铺行后刷新 sign_tasks 统计（失败只 Warn）。
+			Analyzer: scheduleRepo,
 			Params: appschedule.BuildParams{
 				Workers: cfg.Workers, Avg: cfg.AvgAttempt, Rate: cfg.EgressRate,
 				Util: corecapacity.UtilDefault, SlotsPerSlice: slots, SignDist: appschedule.SignDistFront,
@@ -1025,7 +1122,8 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	webhook corewebhook.Sender, webhookCooldown appsettings.Cooldown,
 	autoApprove appsettings.AutoApproveStore, settingsRepo *pg.SettingsRepo,
 	settingsResolver *appsettings.Resolver, scheduleEnv appsettings.ScheduleEnv, mailResolver *appsettings.MailResolver,
-	cipher *appaccount.Cipher, auditAnchorFile string) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
+	cipher *appaccount.Cipher, auditAnchorFile string,
+	authz router.Authorizer) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
@@ -1088,7 +1186,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		WithScheduleSettings(announcementSvc).
 		WithQuotaSettings(announcementSvc).
 		WithMailSettings(announcementSvc)
-	return notifyHandler, systemHandler, audithttp.NewHandler(reader).WithStatus(inspector), announcementSvc, nil
+	return notifyHandler, systemHandler, audithttp.NewHandler(reader, authz).WithStatus(inspector), announcementSvc, nil
 }
 
 // buildWebhookTestThrottle 构造测试推送的每管理员冷却。
@@ -1137,9 +1235,15 @@ func publicOrigin(raw string) string {
 
 // buildRateLimit 构造入站限流面。
 // 关闭开关时返回 nil：路由层把 nil Guard 视为不限流。
+// production 例外：nil Guard 会静默关掉全部入站限速，误配
+// YIBAN_RATE_LIMIT_ENABLE=false 必须启动失败；不自动改回 true，
+// 否则运维看不到误配。development/test/staging 仍可关闭，供本地与压测。
 // 可信代理表非法即启动失败：静默忽略会让限流按代理 IP 计数。
 func buildRateLimit(cfg *config.Config) (*ratelimit.Guard, error) {
 	if !cfg.RateLimitEnabled {
+		if cfg.Env == "production" {
+			return nil, errors.New("assembly: YIBAN_RATE_LIMIT_ENABLE=false is not allowed in production; inbound rate limiting must stay on")
+		}
 		return nil, nil
 	}
 	trusted, err := ratelimit.ParseTrustedProxies(cfg.TrustedProxies)
@@ -1175,6 +1279,18 @@ func buildMailTestThrottle() (*ratelimit.Throttle, error) {
 	return throttle, nil
 }
 
+// newHumanVerifier 按配置造人机验证端口与站点密钥。
+// 私钥与两个可选的令牌绑定期望同源在这里读取：配置项漏传会让绑定
+// 静默失效，故集中一处并由装配测试钉住传参。
+func newHumanVerifier(cfg *config.Config) (appauth.HumanVerifier, string, error) {
+	verifier, err := turnstileadapter.New(cfg.TurnstileSecret,
+		cfg.TurnstileExpectedHostname, cfg.TurnstileExpectedAction)
+	if err != nil {
+		return nil, "", err
+	}
+	return verifier, cfg.TurnstileSiteKey, nil
+}
+
 // egressBurst 是每出口令牌桶的突发深度（账号尝试数）。
 // 它只吸收短时抖动，不改长期速率：长期速率由 YIBAN_EGRESS_RATE 决定。
 const egressBurst = 6
@@ -1199,6 +1315,10 @@ type workerDeps struct {
 	logger    *slog.Logger
 	paused    func(ctx context.Context) (bool, error)
 	limiter   *corerate.Limiter
+	// attemptBudget 是一次尝试的总截止（0=不设限）。
+	// 由 workerAttemptBudget 从配置派生后注入，不在这里再算一遍：
+	// 派生规则只有一处，镜像判据只校验搬运（OCR C2 P3 口径）。
+	attemptBudget time.Duration
 }
 
 // buildWorkerDeps 装配执行循环的依赖，限速器默认由 buildEgressGate 派生。
@@ -1211,21 +1331,36 @@ func buildWorkerDeps(cfg *config.Config, d workerDeps) appworker.Deps {
 		limiter = buildEgressGate(cfg)
 	}
 	return appworker.Deps{
-		Store:     d.store,
-		Creds:     d.creds,
-		Signer:    d.signer,
-		Egress:    d.egress,
-		Limiter:   limiter,
-		Clock:     d.clock,
-		Location:  d.location,
-		Locations: d.locations,
-		Photos:    d.photos,
-		Notifier:  d.notifier,
-		Alerts:    d.alerts,
-		Picker:    d.picker,
-		Logger:    d.logger,
-		Paused:    d.paused,
+		Store:         d.store,
+		Creds:         d.creds,
+		Signer:        d.signer,
+		Egress:        d.egress,
+		Limiter:       limiter,
+		Clock:         d.clock,
+		Location:      d.location,
+		Locations:     d.locations,
+		Photos:        d.photos,
+		Notifier:      d.notifier,
+		Alerts:        d.alerts,
+		Picker:        d.picker,
+		Logger:        d.logger,
+		Paused:        d.paused,
+		AttemptBudget: d.attemptBudget,
 	}
+}
+
+// workerAttemptBudget 返回一次真实尝试的总截止时间。
+//
+// 配置为 0 时按租约派生：0.8×租约，留 20% 给结算与调度抖动。
+// 派生值恒小于租约；显式值另由 config 校验必须小于租约。两条路径
+// 都还不足以完全避免"回收器先于持有者"：预算从凭据就绪起算，租约从
+// 认领起算，中间的窗口/出口/限速/凭据读取会吃掉租约。运行面因此再用
+// 租约余量封顶（worker.effectiveAttemptBudget），保证预算先于回收触发。
+func workerAttemptBudget(cfg *config.Config) time.Duration {
+	if cfg.AttemptBudget > 0 {
+		return cfg.AttemptBudget
+	}
+	return cfg.TaskLease * 8 / 10
 }
 
 // buildEgressGate 构造执行面的每出口限速器。
@@ -1293,16 +1428,42 @@ func (r accountDeviceReader) DeviceState(ctx context.Context, accountID string, 
 	}, nil
 }
 
-// scheduleDiscoverer 用同校一个活跃账号读取平台窗口。
+// discoveryCandidates 是窗口发现一次最多尝试的候选账号数。
 //
-// 窗口属于任务，平台调用却需要登录凭据：借首个活跃账号的登录态。
-// 账号选择策略在 app/account.FirstActiveForSchool；本类型只做接线：
-// 读任务、取凭据、调 provider。该校没有可用账号时返回 not_found，
+// 取 3 而不是 1：候选来自同校 active 账号，任何一个都可能是新注册的
+// 坏号或凭据失效号，只认一个会让全校发现连续失败并回退默认窗口。
+// 也不取更多：上游一次窗口探测要登录平台，3 次已把"单坏号不污染全校"
+// 与探测成本折中；固定常量，故意不做成配置面。
+const discoveryCandidates = 3
+
+// discoveryAccounts 是窗口发现需要的账号能力面。
+//
+// 只为可替换：生产注入 *appaccount.Service，测试注入假实现。
+type discoveryAccounts interface {
+	DiscoveryCandidatesForSchool(ctx context.Context, schoolID string, limit int) ([]appaccount.Record, error)
+	SigningCredential(ctx context.Context, scope corescope.Scope, id string) (appaccount.SigningCredential, error)
+}
+
+// discoveryTaskReader 读校级任务，窄接口便于替换。
+type discoveryTaskReader interface {
+	Task(ctx context.Context, schoolTaskID string) (coreschedule.TaskInfo, error)
+}
+
+// scheduleDiscoverer 用同校若干活跃账号轮换读取平台窗口。
+//
+// 窗口属于任务，平台调用却需要登录凭据：借账号的登录态。
+// 候选顺序在 app/account.DiscoveryCandidatesForSchool（最近验证优先，
+// 未验证的新号靠后）；本类型只做轮换：按序取凭据、调 provider，
+// 首个合法窗口即成功。账号级失败（凭据失效、设备未绑定、被拦、
+// 挑战、暂态）只 warn 并换下一个号；急停与 ctx 取消立即返回，
+// 不把停机当账号问题。全部候选失败时返回最后一个错误，保留上层
+// 既有的回退与告警语义；该校没有可用账号时返回 not_found，
 // 计划层按缓存或回退窗口继续，不把"没有可借用账号"当成平台故障。
 type scheduleDiscoverer struct {
 	provider windowDiscoverer
-	accounts *appaccount.Service
-	tasks    *pg.ScheduleRepo
+	accounts discoveryAccounts
+	tasks    discoveryTaskReader
+	Logger   *slog.Logger
 }
 
 // DiscoverWindow 读一个任务当日的平台窗口。
@@ -1311,16 +1472,57 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 	if err != nil {
 		return contract.Window{}, err
 	}
-	acct, err := d.accounts.FirstActiveForSchool(ctx, task.SchoolID)
+	candidates, err := d.accounts.DiscoveryCandidatesForSchool(ctx, task.SchoolID, discoveryCandidates)
 	if err != nil {
 		return contract.Window{}, err
 	}
+	if len(candidates) == 0 {
+		return contract.Window{}, coreerrs.New(coreerrs.CodeNotFound, "no active account for window discovery")
+	}
+	logger := d.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	var lastErr error
+	for _, acct := range candidates {
+		if err := ctx.Err(); err != nil {
+			return contract.Window{}, err
+		}
+		window, err := d.discoverFor(ctx, task.SchoolID, acct)
+		if err == nil {
+			return window, nil
+		}
+		if discoveryAborted(err) {
+			return contract.Window{}, err
+		}
+		lastErr = err
+		// 失败只记标识与闭集分类：平台报错原文可能带手机号或凭据。
+		outcome, class := discoveryFailureClass(err)
+		attrs := []any{logfield.KeySchoolID, task.SchoolID, logfield.KeyAccountID, acct.ID}
+		level := slog.LevelWarn
+		if outcome != "" {
+			attrs = append(attrs, logfield.KeyOutcome, outcome)
+			// 与 worker/schedule 同口径：already_done 等正常结论走 Info，
+			// 否则全校已签到时每次发现会按候选数刷 Warn。
+			level = appcore.OutcomeLogLevel(contract.Outcome(outcome))
+		}
+		attrs = append(attrs, logfield.KeyError, class)
+		logger.Log(ctx, level, "window discovery: candidate failed", attrs...)
+	}
+	return contract.Window{}, lastErr
+}
+
+// discoverFor 用一个候选账号探一次窗口。
+//
+// 凭据读取失败也算该候选失败：账号行还在但凭据已不可用，
+// 正是需要轮换到下一个号的情形。
+func (d scheduleDiscoverer) discoverFor(ctx context.Context, schoolID string, acct appaccount.Record) (contract.Window, error) {
 	cred, err := d.accounts.SigningCredential(ctx, corescope.Master(), acct.ID)
 	if err != nil {
 		return contract.Window{}, err
 	}
-	return d.provider.DiscoverWindow(ctx, contract.DiscoverRequest{
-		Account: contract.AccountRef{ID: acct.ID, SchoolID: task.SchoolID, Platform: "yiban"},
+	window, err := d.provider.DiscoverWindow(ctx, contract.DiscoverRequest{
+		Account: contract.AccountRef{ID: acct.ID, SchoolID: schoolID, Platform: "yiban"},
 		Credential: contract.Credential{
 			Phone:      cred.Phone,
 			Password:   cred.Password,
@@ -1328,6 +1530,43 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 			PhoneModel: cred.PhoneModel,
 		},
 	})
+	if err != nil {
+		return contract.Window{}, err
+	}
+	// provider 无错也可能给零窗口或反向窗口：那不是一个可排期的结论，
+	// 不能当成全校成功，只按这一个候选失败处理。
+	if err := corewindow.Validate(corewindow.Window{Start: window.Start, End: window.End}); err != nil {
+		return contract.Window{}, coreerrs.New(coreerrs.CodeUpstream, "window discovery: provider returned an invalid window")
+	}
+	return window, nil
+}
+
+// discoveryAborted 报告该错误是否必须立即放弃轮换。
+//
+// 急停是全局状态，ctx 取消是调用方停机：两者都不是"这个号坏了"，
+// 继续换号只会拉长停机响应，并让上层把停机误记成账号问题。
+func discoveryAborted(err error) bool {
+	var paused *coreerrs.PausedError
+	if errors.As(err, &paused) {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// discoveryFailureClass 把候选失败压成两个闭集字段。
+//
+// outcome 只取 contract.Outcome 的稳定值；error 只取稳定错误码或
+// mask.SafeErrorText 的三个分类词，绝不回原始消息——平台报错里
+// 可能带凭据或手机号。
+func discoveryFailureClass(err error) (outcome, class string) {
+	var outcomeErr *contract.OutcomeError
+	if errors.As(err, &outcomeErr) {
+		outcome = string(outcomeErr.Outcome)
+	}
+	if e := coreerrs.From(err); e != nil && e.Code != coreerrs.CodeInternal {
+		return outcome, string(e.Code)
+	}
+	return outcome, coremask.SafeErrorText(err)
 }
 
 // WorkerNotifier 把执行循环的任务事件转成总线事件。

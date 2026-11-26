@@ -44,8 +44,11 @@ func (n *recordingPlanNotifier) kinds() []string {
 
 func newNotifyingSchedule(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a fakeAccounts, d *fakeDiscover, n appschedule.Notifier) *appschedule.Service {
 	t.Helper()
+	// 写覆盖面（Override 用例）要求审计端口：缺端口 fail-closed。
+	tx := &fakeTx{}
 	svc, err := appschedule.NewService(appschedule.Deps{
-		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: &fakeTx{}, Notifier: n,
+		Windows: w, Plans: p, Accounts: a, Discover: d, Tx: tx, Notifier: n,
+		Audit: &fakeAuditRepo{tx: tx},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -164,7 +167,7 @@ func TestOverridePublishesWindowChanged(t *testing.T) {
 	start := time.Date(2026, 10, 29, 7, 0, 0, 0, shanghai)
 	end := time.Date(2026, 10, 29, 7, 40, 0, 0, shanghai)
 	scope := corescope.Master()
-	if _, err := svc.Override(context.Background(), scope, in, start, end, "调度调整", "master-1"); err != nil {
+	if _, err := svc.Override(context.Background(), scope, in, start, end, "调度调整", testActor("master-1")); err != nil {
 		t.Fatalf("Override: %v", err)
 	}
 	if len(n.events) == 0 || n.events[0].kind != appevents.TypeWindowChanged {

@@ -9,6 +9,7 @@ import { handleDefaultNotifyRoute } from './fake-notify-api'
  * 一份路由处理 `/api/auth/me`、`/api/admin/audit-status`、`/api/audit-logs`
  * 与侧栏共用的 `/api/accounts/summary`（回零）。
  * 响应体只用登记过的合成值：操作者是保留域邮箱掩码，对象是合成 id。
+ * 台账 master/admin 可读（admin 的行由服务端按绑定校收窄）；巡检仅 master。
  * 调用记录供断言「默认参数」「游标只前进」「无权限零请求」。
  * 错误注入默认每次都失败；`once: true` 时只有第一次失败，用来验「重试」。
  */
@@ -166,6 +167,12 @@ export async function mockAuditApi(
     return false
   }
 
+  const requireMaster = async (route: Route): Promise<boolean> => {
+    if (sessionRole === 'master') return true
+    await fail(route, 403, 'forbidden', '仅 master 可巡检审计链')
+    return false
+  }
+
   await page.route('**/api/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -201,7 +208,7 @@ export async function mockAuditApi(
     }
 
     if (url.pathname === '/api/admin/audit-status' && request.method() === 'GET') {
-      if (!(await requireAdmin(route))) return
+      if (!(await requireMaster(route))) return
       const failure = takeFailure('status')
       if (failure) return fail(route, failure.status, failure.code, failure.message)
       return json(route, status)

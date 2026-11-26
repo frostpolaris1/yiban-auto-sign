@@ -77,9 +77,12 @@
 #   R4 用「一跑就失败」的 pg_dump 桩让备份步失败；
 #   R10 用只放行 --list 的 pg_restore 包装器让「校验通过、恢复失败」。
 #
-# 发布门状态：本脚本在 CI 的 update-rollback-e2e job 里自动跑（docker
-#   --privileged；跑不起来时该 job 显性打印 SKIP，不当绿）。release-check
-#   项 7 仍是 POINTER；演练本身打印 MANUAL 行登记等价性边界。
+# 发布门状态（P1-6，2026-11 修正）：全矩阵只在
+#   update-rollback-privileged.yml 上跑——手动 workflow_dispatch、自托管
+#   yiban-privileged runner、只读权限；脚本任何非 0 退出（含 2 = 环境错误）
+#   原样判红，没有降级分支。deploy-gate.yml 的 required job 只跑 update.sh
+#   干跑契约（不依赖 docker）。release-check 项 7 仍是 POINTER；演练本身
+#   打印 MANUAL 行登记等价性边界。
 #
 # 隔离：独立容器名/网络/卷（前缀 ROLLBACK_E2E_PREFIX，默认
 #   yiban-e2e-rollback），不碰本机既有容器。
@@ -92,7 +95,7 @@ REPO="$(cd "$SELF_DIR/../.." && pwd)"
 # shellcheck source=lib/deploy-e2e.sh
 . "$SELF_DIR/lib/deploy-e2e.sh"
 
-usage() { sed -n '2,86p' "$SELF"; }
+usage() { sed -n '2,89p' "$SELF"; }
 
 die_usage() {
     echo "update-rollback-e2e: $1" >&2
@@ -611,8 +614,8 @@ EOF
     e2e_ok "容器内演练 rc=0"
 
     e2e_say ""
-    e2e_say "CI：deploy-gate.yml 的 update-rollback-e2e job 自动跑「干跑契约 + 本演练 R1..R10」；"
-    e2e_say "环境起不来时该 job 显性 SKIP（写进 step summary，不算绿）。"
+    e2e_say "CI：required job（deploy-gate.yml#update-rollback-e2e）只跑 update.sh 干跑契约；"
+    e2e_say "本演练 R1..R10 由 update-rollback-privileged.yml 在手动、自托管 runner 上跑，任何非 0 判红。"
     e2e_say "等价性登记：真 systemd + 真 PostgreSQL 18 + 真 goose 迁移 + 真 update.sh 回滚；"
     e2e_say "不等价的一维是没有真实内核启动与硬件。"
     e2e_say "日志目录：$LOG_DIR（容器内演练明细在 container-run/）"

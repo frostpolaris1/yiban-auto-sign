@@ -905,20 +905,29 @@ export interface paths {
          * Probe the platform identity and project the college onto a school.
          * @description Runs one platform authentication with the submitted phone and
          *     password and then reads back the device registration registered on
-         *     the platform. Nothing is persisted: the phone, password and device
-         *     code never reach storage, logs, audit or the response. The platform
-         *     university is projected onto the local school: an active school
-         *     bound to the platform university id is reused; a missing binding
-         *     creates one school (name from the platform, generated code, status
-         *     active) and appends a school.auto_create audit row carrying only the
-         *     platform university id; a disabled school bound to the id is treated
-         *     as absent, no second school is created and school is null. The
-         *     response carries the device code only as a presence bit; the code
-         *     itself never leaves the server. A platform failure answers 502 with
-         *     a neutral envelope; missing phone or password answers 400. The
-         *     request is rate limited per client IP and per submitted phone; a
-         *     429 carries Retry-After. While the global engine pause is in effect
-         *     the request answers 503 (capacity_exceeded with the message "engine is paused") and makes no platform call.
+         *     the platform. No submitted credential is persisted: the phone, password and device
+         *     code never reach storage, logs, audit or the response. The response
+         *     carries the device code only as a presence bit; the code itself
+         *     never leaves the server.
+         *
+         *     The platform university is projected onto the local school by role.
+         *     An active school bound to the platform university id is reused for
+         *     every role. For master and admin a missing binding creates one
+         *     school (name from the platform, generated code, status active) and
+         *     appends a school.auto_create audit row carrying only the platform
+         *     university id. For user the projection is reuse-only: a missing
+         *     binding answers 404 not_found with the message "school is not
+         *     registered; ask an administrator to create it", creates no school,
+         *     writes no audit and returns no result. A disabled school bound to
+         *     the id is treated as absent for every role: no second school is
+         *     created, no audit is written and school is null.
+         *
+         *     A platform failure answers 502 with a neutral envelope; missing
+         *     phone or password answers 400. The request is rate limited per
+         *     client IP and per submitted phone; a 429 carries Retry-After. While
+         *     the global engine pause is in effect the request answers 503
+         *     (capacity_exceeded with the message "engine is paused") and makes no
+         *     platform call.
          */
         post: operations["AccountDetect"];
         delete?: never;
@@ -1067,10 +1076,10 @@ export interface paths {
          * Restore a soft-deleted account.
          * @description Only master and admin may restore. The account keeps its pre-delete
          *     status. A missing or out-of-scope account answers 404; a live (not
-         *     deleted) account answers 409 conflict. One account per owner: an
-         *     owner that already holds a live account is refused, and the existing
-         *     zero-row classification reports it as 429 capacity_exceeded; the
-         *     global active-account limit answers 429 capacity_exceeded as well.
+         *     deleted) account answers 409 conflict. A soft-deleted owner answers
+         *     409 conflict (owner is deleted), and an owner that already holds a
+         *     live account answers 409 conflict (one account per owner). Only the
+         *     global active-account limit answers 429 capacity_exceeded.
          *     Every request must carry current_password, the acting user's own
          *     login password: a missing value answers 400, a wrong value 403,
          *     and repeated failures answer 429. A rejected reauthentication
@@ -1346,7 +1355,7 @@ export interface paths {
          *     and limit. The response is text/csv with one header row whose
          *     columns match the task list fields, quoted per RFC 4180. The
          *     school name, task name and result cells are formula-escaped: a
-         *     leading = + - @ TAB or CR gets a single-quote prefix so
+         *     leading = + - @ TAB CR or LF gets a single-quote prefix so
          *     spreadsheet applications do not evaluate the cell (CWE-1236).
          *     Content-Disposition names the file after the effective business
          *     day, so a request without day reads tasks-<today>.csv. The export
@@ -1420,12 +1429,10 @@ export interface paths {
          *     due tasks — pending rows stay pending and are consumed after resume;
          *     a settings-store failure surfaces as an error instead of silently
          *     resuming (a broken store never reads as "not paused").
-         *     The gate is split by the requested target value, not by the change
-         *     direction: pausing (paused=true) is available to master and admin;
-         *     resuming (paused=false) is master only, following the legacy
-         *     emergency-stop precedent where any administrator can stop and only
-         *     the master can restart. A caller outside the gate for its target
-         *     value answers 403 with zero writes and zero audit rows.
+         *     Both pausing (paused=true) and resuming (paused=false) are master
+         *     only; the target value does not split the gate. admin and user answer
+         *     403 before the password check, with zero writes and zero audit rows
+         *     and without consuming the reauthentication throttle.
          *     current_password is required: a missing value answers 400 and a
          *     wrong password answers 403, both with zero writes and zero audit
          *     rows; repeated failures share the global reauthentication throttle
@@ -1863,9 +1870,11 @@ export interface paths {
          *     way out. total is the number of rows matching the same filters
          *     ignoring the cursor; has_more is true when next_cursor is non-empty.
          *     The chain is not verified here and there is no export.
-         *     Legacy parity: the previous console showed every school's rows to
-         *     both master and admin; this endpoint deliberately keeps that global
-         *     view and does not narrow by the caller's school scope.
+         *     Visibility is scoped to the caller. master reads every row across all
+         *     schools, including rows whose school_id is NULL. admin reads only rows
+         *     for schools bound to it (admin_schools); rows with school_id NULL are
+         *     not visible to admin, and an admin with no bound school gets an empty
+         *     page rather than the global view. user answers 403.
          */
         get: operations["AuditLogList"];
         put?: never;
@@ -1885,7 +1894,8 @@ export interface paths {
         };
         /**
          * Verify the audit chain end to end.
-         * @description Master and admin only. Reads every audit row in id order in bounded
+         * @description Master only. admin and user answer 403 before any read. Reads every
+         *     audit row in id order in bounded
          *     batches and recomputes each row's HMAC and prev_hash link, including
          *     the link across batch boundaries. Memory is bounded by the batch size;
          *     the scan time grows linearly with the chain length.
@@ -1899,16 +1909,20 @@ export interface paths {
          *     the last verified row and is empty when no row passed. checked_at is
          *     the server time this scan finished. No audit detail, actor, target or
          *     personal value is returned.
-         *     When YIBAN_AUDIT_ANCHOR_FILE is configured and the file exists, the
-         *     scan also compares the chain head against the strongest anchor line
-         *     written by `yiban-cli audit anchor`: the anchored row must still
-         *     exist, its hash must match and the row count through it must match.
-         *     Deleting a prefix, truncating the anchored tail, clearing the table or
-         *     re-signing the chain therefore answers ok=false with anchor_status
-         *     mismatch. Rows appended after the anchor are outside this check; keep
-         *     an off-machine copy of the anchor for that window. Without an anchor
-         *     file the endpoint keeps the previous chain-only behavior and reports
-         *     anchor_status disabled or missing.
+         *     When the anchor reader is configured (YIBAN_AUDIT_ANCHOR_FILE is
+         *     non-empty), the scan also compares the chain head against the
+         *     strongest anchor line written by `yiban-cli audit anchor`: the
+         *     anchored row must still exist, its hash must match and the row count
+         *     through it must match. Deleting a prefix, truncating the anchored
+         *     tail, clearing the table or re-signing the chain therefore answers
+         *     ok=false with anchor_status mismatch. Rows appended after the anchor
+         *     are outside this check; keep an off-machine copy of the anchor for
+         *     that window. Without a configured reader the endpoint keeps the
+         *     chain-only behavior and reports anchor_status disabled. When the
+         *     reader is configured but no anchor has been written yet (the anchor
+         *     file is absent or empty and no high-water mark is recorded), it
+         *     answers ok=false with anchor_status missing and anchor_reason
+         *     anchor_not_initialized: no anchor evidence is not a pass.
          *     Legacy parity: the previous console's audit-status endpoint read a
          *     cached daily snapshot; this endpoint recomputes the chain on demand.
          */
@@ -2632,7 +2646,9 @@ export interface paths {
          * @description multipart/form-data with a single `image` file part. The server
          *     decodes, rotates, strips metadata, re-encodes and stores the bytes.
          *     The raw upload limit is 10 MiB. Uploading the same bytes again
-         *     returns the same photo id and restores a deleted photo.
+         *     returns the same photo id and restores a deleted photo. New digests
+         *     are capped at 50 per user in a rolling 24-hour window; exceeding the
+         *     quota answers 429 and duplicate digests do not consume it.
          */
         post: operations["PhotoUpload"];
         delete?: never;
@@ -3171,8 +3187,10 @@ export interface components {
             checked_at: string;
             /**
              * @description Out-of-database anchor comparison state. disabled means no anchor
-             *     path is configured; missing means the path is configured but the
-             *     file does not exist yet (the chain verdict stands); ok means the
+             *     path is configured; missing means the reader is configured but no
+             *     anchor evidence exists yet (the file is absent or empty and no
+             *     high-water mark is recorded), so ok is always false while the
+             *     chain verdict is still reported (fail closed); ok means the
              *     anchor row, its hash, the row count and the recorded line bytes
              *     (line_hash in anchor_meta) all match; mismatch means the anchor
              *     row is gone, its hash or recorded line bytes changed, the count
@@ -3185,9 +3203,10 @@ export interface components {
             /** @description True only when anchor_status is ok. */
             anchor_ok?: boolean;
             /**
-             * @description Human-readable anchor mismatch or error reason. Empty when the
-             *     anchor is disabled, missing or ok. Never contains audit detail,
-             *     actor or personal data.
+             * @description Human-readable anchor mismatch or error reason; for a missing
+             *     anchor it is anchor_not_initialized. Empty when the anchor is
+             *     disabled or ok. Never contains audit detail, actor or personal
+             *     data.
              */
             anchor_reason?: string;
             /**
@@ -3934,7 +3953,7 @@ export interface components {
             start: string;
             /** Format: date-time */
             end: string;
-            /** @description Recorded with the override for later review. */
+            /** @description Recorded with the override for later review. Reason is written to the audit chain and must not contain phone numbers or email addresses. */
             reason: string;
         };
         CapacityReport: {
@@ -5974,6 +5993,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             502: components["responses"]["DefaultError"];
@@ -8059,6 +8079,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };

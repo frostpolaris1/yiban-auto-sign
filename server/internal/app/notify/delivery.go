@@ -21,7 +21,13 @@ package notify
 // 中途崩溃不会留下没有账本的邮件事件。email 与 webhook 各一次
 // InsertWithPending：通知行的去重键保证同一事件只落一行站内信，
 // 两个渠道的账本行各自独立入同一事务路径。
-// 投递是至少一次：站内信与账本各一道唯一键吸收重复事件。
+// 投递是至少一次：站内信与账本各一道唯一键吸收同一事件重复入队。
+// 多实例调度用 claimed_until 租约 + SKIP LOCKED 认领到期行：并发实例
+// 拿到不相交的行，崩溃而没记终态的行最迟一个租约（15 分钟）后重投。
+// 租约挡住并发与崩溃后的短期重发，但挡不住「发送已成功、MarkSent 前崩溃」：
+// 这种重复外发由至少一次语义接受，账本唯一键不覆盖它。
+// 认领后、发送前的瞬时读错误（RecipientActive、CountSentOnDay）在返回前
+// 释放租约，行下一轮（30 秒内）即可重领，不必等满租约。
 // 重试间隔 1m/5m/30m，共 3 次重试后落 failed；不可重试与 panic 立即 failed。
 // 退避窗口最长约 36 分钟；投递时**不复核** mail_notify/订阅开关，
 // 代价是关掉开关前已入队的投递仍会送达。
@@ -73,6 +79,12 @@ const (
 	DeliveryInterval = 30 * time.Second
 	// deliveryBatch 是单轮扫描的到期行上限。
 	deliveryBatch = 50
+	// deliveryLease 是认领到期行的租约。
+	// 算账：单轮 50 行 × 单封 10s 超时 = 最坏约 500s，15 分钟（900s）覆盖
+	// 一轮的全部发送；崩溃而没记终态的行最迟一个租约后重新可见，
+	// 故投递是至少一次——发送成功后、MarkSent 前崩溃造成的重复外发
+	// 同样由该语义接受。
+	deliveryLease = 15 * time.Minute
 	// deliveryTimeout 是一次 SMTP 投递的总预算，与 adapters/mail.DefaultTimeout 同值。
 	deliveryTimeout = 10 * time.Second
 	// ledgerTimeout 是投递后写账本的上限。
@@ -107,6 +119,12 @@ const (
 
 // deliveryRetryDelays 是第 n 次失败后的退避（n 从 0 起）：1m/5m/30m。
 // 长度即「共 3 次重试」；第 4 次失败落 failed。
+//
+// 这是**投递专属预算**，不与 core/retry.BudgetFor 合并：那套按签到结果词
+// 分级、以业务窗口为终点；投递是账本式 at-least-once，按 attempts 固定
+// 三档退避，失败后落 failed，留待运维手工重置账本行。两套预算的语义不同源，
+// 合并会悄悄改投递节奏。本数组的档位与「第 4 次失败」由 delivery_test.go
+// 的退避用例钉住（P3-10 登记为独立预算）。
 var deliveryRetryDelays = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute}
 
 // NotificationWriter 写站内信行。实现是 pg.NotificationRepo。
@@ -122,8 +140,13 @@ type NotificationWriter interface {
 // DeliveryLedger 读写投递账本。实现是 pg.NotificationDeliveryRepo。
 type DeliveryLedger interface {
 	InsertPending(ctx context.Context, in corenotify.DeliveryInsert) (corenotify.Delivery, error)
-	// ListDueForSend 返回 next_retry_at <= now 的 pending 行，带通知正文与收件地址。
-	ListDueForSend(ctx context.Context, now time.Time, limit int) ([]corenotify.DueDelivery, error)
+	// ClaimDueForSend 认领一批到期行（写 claimed_until 租约）并返回认领到的行，
+	// 带通知正文与收件地址。多实例并发时各实例拿到的行不相交。
+	ClaimDueForSend(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]corenotify.DueDelivery, error)
+	// ReleaseClaim 归还一条行的认领（claimed_until 置空），不改 status、
+	// attempts 与 next_retry_at。发送前的瞬时读错误走这里：行下一轮即可
+	// 重新认领，而不是被租约藏满 15 分钟。释放幂等。
+	ReleaseClaim(ctx context.Context, id string) error
 	MarkSent(ctx context.Context, id string) error
 	MarkFailed(ctx context.Context, id, errorKind string, nextRetryAt *time.Time) error
 	MarkSkipped(ctx context.Context, id, reason string) error
@@ -220,7 +243,8 @@ func (t *webhookThrottle) allow(title string, cooldown time.Duration, now time.T
 }
 
 // release 回滚本次占位：发送失败后释放，重试行才不会在窗口内被自己静音。
-// 投递单轮串行（单进程不变量），占位只有一个写入者，直接删除即可。
+// 占位是 process-local map，本进程内由单轮串行写入；跨实例不会同时发送
+// 同一行（claimed_until 租约 + SKIP LOCKED 保证），故不需要跨进程锁。
 func (t *webhookThrottle) release(title string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -402,10 +426,15 @@ func (d *Dispatcher) DispatchUserFailure(ctx context.Context, failure corenotify
 	return nil
 }
 
-// SendDue 跑一轮到期投递，返回第一条账本错误。
-// 单轮串行：单进程不变量，不需要租约或 SKIP LOCKED。
+// SendDue 认领并投递一轮到期行，返回第一条账本错误。
+//
+// 认领（ClaimDueForSend）是跨实例互斥点：claimed_until 租约 + SKIP LOCKED
+// 让多实例各自拿到不相交的行，弱锁随事务结束释放、租约兜住崩溃。
+// 不在租约内的行不会重复发送；崩溃丢失终态的行最迟一个租约后重投。
+// 认领后、发送前的瞬时读错误会在返回前释放租约（ReleaseClaim），
+// 该行下一轮即可重试。
 func (d *Dispatcher) SendDue(ctx context.Context) error {
-	rows, err := d.ledger.ListDueForSend(ctx, d.clock.Now(), deliveryBatch)
+	rows, err := d.ledger.ClaimDueForSend(ctx, d.clock.Now(), deliveryBatch, deliveryLease)
 	if err != nil {
 		return err
 	}
@@ -434,6 +463,8 @@ func (d *Dispatcher) deliver(ctx context.Context, row corenotify.DueDelivery) er
 			logfield.KeyEvent, "notify.recipient_check_failed",
 			logfield.KeyUserID, row.UserID,
 			logfield.KeyError, err.Error())
+		// 读库失败不是投递结论：归还认领，下一轮 30 秒内即可重试。
+		d.releaseClaim(ctx, row.ID)
 		return err
 	}
 	if !active {
@@ -518,6 +549,8 @@ func (d *Dispatcher) deliverWebhook(ctx context.Context, row corenotify.DueDeliv
 			d.log.Warn("notify: webhook budget check failed",
 				logfield.KeyEvent, "notify.webhook_budget_check_failed",
 				logfield.KeyError, err.Error())
+			// 读库失败不是额度结论：归还认领，下一轮即可重试。
+			d.releaseClaim(ctx, row.ID)
 			return err
 		}
 		if used >= d.webhookDailyMax {
@@ -557,6 +590,22 @@ func (d *Dispatcher) deliverWebhook(ctx context.Context, row corenotify.DueDeliv
 	}
 	d.log.Warn("notify: webhook delivery failed", attrs...)
 	return nil
+}
+
+// releaseClaim 归还一条行的认领，供发送前的瞬时读错误使用。
+//
+// 认领与发送之间有两处读库（RecipientActive、CountSentOnDay）。读失败
+// 不是投递结论，行必须在本轮结束前交还调度，否则它被 claimed_until 藏满
+// 一个租约，与「下一轮再试」的 30 秒承诺不符。
+// 释放失败只告警：原始读错误更有诊断价值，行最迟一个租约后仍会重投。
+func (d *Dispatcher) releaseClaim(ctx context.Context, id string) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ledgerTimeout)
+	defer cancel()
+	if err := d.ledger.ReleaseClaim(writeCtx, id); err != nil {
+		d.log.Warn("notify: release delivery claim failed",
+			logfield.KeyEvent, "notify.release_claim_failed",
+			logfield.KeyError, err.Error())
+	}
 }
 
 // sendWebhook 调一次 webhook 端口。panic 按 KindPanic 记账，panic 值不进日志。

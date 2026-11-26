@@ -16,7 +16,8 @@ import (
 func newTestProvider(t *testing.T) (*Provider, *upstream) {
 	t.Helper()
 	up := newUpstream(t)
-	return NewProvider(New(Config{Endpoints: up.endpoints()})), up
+	// 显式打开测试钩子：upload_test.go 的假上游是 http://127.0.0.1 的 httptest。
+	return NewProvider(New(Config{Endpoints: up.endpoints(), allowLoopbackUpload: true})), up
 }
 
 func providerAccount() contract.AccountRef {

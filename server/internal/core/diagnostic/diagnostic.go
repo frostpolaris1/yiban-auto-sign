@@ -23,6 +23,7 @@ import (
 
 	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
+	corewindow "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/window"
 )
 
 // Suggestion 是给用户的封闭建议词表。
@@ -83,7 +84,7 @@ func SuggestionFor(state, result string, win *WindowInfo, now time.Time) string 
 	if result == "credential_invalid" {
 		return SuggestContactAdmin
 	}
-	if win != nil && !now.Before(win.Start) && now.Before(win.End) {
+	if win != nil && !now.Before(win.Start) && !corewindow.ClosedAt(win.End, now) {
 		return SuggestRetryNow
 	}
 	return SuggestReArm

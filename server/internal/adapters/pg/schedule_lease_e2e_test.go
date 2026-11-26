@@ -32,8 +32,15 @@ func TestClaimDueSetsLease(t *testing.T) {
 	e := newEnv(t)
 	rowID, due := seedClaimable(t, e, "lease-set")
 	now := due.Add(time.Minute)
-	if _, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10); err != nil {
+	rows, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10)
+	if err != nil {
 		t.Fatalf("claim: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("claimed = %d, want 1", len(rows))
+	}
+	if want := now.Add(2 * time.Minute); !rows[0].LeaseExpiresAt.Equal(want) {
+		t.Fatalf("TaskRow.LeaseExpiresAt = %v, want %v（执行面靠它封顶尝试预算）", rows[0].LeaseExpiresAt, want)
 	}
 	if got := e.scalarInt(
 		"SELECT (lease_expires_at = claimed_at + interval '2 minutes')::int FROM sign_tasks WHERE id = $1::uuid",
@@ -75,6 +82,56 @@ func TestReclaimExpiredRequeues(t *testing.T) {
 		"SELECT count(*) FROM audit_logs WHERE action = 'task.reclaim' AND target_id = $1",
 		rowID); got != 1 {
 		t.Fatalf("task.reclaim 审计 = %d, want 1", got)
+	}
+}
+
+// 回收冷却：租约到期不等于持有者已死（GC 停顿、对端半开、DNS 重试）。
+// 落点必须是回收时刻+冷却，否则下一 tick 第二个执行体立刻领走同一账号，
+// 与本执行体仍在跑的慢提交撞在一起——唯一索引只盖 state='running'，
+// 回收已经把旧行改成 pending，那一瞬间库层没有任何门。
+func TestReclaimExpiredAppliesGrace(t *testing.T) {
+	e := newEnv(t)
+	rowID, due := seedClaimable(t, e, "lease-grace")
+	now := due.Add(time.Minute)
+	if _, err := e.sched.ClaimDue(e.ctx, now, "2026-10-29", 10); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE sign_tasks SET lease_expires_at = $2 WHERE id = $1::uuid",
+		rowID, now.Add(-time.Minute)); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	const grace = 90 * time.Second
+	reclaimer := pg.NewScheduleRepoWithAudit(e.db, e.audits).WithReclaimGrace(grace)
+	reclaimed, err := reclaimer.ReclaimExpired(e.ctx, now, 10)
+	if err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if reclaimed != 1 {
+		t.Fatalf("reclaimed = %d, want 1", reclaimed)
+	}
+	if got := e.scalarInt(
+		"SELECT (run_at = $2::timestamptz + interval '90 seconds')::int FROM sign_tasks WHERE id = $1::uuid",
+		rowID, now); got != 1 {
+		t.Fatal("回收落点不是 回收时刻+冷却")
+	}
+	// 审计留当时生效的冷却值：配置会变，事后判「回收后多久被重领」要靠它。
+	if got := e.scalarInt(
+		"SELECT (detail::jsonb->>'grace_sec')::int FROM audit_logs WHERE action = 'task.reclaim' AND target_id = $1",
+		rowID); got != 90 {
+		t.Fatalf("审计 grace_sec = %d, want 90", got)
+	}
+	// 冷却期内不可再认领：这就是冷却的全部意义。
+	if rows, err := e.sched.ClaimDue(e.ctx, now.Add(30*time.Second), "2026-10-29", 10); err != nil {
+		t.Fatalf("claim within grace: %v", err)
+	} else if len(rows) != 0 {
+		t.Fatalf("冷却期内被认领 %d 行, want 0", len(rows))
+	}
+	// 冷却之后可以认领。
+	if rows, err := e.sched.ClaimDue(e.ctx, now.Add(grace+time.Second), "2026-10-29", 10); err != nil {
+		t.Fatalf("claim after grace: %v", err)
+	} else if len(rows) != 1 {
+		t.Fatalf("冷却结束后认领 %d 行, want 1", len(rows))
 	}
 }
 

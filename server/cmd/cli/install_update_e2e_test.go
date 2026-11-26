@@ -1946,3 +1946,319 @@ func TestUpdateShRefusesLegacyDotEnv(t *testing.T) {
 		t.Fatalf("旧 .env 必须原样保留:\n%s", got)
 	}
 }
+
+// ---- UI 入签名清单（P1-6 ③）---------------------------------------
+//
+// 被测性质：manifest 收第三项 ui-SHA256SUMS 之后，update.sh 必须在停服与
+// 换件之前把 UI 树逐文件对账（sha256sum -c）、拒绝清单外文件/软链/路径逃逸，
+// 并做「有清单条目 ⇔ 有 --ui-dir」互锁。任何一项红都 exit 1 且零写入。
+
+// seedInstalledUI 预置旧页面与带 YIBAN_UI_DIR 的 server.env。
+func seedInstalledUI(t *testing.T, root string) {
+	t.Helper()
+	oldUI := filepath.Join(root, "var/lib/yiban/ui")
+	if err := os.MkdirAll(oldUI, 0o755); err != nil {
+		t.Fatalf("mkdir old ui: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oldUI, "index.html"), []byte("old-ui"), 0o644); err != nil {
+		t.Fatalf("write old ui: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "etc/yiban"), 0o755); err != nil {
+		t.Fatalf("mkdir etc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/yiban/server.env"),
+		[]byte("YIBAN_UI_DIR=/var/lib/yiban/ui\nYIBAN_HTTP_ADDR=127.0.0.1:47183\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+}
+
+// uiChecksums 调仓库脚本给 ui 目录生成 ui-SHA256SUMS（与清单同目录）。
+func uiChecksums(t *testing.T, uiDir, outDir string) string {
+	t.Helper()
+	sums := filepath.Join(outDir, "ui-SHA256SUMS")
+	out, rc := runScript(t, releaseScriptsPath(t, "make-ui-sums.sh"), nil, uiDir, sums)
+	if rc != 0 {
+		t.Fatalf("make-ui-sums.sh: rc=%d out=%s", rc, out)
+	}
+	return sums
+}
+
+// uiSigningFixture 摆好「已装旧页面 + 已装旧 server/CLI」的签名升级环境。
+func uiSigningFixture(t *testing.T) (env map[string]string, sysctlLog, root, newServer, newCLI, releaseDir string) {
+	t.Helper()
+	env, sysctlLog = signingFixture(t)
+	root = env["YIBAN_INSTALL_ROOT"]
+	env["YIBAN_HEALTH_RETRIES"] = "1"
+	env["YIBAN_HEALTH_RETRY_INTERVAL"] = "0"
+	seedInstalledUI(t, root)
+	binDir := t.TempDir()
+	newServer = fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	newCLI = fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	releaseDir = t.TempDir()
+	return env, sysctlLog, root, newServer, newCLI, releaseDir
+}
+
+// assertUIPageUntouched 钉住「UI 校验失败不动旧页面、不建 .bak、不停服」。
+func assertUIPageUntouched(t *testing.T, root, sysctlLog string) {
+	t.Helper()
+	if body := readAll(t, filepath.Join(root, "var/lib/yiban/ui/index.html")); body != "old-ui" {
+		t.Fatalf("installed ui page must be untouched:\n%s", body)
+	}
+	if _, err := os.Stat(filepath.Join(root, "var/lib/yiban/ui.bak")); err == nil {
+		t.Fatal("no ui.bak may be created when verification fails")
+	}
+	if logBytes, err := os.ReadFile(sysctlLog); err == nil &&
+		strings.Contains(string(logBytes), "stop") {
+		t.Fatalf("service must not be stopped before ui verification passes:\n%s", logBytes)
+	}
+}
+
+func TestUpdateShVerifiesSignedUI(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog, root, newServer, newCLI, releaseDir := uiSigningFixture(t)
+	newUI := writeUIDistDir(t, "ui-signed")
+	sums := uiChecksums(t, newUI, releaseDir)
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, newCLI, sums)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	// 清单与 ui-SHA256SUMS 同目录：不给 --ui-checksums 时必须走缺省值。
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI, "--ui-dir", newUI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 0 {
+		t.Fatalf("signed update with ui: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "ui verification ok") {
+		t.Fatalf("must report ui verification ok; out=%s", out)
+	}
+	if body := readAll(t, filepath.Join(root, "var/lib/yiban/ui/index.html")); !strings.Contains(body, "ui-signed") {
+		t.Fatalf("active ui must be the new one:\n%s", body)
+	}
+	if body := readAll(t, filepath.Join(root, "var/lib/yiban/ui.bak/index.html")); body != "old-ui" {
+		t.Fatalf("previous ui must be kept at ui.bak:\n%s", body)
+	}
+	log := readAll(t, sysctlLog)
+	if !strings.Contains(log, "stop") || !strings.Contains(log, "start") {
+		t.Fatalf("signed ui update must stop then start the service:\n%s", log)
+	}
+}
+
+func TestUpdateShRejectsTamperedUIIndex(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog, root, newServer, newCLI, releaseDir := uiSigningFixture(t)
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	oldBody := readAll(t, installed)
+	newUI := writeUIDistDir(t, "ui-good")
+	sums := uiChecksums(t, newUI, releaseDir)
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, newCLI, sums)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	// 清单生成之后改页面：签名链完好，但逐文件 sha256 必须红。
+	if err := os.WriteFile(filepath.Join(newUI, "index.html"),
+		[]byte("<div id=\"root\">tampered</div>"), 0o644); err != nil {
+		t.Fatalf("tamper ui index: %v", err)
+	}
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI, "--ui-dir", newUI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc == 0 {
+		t.Fatalf("tampered ui must fail the update; out=%s", out)
+	}
+	if !strings.Contains(out, "signing verification FAILED (step: ui)") {
+		t.Fatalf("must name the ui step; out=%s", out)
+	}
+	if !strings.Contains(out, "ui file contents do not match") {
+		t.Fatalf("must explain the hash mismatch; out=%s", out)
+	}
+	assertUIPageUntouched(t, root, sysctlLog)
+	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
+}
+
+func TestUpdateShRejectsExtraUIFile(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog, root, newServer, newCLI, releaseDir := uiSigningFixture(t)
+	newUI := writeUIDistDir(t, "ui-good")
+	sums := uiChecksums(t, newUI, releaseDir)
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, newCLI, sums)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	if err := os.WriteFile(filepath.Join(newUI, "evil.txt"), []byte("not signed"), 0o644); err != nil {
+		t.Fatalf("add extra ui file: %v", err)
+	}
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI, "--ui-dir", newUI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc == 0 {
+		t.Fatalf("a file outside the signed list must fail; out=%s", out)
+	}
+	if !strings.Contains(out, "signing verification FAILED (step: ui)") ||
+		!strings.Contains(out, "outside the signed list") {
+		t.Fatalf("must name the ui step and the extra file; out=%s", out)
+	}
+	assertUIPageUntouched(t, root, sysctlLog)
+}
+
+func TestUpdateShRejectsUISymlink(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog, root, newServer, newCLI, releaseDir := uiSigningFixture(t)
+	newUI := writeUIDistDir(t, "ui-good")
+	sums := uiChecksums(t, newUI, releaseDir)
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, newCLI, sums)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	// 目标本身也在清单里：只靠 sha256sum -c 不会红，必须显性拒绝软链。
+	if err := os.Symlink("index.html", filepath.Join(newUI, "assets", "alias.html")); err != nil {
+		t.Fatalf("symlink ui entry: %v", err)
+	}
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI, "--ui-dir", newUI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc == 0 {
+		t.Fatalf("symlink in ui dir must fail; out=%s", out)
+	}
+	if !strings.Contains(out, "refusing symlink in ui dir") {
+		t.Fatalf("must name the symlink rule; out=%s", out)
+	}
+	assertUIPageUntouched(t, root, sysctlLog)
+}
+
+func TestUpdateShRejectsUIDirWhenManifestHasNoUIEntry(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog, root, newServer, newCLI, releaseDir := uiSigningFixture(t)
+	newUI := writeUIDistDir(t, "ui-good")
+	// 清单只有两件：旧口径的签名发布不得夹带未签名页面。
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, newCLI)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI, "--ui-dir", newUI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 1 {
+		t.Fatalf("ui dir without a manifest ui entry must be rejected (rc=1): rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "manifest has no ui-SHA256SUMS entry but --ui-dir was given") {
+		t.Fatalf("must explain the interlock; out=%s", out)
+	}
+	assertUIPageUntouched(t, root, sysctlLog)
+}
+
+func TestUpdateShRejectsUIEntryWithoutUIDir(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog, root, newServer, newCLI, releaseDir := uiSigningFixture(t)
+	newUI := writeUIDistDir(t, "ui-good")
+	sums := uiChecksums(t, newUI, releaseDir)
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, newCLI, sums)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 1 {
+		t.Fatalf("manifest ui entry without --ui-dir must be rejected (rc=1): rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "manifest lists ui-SHA256SUMS but --ui-dir was not given") {
+		t.Fatalf("must explain the interlock; out=%s", out)
+	}
+	assertUIPageUntouched(t, root, sysctlLog)
+}
+
+func TestUpdateShRejectsTamperedUIChecksums(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog, root, newServer, newCLI, releaseDir := uiSigningFixture(t)
+	newUI := writeUIDistDir(t, "ui-good")
+	sums := uiChecksums(t, newUI, releaseDir)
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, newCLI, sums)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	// 清单文件自身被换：manifest 里那条 sha256 必须先红。
+	body := readAll(t, sums)
+	if err := os.WriteFile(sums, []byte(strings.Replace(body, "index.html", "index.htm1", 1)), 0o644); err != nil {
+		t.Fatalf("tamper ui checksums: %v", err)
+	}
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI, "--ui-dir", newUI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 1 {
+		t.Fatalf("tampered ui checksums must be rejected (rc=1): rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "ui-SHA256SUMS sha256 mismatch") {
+		t.Fatalf("must name the checksum mismatch; out=%s", out)
+	}
+	assertUIPageUntouched(t, root, sysctlLog)
+}
+
+func TestUpdateShRejectsEscapingUIPath(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog, root, newServer, newCLI, releaseDir := uiSigningFixture(t)
+	newUI := writeUIDistDir(t, "ui-good")
+	// 手写一份含路径逃逸的清单，再把它签进 manifest（签名本身合法）。
+	badSums := filepath.Join(releaseDir, "ui-SHA256SUMS")
+	badLine := strings.Repeat("a", 64) + "  ../escape.html\n"
+	if err := os.WriteFile(badSums, []byte(badLine), 0o644); err != nil {
+		t.Fatalf("write bad ui checksums: %v", err)
+	}
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, newCLI, badSums)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI, "--ui-dir", newUI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 1 {
+		t.Fatalf("escaping ui path must be rejected (rc=1): rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "ui checksum path escapes the ui dir") {
+		t.Fatalf("must name the escape rule; out=%s", out)
+	}
+	assertUIPageUntouched(t, root, sysctlLog)
+}
+
+func TestUpdateShRequiresUIForUIChecksumsFlag(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, _, _, newServer, _, releaseDir := uiSigningFixture(t)
+	sums := uiChecksums(t, writeUIDistDir(t, "ui-good"), releaseDir)
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, sums)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--ui-checksums", sums,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 2 {
+		t.Fatalf("--ui-checksums without --ui-dir is a usage error (rc=2): rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "--ui-checksums requires --ui-dir") {
+		t.Fatalf("must explain the rule; out=%s", out)
+	}
+}
+
+func TestUpdateShRejectsMissingUIChecksums(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog, root, newServer, newCLI, releaseDir := uiSigningFixture(t)
+	sums := uiChecksums(t, writeUIDistDir(t, "ui-good"), releaseDir)
+	manifest, sig, pub := signedManifest(t, releaseDir, newServer, newCLI, sums)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	// 清单已被签名，但清单文件被运维漏拷：必须点名缺件而不是静默跳过。
+	if err := os.Remove(sums); err != nil {
+		t.Fatalf("remove ui checksums: %v", err)
+	}
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI,
+		"--ui-dir", writeUIDistDir(t, "ui-good"),
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 1 {
+		t.Fatalf("missing ui checksums must be rejected (rc=1): rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "ui checksum list missing") {
+		t.Fatalf("must name the missing list; out=%s", out)
+	}
+	assertUIPageUntouched(t, root, sysctlLog)
+}

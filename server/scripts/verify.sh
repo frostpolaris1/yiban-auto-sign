@@ -107,6 +107,11 @@ bash ./scripts/generate.sh --check
 # Structure gate: top-level and layer directories match structure.tsv.
 go run ./tools/structure -root .. -rules structure.tsv
 
+# Workflow 静态门：run 段内不得直插 ${{ github.base_ref }} / ${{ github.event.before }}。
+# 这两个表达式不经过 shell 转义，直插即 git 参数注入面；必须经 env:
+# BASE_REF / BEFORE_SHA 再用带引号的变量。扫描面是 .github/workflows。
+bash ../scripts/workflow-run-interp-gate.sh
+
 # License gate: every third-party dependency must carry an allowed license,
 # and THIRD_PARTY_LICENSES.md must match the scan. The gate fails closed:
 # a missing scanner or an incomplete scan exits 2, never green.

@@ -839,9 +839,23 @@ test('invariant 8: an admin cannot resume from the patrol header and sends nothi
   await expect(page.getByText('执行引擎已暂停')).toBeVisible()
   const resume = page.getByRole('button', { name: '恢复引擎' })
   await expect(resume).toBeDisabled()
-  await expect(resume).toHaveAttribute('title', '仅主管理员可恢复')
+  await expect(resume).toHaveAttribute('title', '仅主管理员可操作')
   await resume.click({ force: true })
   expect(pauseCalls(api), 'a disabled resume must not reach the server').toHaveLength(0)
+})
+
+test('invariant 8: an admin cannot pause an unpaused engine from the patrol header', async ({
+  page,
+}) => {
+  const api = await mockLogsApi(page, { role: 'admin' })
+  await page.goto('/logs?tab=patrol')
+  await openPatrolTab(page)
+
+  const pause = page.getByRole('button', { name: '暂停引擎' })
+  await expect(pause).toBeDisabled()
+  await expect(pause).toHaveAttribute('title', '仅主管理员可操作')
+  await pause.click({ force: true })
+  expect(pauseCalls(api), 'a disabled pause must not reach the server').toHaveLength(0)
 })
 
 test('invariant 8: a master pauses from the patrol header and the banner appears', async ({
@@ -854,7 +868,7 @@ test('invariant 8: a master pauses from the patrol header and the banner appears
   await page.getByRole('button', { name: '暂停引擎' }).click()
   const dialog = page.getByRole('dialog', { name: '暂停执行引擎' })
   await expect(dialog).toBeVisible()
-  await expect(dialog).toContainText('恢复仅主管理员')
+  await expect(dialog).toContainText('暂停与恢复均仅主管理员')
   await dialog.getByRole('textbox', { name: '你的登录口令' }).fill('p@ssword')
   await dialog.getByRole('button', { name: '暂停引擎' }).click()
 

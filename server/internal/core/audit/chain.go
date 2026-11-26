@@ -36,6 +36,7 @@ import (
 
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // Domain 把本链与其他 HMAC 用途隔开，参与 payload 首段。
@@ -174,6 +175,10 @@ const (
 	ActionPhotoPurge Action = "photo.purge"
 	// P5：学校默认图登记。detail 只记新照片 id 与旧照片 id（可空）。
 	ActionSchoolDefaultPhotoSet Action = "school.default_photo_set"
+	// P2-3：人工覆盖任务窗口。与 window_overrides 同事务追加，
+	// detail 记 changes（window.start/window.end 的旧→新 Unix 秒，旧值可为 null）
+	// 与 reason；目标恒为 school_task。周末门关闭不写覆盖，也不写它。
+	ActionScheduleWindowOverride Action = "schedule.window_override"
 )
 
 // Actor 是写审计行时的操作者。
@@ -239,6 +244,8 @@ type LogRow struct {
 
 // LogQuery 是审计只读列表的已定型条件。Actor 是已掩码的标签。
 // Target 是精确匹配的目标 id。From 与 To 是闭区间时间界；nil 表示该侧不限。
+// Scope 是可见面：master 看全部；admin 只看绑定院校的行，school_id IS NULL
+// 的行对它不可见；user 不是合法可见面（入口与仓储都拒）。
 type LogQuery struct {
 	Action string
 	Actor  string
@@ -247,6 +254,7 @@ type LogQuery struct {
 	To     *time.Time
 	Cursor string
 	Limit  int
+	Scope  corescope.Scope
 }
 
 // ErrEmptyChain 表示校验了零行。
@@ -360,12 +368,26 @@ var detailKeys = map[string]bool{
 	"retryable": true,
 	// 平台大学投影自动建校：值来自平台身份信封，是公开院校标识而非个人数据。
 	"university_id": true,
+	// 租约回收到期行时当时生效的冷却秒数（YIBAN_RECLAIM_GRACE_SEC，0..3600）。
+	// 配置会变：事后判"回收后多久被重领"必须看当时的值，不是现值。
+	// 整数、四位数以内，无自由文本容量，不构成隐私面。
+	"grace_sec": true,
+	// 自助恢复用户时账号是否一并恢复：属主名下已有 live 账号时为 false。
+	// 只有布尔，无自由文本容量，不构成隐私面。
+	"account_restored": true,
 	// 设置写回（sett2/3b/3c 调度、r4r 配额、smtp4 SMTP）：changes 是
 	// 键→[旧,新]对。键限 settings 键形状；值限 nil/布尔/整数标量、
 	// 状态词形状字符串（调度域 [0,300]/[0,1439]/true-false/front-uniform，
 	// 配额域 [0,100000]，mail 敏感键 set/cleared），或 settings.mail_writeback
 	// 的 mail.smtp_host 主机名形状。无自由文本容量，不构成隐私面。
 	"changes": true,
+}
+
+// boolOnlyKeys 是只收布尔值的 detail 键集。
+// 这些键不接受 nil：null 会让"未恢复"与"没记录"在审计里不可区分。
+// 校验先于通用类型分支，字符串/数字即使形似布尔也一律 ErrDetailType。
+var boolOnlyKeys = map[string]bool{
+	"account_restored": true,
 }
 
 // cropPercentKeys 是裁切比例 detail 键集。取值限 0..10 闭区间。
@@ -381,6 +403,12 @@ var cropPercentKeys = map[string]bool{
 var versionKeys = map[string]bool{
 	"terms_version":   true,
 	"privacy_version": true,
+}
+
+// graceSecKeys 是租约回收冷却秒数 detail 键集。取值限 0..3600，
+// 与 YIBAN_RECLAIM_GRACE_SEC 的配置上界一致；防止毫秒值或放大值入链。
+var graceSecKeys = map[string]bool{
+	"grace_sec": true,
 }
 
 // ZeroHash 是新链首行的 prev_hash：32 字节全零。
@@ -431,6 +459,14 @@ func EncodeDetail(values map[string]any) (string, error) {
 
 // validateDetailValue 对单个值应用类型白名单。
 func validateDetailValue(key string, value any) error {
+	// 布尔专用键先于类型分支校验：nil 也在 switch 的 nil 分支放行，
+	// 故必须在入口就拒绝，不能等到 case bool。
+	if boolOnlyKeys[key] {
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("%w: %q must be a bool", ErrDetailType, key)
+		}
+		return nil
+	}
 	switch typed := value.(type) {
 	case nil:
 		return nil
@@ -607,13 +643,17 @@ func isElevenDigitOneShape(s string) bool {
 }
 
 // validateDetailNumberWithLimits 是数值族的公共入口：先按按键限幅（crop_* 限
-// 0..10），再走通用数值规则。限幅挂键名而不是挂类型，同键异型不会绕过。
+// 0..10，version_* 限 1..1000，grace_sec 限 0..3600），再走通用数值规则。
+// 限幅挂键名而不是挂类型，同键异型不会绕过。
 func validateDetailNumberWithLimits(key string, value float64) error {
 	if cropPercentKeys[key] && (value < 0 || value > 10) {
 		return fmt.Errorf("%w: %q must be within 0..10", ErrDetailShape, key)
 	}
 	if versionKeys[key] && (value < 1 || value > 1000) {
 		return fmt.Errorf("%w: %q must be within 1..1000", ErrDetailShape, key)
+	}
+	if graceSecKeys[key] && (value < 0 || value > 3600) {
+		return fmt.Errorf("%w: %q must be within 0..3600", ErrDetailShape, key)
 	}
 	return validateDetailNumber(value)
 }

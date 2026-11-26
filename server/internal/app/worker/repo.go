@@ -85,6 +85,12 @@ type Store interface {
 	// DayTasks 返回账号当日已有 sign_tasks 行的启用任务 ID。
 	// 只算启用任务：停用任务的行永远不会被认领。
 	DayTasks(ctx context.Context, accountID, day string) ([]string, error)
+	// HasSuccessOn 判账号在业务日 day 是否已有 success 行（决策 2A：
+	// 同账号同日任一任务成功即视为今日已签到，兄弟任务不再认领）。
+	// 只认 state='success'：skipped 是一次明确的"今天不做"，不算成功，
+	// 不拦兄弟任务；failed 同理。already_done 由 worker 落 state=success，
+	// 因此也算成功。
+	HasSuccessOn(ctx context.Context, accountID, day string) (bool, error)
 	// EnabledTasks 返回账号所属学校的全部启用任务 ID。
 	// 账号不可用（停用、软删、不存在）返回 errs.ErrNotFound。
 	AccountEnabledTasks(ctx context.Context, accountID string) ([]string, error)
@@ -183,4 +189,14 @@ type Deps struct {
 	// true 时 Step 整轮不动：不认领、不回收；查询故障原样上抛——
 	// 故障不是「未暂停」，急停面在故障时不得误放行。
 	Paused func(ctx context.Context) (bool, error)
+	// AttemptBudget 是一次真实尝试（发现＋提交）的总截止时间。
+	// 端口层零值不设上限，保持引入预算前的行为：此时卡住的提供方会一直
+	// 持住租约，直到回收器把行放回队列——而回收后同一账号能被第二个执行体
+	// 再认领，库层唯一索引挡不住（它只盖 state='running'）。
+	// 线上装配不传零：assembly.workerAttemptBudget 在配置为 0 时派生
+	// 0.8×租约；非零值必须小于租约（config.LoadFrom 校验）。运行面还会
+	// 用认领租约的剩余时间封顶（effectiveAttemptBudget），覆盖"预算从
+	// 凭据就绪起算、租约从认领起算"的时间差。预算先到期，本次尝试由
+	// 自己结算，回收器找不到过期行，同账号双跑因此不会出现。
+	AttemptBudget time.Duration
 }

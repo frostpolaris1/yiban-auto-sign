@@ -39,6 +39,9 @@ func TestSuggestionVocabulary(t *testing.T) {
 		{string(corestatus.TaskFailed), "credential_invalid", nil, SuggestContactAdmin},
 		{string(corestatus.TaskFailed), "rejected", openWin(), SuggestRetryNow},
 		{string(corestatus.TaskFailed), "rejected", closedWin(), SuggestReArm},
+		// 恰在终点算已关：建议 re_arm，不得给 retry_now（P3-11⑤）。
+		{string(corestatus.TaskFailed), "rejected",
+			&WindowInfo{Start: now.Add(-time.Hour), End: now}, SuggestReArm},
 		{string(corestatus.TaskFailed), "rejected", nil, SuggestReArm},
 		{string(corestatus.TaskPending), "wait_window_open", openWin(), SuggestWait},
 		// 状态先于结论词：排队中的行可能带着上次失败的结论词

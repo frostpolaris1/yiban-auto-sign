@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,23 +130,33 @@ func (sc *streamClient) close() {
 	_ = sc.resp.Body.Close()
 }
 
+// sseUser 构造一个可订阅事件流的活跃账号会话主体。
+func sseUser(id string) coreauth.User {
+	return coreauth.User{
+		ID: id, Email: id + "@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
+	}
+}
+
 // newSSEServer 构造装配 SSE 域的真 HTTP 服务器。
 // 处理器时钟取自定时器：两者必须同源，否则截止时刻与水位不可比。
 func newSSEServer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *appevents.Broker, timer *fakeTimer) (*httptest.Server, coreauth.Issued) {
 	t.Helper()
-	srv, issued, _ := newSSEServerWithIssuer(t, authz, diag, broker, timer)
-	return srv, issued
+	srv, issued, _ := newSSEServerWithUsers(t, authz, diag, broker, timer, []coreauth.User{sseUser("u1")})
+	return srv, issued[0]
 }
 
-// newSSEServerWithIssuer 额外返回 issuer，供撤权用例调用 Revoke。
-func newSSEServerWithIssuer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *appevents.Broker, timer *fakeTimer) (*httptest.Server, coreauth.Issued, *fakeIssuer) {
+// newSSEServerWithUsers 构造真服务器，并为每个主体签发独立会话。
+// 每用户配额用例需要同时持有多个不同用户的会话。
+func newSSEServerWithUsers(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *appevents.Broker, timer *fakeTimer, users []coreauth.User) (*httptest.Server, []coreauth.Issued, *fakeIssuer) {
 	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
-	issued, err := issuer.Issue(context.Background(), coreauth.User{
-		ID: "u1", Email: "master@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
-	})
-	if err != nil {
-		t.Fatalf("issue session: %v", err)
+	issued := make([]coreauth.Issued, 0, len(users))
+	for _, user := range users {
+		got, err := issuer.Issue(context.Background(), user)
+		if err != nil {
+			t.Fatalf("issue session: %v", err)
+		}
+		issued = append(issued, got)
 	}
 	if authz == nil {
 		authz = &fakeAuthorizer{scope: corescope.Master()}
@@ -161,6 +172,13 @@ func newSSEServerWithIssuer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag,
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
 	return srv, issued, issuer
+}
+
+// newSSEServerWithIssuer 额外返回 issuer，供撤权用例调用 Revoke。
+func newSSEServerWithIssuer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *appevents.Broker, timer *fakeTimer) (*httptest.Server, coreauth.Issued, *fakeIssuer) {
+	t.Helper()
+	srv, issued, issuer := newSSEServerWithUsers(t, authz, diag, broker, timer, []coreauth.User{sseUser("u1")})
+	return srv, issued[0], issuer
 }
 
 func progressEvent(school string) appevents.Event {
@@ -296,35 +314,17 @@ func tryStream(base string, issued coreauth.Issued) (*http.Response, context.Can
 	return resp, cancel, nil
 }
 
-// 连接预算：达到全局上限后新连接回 429（rate_limited + Retry-After），
-// 断开一条后槽位释放，新连接恢复 200。
-func TestSSEConcurrentStreamCap(t *testing.T) {
-	broker := appevents.NewBroker()
-	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker,
-		newFakeTimer(newFakeClock(diagNowTime)))
-
-	clients := make([]*streamClient, 0, eventshttp.MaxConcurrentStreams)
-	for i := 0; i < eventshttp.MaxConcurrentStreams; i++ {
-		clients = append(clients, newStreamClient(t, srv.URL, issued, ""))
-	}
-	defer func() {
-		for _, sc := range clients {
-			sc.close()
-		}
-	}()
-
-	resp, cancel, err := tryStream(srv.URL, issued)
-	if err != nil {
-		t.Fatalf("超限请求: %v", err)
-	}
-	defer cancel()
+// wantRateLimited 断言一次 429：rate_limited 信封且带 Retry-After。
+// 调用方负责关闭响应体。
+func wantRateLimited(t *testing.T, resp *http.Response) {
+	t.Helper()
 	if resp.StatusCode != http.StatusTooManyRequests {
+		// 红路径可能拿到的是 200 流：先关掉，否则服务器清理会等这条连接。
 		_ = resp.Body.Close()
-		t.Fatalf("超限状态 = %d, want 429", resp.StatusCode)
+		t.Fatalf("状态 = %d, want 429", resp.StatusCode)
 	}
 	if ra := resp.Header.Get("Retry-After"); ra == "" {
-		_ = resp.Body.Close()
-		t.Fatal("超限 429 缺 Retry-After")
+		t.Fatal("429 缺 Retry-After")
 	}
 	var envelope struct {
 		Error struct {
@@ -332,20 +332,119 @@ func TestSSEConcurrentStreamCap(t *testing.T) {
 		} `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		_ = resp.Body.Close()
 		t.Fatalf("429 信封不是 JSON: %v", err)
 	}
-	_ = resp.Body.Close()
 	if envelope.Error.Code != "rate_limited" {
 		t.Fatalf("429 code = %q, want rate_limited", envelope.Error.Code)
 	}
+}
 
-	// 断开一条：服务端处理协程退出后槽位释放。
+// 每用户配额：同一会话第一条 200，第二条 429（rate_limited + Retry-After）；
+// 关闭第一条后槽位释放，最多等 2s 可再开。
+func TestSSEPerUserStreamCap(t *testing.T) {
+	srv, issued := newSSEServer(t, nil, &fakeDiag{}, appevents.NewBroker(),
+		newFakeTimer(newFakeClock(diagNowTime)))
+	first := newStreamClient(t, srv.URL, issued, "")
+	defer first.close()
+
+	resp, cancel, err := tryStream(srv.URL, issued)
+	if err != nil {
+		t.Fatalf("第二条请求: %v", err)
+	}
+	wantRateLimited(t, resp)
+	_ = resp.Body.Close()
+	cancel()
+
+	first.close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, cancel, err := tryStream(srv.URL, issued)
+		if err != nil {
+			t.Fatalf("释放后重连: %v", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			sc := &streamClient{
+				resp:   resp,
+				frames: make(chan frame, 32),
+				errs:   make(chan error, 1),
+				cancel: cancel,
+			}
+			go sc.readLoop()
+			sc.close()
+			return
+		}
+		_ = resp.Body.Close()
+		cancel()
+		if time.Now().After(deadline) {
+			t.Fatal("关闭首条后 2s 内每用户槽位未释放")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// 每用户而非全局/按 IP：两个不同用户各自第一条都 200。
+func TestSSEPerUserCapAllowsOtherUsers(t *testing.T) {
+	broker := appevents.NewBroker()
+	srv, issued, _ := newSSEServerWithUsers(t, nil, &fakeDiag{}, broker,
+		newFakeTimer(newFakeClock(diagNowTime)),
+		[]coreauth.User{sseUser("u1"), sseUser("u2")})
+	one := newStreamClient(t, srv.URL, issued[0], "")
+	defer one.close()
+	two := newStreamClient(t, srv.URL, issued[1], "")
+	defer two.close()
+}
+
+// admin 订阅者同样按用户计数：两个绑定校管理员各自第一条都能开。
+func TestSSEPerUserCapAdminRole(t *testing.T) {
+	broker := appevents.NewBroker()
+	authz := &fakeAuthorizer{scope: corescope.Admin([]string{"s1"})}
+	srv, issued, _ := newSSEServerWithUsers(t, authz, &fakeDiag{}, broker,
+		newFakeTimer(newFakeClock(diagNowTime)),
+		[]coreauth.User{sseUser("a1"), sseUser("a2")})
+	one := newStreamClient(t, srv.URL, issued[0], "")
+	defer one.close()
+	two := newStreamClient(t, srv.URL, issued[1], "")
+	defer two.close()
+}
+
+// 全局连接预算：10 个不同用户各占一条后，第 11 个不同用户 429；
+// 断开一条后槽位释放，新连接恢复 200。
+// 不能拿同一会话开 10 条：那会先撞每用户上限 1，测不到全局兜底。
+func TestSSEConcurrentStreamCap(t *testing.T) {
+	broker := appevents.NewBroker()
+	users := make([]coreauth.User, 0, eventshttp.MaxConcurrentStreams+1)
+	for i := 0; i <= eventshttp.MaxConcurrentStreams; i++ {
+		users = append(users, sseUser(fmt.Sprintf("cap-u%d", i)))
+	}
+	srv, issued, _ := newSSEServerWithUsers(t, nil, &fakeDiag{}, broker,
+		newFakeTimer(newFakeClock(diagNowTime)), users)
+
+	clients := make([]*streamClient, 0, eventshttp.MaxConcurrentStreams)
+	for i := 0; i < eventshttp.MaxConcurrentStreams; i++ {
+		clients = append(clients, newStreamClient(t, srv.URL, issued[i], ""))
+	}
+	defer func() {
+		for _, sc := range clients {
+			sc.close()
+		}
+	}()
+
+	// 第 11 个不同用户撞全局上限；该用户自身尚未占槽。
+	overflow := issued[eventshttp.MaxConcurrentStreams]
+	resp, cancel, err := tryStream(srv.URL, overflow)
+	if err != nil {
+		t.Fatalf("超限请求: %v", err)
+	}
+	wantRateLimited(t, resp)
+	_ = resp.Body.Close()
+	cancel()
+
+	// 断开一条不同用户的连接：服务端处理协程退出后槽位释放。
 	clients[0].close()
 	clients = clients[1:]
 	const maxAttempts = 500 // 500 × 10ms = 5s 上限；不用墙钟，避免 canonical clock.now
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		resp, cancel, err := tryStream(srv.URL, issued)
+		resp, cancel, err := tryStream(srv.URL, overflow)
 		if err != nil {
 			t.Fatalf("释放后重连: %v", err)
 		}

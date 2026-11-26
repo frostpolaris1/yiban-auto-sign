@@ -13,10 +13,15 @@ import (
 
 // newVerifier 起一个假 siteverify，返回按需替换 Endpoint 的校验器。
 func newVerifier(t *testing.T, handler http.HandlerFunc) *turnstile.Verifier {
+	return newVerifierWithExpectations(t, handler, "", "")
+}
+
+// newVerifierWithExpectations 同上，并带上可选的令牌绑定期望（主机名/动作）。
+func newVerifierWithExpectations(t *testing.T, handler http.HandlerFunc, hostname, action string) *turnstile.Verifier {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	v, err := turnstile.New("test-secret")
+	v, err := turnstile.New("test-secret", hostname, action)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -26,7 +31,7 @@ func newVerifier(t *testing.T, handler http.HandlerFunc) *turnstile.Verifier {
 
 func TestNewRejectsEmptySecret(t *testing.T) {
 	for _, secret := range []string{"", "   "} {
-		if _, err := turnstile.New(secret); err == nil {
+		if _, err := turnstile.New(secret, "", ""); err == nil {
 			t.Fatalf("New(%q) = nil error, want failure", secret)
 		}
 	}
@@ -156,5 +161,98 @@ func TestVerifyEmptyTokenNeverCallsTheEndpoint(t *testing.T) {
 	})
 	if _, _, err := v.Verify(context.Background(), "  ", ""); err == nil {
 		t.Fatal("want an error")
+	}
+}
+
+// 令牌绑定：期望非空时回执里的主机名/动作必须匹配，不匹配是「令牌不合格」，
+// 不是验证服务不可达——调用方 on 档回 400、log 档放行，不走 502。
+func TestVerifyHonorsExpectedTokenBindings(t *testing.T) {
+	cases := []struct {
+		name     string
+		answer   string
+		hostname string
+		action   string
+		want     bool
+		wantCode string
+	}{
+		{
+			name:   "no expectation accepts any binding",
+			answer: `{"success":true,"hostname":"any.example","action":"any"}`,
+			want:   true,
+		},
+		{
+			name:     "hostname match",
+			answer:   `{"success":true,"hostname":"reg.example.com"}`,
+			hostname: "reg.example.com",
+			want:     true,
+		},
+		{
+			name:     "hostname match ignores case and padding",
+			answer:   `{"success":true,"hostname":"REG.Example.COM"}`,
+			hostname: "  reg.example.com  ",
+			want:     true,
+		},
+		{
+			name:     "hostname mismatch",
+			answer:   `{"success":true,"hostname":"evil.example.com"}`,
+			hostname: "reg.example.com",
+			wantCode: "hostname-mismatch",
+		},
+		{
+			name:     "missing hostname is a mismatch",
+			answer:   `{"success":true}`,
+			hostname: "reg.example.com",
+			wantCode: "hostname-mismatch",
+		},
+		{
+			name:   "action match",
+			answer: `{"success":true,"action":"register"}`,
+			action: "register",
+			want:   true,
+		},
+		{
+			name:     "action mismatch is case sensitive",
+			answer:   `{"success":true,"action":"Register"}`,
+			action:   "register",
+			wantCode: "action-mismatch",
+		},
+		{
+			name:     "both match",
+			answer:   `{"success":true,"hostname":"reg.example.com","action":"register"}`,
+			hostname: "reg.example.com",
+			action:   "register",
+			want:     true,
+		},
+		{
+			name:     "hostname mismatch is reported before action mismatch",
+			answer:   `{"success":true,"hostname":"evil.example.com","action":"other"}`,
+			hostname: "reg.example.com",
+			action:   "register",
+			wantCode: "hostname-mismatch",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newVerifierWithExpectations(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.answer))
+			}, tc.hostname, tc.action)
+
+			ok, codes, err := v.Verify(context.Background(), "token", "")
+			if err != nil {
+				t.Fatalf("binding rejection must not be an availability error: %v", err)
+			}
+			if ok != tc.want {
+				t.Fatalf("ok = %v, want %v (codes %v)", ok, tc.want, codes)
+			}
+			if tc.wantCode == "" {
+				if len(codes) != 0 {
+					t.Fatalf("codes = %v, want empty", codes)
+				}
+				return
+			}
+			if len(codes) != 1 || codes[0] != tc.wantCode {
+				t.Fatalf("codes = %v, want [%s]", codes, tc.wantCode)
+			}
+		})
 	}
 }

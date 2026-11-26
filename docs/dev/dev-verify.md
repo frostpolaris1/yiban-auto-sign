@@ -210,12 +210,12 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push 都跑——
 **slow 行与长尾不再只靠本地全量覆盖**。
 
-**现量口径（2026-11-05 本树，增版本接线静态门后）**：全量 361 个文件 ＝ 快集 345 ＋ 慢集 14 ＋ 串行轨 2
+**现量口径（2026-11-05 本树，增版本接线静态门后）**：全量 362 个文件 ＝ 快集 346 ＋ 慢集 14 ＋ 串行轨 2
 （串行轨含 `tests/test_verify_jobs.py`：该文件用真实墙钟等异步任务终态。2026-10-26 在快集里
 连续两次红后移入，理由见名册该行）
 （文件数口径：`tests/lane-roster.tsv` 的非注释行按车道计数；测量命令
 `awk -F'\t' '!/^#/ && ($1=="fast" || $1=="slow" || $1=="serial") {print $1}' tests/lane-roster.tsv | sort | uniq -c`）。
-用例数口径 5386 ＝ 快集 5145 ＋ 慢集 173 ＋ 串行轨 68
+用例数口径 5417 ＝ 快集 5176 ＋ 慢集 173 ＋ 串行轨 68
 （2026-11-22 补签闸门批＋7：`tests/test_status_sets.py` 三条 ＋ `tests/test_v3_same_day_requeue.py` 四条，
 全部落快集。此前 2026-11-21 rollback-e2e 批＋3：`tests/test_deploy_e2e_wiring.py` 的 `PgClientExtractionListTest` 三条。
 此前 2026-11-11 sfr 批＋3：contract-gate allowlist 过期列自测。口径：`pytest tests/ --collect-only -q` 的 `tests/…::…` 行按文件归道计数；测量命令

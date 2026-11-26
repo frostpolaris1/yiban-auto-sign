@@ -52,10 +52,12 @@ func TestClaimDueSkipsSameAccountRunning(t *testing.T) {
 	if byAccount[acct.ID] != 1 || byAccount[other.ID] != 1 {
 		t.Fatalf("账号认领分布 = %v", byAccount)
 	}
-	// 落终态后同账号可领下一条。
+	// 落终态后同账号可领下一条。终态取 failed：决策 2A 下 success 会拦住
+	// 同账号同日其余任务（另见 schedule_single_success_e2e_test.go），
+	// 本用例只钉"同账号串行"这一层。
 	for _, c := range claimed {
 		if c.AccountID == acct.ID {
-			if err := e.sched.Finish(e.ctx, c.AccountID, c.SchoolTaskID, c.Day, corestatus.TaskSuccess, "ok", c.ClaimSeq, at); err != nil {
+			if err := e.sched.Finish(e.ctx, c.AccountID, c.SchoolTaskID, c.Day, corestatus.TaskFailed, "boom", c.ClaimSeq, at); err != nil {
 				t.Fatalf("finish: %v", err)
 			}
 		}

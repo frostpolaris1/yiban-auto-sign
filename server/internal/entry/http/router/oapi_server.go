@@ -306,12 +306,11 @@ func (s *server) AccountPause(c *gin.Context, id oapi.AccountID, params oapi.Acc
 }
 
 // AccountSign 委托手动签到处理器。未装配时仍是 501。
+// 账号键限流在 handler 内、可见面读取成功之后执行：越权请求
+// 回原有 404，不消耗目标账号桶。IP 面仍由 rateLimitedPaths 兜底。
 func (s *server) AccountSign(c *gin.Context, id oapi.AccountID, params oapi.AccountSignParams) {
 	if s.signing == nil {
 		notImplemented(c)
-		return
-	}
-	if !s.accountLimit(c, string(id)) {
 		return
 	}
 	s.signing.Sign(c, id, params)
@@ -319,7 +318,7 @@ func (s *server) AccountSign(c *gin.Context, id oapi.AccountID, params oapi.Acco
 
 // AccountBatchSign 委托批量手动签到处理器（静态段，紧邻 {id} 路由）。
 // 未装配时仍是 501。IP 面走中间件白名单（rateLimitedPaths）；
-// 账号键面由 handler 逐项判定（与单条端点同口径）。
+// 账号键面由 handler 逐项、在可见面判定之后执行（与单条端点同口径）。
 func (s *server) AccountBatchSign(c *gin.Context, params oapi.AccountBatchSignParams) {
 	if s.signing == nil {
 		notImplemented(c)
@@ -347,25 +346,20 @@ func (s *server) AccountLocationSet(c *gin.Context, id oapi.AccountID, params oa
 }
 
 // AccountPersonName 委托平台姓名懒加载处理器。未装配时仍是 501。
-// 账号键限流与 verify/sign 同桶同序：先判桶，再进 handler。
+// 账号键限流与 verify/sign 同桶，在 handler 读取凭据成功后执行。
 func (s *server) AccountPersonName(c *gin.Context, id oapi.AccountID, params oapi.AccountPersonNameParams) {
 	if s.signing == nil {
 		notImplemented(c)
-		return
-	}
-	if !s.accountLimit(c, string(id)) {
 		return
 	}
 	s.signing.PersonName(c, id, params)
 }
 
 // AccountVerify 委托签到凭据校验处理器。未装配时仍是 501。
+// 账号键限流在 handler 内、凭据读取成功后执行。
 func (s *server) AccountVerify(c *gin.Context, id oapi.AccountID, params oapi.AccountVerifyParams) {
 	if s.signing == nil {
 		notImplemented(c)
-		return
-	}
-	if !s.accountLimit(c, string(id)) {
 		return
 	}
 	s.signing.Verify(c, id, params)

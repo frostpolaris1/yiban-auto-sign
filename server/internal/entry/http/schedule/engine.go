@@ -19,10 +19,11 @@ package schedule
 // 实现由装配注入（与 ManualSigner 的窄端口先例一致）。
 // 未启动的循环三时刻为 null：进程时间不从库里补。
 // 手机号只有用例给的掩码值；本文件拿不到明文，也不写日志。
-// 全局暂停（3a）：快照带 paused（缺行=false）；写面按请求目标值分闸
-// ——暂停 master/admin、恢复仅 master（旧线急停先例），二次口令复核
-// （缺值 400、错误 403、连错 429 走全局再认证节流）。写入与
-// settings.engine_paused 审计同事务由用例层保证；本包不写 SQL。
+// 全局暂停（3a）：快照带 paused（缺行=false）；写面只给 master——
+// 暂停与恢复对 admin 都 403，且角色门先于二次口令复核
+// （admin 零写入零审计、不付口令成本）。master 的复核缺口令 400、
+// 错误 403、连错 429 走全局再认证节流。写入与 settings.engine_paused
+// 审计同事务由用例层保证；本包不写 SQL。
 
 import (
 	"context"
@@ -153,8 +154,8 @@ func (h *EngineHandler) Snapshot(c *gin.Context) {
 
 // Pause 实现 PUT /api/admin/engine/pause（批 3a）。
 //
-// 顺序有讲究：会话 → 请求体 → 角色门（按请求目标值分闸，恢复仅 master——
-// 越权角色不付口令成本）→ 二次口令 → 用例（写与审计同事务）。
+// 顺序有讲究：会话 → 请求体 → 角色门（暂停与恢复都仅 master——
+// admin 在口令之前被拒）→ 二次口令 → 用例（写与审计同事务）。
 // 缺字段 400、缺口令 400、口令错 403（连错走全局再认证节流 429）；
 // 被拒路径零写入零审计。
 func (h *EngineHandler) Pause(c *gin.Context, _ oapi.AdminEnginePauseParams) {
@@ -177,8 +178,8 @@ func (h *EngineHandler) Pause(c *gin.Context, _ oapi.AdminEnginePauseParams) {
 		return
 	}
 	paused := *body.Paused
-	// 方向分闸先于二次口令：恢复（paused=false）仅 master，旧线急停先例。
-	if !paused && user.Role != coreauth.RoleMaster {
+	// 角色门先于二次口令：暂停与恢复都仅 master，admin 零写入零口令。
+	if user.Role != coreauth.RoleMaster {
 		fail(c, errs.New(errs.CodeForbidden, "master role is required"))
 		return
 	}

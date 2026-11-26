@@ -18,6 +18,7 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
+	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 )
 
 type fakeService struct {
@@ -30,6 +31,7 @@ type fakeService struct {
 	restores     int
 	purges       int
 	batches      int
+	detects      int
 }
 
 func (f *fakeService) List(context.Context, corescope.Scope, appaccount.ListFilter, string, int) (appaccount.Page, error) {
@@ -72,6 +74,7 @@ func (f *fakeService) DeviceRefresh(context.Context, corescope.Scope, string, ap
 }
 
 func (f *fakeService) Detect(context.Context, corescope.Scope, appaccount.DetectInput) (appaccount.DetectResult, error) {
+	f.detects++
 	return appaccount.DetectResult{}, nil
 }
 
@@ -120,12 +123,19 @@ func (f *fakeLimiter) AllowAccount(key string) (bool, time.Duration) {
 
 func newContext(t *testing.T, method, path, body string) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
+	return newContextWithUser(t, "u1", method, path, body)
+}
+
+// newContextWithUser 构造指定会话用户的请求上下文，用于验证
+// 以调用者为键的限流隔离。
+func newContextWithUser(t *testing.T, userID, method, path, body string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req = req.WithContext(coreauth.WithSession(req.Context(), coreauth.Session{
-		User: coreauth.User{ID: "u1", Role: coreauth.RoleUser, Status: coreauth.StatusActive},
+		User: coreauth.User{ID: userID, Role: coreauth.RoleUser, Status: coreauth.StatusActive},
 	}))
 	c.Request = req
 	return c, rec
@@ -227,5 +237,79 @@ func TestMyAccountDeleteRequiresSession(t *testing.T) {
 	}
 	if svc.selfDeletes != 0 {
 		t.Fatal("无会话不得调用用例")
+	}
+}
+
+// detect 桶绑定调用者：B 同一手机号打满后，A 仍可探测；
+// B 自己的重复探测仍然是 429 + Retry-After。
+func TestDetectRateLimitIsPerCaller(t *testing.T) {
+	svc := &fakeService{}
+	throttle, err := ratelimit.NewThrottle(ratelimit.Quota{PerMinute: 1, Burst: 1})
+	if err != nil {
+		t.Fatalf("NewThrottle: %v", err)
+	}
+	h := accounthttp.NewHandler(svc, fakeAuthorizer{}, &ratelimit.Guard{Account: throttle})
+	const body = `{"phone":"13800000001","password":"x"}`
+
+	c, rec := newContextWithUser(t, "user-b", http.MethodPost, "/api/accounts/detect", body)
+	h.Detect(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("B 首次 status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if svc.detects != 1 {
+		t.Fatalf("B 首次 detect 用例 = %d, want 1", svc.detects)
+	}
+
+	c, rec = newContextWithUser(t, "user-b", http.MethodPost, "/api/accounts/detect", body)
+	h.Detect(c)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("B 二次 status = %d, want 429: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" {
+		t.Fatal("B 二次 429 缺 Retry-After")
+	}
+	if svc.detects != 1 {
+		t.Fatalf("B 被限流后 detect 用例 = %d, want 1", svc.detects)
+	}
+
+	c, rec = newContextWithUser(t, "user-a", http.MethodPost, "/api/accounts/detect", body)
+	h.Detect(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("A 首次 status = %d, want 200（B 不得打满 A 的桶）: %s", rec.Code, rec.Body.String())
+	}
+	if svc.detects != 2 {
+		t.Fatalf("A 首次 detect 用例 = %d, want 2", svc.detects)
+	}
+}
+
+// detect 键必须同时绑定调用者与手机号摘要：不同调用者同号不同键，
+// 同一调用者同号同键，且键中不出现明文手机号。
+func TestDetectRateKeyBindsCallerAndHashesPhone(t *testing.T) {
+	const phone = "13800000001"
+	svc := &fakeService{}
+	lim := &fakeLimiter{allow: true}
+	h := accounthttp.NewHandler(svc, fakeAuthorizer{}, lim)
+	body := `{"phone":"13800000001","password":"x"}`
+
+	for _, userID := range []string{"user-b", "user-a", "user-b"} {
+		c, _ := newContextWithUser(t, userID, http.MethodPost, "/api/accounts/detect", body)
+		h.Detect(c)
+	}
+	if len(lim.keys) != 3 {
+		t.Fatalf("限流键数 = %d, want 3: %v", len(lim.keys), lim.keys)
+	}
+	for i, wantPrefix := range []string{"detect:user-b:", "detect:user-a:", "detect:user-b:"} {
+		if !strings.HasPrefix(lim.keys[i], wantPrefix) {
+			t.Fatalf("keys[%d] = %q, want prefix %q", i, lim.keys[i], wantPrefix)
+		}
+		if strings.Contains(lim.keys[i], phone) {
+			t.Fatalf("keys[%d] = %q, 不得含明文手机号", i, lim.keys[i])
+		}
+	}
+	if lim.keys[0] == lim.keys[1] {
+		t.Fatalf("不同调用者同手机号必须不同键: %q", lim.keys[0])
+	}
+	if lim.keys[0] != lim.keys[2] {
+		t.Fatalf("同一调用者同手机号必须同键: %q != %q", lim.keys[0], lim.keys[2])
 	}
 }
