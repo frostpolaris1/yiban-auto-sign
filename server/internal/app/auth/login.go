@@ -284,21 +284,26 @@ func (s *Service) recordLoginFailure(ctx context.Context, userID string, role co
 }
 
 // recordUnknownLoginFailure 记录一次「未知邮箱」登录失败。
-// 每次都写 Warn（ip_hash + reason，无邮箱/IP）；采样器放行时才写一条汇总审计。
-// 审计形状：Actor 全空、ActorLabel=unknown、TargetType=user、TargetID 空、
-// Detail={reason:unknown_email,count:1}——与已存在账号失败可区分，且无 PII。
-// 审计写失败返回错误（fail-closed）；被抑制的尝试根本不接触审计，
-// 因而不改变 401 形状。采样器不回滚：同一窗口内不因审计故障重试放大写入。
+// 每次都写 Warn（有 IP 时带 ip_hash，无 IP 时省略该属性）；采样器放行时
+// 才写一条汇总审计。审计形状：Actor 全空、ActorLabel=unknown、
+// TargetType=user、TargetID 空、Detail={reason:unknown_email,count:1}——
+// 与已存在账号失败可区分，且无 PII。
+//
+// 计时与故障形状对齐已存在账号路径：被抑制的尝试仍付一次空事务，
+// 审计写失败时同窗口后续尝试继续重试审计并继续 fail-closed，避免
+// 「未知邮箱先 500 后 401、已知邮箱一直 500」的可枚举差异。
 func (s *Service) recordUnknownLoginFailure(ctx context.Context, ip string, now time.Time) error {
-	allowed, fingerprint := s.unknownLogins.allow(ip)
-	s.log.Warn("appauth: unknown email login failed",
-		logfield.KeyIPHash, fingerprint,
-		logfield.KeyReason, "unknown_email",
-	)
-	if !allowed {
-		return nil
+	allowed, fingerprint, retry := s.unknownLogins.allow(ip)
+	attrs := []any{logfield.KeyReason, "unknown_email"}
+	if fingerprint != "unknown" {
+		attrs = append([]any{logfield.KeyIPHash, fingerprint}, attrs...)
 	}
-	return s.tx.InTx(ctx, func(ctx context.Context) error {
+	s.log.Warn("appauth: unknown email login failed", attrs...)
+	if !allowed && !retry {
+		// 被抑制的尝试不写审计，但要付与已存在账号路径同量级的数据库往返。
+		return s.tx.InTx(ctx, func(context.Context) error { return nil })
+	}
+	err := s.tx.InTx(ctx, func(ctx context.Context) error {
 		_, err := s.audits.Append(ctx, coreaudit.Entry{
 			TS:          now,
 			ActorUserID: "",
@@ -311,6 +316,12 @@ func (s *Service) recordUnknownLoginFailure(ctx context.Context, ip string, now 
 		})
 		return err
 	})
+	if err != nil {
+		s.unknownLogins.markAuditFailed(ip, true)
+		return err
+	}
+	s.unknownLogins.markAuditFailed(ip, false)
+	return nil
 }
 
 // checkSelfDeleteGrace 在活跃行查不到之后检查软删行（旧线 find_user_any 同位）。
