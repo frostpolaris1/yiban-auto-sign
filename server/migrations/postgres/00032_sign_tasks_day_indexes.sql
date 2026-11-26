@@ -15,10 +15,20 @@
 --      新行尽快进入统计；
 --   3) 迁移末尾 ANALYZE 一次，给新索引与统计一个起点。
 --
+-- 锁超时窗口：迁移连接由 openMigrationDB 建，自带 lock_timeout=5s。
+-- ALTER 保留 5s 的快速失败语义；两条 CIC 在等待老快照时可能超过 5s，
+-- 故 ALTER 之后、首个 CIC 之前 SET lock_timeout='0'，建完索引后、
+-- ANALYZE 之前收回 '5s'（ANALYZE 也要快速失败），末尾恢复
+-- statement_timeout。lock_timeout=0 只覆盖真正需要长等的 CIC。
+--
 -- 注意：CREATE INDEX CONCURRENTLY 不在事务里；中断会留下 INVALID 索引
---（pg_index.indisvalid = false）。重跑前必须先
--- DROP INDEX CONCURRENTLY IF EXISTS 清理（见 deploy/README.md
--- 「00032 索引失败处理」）。IF NOT EXISTS 只跳过同名对象，不修复 INVALID。
+--（pg_index.indisvalid = false）。CIC 当场失败时 goose 通常还没写版本行，
+-- 重跑会再次执行本迁移；危险在重跑时 IF NOT EXISTS 看到同名 INVALID
+-- 直接跳过，随后版本落库为 32。版本一旦记录，goose 不再执行本文件，
+-- 重跑 Migrate 不会修复 INVALID，需按 deploy/README.md
+-- 「00032 索引失败处理」手工重建（不要无条件删两条）。
+--
+-- 迁移窗口不要同时跑 pg_dump / 长事务：旧快照会让 CIC 的等待阶段卡住。
 --
 -- Governance: migrations are forward-only. There is no Down section.
 
@@ -29,12 +39,15 @@ ALTER TABLE sign_tasks SET (
 );
 
 SET statement_timeout = '0';
+SET lock_timeout = '0';
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sign_tasks_day_run_at_id
     ON sign_tasks (day, run_at DESC, id DESC);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sign_tasks_day_state
     ON sign_tasks (day, state);
+
+SET lock_timeout = '5s';
 
 ANALYZE sign_tasks;
 
