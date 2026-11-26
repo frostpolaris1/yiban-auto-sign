@@ -37,7 +37,8 @@ func newYibanHarness(t *testing.T) *yibanHarness {
 	up := newUpstream(t)
 	up.signInDelay = delay
 	return &yibanHarness{
-		Provider:    NewProvider(New(Config{Endpoints: up.endpoints()})),
+		// 显式打开测试钩子：假上游是 http://127.0.0.1 的 httptest。
+		Provider:    NewProvider(New(Config{Endpoints: up.endpoints(), allowLoopbackUpload: true})),
 		t:           t,
 		up:          up,
 		signInDelay: delay,

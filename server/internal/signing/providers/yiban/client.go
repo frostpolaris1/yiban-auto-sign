@@ -42,6 +42,11 @@ type Config struct {
 	SessionTTL time.Duration
 	Transport  http.RoundTripper
 	Random     io.Reader
+
+	// allowLoopbackUpload 是测试专用的环回明文上传钩子（台账 P3-1）：
+	// 仅让 httptest 假上游（http://127.0.0.1、http://[::1]）通过签名地址检查。
+	// 未导出、无公开配置/环境变量入口，生产构造恒为 false。
+	allowLoopbackUpload bool
 }
 
 // Client 维护每账号的内存会话。
@@ -53,6 +58,8 @@ type Client struct {
 	ttl       time.Duration
 	transport http.RoundTripper
 	random    io.Reader
+	// allowLoopback 由 Config.allowLoopbackUpload 复制，仅供测试环回上传。
+	allowLoopback bool
 
 	mu        sync.Mutex
 	sessions  map[string]*sessionEntry
@@ -93,14 +100,15 @@ func New(cfg Config) *Client {
 		cfg.Random = rand.Reader
 	}
 	return &Client{
-		endpoints: cfg.Endpoints,
-		clock:     cfg.Clock,
-		timeout:   cfg.Timeout,
-		ttl:       cfg.SessionTTL,
-		transport: cfg.Transport,
-		random:    cfg.Random,
-		sessions:  make(map[string]*sessionEntry),
-		positions: make(map[string]positionEntry),
+		endpoints:     cfg.Endpoints,
+		clock:         cfg.Clock,
+		timeout:       cfg.Timeout,
+		ttl:           cfg.SessionTTL,
+		transport:     cfg.Transport,
+		random:        cfg.Random,
+		allowLoopback: cfg.allowLoopbackUpload,
+		sessions:      make(map[string]*sessionEntry),
+		positions:     make(map[string]positionEntry),
 	}
 }
 
