@@ -15,7 +15,7 @@ package schedule
 // 两个端点只给 master 与 admin；跨校行不出现，越权 school_id 是空页。
 // 列表回 oapi.TaskPage；导出回 text/csv 附件，列与列表同口径，
 // 超过 ExportCap 截断并以 X-Export-Truncated: true 显式标记。
-// CSV 的学校名、任务名与 result 列做公式注入转义（首字符 = + - @ TAB CR
+// CSV 的学校名、任务名与 result 列做公式注入转义（首字符 = + - @ TAB CR LF
 // 加 ' 前缀，CWE-1236）；文件名取用例回传的有效业务日。
 // 手机号只用用例给的掩码值；本文件拿不到明文，也不写日志。
 
@@ -161,7 +161,7 @@ func taskRow(r appschedule.TaskView) oapi.AdminTaskRow {
 }
 
 // csvFormulaPrefix 是公式注入的转义前缀（CWE-1236）。
-// 以 = + - @ TAB CR 开头的单元格加它，表格软件不再当公式求值。
+// 以 = + - @ TAB CR LF 开头的单元格加它，表格软件不再当公式求值。
 const csvFormulaPrefix = "'"
 
 // csvSafeCell 对可能携带外部文本的列做公式注入转义：学校名、任务名
@@ -172,7 +172,7 @@ func csvSafeCell(value string) string {
 		return value
 	}
 	switch value[0] {
-	case '=', '+', '-', '@', '\t', '\r':
+	case '=', '+', '-', '@', '\t', '\r', '\n':
 		return csvFormulaPrefix + value
 	}
 	return value

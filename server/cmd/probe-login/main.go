@@ -1,7 +1,8 @@
 // Command probe-login runs the new-stack yiban login chain against the real
 // upstream exactly once and captures every wire request/response. One-shot
-// diagnostic (4sk): credentials are read interactively and never appear in
-// argv/env/files/logs; the capture is AES-256-GCM encrypted into a single
+// diagnostic (4sk): credentials are read interactively; plaintext never appears
+// in argv/env/stdout/stderr/logs. The only exceptions are the encrypted capture
+// and an explicit -decrypt; the capture is AES-256-GCM encrypted into a single
 // 0600 file whose random passphrase is printed exactly once. Summary lines on
 // stdout carry counts and outcomes only.
 //
@@ -9,6 +10,10 @@
 // (signing/providers/yiban), with a capturing http.RoundTripper injected via
 // Config.Transport — the capture therefore shows what the new stack really
 // sends, not a reimplementation.
+//
+// -decrypt 打印的是完整 wire capture：含 cookie、会话头与请求/响应中的凭据或
+// 上游密文。抓取物不是脱敏产物；除显式 -decrypt 外，脱敏只覆盖 stdout/stderr
+// 与摘要行，抓取文件保持全量，仅限受控诊断。
 package main
 
 import (
@@ -181,6 +186,7 @@ func decryptDump(path string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Fprintln(os.Stderr, "probe: 解密输出含凭据，勿重定向/上传")
 	fmt.Println(string(pt))
 	return nil
 }
@@ -278,7 +284,7 @@ func loadCredentials() (phone, password string, err error) {
 func shredCredentials() {
 	for _, p := range []string{credBinPath, credKeyPath} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "probe: 粉碎 %s 失败: %v\n", p, err)
+			fmt.Fprintln(os.Stderr, redactProbeText(fmt.Sprintf("probe: 粉碎 %s 失败: %v", p, err)))
 		}
 	}
 }
@@ -295,9 +301,9 @@ func runSignFlow(ctx context.Context, provider *yiban.Provider, phone, password 
 	if werr != nil {
 		var oe *contract.OutcomeError
 		if errors.As(werr, &oe) {
-			return append(lines, fmt.Sprintf("窗口: %s (%s)", oe.Outcome, oe.Message))
+			return append(lines, fmt.Sprintf("窗口: %s (%s)", oe.Outcome, redactProbeText(oe.Message)))
 		}
-		return append(lines, fmt.Sprintf("窗口: error: %v", werr))
+		return append(lines, fmt.Sprintf("窗口: error: %s", redactProbeText(werr.Error())))
 	}
 	lines = append(lines, fmt.Sprintf("窗口: %s ~ %s",
 		window.Start.Format("15:04:05"), window.End.Format("15:04:05")))
@@ -306,15 +312,15 @@ func runSignFlow(ctx context.Context, provider *yiban.Provider, phone, password 
 	if terr != nil {
 		var oe *contract.OutcomeError
 		if errors.As(terr, &oe) {
-			return append(lines, fmt.Sprintf("候选点: %s (%s)", oe.Outcome, oe.Message))
+			return append(lines, fmt.Sprintf("候选点: %s (%s)", oe.Outcome, redactProbeText(oe.Message)))
 		}
-		return append(lines, fmt.Sprintf("候选点: error: %v", terr))
+		return append(lines, fmt.Sprintf("候选点: error: %s", redactProbeText(terr.Error())))
 	}
 	if len(targets) == 0 {
 		return append(lines, "候选点: 空")
 	}
 	target := targets[0]
-	lines = append(lines, fmt.Sprintf("候选点: %d 个，取第 1 个「%s」", len(targets), target.Title))
+	lines = append(lines, fmt.Sprintf("候选点: %d 个，取第 1 个「%s」", len(targets), redactProbeText(target.Title)))
 
 	result, serr := provider.Sign(ctx, contract.SignRequest{
 		AttemptID:  "probe-" + clock.System{}.Now().Format("150405"),
@@ -325,17 +331,29 @@ func runSignFlow(ctx context.Context, provider *yiban.Provider, phone, password 
 		Location:   contract.Location{Mode: contract.LocationAuto, Lng: target.Center.Lng, Lat: target.Center.Lat, Reason: "probe: target center"},
 	})
 	if serr != nil {
-		return append(lines, fmt.Sprintf("签到: error: %v", serr))
+		return append(lines, fmt.Sprintf("签到: error: %s", redactProbeText(serr.Error())))
 	}
-	lines = append(lines, fmt.Sprintf("签到: %s (%s)", result.Outcome, result.Message))
+	lines = append(lines, fmt.Sprintf("签到: %s (%s)", result.Outcome, redactProbeText(result.Message)))
 	return lines
+}
+
+// probeSummary 把登录结果压成单行摘要；错误文本中的 URL token 先脱敏。
+func probeSummary(verr error) string {
+	switch {
+	case verr == nil:
+		return "ok"
+	case errors.Is(verr, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "error: " + redactProbeText(verr.Error())
+	}
 }
 
 func main() {
 	stage := flag.Bool("stage", false, "今晚录入凭据：加密落盘两件 0600 文件后退出，等 -fire 到点开跑")
 	fire := flag.Bool("fire", false, "定时模式：读取 -stage 落盘的凭据开跑，跑完立即粉碎凭据文件")
 	sign := flag.Bool("sign", false, "登录成功后继续发现窗口/候选点并执行一次真实签到（默认只登录）")
-	decrypt := flag.String("decrypt", "", "解密指定抓取文件：口令从 stdin 读入，明文 JSON 打到 stdout")
+	decrypt := flag.String("decrypt", "", "解密指定抓取文件：口令从 stdin 读入，明文 JSON 打到 stdout；输出含凭据，勿重定向/上传")
 	flag.Parse()
 
 	if *decrypt != "" {
@@ -377,19 +395,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	var summary string
 	_, verr := provider.Verify(ctx, contract.VerifyRequest{
 		Account:    contract.AccountRef{ID: "probe", Platform: "yiban"},
 		Credential: contract.Credential{Phone: phone, Password: password},
 	})
-	switch {
-	case verr == nil:
-		summary = "ok"
-	case errors.Is(verr, context.DeadlineExceeded):
-		summary = "timeout"
-	default:
-		summary = "error: " + verr.Error()
-	}
+	summary := probeSummary(verr)
 
 	var signLines []string
 	if *sign && verr == nil {
@@ -417,6 +427,6 @@ func main() {
 }
 
 func fatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "probe: "+format+"\n", args...)
+	fmt.Fprintln(os.Stderr, "probe: "+redactProbeText(fmt.Sprintf(format, args...)))
 	os.Exit(2)
 }
