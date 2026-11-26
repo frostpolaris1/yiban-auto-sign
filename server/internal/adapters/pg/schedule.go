@@ -935,6 +935,18 @@ func (r *ScheduleRepo) AccountSignHistory(ctx context.Context, accountID, today 
 	return last, failedDays, nil
 }
 
+// AnalyzeSignTasks 刷新 sign_tasks 的统计信息（P0-3）。
+//
+// 迁移 00032 已把该表的 autovacuum analyze 阈值收到 500 行 / 1%；
+// 日切构建铺完当日后主动 ANALYZE 一次，让新行的分布立刻进入计划。
+// 失败由调用方决定是否致命：日切只记 Warn，不阻断已落库的计划行。
+func (r *ScheduleRepo) AnalyzeSignTasks(ctx context.Context) error {
+	if _, err := r.db.q(ctx).Exec(ctx, "ANALYZE sign_tasks"); err != nil {
+		return mapError(err)
+	}
+	return nil
+}
+
 // DayOutcomeCounts 汇总某业务日的任务行状态与失败分布。
 //
 // 口径：
