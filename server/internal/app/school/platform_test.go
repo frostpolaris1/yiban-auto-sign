@@ -3,7 +3,8 @@ package school
 // 平台大学投影的守卫单测（ykxf）。
 //
 // 判据：活跃命中复用、disabled 视同未命中且不重复建校、
-// 未命中自动建校并只写 university_id 审计、并发建校 409 回落复用。
+// 未命中自动建校并只写 university_id 审计、并发建校 409 回落复用；
+// 无建校权限（普通用户探测）未命中回 not_found，零建校、零审计。
 // 本文件不连数据库：仓储、审计与事务都是内存替身。
 
 import (
@@ -96,7 +97,7 @@ func TestEnsurePlatformSchoolReusesActiveBinding(t *testing.T) {
 	}}
 	svc, audits := newPlatformService(t, repo)
 
-	record, err := svc.EnsurePlatformSchool(context.Background(), "0000000001", "示例大学")
+	record, err := svc.EnsurePlatformSchool(context.Background(), "0000000001", "示例大学", true)
 	if err != nil {
 		t.Fatalf("EnsurePlatformSchool: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestEnsurePlatformSchoolTreatsDisabledAsAbsent(t *testing.T) {
 	}}
 	svc, audits := newPlatformService(t, repo)
 
-	record, err := svc.EnsurePlatformSchool(context.Background(), "0000000002", "停用大学")
+	record, err := svc.EnsurePlatformSchool(context.Background(), "0000000002", "停用大学", true)
 	if err != nil {
 		t.Fatalf("EnsurePlatformSchool: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestEnsurePlatformSchoolCreatesAndAuditsOnlyUniversityID(t *testing.T) {
 	repo := &platformRepo{lookupErr: errs.ErrNotFound}
 	svc, audits := newPlatformService(t, repo)
 
-	record, err := svc.EnsurePlatformSchool(context.Background(), "0000000003", "  示例大学  ")
+	record, err := svc.EnsurePlatformSchool(context.Background(), "0000000003", "  示例大学  ", true)
 	if err != nil {
 		t.Fatalf("EnsurePlatformSchool: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestEnsurePlatformSchoolFallsBackToReuseOnConcurrentConflict(t *testing.T) 
 	}
 	svc, audits := newPlatformService(t, repo)
 
-	record, err := svc.EnsurePlatformSchool(context.Background(), "0000000004", "并发大学")
+	record, err := svc.EnsurePlatformSchool(context.Background(), "0000000004", "并发大学", true)
 	if err != nil {
 		t.Fatalf("EnsurePlatformSchool: %v", err)
 	}
@@ -201,11 +202,66 @@ func TestEnsurePlatformSchoolRejectsEmptyName(t *testing.T) {
 	repo := &platformRepo{lookupErr: errs.ErrNotFound}
 	svc, _ := newPlatformService(t, repo)
 
-	_, err := svc.EnsurePlatformSchool(context.Background(), "0000000005", "   ")
+	_, err := svc.EnsurePlatformSchool(context.Background(), "0000000005", "   ", true)
 	if err == nil || errs.From(err).Code != errs.CodeValidation {
 		t.Fatalf("empty name error = %v, want validation", err)
 	}
 	if len(repo.creates) != 0 {
 		t.Fatalf("empty name created %d schools, want 0", len(repo.creates))
+	}
+}
+
+func TestEnsurePlatformSchoolRejectsUnknownSchoolWithoutCreatePermission(t *testing.T) {
+	repo := &platformRepo{lookupErr: errs.ErrNotFound}
+	svc, audits := newPlatformService(t, repo)
+
+	record, err := svc.EnsurePlatformSchool(context.Background(), "0000000006", "未登记大学", false)
+	if err == nil || errs.From(err).Code != errs.CodeNotFound {
+		t.Fatalf("error = %v, want not_found", err)
+	}
+	if got := errs.From(err).Message; got != "school is not registered; ask an administrator to create it" {
+		t.Fatalf("message = %q, want the registration hint", got)
+	}
+	if record.ID != "" || record.PlatformUniversityID != "" {
+		t.Fatalf("record = %+v, want the zero record", record)
+	}
+	if len(repo.creates) != 0 {
+		t.Fatalf("no-create mode created %d schools, want 0", len(repo.creates))
+	}
+	if len(audits.entries) != 0 {
+		t.Fatalf("no-create mode wrote %d audit rows, want 0", len(audits.entries))
+	}
+}
+
+func TestEnsurePlatformSchoolReusesRegisteredSchoolWithoutCreatePermission(t *testing.T) {
+	cases := []struct {
+		name   string
+		status Status
+	}{
+		{"active", StatusActive},
+		{"disabled", StatusDisabled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &platformRepo{lookup: Record{
+				ID: "school-" + tc.name, Code: "existing", Name: "Existing",
+				Status: tc.status, PlatformUniversityID: "0000000007",
+			}}
+			svc, audits := newPlatformService(t, repo)
+
+			record, err := svc.EnsurePlatformSchool(context.Background(), "0000000007", "已登记大学", false)
+			if err != nil {
+				t.Fatalf("registered school must stay readable: %v", err)
+			}
+			if record.ID != "school-"+tc.name || record.Status != tc.status {
+				t.Fatalf("record = %+v, want the registered row", record)
+			}
+			if len(repo.creates) != 0 {
+				t.Fatalf("no-create mode created %d schools, want 0", len(repo.creates))
+			}
+			if len(audits.entries) != 0 {
+				t.Fatalf("no-create mode wrote %d audit rows, want 0", len(audits.entries))
+			}
+		})
 	}
 }

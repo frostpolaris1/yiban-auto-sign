@@ -3,7 +3,8 @@ package account
 // 平台探测的守卫单测（ykxf）。
 //
 // 判据：平台认证与设备读回都走注入端口；凭据不落账号仓储；
-// 身份缺字段与平台失败统一 upstream；活跃校回填、disabled 校为 null。
+// 身份缺字段与平台失败统一 upstream；活跃校回填、disabled 校为 null，
+// 普通用户探测未登记校按 not_found 原样上抛、不代建。
 
 import (
 	"context"
@@ -33,16 +34,17 @@ func (f *fakeIdentity) Verify(_ context.Context, req contract.VerifyRequest) (co
 }
 
 type fakeProjector struct {
-	record coreschool.Record
-	err    error
-	calls  int
-	lastID string
-	last   string
+	record          coreschool.Record
+	err             error
+	calls           int
+	lastID          string
+	last            string
+	lastAllowCreate bool
 }
 
-func (f *fakeProjector) EnsurePlatformSchool(_ context.Context, universityID, name string) (coreschool.Record, error) {
+func (f *fakeProjector) EnsurePlatformSchool(_ context.Context, universityID, name string, allowCreate bool) (coreschool.Record, error) {
 	f.calls++
-	f.lastID, f.last = universityID, name
+	f.lastID, f.last, f.lastAllowCreate = universityID, name, allowCreate
 	return f.record, f.err
 }
 
@@ -99,12 +101,90 @@ func TestDetectReturnsIdentityAndSchoolWithoutPersisting(t *testing.T) {
 	if projector.lastID != "0000000031" || projector.last != "示例大学" {
 		t.Fatalf("projection input = %q %q", projector.lastID, projector.last)
 	}
+	if projector.lastAllowCreate {
+		t.Fatalf("ordinary user detection asked to create a school; it may only reuse a registered one")
+	}
 	if identity.lastReq.Credential.Phone != "13800138031" ||
 		identity.lastReq.Credential.Password != "platform-secret" {
 		t.Fatalf("platform request = %+v", identity.lastReq.Credential)
 	}
 	if repo.credCalls != 0 {
 		t.Fatalf("detect read %d credentials; it must not persist or read account rows", repo.credCalls)
+	}
+}
+
+// 建校权限按角色分流：普通用户只复用已登记学校，未登记按 not_found
+// 原样上抛（由 school 服务拒绝代建、不写审计）；master/admin 保留自动建校。
+func TestDetectSchoolCreationFollowsRole(t *testing.T) {
+	active := coreschool.Record{
+		ID: "school-33", Name: "示例大学", Status: coreschool.StatusActive,
+		PlatformUniversityID: "0000000033",
+	}
+	cases := []struct {
+		name            string
+		scope           corescope.Scope
+		projector       *fakeProjector
+		wantErr         errs.Code
+		wantSchool      bool
+		wantAllowCreate bool
+	}{
+		{
+			name:            "user reuses a registered school",
+			scope:           corescope.User("user-1"),
+			projector:       &fakeProjector{record: active},
+			wantSchool:      true,
+			wantAllowCreate: false,
+		},
+		{
+			name:            "user cannot create an unregistered school",
+			scope:           corescope.User("user-1"),
+			projector:       &fakeProjector{err: errs.New(errs.CodeNotFound, "school is not registered; ask an administrator to create it")},
+			wantErr:         errs.CodeNotFound,
+			wantAllowCreate: false,
+		},
+		{
+			name:            "admin still creates",
+			scope:           corescope.Admin([]string{"school-33"}),
+			projector:       &fakeProjector{record: active},
+			wantSchool:      true,
+			wantAllowCreate: true,
+		},
+		{
+			name:            "master still creates",
+			scope:           corescope.Master(),
+			projector:       &fakeProjector{record: active},
+			wantSchool:      true,
+			wantAllowCreate: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			identity := &fakeIdentity{profile: contract.Profile{
+				DisplayName: "测*生", SchoolName: "示例大学", UniversityID: "0000000033",
+			}}
+			svc, _ := newDetectService(t, identity, tc.projector, &fakeDeviceReader{})
+
+			result, err := svc.Detect(context.Background(), tc.scope, DetectInput{
+				Phone: "13800138033", Password: "platform-secret",
+			})
+			if tc.wantErr != "" {
+				if err == nil || errs.From(err).Code != tc.wantErr {
+					t.Fatalf("error = %v, want %s", err, tc.wantErr)
+				}
+				if result.School != nil {
+					t.Fatalf("school = %+v, want null when lookups fail", result.School)
+				}
+			} else if err != nil {
+				t.Fatalf("Detect: %v", err)
+			}
+			if tc.projector.calls != 1 || tc.projector.lastAllowCreate != tc.wantAllowCreate {
+				t.Fatalf("projection calls = %d allowCreate = %t, want 1/%t",
+					tc.projector.calls, tc.projector.lastAllowCreate, tc.wantAllowCreate)
+			}
+			if tc.wantSchool && (result.School == nil || result.School.ID != "school-33") {
+				t.Fatalf("school = %+v, want the registered school", result.School)
+			}
+		})
 	}
 }
 
