@@ -13,6 +13,7 @@ package account
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -328,6 +329,43 @@ func TestRunAutoApproveVersionConflictAfterManualReviewStaysSilent(t *testing.T)
 	}
 	if len(alerts.events) != 0 {
 		t.Fatalf("通知 = %+v, want 0（审计未落地不得发通知）", alerts.events)
+	}
+}
+
+// TestRunAutoApproveVersionConflictAuditFailureStillAlerts 钉住 N-a：
+// 审计写失败只 Warn，不改「行仍 pending、应补发通知」这一结论。runAutoApprove
+// 无返回值，等价观测是：账号留 pending、恰好一条待审通知、审计只尝试一次。
+func TestRunAutoApproveVersionConflictAuditFailureStillAlerts(t *testing.T) {
+	repo := &autoRepo{record: Record{ID: "acc-v3", SchoolID: "school-1", Status: StatusPending}}
+	identity := &fakeIdentity{profile: contract.Profile{UniversityID: "U1"}}
+	alerts := &recordingReviewAlerts{}
+	svc := newAutoServiceAlerts(t, repo,
+		autoSchools{record: coreschool.Record{ID: "school-1", Status: coreschool.StatusActive, PlatformUniversityID: "U1"}},
+		&autoSettings{enabled: true}, identity, alerts)
+	repo.cred = sealedCredential(t, svc.deps.Cipher, "acc-v3")
+	identity.onVerify = func() { repo.cred.Version++ }
+	audits, ok := svc.deps.Audit.(*reviewFakeAudit)
+	if !ok {
+		t.Fatalf("audit fake = %T, want *reviewFakeAudit", svc.deps.Audit)
+	}
+	audits.appendErr = errors.New("audit down")
+
+	svc.runAutoApprove(context.Background(), "acc-v3", "school-1", true)
+
+	if repo.record.Status != StatusPending {
+		t.Fatalf("status = %q, want pending", repo.record.Status)
+	}
+	if audits.attempts != 1 {
+		t.Fatalf("audit attempts = %d, want 1", audits.attempts)
+	}
+	if count := auditActionCount(audits, "account.auto_check_failed"); count != 0 {
+		t.Fatalf("auto check failed rows = %d, want 0（Append 失败不得记成已写）", count)
+	}
+	if len(alerts.events) != 1 {
+		t.Fatalf("通知 = %+v, want 1（审计失败不得吞掉待审通知）", alerts.events)
+	}
+	if got := alerts.events[0].Category; got != corenotify.CategoryReviewPending {
+		t.Fatalf("通知类别 = %q, want review_pending", got)
 	}
 }
 

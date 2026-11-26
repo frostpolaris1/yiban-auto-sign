@@ -114,10 +114,16 @@ func (reviewFakeTx) InTx(ctx context.Context, fn func(context.Context) error) er
 // reviewFakeAudit 只记录追加，不校验链。
 type reviewFakeAudit struct {
 	appaudit.Repo
-	entries []coreaudit.Entry
+	entries   []coreaudit.Entry
+	attempts  int
+	appendErr error
 }
 
 func (f *reviewFakeAudit) Append(_ context.Context, in coreaudit.Entry) (coreaudit.Row, error) {
+	f.attempts++
+	if f.appendErr != nil {
+		return coreaudit.Row{}, f.appendErr
+	}
 	f.entries = append(f.entries, in)
 	return coreaudit.Row{}, nil
 }
