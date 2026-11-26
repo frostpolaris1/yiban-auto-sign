@@ -1543,17 +1543,20 @@ type AuditStatusReport struct {
 	// AnchorOk True only when anchor_status is ok.
 	AnchorOk *bool `json:"anchor_ok,omitempty"`
 
-	// AnchorReason Human-readable anchor mismatch or error reason. Empty when the
-	// anchor is disabled, missing or ok. Never contains audit detail,
-	// actor or personal data.
+	// AnchorReason Human-readable anchor mismatch or error reason; for a missing
+	// anchor it is anchor_not_initialized. Empty when the anchor is
+	// disabled or ok. Never contains audit detail, actor or personal
+	// data.
 	AnchorReason *string `json:"anchor_reason,omitempty"`
 
 	// AnchorSeq Row id of the anchor head when an anchor was compared.
 	AnchorSeq *int64 `json:"anchor_seq,omitempty"`
 
 	// AnchorStatus Out-of-database anchor comparison state. disabled means no anchor
-	// path is configured; missing means the path is configured but the
-	// file does not exist yet (the chain verdict stands); ok means the
+	// path is configured; missing means the reader is configured but no
+	// anchor evidence exists yet (the file is absent or empty and no
+	// high-water mark is recorded), so ok is always false while the
+	// chain verdict is still reported (fail closed); ok means the
 	// anchor row, its hash, the row count and the recorded line bytes
 	// (line_hash in anchor_meta) all match; mismatch means the anchor
 	// row is gone, its hash or recorded line bytes changed, the count
@@ -1583,8 +1586,10 @@ type AuditStatusReport struct {
 }
 
 // AuditStatusReportAnchorStatus Out-of-database anchor comparison state. disabled means no anchor
-// path is configured; missing means the path is configured but the
-// file does not exist yet (the chain verdict stands); ok means the
+// path is configured; missing means the reader is configured but no
+// anchor evidence exists yet (the file is absent or empty and no
+// high-water mark is recorded), so ok is always false while the
+// chain verdict is still reported (fail closed); ok means the
 // anchor row, its hash, the row count and the recorded line bytes
 // (line_hash in anchor_meta) all match; mismatch means the anchor
 // row is gone, its hash or recorded line bytes changed, the count

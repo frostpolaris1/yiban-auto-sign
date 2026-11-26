@@ -1900,16 +1900,20 @@ export interface paths {
          *     the last verified row and is empty when no row passed. checked_at is
          *     the server time this scan finished. No audit detail, actor, target or
          *     personal value is returned.
-         *     When YIBAN_AUDIT_ANCHOR_FILE is configured and the file exists, the
-         *     scan also compares the chain head against the strongest anchor line
-         *     written by `yiban-cli audit anchor`: the anchored row must still
-         *     exist, its hash must match and the row count through it must match.
-         *     Deleting a prefix, truncating the anchored tail, clearing the table or
-         *     re-signing the chain therefore answers ok=false with anchor_status
-         *     mismatch. Rows appended after the anchor are outside this check; keep
-         *     an off-machine copy of the anchor for that window. Without an anchor
-         *     file the endpoint keeps the previous chain-only behavior and reports
-         *     anchor_status disabled or missing.
+         *     When the anchor reader is configured (YIBAN_AUDIT_ANCHOR_FILE is
+         *     non-empty), the scan also compares the chain head against the
+         *     strongest anchor line written by `yiban-cli audit anchor`: the
+         *     anchored row must still exist, its hash must match and the row count
+         *     through it must match. Deleting a prefix, truncating the anchored
+         *     tail, clearing the table or re-signing the chain therefore answers
+         *     ok=false with anchor_status mismatch. Rows appended after the anchor
+         *     are outside this check; keep an off-machine copy of the anchor for
+         *     that window. Without a configured reader the endpoint keeps the
+         *     chain-only behavior and reports anchor_status disabled. When the
+         *     reader is configured but no anchor has been written yet (the anchor
+         *     file is absent or empty and no high-water mark is recorded), it
+         *     answers ok=false with anchor_status missing and anchor_reason
+         *     anchor_not_initialized: no anchor evidence is not a pass.
          *     Legacy parity: the previous console's audit-status endpoint read a
          *     cached daily snapshot; this endpoint recomputes the chain on demand.
          */
@@ -3172,8 +3176,10 @@ export interface components {
             checked_at: string;
             /**
              * @description Out-of-database anchor comparison state. disabled means no anchor
-             *     path is configured; missing means the path is configured but the
-             *     file does not exist yet (the chain verdict stands); ok means the
+             *     path is configured; missing means the reader is configured but no
+             *     anchor evidence exists yet (the file is absent or empty and no
+             *     high-water mark is recorded), so ok is always false while the
+             *     chain verdict is still reported (fail closed); ok means the
              *     anchor row, its hash, the row count and the recorded line bytes
              *     (line_hash in anchor_meta) all match; mismatch means the anchor
              *     row is gone, its hash or recorded line bytes changed, the count
@@ -3186,9 +3192,10 @@ export interface components {
             /** @description True only when anchor_status is ok. */
             anchor_ok?: boolean;
             /**
-             * @description Human-readable anchor mismatch or error reason. Empty when the
-             *     anchor is disabled, missing or ok. Never contains audit detail,
-             *     actor or personal data.
+             * @description Human-readable anchor mismatch or error reason; for a missing
+             *     anchor it is anchor_not_initialized. Empty when the anchor is
+             *     disabled or ok. Never contains audit detail, actor or personal
+             *     data.
              */
             anchor_reason?: string;
             /**
