@@ -147,8 +147,12 @@ bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>   # R1..R1
 go test ./cmd/cli/ -run 'TestUpdateSh' -count=1
 ```
 
-CI：`deploy-gate.yml` 的 `update-rollback-e2e` job 自动跑上面两条
-（第一条是干跑契约，必定真跑；第二条环境起不来时显性 SKIP，不算绿）。
+CI：拆成两条轨，都是 fail-closed（P1-6）：
+- `deploy-gate.yml` 的 `update-rollback-e2e` job（required，托管 runner）只跑
+  update.sh 干跑契约（上面第二条命令），任何非 0 退出判红；
+- `update-rollback-privileged.yml`（手动 `workflow_dispatch`、自托管
+  `yiban-privileged` runner、只读权限）跑上面第一条 R1..R10 全矩阵，脚本非 0
+  原样判红。全矩阵不在托管 runner 上跑，rc=2 环境错误不再被当作跳过。
 
 期望：演练脚本退出码 0，`run.log` 末尾 `result=PASS`，R1..R10（含 R8b install 重跑、
 R8c 状态目录软链、R9b 备份件被篡改）全 PASS
@@ -161,7 +165,8 @@ R8c 状态目录软链、R9b 备份件被篡改）全 PASS
 旧线 `deploy_gate.sh --phase B`（回滚 v0.6.2）：本项不再指向；
 脚本与旧线 CI 仍在（phase B 未删）。
 脚本侧红：`update.sh` 无 `.bak` 回滚路径、无自检门/统一备份/数据库恢复标记、
-`deploy-gate.yml` 没有 `update-rollback-e2e` job 或该 job 不调用演练，
+`deploy-gate.yml` 没有 `update-rollback-e2e` job 或没跑干跑契约、演练调用回流到
+托管 runner、`update-rollback-privileged.yml` 缺失或带自动触发/降级分支，
 或演练脚本/守卫用例名消失。
 
 ## 项 8　ed25519/SPA 发布件检查（item 名 `signing`，可执行门；2026-10-29 起）

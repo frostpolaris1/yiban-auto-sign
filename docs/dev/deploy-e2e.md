@@ -301,15 +301,24 @@ sha256）、真 `systemctl` 停起 unit、真 goose 迁移成败、真
 
 ### 8.5 CI 接线
 
-`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` job 两步：
+`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` 是 required
+检查，只跑 update.sh 干跑契约，不依赖 docker：
 
 1. `go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh'`：update.sh 干跑契约
-   （自检门、统一备份、start 失败回滚、首次装页面回滚、argv 无口令、缺值 exit 2）。
-   不需要 docker，托管 runner 上必定真跑。
-2. `bash scripts/e2e/update-rollback-e2e.sh host ...`：R1..R10 全矩阵。
-   托管 runner 上 `--privileged` systemd 容器未实测：环境起不来时脚本 exit 2，
-   job 打印 `SKIP` 并写进 step summary 后退出 0 —— **SKIP 不算绿**，
-   release-check 项 7 仍记 POINTER，发布前按 §1 手跑一遍。
+   （自检门、统一备份、start 失败回滚、首次装页面回滚、argv 无口令、缺值退出 2）。
+   托管 runner 上必定真跑，**任何非 0 退出判红**，没有降级分支。
 
-`tests/test_deploy_e2e_wiring.py` 钉住这条接线：job 存在、有超时门、
-真的调用脚本、干跑契约在场、SKIP 路径写进 step summary。
+需要 `--privileged` systemd 的完整矩阵 R1..R10 不在托管 runner 上跑，拆到
+`.github/workflows/update-rollback-privileged.yml`：
+
+2. `bash scripts/e2e/update-rollback-e2e.sh host ...`：R1..R10 全矩阵，
+   一次性 systemd 容器真跑 update.sh。该 workflow 只接受手动
+   `workflow_dispatch`，`runs-on: [self-hosted, linux, x64, yiban-privileged]`，
+   权限只读；脚本任何非 0 退出（含退出码 2 = 环境错误）都原样判红，没有降级
+   分支（P1-6 前旧接法把 rc=2 打印成 `SKIP` 后退出 0，等于 required 检查可整条
+   失效，已删）。自托管 runner 的注册与前置条件见 workflow 文件头。
+
+`tests/test_deploy_e2e_wiring.py` 钉住这条接线：required job 存在、有超时门、
+干跑契约在场、块内没有 `-eq 2`/`SKIP`/`exit 0`/`::warning`/`continue-on-error` 之类降级；全矩阵只在唯一一条手动、自托管 workflow 里，
+带自托管标签与只读权限，且同样没有降级分支。release-check 项 7 仍记 POINTER：
+发布前按 §1 在目标机上再手跑一遍。
