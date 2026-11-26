@@ -4,12 +4,13 @@ package router_test
 // 真中间件、真用例链（appsettings.Service）。
 //
 // 断言用户可见不变式（写面咬接线）：
-//  1. 缺 CSRF → 403；user 角色 → 403（均零写入零审计）。
-//  2. admin 暂停（正确口令）→ 200 {"paused":true}；GET /api/admin/engine
+//  1. 缺 CSRF → 403；user 与 admin 暂停 → 403（均零写入零审计、
+//     不消费二次口令）。
+//  2. master 暂停（正确口令）→ 200 {"paused":true}；GET /api/admin/engine
 //     快照 paused=true（热生效，无需重启）。
-//  3. 方向分闸：admin 恢复 → 403 零写入；master 恢复 → 200，
+//  3. 方向分闸双向仅 master：admin 恢复 → 403 零写入；master 恢复 → 200，
 //     快照回 paused=false。
-//  4. current_password：缺失 400、错误 403，均零写入零审计行。
+//  4. current_password（master）：缺失 400、错误 403，均零写入零审计行。
 
 import (
 	"context"
@@ -123,7 +124,7 @@ func getEngine(engine *gin.Engine, session *coreauth.Session) *httptest.Response
 	return serve(engine, requestWithSession(http.MethodGet, "/api/admin/engine", "", "", session))
 }
 
-// 全链路：CSRF/角色负例 → admin 暂停热生效 → 方向分闸 → master 恢复回 false。
+// 全链路：CSRF/角色负例（admin 暂停被拒）→ master 暂停热生效 → 方向分闸 → master 恢复回 false。
 func TestEnginePauseEndToEnd(t *testing.T) {
 	engine, issuer, store, audits := newEnginePauseEngine(t)
 	master := issueUser(t, issuer, coreauth.RoleMaster)
@@ -134,23 +135,26 @@ func TestEnginePauseEndToEnd(t *testing.T) {
 	if rec := putPause(`{"paused":true,"current_password":"right-pass"}`, "", &admin)(engine); rec.Code != http.StatusForbidden {
 		t.Fatalf("missing csrf = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
-	// 角色负例：user 暂停 403。
+	// 角色负例：user 暂停 403，admin 暂停同样 403（仅 master）。
 	if rec := putPause(`{"paused":true,"current_password":"right-pass"}`, user.CSRFToken, &user)(engine); rec.Code != http.StatusForbidden {
 		t.Fatalf("user pause = %d, want 403", rec.Code)
+	}
+	if rec := putPause(`{"paused":true,"current_password":"right-pass"}`, admin.CSRFToken, &admin)(engine); rec.Code != http.StatusForbidden {
+		t.Fatalf("admin pause = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 	if len(store.boolRows) != 0 || len(audits.entries) != 0 {
 		t.Fatalf("被拒请求落了行: rows=%v audits=%d", store.boolRows, len(audits.entries))
 	}
 
-	// admin 暂停成功：200 回显 true，GET 快照立即 paused=true。
-	rec := putPause(`{"paused":true,"current_password":"right-pass"}`, admin.CSRFToken, &admin)(engine)
+	// master 暂停成功：200 回显 true，GET 快照立即 paused=true。
+	rec := putPause(`{"paused":true,"current_password":"right-pass"}`, master.CSRFToken, &master)(engine)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"paused":true`) {
-		t.Fatalf("admin pause = %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("master pause = %d: %s", rec.Code, rec.Body.String())
 	}
 	if len(audits.entries) != 1 || audits.entries[0].Action != coreaudit.ActionSettingsEnginePaused {
 		t.Fatalf("audit rows = %d, want exactly one engine_paused row", len(audits.entries))
 	}
-	rec = getEngine(engine, &admin)
+	rec = getEngine(engine, &master)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"paused":true`) {
 		t.Fatalf("engine snapshot after pause = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -184,12 +188,12 @@ func TestEnginePauseEndToEnd(t *testing.T) {
 // current_password 复核的端到端形状：缺失 400、错误 403，均零写入零审计。
 func TestEnginePausePasswordGateEndToEnd(t *testing.T) {
 	engine, issuer, store, audits := newEnginePauseEngine(t)
-	admin := issueUser(t, issuer, coreauth.RoleAdmin)
+	master := issueUser(t, issuer, coreauth.RoleMaster)
 
-	if rec := putPause(`{"paused":true}`, admin.CSRFToken, &admin)(engine); rec.Code != http.StatusBadRequest {
+	if rec := putPause(`{"paused":true}`, master.CSRFToken, &master)(engine); rec.Code != http.StatusBadRequest {
 		t.Fatalf("missing password = %d, want 400: %s", rec.Code, rec.Body.String())
 	}
-	if rec := putPause(`{"paused":true,"current_password":"wrong-pass"}`, admin.CSRFToken, &admin)(engine); rec.Code != http.StatusForbidden {
+	if rec := putPause(`{"paused":true,"current_password":"wrong-pass"}`, master.CSRFToken, &master)(engine); rec.Code != http.StatusForbidden {
 		t.Fatalf("wrong password = %d, want 403", rec.Code)
 	}
 	if len(store.boolRows) != 0 || len(audits.entries) != 0 {

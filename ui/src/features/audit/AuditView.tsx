@@ -7,6 +7,8 @@
  *
  * **口径**
  * 权限由 `RUN_VIEW_ROLES`（master/admin）控制；user 渲染无权限卡片且零审计请求。
+ * 台账可见面由服务端按调用者收窄：master 读全部，admin 只读绑定院校的行。
+ * 巡检结论仅 master 可用：admin 不请求 `/api/admin/audit-status`，页头只显示只读说明。
  * 页头结论复用 `lib/audit-status` 的三态判定：完好 / 异常 / 暂无行；
  * 断链时页头出危险告警，列表照常可用；列表读取失败只影响列表区，结论保持。
  * 筛选变化一律回第一页（游标清空）；翻页只带游标，末页 `next_cursor` 为空时下一页禁用。
@@ -122,6 +124,8 @@ export function AuditView() {
   const meQuery = useMe()
   const role = meQuery.data?.role ?? null
   const allowed = roleAllowed(role, RUN_VIEW_ROLES)
+  // 巡检端点仅 master；admin 的台账照常可读，但不得发巡检请求（否则常驻 403）。
+  const isMaster = role === 'master'
 
   // 游标栈与会话同寿命；任何筛选提交都把栈重置回第一页。
   const [stack, setStack] = useState<CursorStack>(() => emptyCursorStack())
@@ -152,7 +156,7 @@ export function AuditView() {
   const statusQuery = useQuery({
     queryKey: ['audit-status'],
     queryFn: () => (SHOWCASE ? Promise.resolve(showcaseAuditStatus()) : getAuditStatus()),
-    enabled: allowed,
+    enabled: allowed && isMaster,
     staleTime: STATUS_STALE_MS,
     retry: false,
   })
@@ -215,17 +219,25 @@ export function AuditView() {
             审计 <span className="accent">日志</span>
           </>
         }
-        subtitle="审计链的只读台账；按动作、操作者与时间范围筛选。"
+        subtitle={
+          isMaster
+            ? '审计链的只读台账；按动作、操作者与时间范围筛选。'
+            : '审计链的只读台账；仅显示绑定院校的审计行，按动作、操作者与时间范围筛选。'
+        }
         actions={
-          <AuditVerdict
-            report={report}
-            loading={statusQuery.isPending}
-            error={statusError?.message ?? null}
-            errorCode={statusError?.code ?? null}
-            onRetry={() => {
-              void statusQuery.refetch()
-            }}
-          />
+          isMaster ? (
+            <AuditVerdict
+              report={report}
+              loading={statusQuery.isPending}
+              error={statusError?.message ?? null}
+              errorCode={statusError?.code ?? null}
+              onRetry={() => {
+                void statusQuery.refetch()
+              }}
+            />
+          ) : (
+            <span className="app-caption">巡检仅主管理员可用</span>
+          )
         }
       />
 

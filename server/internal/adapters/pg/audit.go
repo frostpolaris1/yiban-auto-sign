@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // AuditRepo 是 PostgreSQL 审计仓储。
@@ -284,7 +286,10 @@ func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]c
 	if query.Limit < 1 || query.Limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
 	}
-	where, args := auditListWhere(query)
+	where, args, err := auditListWhere(query)
+	if err != nil {
+		return nil, "", err
+	}
 	if query.Cursor != "" {
 		at, id, err := decodeIntCursor(query.Cursor)
 		if err != nil {
@@ -327,7 +332,10 @@ func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]c
 // CountLogs 数同过滤条件下的总行数，忽略游标与 limit。
 // 与 ListLogs 共用 auditListWhere：两处过滤口径不会漂移。
 func (r *AuditRepo) CountLogs(ctx context.Context, query coreaudit.LogQuery) (int64, error) {
-	where, args := auditListWhere(query)
+	where, args, err := auditListWhere(query)
+	if err != nil {
+		return 0, err
+	}
 	var total int64
 	if err := r.db.q(ctx).QueryRow(ctx,
 		`SELECT count(*) FROM audit_logs`+where, args...).Scan(&total); err != nil {
@@ -338,7 +346,8 @@ func (r *AuditRepo) CountLogs(ctx context.Context, query coreaudit.LogQuery) (in
 
 // auditListWhere 构造列表与计数共用的过滤子句。
 // 返回的 clause 以 " WHERE TRUE" 开头；args 与占位符按出现顺序对应。
-func auditListWhere(query coreaudit.LogQuery) (string, []any) {
+// 可见面追加在既有条件之后，故游标占位符仍接在 args 尾部。
+func auditListWhere(query coreaudit.LogQuery) (string, []any, error) {
 	where := " WHERE TRUE"
 	var args []any
 	if query.Action != "" {
@@ -361,5 +370,16 @@ func auditListWhere(query coreaudit.LogQuery) (string, []any) {
 		args = append(args, query.To.UTC())
 		where += fmt.Sprintf(" AND ts <= $%d", len(args))
 	}
-	return where, args
+	// audit_logs 没有 owner_user_id：user 可见面必须显式拒绝，
+	// 不能让 scopePredicate 拼出错误列名。
+	if query.Scope.Kind() == corescope.KindUser {
+		return "", nil, errs.New(errs.CodeForbidden, "audit logs are scoped to master and admin")
+	}
+	clause, scopeArgs, err := scopePredicate(query.Scope, len(args)+1, "")
+	if err != nil {
+		return "", nil, err
+	}
+	where += clause
+	args = append(args, scopeArgs...)
+	return where, args, nil
 }

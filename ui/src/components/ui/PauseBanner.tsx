@@ -20,7 +20,7 @@ type PauseBannerProps = {
   /** 到点未领取的任务数：恢复后按序补跑。 */
   dueNow: number
   canResume: boolean
-  /** 不可恢复时的原因（如「仅主管理员可恢复」或展示模式只读）。 */
+  /** 不可恢复时的原因（如「仅主管理员可操作」或展示模式只读）。 */
   resumeBlockedReason?: string
   onResume: (opener?: HTMLElement | null) => void
 }

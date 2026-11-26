@@ -43,8 +43,9 @@ import {
  *    跳过不计入；分母 0 显「—」；环比 pill 分「有对比/无对比」两态；
  *    KPI 与图表共用同一次 sign-stats 读取，不新增请求；
  *    业务日跨日换键恰好重取一次，同一业务日内不轮询。
- * 10. 审计链巡检：master/admin 读一次 audit-status 并显示三态、行数与时刻；
- *    断链给定位行且不弹窗；空链说「暂无审计行」，不算通过。
+ * 10. 审计链巡检仅 master：读一次 audit-status 并显示三态、行数与时刻；
+ *    admin 不请求、不渲染巡检条（台账仍可读）；断链给定位行且不弹窗；
+ *    空链说「暂无审计行」，不算通过。
  *    桌面快捷条与侧栏 3/3 重复，已隐藏（B5）；移动保留且健康条折叠为摘要行。
  *
  * 断言用户可见结果与请求参数，不钉组件内部结构。
@@ -139,7 +140,7 @@ test('invariant 1: a manager sends no sign-status or diagnostics request', async
 test('invariant 10: the audit card shows the verdict, rows and inspection time', async ({
   page,
 }) => {
-  const api = await mockDashboardApi(page, { role: 'admin' })
+  const api = await mockDashboardApi(page, { role: 'master' })
   await openDashboard(page)
 
   const card = auditCard(page)
@@ -152,7 +153,7 @@ test('invariant 10: the audit card shows the verdict, rows and inspection time',
 
 test('invariant 10: a broken chain names the row without a popup', async ({ page }) => {
   await mockDashboardApi(page, {
-    role: 'admin',
+    role: 'master',
     auditStatus: {
       ...DEFAULT_AUDIT_STATUS,
       ok: false,
@@ -172,7 +173,7 @@ test('invariant 10: a broken chain names the row without a popup', async ({ page
 
 test('invariant 10: an empty chain is neutral, not an alarm', async ({ page }) => {
   await mockDashboardApi(page, {
-    role: 'admin',
+    role: 'master',
     auditStatus: {
       ...DEFAULT_AUDIT_STATUS,
       ok: false,
@@ -189,11 +190,22 @@ test('invariant 10: an empty chain is neutral, not an alarm', async ({ page }) =
   await expect(card.getByText('链异常')).toHaveCount(0)
 })
 
+test('invariant 10: an admin neither requests nor renders the audit inspection', async ({ page }) => {
+  const api = await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+
+  const strip = page.getByRole('region', { name: '系统健康与审计巡检' })
+  await expect(strip).toContainText('执行引擎')
+  await expect(strip.getByText('审计', { exact: true })).toHaveCount(0)
+  await expect(strip.getByText('审计链巡检')).toHaveCount(0)
+  expect(auditStatusCalls(api), 'an admin never inspects the audit chain').toHaveLength(0)
+})
+
 test('invariant 10: the health pulse bar shows engine status, live counters and recovers from failure alone', async ({
   page,
 }) => {
   const api = await mockDashboardApi(page, {
-    role: 'admin',
+    role: 'master',
     engineSnapshot: {
       ...DEFAULT_ENGINE_SNAPSHOT,
       paused: true,
@@ -727,6 +739,20 @@ test('invariant 10: failed KPI links to failed events and the desktop yields qui
 })
 
 
+test('invariant 11: an admin sees pause disabled on an unpaused engine and sends nothing', async ({
+  page,
+}) => {
+  const api = await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+
+  const strip = page.getByRole('region', { name: '系统健康与审计巡检' })
+  const pause = strip.getByRole('button', { name: '暂停引擎' })
+  await expect(pause).toBeDisabled()
+  await expect(pause).toHaveAttribute('title', '仅主管理员可操作引擎开关')
+  await pause.click({ force: true })
+  expect(pauseCalls(api), 'a disabled pause must not reach the server').toHaveLength(0)
+})
+
 test('invariant 11: a master pauses the engine through reauth and the banner offers resume', async ({
   page,
 }) => {
@@ -739,7 +765,7 @@ test('invariant 11: a master pauses the engine through reauth and the banner off
   await expect(dialog).toBeVisible()
   await expect(dialog).toContainText('在飞 1 条（本管辖范围）')
   await expect(dialog).toContainText('待执行 0 条（本管辖范围）')
-  await expect(dialog).toContainText('恢复仅主管理员')
+  await expect(dialog).toContainText('暂停与恢复均仅主管理员')
   await dialog.getByRole('textbox', { name: '你的登录口令' }).fill('p@ssword')
   await dialog.getByRole('button', { name: '暂停引擎' }).click()
 
@@ -766,7 +792,7 @@ test('invariant 11: an admin sees the resume button disabled with the master-onl
   await expect(strip).toContainText('执行引擎已暂停')
   const resume = strip.getByRole('button', { name: '恢复引擎' })
   await expect(resume).toBeDisabled()
-  await expect(resume).toHaveAttribute('title', '仅主管理员可恢复')
+  await expect(resume).toHaveAttribute('title', '仅主管理员可操作引擎开关')
   await resume.click({ force: true })
   expect(pauseCalls(api), 'a disabled resume must not reach the server').toHaveLength(0)
 })
@@ -854,7 +880,7 @@ test.describe('B5 冗余移除与移动健康条（2026-11-25）', () => {
     const quickLinks = page.locator('nav[aria-label="管理常用直达"]')
     await expect(quickLinks).toHaveCount(1)
     await expect(quickLinks).toBeHidden()
-    expect(auditStatusCalls(api), '隐藏快捷条不新增请求').toHaveLength(1)
+    expect(auditStatusCalls(api), 'admin 不请求巡检，隐藏快捷条也不新增请求').toHaveLength(0)
 
     const sidebar = page.getByRole('complementary', { name: '主导航' })
     const entries = [
@@ -970,7 +996,7 @@ test.describe('B5 冗余移除与移动健康条（2026-11-25）', () => {
   }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await mockDashboardApi(page, {
-      role: 'admin',
+      role: 'master',
       auditStatusError: { status: 500, code: 'internal_error', message: '巡检不可用' },
     })
     await openDashboard(page)
@@ -985,7 +1011,7 @@ test.describe('B5 冗余移除与移动健康条（2026-11-25）', () => {
   test('B5: a broken audit chain force-expands the mobile strip', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await mockDashboardApi(page, {
-      role: 'admin',
+      role: 'master',
       auditStatus: { ...DEFAULT_AUDIT_STATUS, ok: false, broken_at: 42 },
     })
     await openDashboard(page)

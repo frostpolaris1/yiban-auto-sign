@@ -389,7 +389,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		settingsSvc *appsettings.Service
 		db          *pg.DB
 		workerSvc   *appworker.Service
-		// authz 只给 master 专属的注册开关用。无数据库时为 nil，端点回 501。
+		// authz 驱动 master 专属写操作与审计可见面：注册开关、审计列表、
+		// 审计巡检都经它定 scope。无数据库时为 nil：注册开关回 501，
+		// 审计列表与巡检回 500（fail-closed）。
 		authz router.Authorizer
 		// engineState 是执行循环的进程内时刻记录，DB 分支构造：
 		// 循环（Run）写入，执行监控端点读取，两者共享同一实例。
@@ -548,9 +550,36 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, err
 		}
+		schoolRepo := pg.NewSchoolRepo(db)
+		schoolSvc, err := appschool.NewService(appschool.Deps{
+			Schools: schoolRepo,
+			Audit:   audits,
+			Tx:      db,
+			Clock:   clk,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: school service: %w", err)
+		}
+		// adminSvc 同时是三个域的作用域解析器：
+		// 入口层只认一个 Authorizer，故绑定校口径只有一份。
+		// 审计可见面与引擎暂停写面都不自建第二套院校判据。
+		adminSvc, err := appadmin.NewService(appadmin.Deps{
+			Admins:  pg.NewAdminSchoolRepo(db),
+			Users:   pg.NewUserRepo(db),
+			Schools: schoolRepo,
+			Audit:   audits,
+			Tx:      db,
+			Clock:   clk,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: admin service: %w", err)
+		}
+		authz = adminSvc
 		notifyLib, systemLib, auditLib, settingsSvc, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle,
 			webhookSender, webhookTestThrottle, settingsRepo, settingsRepo, settingsResolver,
-			scheduleEnvFromConfig(cfg, config.Env{}), mailResolver, cipher, cfg.AuditAnchorFile)
+			scheduleEnvFromConfig(cfg, config.Env{}), mailResolver, cipher, cfg.AuditAnchorFile, authz)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -614,32 +643,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeAuth()
 		}
 
-		schoolRepo := pg.NewSchoolRepo(db)
-		schoolSvc, err := appschool.NewService(appschool.Deps{
-			Schools: schoolRepo,
-			Audit:   audits,
-			Tx:      db,
-			Clock:   clk,
-		})
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("assembly: school service: %w", err)
-		}
-		// adminSvc 同时是三个域的作用域解析器：
-		// 入口层只认一个 Authorizer，故绑定校口径只有一份。
-		adminSvc, err := appadmin.NewService(appadmin.Deps{
-			Admins:  pg.NewAdminSchoolRepo(db),
-			Users:   pg.NewUserRepo(db),
-			Schools: schoolRepo,
-			Audit:   audits,
-			Tx:      db,
-			Clock:   clk,
-		})
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("assembly: admin service: %w", err)
-		}
-		authz = adminSvc
 		// 用户仓储先于账号服务构造：账号用例的属主活跃校验复用同一实例
 		//（仓储无状态）。Sessions 是会话撤销原语：重置口令与软删后立即
 		// 失效全部会话。OwnerAccounts 用同一份用户仓储：名下账号计数是
@@ -1108,7 +1111,8 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	webhook corewebhook.Sender, webhookCooldown appsettings.Cooldown,
 	autoApprove appsettings.AutoApproveStore, settingsRepo *pg.SettingsRepo,
 	settingsResolver *appsettings.Resolver, scheduleEnv appsettings.ScheduleEnv, mailResolver *appsettings.MailResolver,
-	cipher *appaccount.Cipher, auditAnchorFile string) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
+	cipher *appaccount.Cipher, auditAnchorFile string,
+	authz router.Authorizer) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, *appsettings.Service, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
@@ -1171,7 +1175,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		WithScheduleSettings(announcementSvc).
 		WithQuotaSettings(announcementSvc).
 		WithMailSettings(announcementSvc)
-	return notifyHandler, systemHandler, audithttp.NewHandler(reader).WithStatus(inspector), announcementSvc, nil
+	return notifyHandler, systemHandler, audithttp.NewHandler(reader, authz).WithStatus(inspector), announcementSvc, nil
 }
 
 // buildWebhookTestThrottle 构造测试推送的每管理员冷却。

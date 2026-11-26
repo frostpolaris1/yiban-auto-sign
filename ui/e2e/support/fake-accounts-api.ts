@@ -142,7 +142,7 @@ export const EMPTY_ACCOUNT_SUMMARY: AccountSummary = { pending: 0, rejected: 0 }
 
 /**
  * 其它页面的审计链巡检缺省结论：完好态。
- * 只有看板会请求它；此处的路由防其它用例落到 404，
+ * 只有 master 看板会请求它；此处的路由防其它用例落到 404，
  * 断链/空链分支由 `fake-dashboard-api` 覆盖。
  */
 export const DEFAULT_AUDIT_STATUS: AuditStatusReport = {
@@ -745,10 +745,10 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       })
     }
 
-    // 审计链巡检：壳只对 master/admin 请求；其余角色与契约一致 403。
+    // 审计链巡检：仅 master 看板请求；其余角色与契约一致 403。
     if (url.pathname === '/api/admin/audit-status' && request.method() === 'GET') {
-      if (sessionRole !== 'master' && sessionRole !== 'admin') {
-        return fail(route, 403, 'forbidden', '仅 master/admin 可巡检审计链')
+      if (sessionRole !== 'master') {
+        return fail(route, 403, 'forbidden', '仅 master 可巡检审计链')
       }
       return json(route, request, DEFAULT_AUDIT_STATUS)
     }

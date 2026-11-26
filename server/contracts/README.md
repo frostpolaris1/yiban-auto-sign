@@ -206,8 +206,8 @@ either side drifts.
 | GET | `/api/admin/tasks/export` | master/admin | UX-3 swh |
 | GET | `/api/admin/engine` | master/admin | UX-5 aqn |
 |  |  |  | 单进程执行监视快照；响应含 `paused`（全局暂停开关，settings 行 engine.paused，缺行=false，DB 持久跨重启）。 |
-| PUT | `/api/admin/engine/pause` | master/admin | 3a 28l |
-|  |  |  | 写全局暂停开关（settings 行 engine.paused，DB 持久、热生效、跨重启）：按请求目标值分闸——`paused=true`（暂停）master/admin 皆可，`paused=false`（恢复）仅 master（旧线急停先例）；两字段（paused、current_password）必填，缺 400、口令错 403，均零写入零审计；连错沿用全局再认证节流 429；settings 查询故障上抛不静默放行；写入与恰一行 `settings.engine_paused` 审计同事务，detail 只含目标态（操作者在审计行主体列）；幂等重放允许且每次恰一行；恢复写 false 不删行（缺行也读 false，本端点无删行语义）；200 回显 `{"paused": bool}`。 |
+| PUT | `/api/admin/engine/pause` | master | 3a 28l |
+|  |  |  | 写全局暂停开关（settings 行 engine.paused，DB 持久、热生效、跨重启）：暂停（`paused=true`）与恢复（`paused=false`）均仅 master，不再按目标值分闸；admin/user 在二次口令前一律 403，零写入零审计、不消耗再认证节流；两字段（paused、current_password）必填，缺 400、口令错 403，均零写入零审计；连错沿用全局再认证节流 429；settings 查询故障上抛不静默放行；写入与恰一行 `settings.engine_paused` 审计同事务，detail 只含目标态（操作者在审计行主体列）；幂等重放允许且每次恰一行；恢复写 false 不删行（缺行也读 false，本端点无删行语义）；200 回显 `{"paused": bool}`。 |
 | GET | `/api/admin/notify` | master/admin | 2ws A |
 |  |  |  | 各自管理自己的订阅：返回全部类别×三渠道（in_app/email/webhook）共 12 项的有效状态；缺行按默认（review=in_app+email+webhook；credential_invalid=in_app+webhook；sign_failed_daily=email；capacity_rejected=in_app）。投递已接线：站内信＋邮件账本＋webhook 出口（kqa）。 |
 | PUT | `/api/admin/notify` | master/admin | 2ws A |
@@ -239,9 +239,9 @@ either side drifts.
 | GET | `/api/announcement` | master/admin/user | 2ws A |
 |  |  |  | 所有已登录角色读同一正文；未设置或已清空回空文本与 null 时间。 |
 | GET | `/api/audit-logs` | master/admin | 2ws A |
-|  |  |  | 只读审计行：游标分页＋action/actor/from/to 筛选；actor 过滤值按写入同口径掩码；detail 出口过掩码口径；不校验链、不导出。 |
-| GET | `/api/admin/audit-status` | master/admin | 2cu |
-|  |  |  | 按需巡检审计链：按 id 升序分窗读行（每窗 2000 行，内存 O(窗)），逐行复算 HMAC 并校验 prev_hash，跨窗用上一窗末行哈希作锚点；完好 200 `ok=true`＋链头哈希；断链 200 `ok=false`＋`broken_at`（首个不符行 id）；空链 200 `ok=false,empty=true`（零行没有证明任何事，不是通过）。只回结论、行数与时刻，不回审计正文/actor/detail。 |
+|  |  |  | 只读审计行：游标分页＋action/actor/from/to 筛选；actor 过滤值按写入同口径掩码；detail 出口过掩码口径；不校验链、不导出。可见面按调用者收窄：master 读全部（含 school_id 为 NULL 的行）；admin 只读绑定校（admin_schools）的行，NULL 行不可见，空绑定回空页而非全量；user 403。 |
+| GET | `/api/admin/audit-status` | master | 2cu |
+|  |  |  | 按需巡检审计链：按 id 升序分窗读行（每窗 2000 行，内存 O(窗)），逐行复算 HMAC 并校验 prev_hash，跨窗用上一窗末行哈希作锚点；完好 200 `ok=true`＋链头哈希；断链 200 `ok=false`＋`broken_at`（首个不符行 id）；空链 200 `ok=false,empty=true`（零行没有证明任何事，不是通过）。仅 master；admin/user 403 且不读链。只回结论、行数与时刻，不回审计正文/actor/detail。 |
 | GET | `/api/me/diagnostics` | master/admin/user | P6 |
 | GET | `/api/accounts/:id/diagnostics` | user/admin/master | UX-3 (was user/admin) |
 | GET | `/api/me/sign-status` | master/admin/user | P6 |

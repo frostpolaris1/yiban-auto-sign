@@ -33,7 +33,7 @@ export type EnginePauseResult = Schemas['EnginePauseStatus']
 
 /**
  * 全局暂停开关：`PUT /api/admin/engine/pause`。
- * 方向分权在服务端——暂停 master+admin，恢复仅 master；
+ * 角色分权在服务端——暂停与恢复都仅 master；
  * 二次口令缺失 400、错误 403、连败 429，均零写入零审计。
  */
 export function setEnginePause(paused: boolean, currentPassword: string): Promise<EnginePauseResult> {

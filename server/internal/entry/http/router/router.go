@@ -60,7 +60,8 @@ type Options struct {
 	// 生产必须有值；cmd/server 在配置了数据库时注入。
 	Auth AuthService
 	// Authorizer 把会话用户解析为作用域与审计主体。
-	// 目前只服务 master 专属的注册开关；为 nil 时该端点回 501。
+	// 驱动 master 专属的注册开关与审计可见面；为 nil 时注册开关回 501，
+	// 审计列表与巡检回 500（fail-closed）。
 	Authorizer Authorizer
 	Clock      clock.Clock
 	// InsecureCookies 选择无前缀的 cookie 名。

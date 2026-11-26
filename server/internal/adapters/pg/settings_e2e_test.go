@@ -271,7 +271,7 @@ func TestAuditLogListE2E(t *testing.T) {
 	}
 
 	repo := e.audits
-	first, next, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Limit: 2})
+	first, next, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Limit: 2})
 	if err != nil {
 		t.Fatalf("ListLogs: %v", err)
 	}
@@ -282,14 +282,14 @@ func TestAuditLogListE2E(t *testing.T) {
 		t.Fatalf("first page ids = %d,%d, want %d,%d", first[0].ID, first[1].ID, rows[4].ID, rows[3].ID)
 	}
 
-	second, next2, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Limit: 2, Cursor: next})
+	second, next2, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Limit: 2, Cursor: next})
 	if err != nil {
 		t.Fatalf("ListLogs second: %v", err)
 	}
 	if len(second) != 2 || second[0].ID != rows[2].ID || second[1].ID != rows[1].ID || next2 == "" {
 		t.Fatalf("second page = %+v next=%q", second, next2)
 	}
-	third, next3, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Limit: 2, Cursor: next2})
+	third, next3, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Limit: 2, Cursor: next2})
 	if err != nil {
 		t.Fatalf("ListLogs third: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestAuditLogListE2E(t *testing.T) {
 	}
 
 	// action 精确匹配。
-	matching, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Action: "auth.login", Limit: 50})
+	matching, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Action: "auth.login", Limit: 50})
 	if err != nil {
 		t.Fatalf("ListLogs action: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestAuditLogListE2E(t *testing.T) {
 		t.Fatalf("auth.login rows = %d, want 2", len(matching))
 	}
 	// actor 精确匹配。
-	byActor, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Actor: "a***@example.com", Limit: 50})
+	byActor, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Actor: "a***@example.com", Limit: 50})
 	if err != nil {
 		t.Fatalf("ListLogs actor: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestAuditLogListE2E(t *testing.T) {
 		t.Fatalf("actor rows = %d, want 4", len(byActor))
 	}
 	// target 精确匹配，响应行带 target_id；计数与列表同过滤口径。
-	byTarget, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Target: "target-1", Limit: 50})
+	byTarget, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Target: "target-1", Limit: 50})
 	if err != nil {
 		t.Fatalf("ListLogs target: %v", err)
 	}
@@ -324,16 +324,16 @@ func TestAuditLogListE2E(t *testing.T) {
 	if byTarget[0].Target != "target-1" {
 		t.Fatalf("row target = %q, want target-1", byTarget[0].Target)
 	}
-	if total, err := repo.CountLogs(e.ctx, coreaudit.LogQuery{Target: "target-1"}); err != nil || total != 5 {
+	if total, err := repo.CountLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Target: "target-1"}); err != nil || total != 5 {
 		t.Fatalf("CountLogs(target) = (%d, %v), want (5, nil)", total, err)
 	}
-	if total, err := repo.CountLogs(e.ctx, coreaudit.LogQuery{Action: "auth.login"}); err != nil || total != 2 {
+	if total, err := repo.CountLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Action: "auth.login"}); err != nil || total != 2 {
 		t.Fatalf("CountLogs(auth.login) = (%d, %v), want (2, nil)", total, err)
 	}
 	// from/to 闭区间。
 	from := base.Add(time.Minute)
 	to := base.Add(3 * time.Minute)
-	bounded, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{From: &from, To: &to, Limit: 50})
+	bounded, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), From: &from, To: &to, Limit: 50})
 	if err != nil {
 		t.Fatalf("ListLogs bounds: %v", err)
 	}
@@ -342,14 +342,14 @@ func TestAuditLogListE2E(t *testing.T) {
 	}
 
 	// 负向：未知游标与越界 limit 都是 400。
-	_, _, err = repo.ListLogs(e.ctx, coreaudit.LogQuery{Cursor: "not-a-cursor", Limit: 50})
+	_, _, err = repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Cursor: "not-a-cursor", Limit: 50})
 	requireValidation(t, err)
 	for _, limit := range []int{0, 201} {
-		_, _, err = repo.ListLogs(e.ctx, coreaudit.LogQuery{Limit: limit})
+		_, _, err = repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Limit: limit})
 		requireValidation(t, err)
 	}
 	// 未知 action 是空页，不是错误。
-	empty, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Action: "auth.nope", Limit: 50})
+	empty, _, err := repo.ListLogs(e.ctx, coreaudit.LogQuery{Scope: corescope.Master(), Action: "auth.nope", Limit: 50})
 	if err != nil {
 		t.Fatalf("unknown action: %v", err)
 	}

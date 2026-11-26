@@ -3,9 +3,10 @@ package schedule_test
 // 全局暂停端点（PUT /api/admin/engine/pause，批 3a）的入口层守卫，
 // 与快照 paused 字段的读面守卫。
 //
-// 判据：方向分闸（admin 可暂停、admin 恢复 403、user 403）、
-// current_password 复核（缺 400、错 403，均零写入零审计）、
-// 成功 200 回显目标态、快照带 paused（故障上抛不发快照）。
+// 判据：暂停与恢复均仅 master（admin 与 user 一律 403，双向都被挡在
+// 二次口令之前，零写入零审计）、current_password 复核（缺 400、错 403，
+// 均零写入零审计）、成功 200 回显目标态、
+// 快照带 paused（故障上抛不发快照）。
 // 真路由与 CSRF 由 router 包的 e2e 钉；本文件用真用例链
 // （appsettings.Service），只替存储、审计与二次口令。
 
@@ -48,12 +49,8 @@ func (p *pauseGateFake) SetEnginePaused(_ context.Context, scope corescope.Scope
 	if p.writeErr != nil {
 		return p.writeErr
 	}
-	// 用例层的方向分闸在替身里复刻：判定入口层的门，不重复判定。
-	if paused {
-		if kind := scope.Kind(); kind != corescope.KindMaster && kind != corescope.KindAdmin {
-			return errs.New(errs.CodeForbidden, "master or admin role is required")
-		}
-	} else if scope.Kind() != corescope.KindMaster {
+	// 用例层的门在替身里复刻：暂停与恢复均仅 master。
+	if scope.Kind() != corescope.KindMaster {
 		return errs.New(errs.CodeForbidden, "master role is required")
 	}
 	p.writes = append(p.writes, paused)
@@ -132,21 +129,36 @@ func (f *enginePauseFixture) pauseRequest(t *testing.T, body string, role coreau
 	return rec
 }
 
-// admin 暂停成功：200 回显 true，写入一次，口令被复核一次。
-func TestEnginePauseAdminPauseSucceeds(t *testing.T) {
+// 双向仅 master：admin 暂停也 403，零写入、零审计、口令未被提交。
+func TestEnginePauseAdminPauseForbidden(t *testing.T) {
 	f := newEnginePauseFixture(t, coreauth.RoleAdmin)
 	rec := f.pauseRequest(t, `{"paused":true,"current_password":"pw"}`, coreauth.RoleAdmin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "master role is required") {
+		t.Fatalf("admin pause = %d %s, want 403 master role is required", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"paused":true`) {
-		t.Fatalf("body = %s, want paused=true echo", rec.Body.String())
+	if len(f.gate.writes) != 0 || len(f.reauth.submitted) != 0 {
+		t.Fatalf("被拒暂停触达写入或口令: writes=%v reauth=%v", f.gate.writes, f.reauth.submitted)
 	}
-	if len(f.gate.writes) != 1 || f.gate.writes[0] != true {
-		t.Fatalf("gate writes = %v, want one true", f.gate.writes)
+}
+
+// master 两个方向都成功：200 回显目标态，写入一次，口令复核一次。
+func TestEnginePauseMasterBothDirections(t *testing.T) {
+	cases := []struct{ body, want string }{
+		{`{"paused":true,"current_password":"pw"}`, `"paused":true`},
+		{`{"paused":false,"current_password":"pw"}`, `"paused":false`},
 	}
-	if len(f.reauth.submitted) != 1 || f.reauth.submitted[0] != "pw" {
-		t.Fatalf("reauth submissions = %v", f.reauth.submitted)
+	for _, tc := range cases {
+		f := newEnginePauseFixture(t, coreauth.RoleMaster)
+		rec := f.pauseRequest(t, tc.body, coreauth.RoleMaster)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("master %s = %d %s", tc.body, rec.Code, rec.Body.String())
+		}
+		if len(f.gate.writes) != 1 {
+			t.Fatalf("master %s writes = %v, want one", tc.body, f.gate.writes)
+		}
+		if len(f.reauth.submitted) != 1 || f.reauth.submitted[0] != "pw" {
+			t.Fatalf("reauth submissions = %v", f.reauth.submitted)
+		}
 	}
 }
 
@@ -161,13 +173,19 @@ func TestEnginePauseDirectionGate(t *testing.T) {
 		t.Fatalf("被拒恢复触达写入或口令: writes=%v reauth=%v", f.gate.writes, f.reauth.submitted)
 	}
 
-	// user 暂停：403，零写入。
-	f = newEnginePauseFixture(t, coreauth.RoleUser)
-	if rec := f.pauseRequest(t, `{"paused":true,"current_password":"pw"}`, coreauth.RoleUser); rec.Code != http.StatusForbidden {
-		t.Fatalf("user pause = %d, want 403", rec.Code)
-	}
-	if len(f.gate.writes) != 0 {
-		t.Fatalf("user 暂停触达写入: %v", f.gate.writes)
+	// user：暂停与恢复都 403，零写入、零口令。
+	for _, paused := range []bool{true, false} {
+		f := newEnginePauseFixture(t, coreauth.RoleUser)
+		body := `{"paused":false,"current_password":"pw"}`
+		if paused {
+			body = `{"paused":true,"current_password":"pw"}`
+		}
+		if rec := f.pauseRequest(t, body, coreauth.RoleUser); rec.Code != http.StatusForbidden {
+			t.Fatalf("user paused=%v = %d, want 403", paused, rec.Code)
+		}
+		if len(f.gate.writes) != 0 || len(f.reauth.submitted) != 0 {
+			t.Fatalf("user 被拒请求触达写入或口令: writes=%v reauth=%v", f.gate.writes, f.reauth.submitted)
+		}
 	}
 }
 
