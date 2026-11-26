@@ -188,10 +188,23 @@ R8c 状态目录软链、R9b 备份件被篡改）全 PASS
 - `--require-signing`（发布操作档）：上述 SKIP 全部升为 FAIL。发布操作必须用。
 - `--selftest` 含突变：「篡改一字节必红」「错指纹必红」「缺锚必红」
   「私钥不得被 `--out` 覆盖」（openssl 在时执行，否则显性跳过）。
+- 发布件目录现含第四件 `ui-SHA256SUMS`（与前端产物目录 `ui/dist` 平级，
+  由 `scripts/release/make-ui-sums.sh` 生成）：全部普通文件、相对路径、
+  `LC_ALL=C` 排序、`<sha256>  <相对路径>` 两空格格式，可被 `sha256sum -c`
+  直接吃。它是签名清单的第三项：
+  `make-manifest.sh <ver> yiban-server yiban-cli ui-SHA256SUMS`；
+  清单里以普通文件条目出现，不许重名、basename 只允许 `[A-Za-z0-9._-]`。
 - sha256 与本地二进制、版本与 `--expect-version` 的对账由
   `update.sh --manifest/--signature/--pubkey` 在升级时承担。
   未给三件时 `update.sh` 默认拒绝升级（exit 2，停服务之前）；
   显式 `--allow-unsigned` 才跳过验签，逃生口与三件互斥。
+- UI 与二进制同批入清单：清单里有 `ui-SHA256SUMS` 条目时，`update.sh` 必须
+  同时给 `--ui-dir`（缺则 exit 1 显性失败），并从 `--ui-checksums`（缺省
+  `$(dirname` manifest`)/ui-SHA256SUMS`）读逐文件清单；校验 =
+  对清单自身做 sha256 对账 + `sha256sum -c` 全量 + 拒绝清单外多余文件、
+  软链、非普通文件、路径逃逸。反过来，清单没有 ui 条目却给 `--ui-dir` 也
+  exit 1（不许把未签名的页面塞进已签名升级）。任一项红即 exit 1 且零写入
+  （发生在停服/换件之前）；`--allow-unsigned` 不降级 UI 清单校验。
 
 ## 已登记缺口（待立项，本清单不现场补造）
 

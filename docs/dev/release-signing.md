@@ -9,9 +9,10 @@
 | 件 | 作用 |
 |---|---|
 | `scripts/release/make-manifest.sh <version> <file>...` | 生成单行 `manifest.json`：`{"version":...,"files":[{"name":...,"sha256":...}]}`；键序固定、结尾换行（可复现字节） |
+| `scripts/release/make-ui-sums.sh <ui-dir> <out-file>` | 为 UI 树生成 `ui-SHA256SUMS`（GNU `sha256sum` 文本格式、路径相对 ui 目录、LC_ALL=C 排序；拒软链/非普通文件/路径逃逸/输出落在 ui 目录内）。清单必须写在 `ui/dist` **之外**（与 dist 平级）：激活是整目录换名，清单进了 dist 会随页面发布到站点根 |
 | `scripts/release/sign.sh --key PRIVATE.pem --in manifest.json --out manifest.json.sig` | openssl 3 Ed25519 纯签名（`-rawin`），签名字节＝清单文件字节 |
 | `scripts/release/verify.sh --pubkey PUB.pem --manifest manifest.json --signature manifest.sig` | 只验签，不判断公钥是否可信；rc=0 通过／rc=1 不通过／rc=2 验证没跑 |
-| `deploy/baremetal/update.sh --manifest/--signature/--pubkey [--expect-version V]` | 先比指纹，再验签，再对账 sha256；任何失败不碰旧件、不停服务。未给三件默认拒绝（exit 2）；`--allow-unsigned` 是显式逃生口，与三件互斥 |
+| `deploy/baremetal/update.sh --manifest/--signature/--pubkey [--expect-version V] [--ui-dir DIR] [--ui-checksums FILE]` | 先比指纹，再验签，再对账 sha256（二进制与 UI 清单）；任何失败不碰旧件、不停服务。清单有 `ui-SHA256SUMS` 条目就必须给 `--ui-dir`，反之亦拒；UI 逐文件校验与「清单外文件」检查都在验签后、停服前。未给三件默认拒绝（exit 2）；`--allow-unsigned` 是显式逃生口，与三件互斥 |
 | `<安装根>/release-pubkey.sha256` | 信任锚：管理员在安装时写入的发布公钥 SHA-256 |
 | `scripts/release-check.sh` 项 8（`signing`） | 三件齐全且**外部锚**匹配时验签；缺件或验证没跑显性 SKIP（跳过≠绿） |
 
@@ -51,19 +52,25 @@
 
 ## 4. 发布与升级流程
 
-1. 构建 `yiban-server` 与 `yiban-cli`。
-2. `bash scripts/release/make-manifest.sh 0.7.5 yiban-server yiban-cli > manifest.json`
+1. 构建 `yiban-server` 与 `yiban-cli`；前端用 `ui/package.json` 的 `build` 产出 `ui/dist`。
+   `bash server/scripts/build-release.sh <outdir> --ui-dir ui/dist`（或 `YIBAN_UI_DIST=ui/dist`）
+   会在 `<outdir>` 里顺带生成 `ui-SHA256SUMS` 并打印 manifest 交接命令。
+2. `bash scripts/release/make-ui-sums.sh ui/dist ui-SHA256SUMS`（不用 build-release 时手工跑；
+   清单写在 `ui/dist` 之外，与 dist 平级）。
+   `bash scripts/release/make-manifest.sh 0.7.5 yiban-server yiban-cli ui-SHA256SUMS > manifest.json`
 3. `bash scripts/release/sign.sh --key yiban-release-key.pem --in manifest.json --out manifest.json.sig`
-4. 发布件目录（缺省 `release/`，`YIBAN_RELEASE_DIR` 可覆盖）放三件：
-   `manifest.json`＋`manifest.json.sig`＋`release-pubkey.pem`。
+4. 发布件目录（缺省 `release/`，`YIBAN_RELEASE_DIR` 可覆盖）放签名三件
+   `manifest.json`＋`manifest.json.sig`＋`release-pubkey.pem`，外加 UI 清单
+   `ui-SHA256SUMS` 与前端产物目录 `ui/dist`。
 5. 发布门：`bash scripts/release-check.sh --only signing --require-signing`。
    锚用环境变量 `YIBAN_RELEASE_PUBKEY_SHA256` 给，或用
    `--pubkey-sha256-file <发布件目录之外的路径>`。
    `--require-signing` 把缺件、缺锚与缺 openssl 从 SKIP 升为 FAIL。
    发布操作必须用它。
 6. 升级：
-   `sudo bash deploy/baremetal/update.sh --server-bin NEW [--cli-bin NEW] --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem --expect-version 0.7.5`
-   未给三件 → 默认拒绝（exit 2，发生在停服务之前）。
+   `sudo bash deploy/baremetal/update.sh --server-bin NEW [--cli-bin NEW] --ui-dir NEW_DIST --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem --expect-version 0.7.5`
+   清单含 `ui-SHA256SUMS` 时必须给 `--ui-dir`；`--ui-checksums` 缺省取
+   `$(dirname manifest.json)/ui-SHA256SUMS`。未给三件 → 默认拒绝（exit 2，发生在停服务之前）。
    钥匙仪式未完成的部署显式给 `--allow-unsigned` 放行（显性 WARN，跳过≠绿）；
    逃生口与三件互斥，同给即 exit 2。
 
@@ -74,11 +81,15 @@
 - 版本：`--expect-version` 钉住期望版本；不符 exit 1。防已签名旧包重放。
 - `verify.sh` rc=2 表示验证**没有跑**（openssl 缺失、文件缺失）——
   调用方必须按失败处理。
-- `update.sh` 次序保证：指纹 → 验签 → 版本 → sha256 → 自检门 → 统一备份 →
-  停服务 → 迁移 → 换件。前六步任一失败：未停服务、未换件、未跑迁移，
-  退出码 1（验签/对账）或 2（自检/预检/备份）并点名步骤。
-- **TOCTOU 防护**：`update.sh` 先把清单、签名、公钥与新二进制复制进 root
-  私有暂存目录（`mktemp -d`，0700）。之后的哈希、验签与安装只读副本。
+- `update.sh` 次序保证：指纹 → 验签 → 版本 → 二进制 sha256 → UI 清单 sha256
+  与逐文件校验 → 自检门 → 统一备份 → 停服务 → 迁移 → 换件。前七步任一失败：
+  未停服务、未换件、未跑迁移，退出码 1（验签/对账）或 2（自检/预检/备份）并点名步骤。
+- UI 校验：清单里的 `ui-SHA256SUMS` 条目锁住 UI 清单本身；再用清单在快照树上
+  跑 `sha256sum -c`，并拒绝清单外的多余文件、软链、非普通文件与路径逃逸
+  （绝对路径、`..` 段）。manifest 无 ui 条目却给 `--ui-dir` 是显性失败（exit 1）。
+- **TOCTOU 防护**：`update.sh` 先把清单、签名、公钥、新二进制、UI 树与
+  UI 清单复制进 root 私有暂存目录（`mktemp -d`，0700）。之后的哈希、验签、
+  清单校验与安装只读副本。
   失败路径删除暂存目录与 `.new` 暂存件。
 
 ## 6. 门与测试
@@ -86,13 +97,17 @@
 - Go 干跑：`go test ./cmd/cli -run "TestUpdateSh|TestInstallSh" -count=1`。
   覆盖：验签通过、篡改清单拒绝、缺锚拒绝、错指纹拒绝、清单缺条目拒绝、
   二进制与清单不符拒绝、版本不符拒绝、未给三件默认拒绝（rc=2、未停服务、
-  旧件未动）、`--allow-unsigned` 有痕放行、逃生口与三件同给拒绝。
+  旧件未动）、`--allow-unsigned` 有痕放行、逃生口与三件同给拒绝；
+  UI 入清单：正常 UI 通过、篡改 index.html 拒绝、清单外文件拒绝、UI 树含软链
+  拒绝、manifest 无 ui 条目却给 `--ui-dir` 拒绝、有 ui 条目没给 `--ui-dir` 拒绝。
+  断言失败发生在停服/换件之前（旧页面未变、无 `.bak`、systemctl 日志无 stop）。
 - 私钥入库门：`py -3 -m pytest tests/test_private_key_gate.py -q`
   （WSL 用 `/root/.venv-yiban-wsl/bin/python -m pytest`）。
 - 发布门：`bash scripts/release-check.sh --selftest`（含「篡改必红」「错指纹必红」
   「缺锚在 `--require-signing` 下必红」「私钥不得被 `--out` 覆盖」突变）。
-- e2e：容器路径 C4b（签发→验签→错公钥必拒→篡改必拒）、裸机路径 B4b。
-  命令见 `docs/dev/deploy-e2e.md`。
+- e2e：容器路径 C4b（签发→验签→错公钥必拒→篡改必拒）、裸机路径 B4b；
+  UI 签名链单独有 `scripts/e2e/ui-signing-e2e.sh`（无 docker 可本地单跑，
+  覆盖篡改 index、清单外文件、正常 UI 与互锁用例）。命令见 `docs/dev/deploy-e2e.md`。
 
 ## 7. 已知边界
 
@@ -101,7 +116,8 @@
 - 未签名升级必须显式给 `--allow-unsigned`（默认强制验签）。
   逃生口只影响验签分支；停服务、迁移、健康检查与回滚不受影响。
   WARN 行留在 stderr 供审计。
-- 清单覆盖二进制；schema 与配置随二进制发布，不单列。
+- 清单覆盖二进制与 UI（`ui-SHA256SUMS` 条目本身 + 清单内每个 UI 文件）；
+  schema 与配置随二进制发布，不单列。
 - **已签名旧包可重放（降级）**：不传 `--expect-version` 时，持有旧发布件的人
   可把版本退回去。传 `--expect-version` 可挡。发布操作必须传该参数。
 - 信任锚文件放在安装根（`<安装根>/release-pubkey.sha256`）。干跑时同前缀：

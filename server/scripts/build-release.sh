@@ -8,7 +8,8 @@
 #   产物自报版本：yiban-server --version / yiban-cli version。
 #
 # 用法（在任意目录执行）：
-#   bash server/scripts/build-release.sh <outdir>
+#   bash server/scripts/build-release.sh <outdir> [--ui-dir <ui-dist>]
+#   YIBAN_UI_DIST=<ui-dist> bash server/scripts/build-release.sh <outdir>
 #
 # 行为口径：
 #   - VERSION 缺失 / 非 X.Y.Z / 多行 ⇒ exit 2 并点名；
@@ -18,7 +19,11 @@
 #   - commit 取 git rev-parse --short HEAD；取不到（非 git 检出）⇒
 #     exit 2：发布件必须带真实提交，不许回落 unknown；
 #   - 一律不注入分支名：发布件不带分支身份；
-#   - 产出版本/提交/时间各打印一行（build-release: version=… …）。
+#   - 产出版本/提交/时间各打印一行（build-release: version=… …）；
+#   - 给了 --ui-dir（或环境 YIBAN_UI_DIST）⇒ 校验目录与 index.html 后，
+#     用 scripts/release/make-ui-sums.sh 在 <outdir>/ui-SHA256SUMS 生成 UI
+#     清单（与二进制同居发布 staging，绝不写进 ui-dist 本身），并打印
+#     make-manifest.sh 三件交接命令；不给 ⇒ 行为与旧版完全一致。
 #
 # 产物名：Linux 为 yiban-server / yiban-cli（与 deploy/baremetal/install.sh、
 #   scripts/release/make-manifest.sh 的命名一致）；Windows 宿主（开发与
@@ -35,7 +40,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILDINFO_PKG="github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo"
 
 usage() {
-    echo "usage: bash server/scripts/build-release.sh <outdir>" >&2
+    echo "usage: bash server/scripts/build-release.sh <outdir> [--ui-dir <ui-dist>]" >&2
+    echo "       YIBAN_UI_DIST=<ui-dist> bash server/scripts/build-release.sh <outdir>" >&2
 }
 
 die() {
@@ -50,8 +56,32 @@ exe_suffix() {
     esac
 }
 
-[ "$#" -eq 1 ] || { usage; die "exactly one argument (outdir) is required"; }
-OUT="$1"
+OUT=""
+UI_DIST="${YIBAN_UI_DIST:-}"
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --ui-dir)
+            [ "$#" -ge 2 ] || { usage; die "--ui-dir requires a value"; }
+            [ -n "$2" ] || { usage; die "--ui-dir requires a non-empty value"; }
+            UI_DIST="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --*)
+            usage
+            die "unknown argument: $1"
+            ;;
+        *)
+            [ -z "$OUT" ] || { usage; die "exactly one outdir argument is required (extra: $1)"; }
+            OUT="$1"
+            shift
+            ;;
+    esac
+done
+[ -n "$OUT" ] || { usage; die "exactly one argument (outdir) is required"; }
 
 # 版本单一来源：单行、换行结尾、严格 X.Y.Z。
 VFILE="$ROOT/VERSION"
@@ -91,3 +121,14 @@ exe="$(exe_suffix)"
 echo "build-release: version=$ver commit=$commit build_time=$build_time"
 echo "build-release: wrote $OUT/yiban-server$exe"
 echo "build-release: wrote $OUT/yiban-cli$exe"
+
+# UI 产物入签名清单（P1-6 ③）：清单落在发布 staging（与二进制同居），
+# 由 make-manifest.sh 以 basename 收录；绝不写进 ui-dist 本身。
+if [ -n "$UI_DIST" ]; then
+    [ -d "$UI_DIST" ] || die "--ui-dir is not a directory: $UI_DIST"
+    [ -f "$UI_DIST/index.html" ] || die "--ui-dir has no index.html: $UI_DIST"
+    bash "$ROOT/scripts/release/make-ui-sums.sh" "$UI_DIST" "$OUT/ui-SHA256SUMS" \
+        || die "cannot generate ui checksums in $OUT"
+    echo "build-release: wrote $OUT/ui-SHA256SUMS"
+    echo "build-release: manifest: bash $ROOT/scripts/release/make-manifest.sh $ver $OUT/yiban-server$exe $OUT/yiban-cli$exe $OUT/ui-SHA256SUMS"
+fi
