@@ -58,7 +58,7 @@ def run(args, cwd=None, env=None):
 
 
 def run_bash(args, cwd=None, env=None):
-    return run([BASH] + list(args), cwd=cwd, env=env)
+    return run([BASH, *list(args)], cwd=cwd, env=env)
 
 
 def write_file(path, body, mode=0o644):
@@ -192,7 +192,7 @@ class ManifestThirdItemTest(unittest.TestCase):
             p = os.path.join(self.tmp, name)
             write_file(p, "payload-" + name + "\n")
             paths.append(p)
-        r = run_bash([MAKE_MANIFEST, "1.2.3"] + paths)
+        r = run_bash([MAKE_MANIFEST, "1.2.3", *paths])
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         doc = json.loads(r.stdout)
         self.assertEqual(doc["version"], "1.2.3")
