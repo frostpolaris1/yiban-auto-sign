@@ -15,6 +15,7 @@
 // Provider、Step、New。
 // ValidWindow、ValidTargets、ValidProfile。
 // AllOutcomes、ResultFor、ResultSteps、OutcomeAdvice、FixedTime。
+// SeedOutcome：按契约结果布种，供符合性矩阵逐项复现。
 //
 // # 口径
 // 第 N 次调用取脚本第 N 项；序列用尽后重复最后一项。
@@ -24,6 +25,7 @@
 // 例外：未声明能力的发现方法返回非 nil 错误（契约 G1）。
 // 被上下文取消的调用仍消耗一项脚本。
 // 声明 ImageRequired 时，无图请求返回 photo_missing，且**不消耗脚本**。
+// SeedOutcome 只固定单个 AttemptID 的结果，不动脚本序列。
 // 空 AttemptID 关闭幂等缓存。
 // **全部时间取 FixedTime**，本包不读墙上时钟。
 package fake
@@ -117,8 +119,44 @@ func (p *Provider) OnSign(steps ...Step[contract.Result]) *Provider {
 // OnAttempt 为一个 AttemptID 固定结果。
 // 它优先于 OnSign 的序列，重复调用返回同一结果。
 func (p *Provider) OnAttempt(attemptID string, result contract.Result) *Provider {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.attemptFixed[attemptID] = result
 	return p
+}
+
+// SeedOutcome 按契约结果布种一次签到。
+//
+// 它给符合性矩阵用：矩阵要求同一提供方分别复现契约的每个结果，
+// 而不是反复采样同一个脚本序列。
+// 约定：不清空 OnSign 脚本——布种结果按 AttemptID 优先命中，
+// 调用方仍需为每个结果使用独立的 Provider 实例，避免串味。
+//
+// 返回 false 表示本次无法布种，只有四种情形：
+// want 不在契约结果词表内；未声明 ImageRequired 时没有 photo_missing；
+// 未声明 DeviceBinding 时没有 device_unbound；req 为 nil 或 AttemptID
+// 为空时没有可固定的身份。
+// 前两者是契约豁免，第三者是用错接口——返回 true 会让调用方
+// 误以为「已复现该结果」，实际什么都没布：Sign 与 ExpectedOutcome
+// 都只按非空 AttemptID 查表，写进 attemptFixed[""] 永远读不到。
+func (p *Provider) SeedOutcome(req *contract.SignRequest, want contract.Outcome) bool {
+	// 词表外结果拒绝布种：写进 attemptFixed 后 Sign 原样返回，
+	// 调用方会误以为「已复现」，而检查器对词表外结果直接跳过。
+	if !want.Valid() {
+		return false
+	}
+	if want == contract.OutcomePhotoMissing && !p.caps.ImageRequired {
+		return false
+	}
+	if want == contract.OutcomeDeviceUnbound && !p.caps.DeviceBinding {
+		return false
+	}
+	if req == nil || req.AttemptID == "" {
+		return false
+	}
+	// 不在持锁状态下回调：OnAttempt 自己会取 p.mu。
+	p.OnAttempt(req.AttemptID, ResultFor(want))
+	return true
 }
 
 // ID 返回构造时给定的标识。
@@ -237,22 +275,28 @@ func (p *Provider) Sign(ctx context.Context, req contract.SignRequest) (contract
 // 顺序：Expect 字段、按 AttemptID 的固定结果、齐次脚本。
 // 三者都给不出确定期望时返回 false。
 func (p *Provider) ExpectedOutcome(req contract.SignRequest) (contract.Outcome, bool) {
+	// 回调在锁外：调用方可能布种，布种会取 p.mu。
 	if p.Expect != nil {
 		if outcome, ok := p.Expect(req); ok {
 			return outcome, true
 		}
 	}
-	if fixed, ok := p.attemptFixed[req.AttemptID]; ok && req.AttemptID != "" {
+	p.mu.Lock()
+	fixed, hasFixed := p.attemptFixed[req.AttemptID]
+	signSteps := append([]Step[contract.Result](nil), p.signSteps...)
+	p.mu.Unlock()
+
+	if hasFixed && req.AttemptID != "" {
 		return fixed.Outcome, true
 	}
-	if len(p.signSteps) == 0 {
+	if len(signSteps) == 0 {
 		return "", false
 	}
-	first := p.signSteps[0]
+	first := signSteps[0]
 	if first.Err != nil {
 		return "", false
 	}
-	for _, step := range p.signSteps[1:] {
+	for _, step := range signSteps[1:] {
 		if step.Err != nil || step.Value.Outcome != first.Value.Outcome {
 			return "", false
 		}
@@ -288,26 +332,10 @@ func (p *Provider) SignCalls() int {
 	return p.signHit
 }
 
-// AllOutcomes 按契约顺序列出全部 15 项中性结果。
-// **契约 v1 冻结**；新增结果时必须同步本清单。
+// AllOutcomes 按契约顺序列出全部结果。
+// **契约 v1 冻结**；清单只有 contract.AllOutcomes 一处来源，本函数只做转发。
 func AllOutcomes() []contract.Outcome {
-	return []contract.Outcome{
-		contract.OutcomeSuccess,
-		contract.OutcomeAlreadyDone,
-		contract.OutcomePendingUpstream,
-		contract.OutcomeNoTarget,
-		contract.OutcomeNoPosition,
-		contract.OutcomeInvalidTarget,
-		contract.OutcomeCredentialBad,
-		contract.OutcomeDeviceUnbound,
-		contract.OutcomeChallenge,
-		contract.OutcomeBlocked,
-		contract.OutcomeTransient,
-		contract.OutcomeRejected,
-		contract.OutcomePhotoMissing,
-		contract.OutcomePhotoRejected,
-		contract.OutcomeUnknown,
-	}
+	return contract.AllOutcomes()
 }
 
 // OutcomeAdvice 返回契约结果表的默认重试建议。
@@ -346,7 +374,7 @@ func ResultFor(o contract.Outcome) contract.Result {
 	return result
 }
 
-// ResultSteps 为每个给定结果生成一步预设；无参数时覆盖全部 14 项。
+// ResultSteps 为每个给定结果生成一步预设；无参数时覆盖契约全部结果。
 func ResultSteps(outcomes ...contract.Outcome) []Step[contract.Result] {
 	if len(outcomes) == 0 {
 		outcomes = AllOutcomes()

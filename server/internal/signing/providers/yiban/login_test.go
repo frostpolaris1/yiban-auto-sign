@@ -70,9 +70,16 @@ type upstream struct {
 
 	signPositionFixture []byte
 	signPositionBody    []byte
-	deviceBody          []byte
-	signInBody          []byte
-	signInStatus        int
+	// deviceFixture 与 signInFixture 是夹具原件：
+	// 符合性矩阵布种前从这里复位，避免上一个结果的改动串到下一个。
+	deviceFixture []byte
+	signInFixture []byte
+	deviceBody    []byte
+	signInBody    []byte
+	signInStatus  int
+	// signInDelay 是 /signIn 的响应延迟：
+	// 让上下文的取消与期限穿透真实 Provider.Sign，而不是只打穿假上游。
+	signInDelay time.Duration
 
 	// P5-D 上传播（逆向夹具，未经实拍）。
 	uploadBody []byte
@@ -134,17 +141,42 @@ func (u *upstream) recordedHops() []recordedHop {
 	return append([]recordedHop(nil), u.recorded...)
 }
 
+// 共享测试密钥：1024 位 RSA 生成有明显开销，
+// 而符合性矩阵每条判据都重建上游（最多 20 条 × 15 项结果）。
+// 密钥只读，跨上游共享不会串味；删除每台现生成的浪费。
+var (
+	testKeyOnce sync.Once
+	testKey     *rsa.PrivateKey
+	testKeyPEM  string
+	testKeyErr  error
+)
+
+// sharedTestKey 返回进程内唯一的测试密钥与 PKIX 公钥 PEM。
+func sharedTestKey(t *testing.T) (*rsa.PrivateKey, string) {
+	t.Helper()
+	testKeyOnce.Do(func() {
+		key, err := rsa.GenerateKey(rand.Reader, 1024)
+		if err != nil {
+			testKeyErr = err
+			return
+		}
+		der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+		if err != nil {
+			testKeyErr = err
+			return
+		}
+		testKey = key
+		testKeyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	})
+	if testKeyErr != nil {
+		t.Fatalf("准备测试密钥: %v", testKeyErr)
+	}
+	return testKey, testKeyPEM
+}
+
 func newUpstream(t *testing.T) *upstream {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		t.Fatalf("MarshalPKIXPublicKey: %v", err)
-	}
-	public := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	key, public := sharedTestKey(t)
 	signPosition := readProtocolFixture(t, "sign_position.json")
 	up := &upstream{
 		key:                 key,
@@ -152,7 +184,9 @@ func newUpstream(t *testing.T) *upstream {
 		authFixture:         readProtocolFixture(t, "auth_response.json"),
 		signPositionFixture: signPosition,
 		signPositionBody:    signPosition,
+		deviceFixture:       readProtocolFixture(t, "device_state.json"),
 		deviceBody:          readProtocolFixture(t, "device_state.json"),
+		signInFixture:       readProtocolFixture(t, "sign_in_response.json"),
 		signInBody:          readProtocolFixture(t, "sign_in_response.json"),
 		headers:             make(map[string]http.Header),
 		counts:              make(map[string]int),
@@ -242,6 +276,18 @@ func newUpstream(t *testing.T) *upstream {
 			up.mu.Unlock()
 			_, _ = w.Write(body)
 		case "/nightAttendance/student/index/signIn":
+			// 可延迟响应：判据用它在途取消与期限分支，
+			// 取消要真的穿透 Yiban 客户端到这条 HTTP 请求。
+			up.mu.Lock()
+			delay := up.signInDelay
+			up.mu.Unlock()
+			if delay > 0 {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(delay):
+				}
+			}
 			raw, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(raw))
 			if err := r.ParseForm(); err != nil {

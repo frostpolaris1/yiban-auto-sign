@@ -192,6 +192,31 @@ const (
 	OutcomeUnknown       Outcome = "unknown"
 )
 
+// AllOutcomes 按契约顺序返回全部结果。
+//
+// 它是结果词表的唯一清单：判据、假 Provider 与各类报告都从这里取，
+// 不再各自手抄一份。新增结果时必须同步本函数——
+// contract_test 的 AST 门会比对本函数与常量块，漏登记直接判红。
+func AllOutcomes() []Outcome {
+	return []Outcome{
+		OutcomeSuccess,
+		OutcomeAlreadyDone,
+		OutcomePendingUpstream,
+		OutcomeNoTarget,
+		OutcomeNoPosition,
+		OutcomeInvalidTarget,
+		OutcomeCredentialBad,
+		OutcomeDeviceUnbound,
+		OutcomeChallenge,
+		OutcomeBlocked,
+		OutcomeTransient,
+		OutcomeRejected,
+		OutcomePhotoMissing,
+		OutcomePhotoRejected,
+		OutcomeUnknown,
+	}
+}
+
 // Valid 报告 o 是否为已知结果。
 func (o Outcome) Valid() bool {
 	switch o {

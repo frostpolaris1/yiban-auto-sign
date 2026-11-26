@@ -12,23 +12,7 @@ import (
 // 不是字面量副本）：契约改一个词名，本用例立刻红——词表漂移无处遁形。
 // core/retry 不 import signing（单向依赖），故对照表放在合约层这一侧。
 func TestRetryBudgetCoversContractOutcomes(t *testing.T) {
-	outcomes := []contract.Outcome{
-		contract.OutcomeSuccess,
-		contract.OutcomeAlreadyDone,
-		contract.OutcomePendingUpstream,
-		contract.OutcomeNoTarget,
-		contract.OutcomeNoPosition,
-		contract.OutcomeInvalidTarget,
-		contract.OutcomeCredentialBad,
-		contract.OutcomeDeviceUnbound,
-		contract.OutcomeChallenge,
-		contract.OutcomeBlocked,
-		contract.OutcomeTransient,
-		contract.OutcomeRejected,
-		contract.OutcomePhotoMissing,
-		contract.OutcomePhotoRejected,
-		contract.OutcomeUnknown,
-	}
+	outcomes := contract.AllOutcomes()
 	// default 档形状（未知词分支）：1 次＋会话不可信标记。任何已知词落到它都算漂移——
 	// 每个词都必须有自己的显式分支。
 	for _, o := range outcomes {

@@ -11,7 +11,7 @@
 // 参考实现是 signing/fake 包；本包不依赖它。
 //
 // # 复用
-// Run、Checks、Check、NewProvider、Expecter。
+// Run、Checks、Check、NewProvider、Expecter、OutcomeSeeder、NotApplicable。
 //
 // # 口径
 // 判据只看提供方的可观察行为，不看内部实现。
@@ -22,6 +22,9 @@
 // 宁缺勿冤——11 至 21 位的整段数字只认对齐窗口，秒/毫秒/微秒/纳秒时间戳不判；
 // 分隔与带国家码形态仍被抓；22 位以上的连续数字段按滑动窗口抓内嵌号码。
 // Expecter 是**必选**接口：不实现者不通过认证（G2）。
+// OutcomeSeeder 同样是**必选**接口：sign.result、pii.absent、sign.retry
+// 与 sign.unknown 都要逐项布种契约结果，不实现者在这四条判据上报红。
+// 每个结果用**独立的提供方实例**布种，避免上游与缓存串味。
 // 并发判据只在 `-race` 构建下检验数据竞争。
 // 提供方在判据内 panic 时，本包把它转成同格式失败，不中断整轮。
 //
@@ -68,7 +71,11 @@
 // 依据： 要求 conformance 不连真实平台；
 // 判据对象是参考实现，正常路径不得失败。
 //
-// sign.result：每次 Sign 返回 nil 错误与词表内结果。
+// sign.result：对契约全部 15 项结果逐项布种，Sign 返回 nil 错误，
+// 且 actual.Outcome 必须**等于**布种的 want。
+// 词表外结果与「布种得到别的结果」都判红；不再只查「词表内」。
+// 布种返回 false 只允许能力豁免（photo_missing / device_unbound），
+// 其余判红：能力不足不是免检理由。未实现 OutcomeSeeder 亦判红。
 // 依据：契约 Outcome 词表；错误只用于传输与上下文问题。
 //
 // sign.photo_missing：声明 ImageRequired 时，无图请求返回 photo_missing。
@@ -84,11 +91,14 @@
 // 依据：契约硬边界 1 与 Evidence 脱敏要求。
 //
 // sign.retry：重试分级与契约结果表一致。
-// transient 必须可重试且预算至少 1。
-// challenge 可重试时预算至少 1。
+// 逐项布种全部契约结果后，只看各自的重试建议：
+// transient 必须可重试且预算至少 1；challenge 可重试时预算至少 1；
 // 其余结果一律不可自动重试。
+// 布种结果与 want 不符不在本判据报告——那是 sign.result 的职责，
+// 本判据只查「重试分级」这一件事。
 //
 // sign.unknown：unknown 永不自动重试。
+// 同样遍历全部布种结果，只对 unknown 检查 Retryable。
 // 依据：契约结果表注明「否，人工确认」。
 //
 // sign.cancel：已取消上下文返回 context.Canceled，且不返回伪结果（Outcome 为空）。
@@ -138,9 +148,12 @@
 // G2：契约未给 Result 与 AttemptID 的关联字段。
 // 处置：Expecter 是认证必选接口；未实现者在 sign.concurrent 报红。
 //
-// G3：套件无法强制提供方返回某个结果。
-// sign.retry 与 sign.unknown 只覆盖该提供方实际返回的结果。
-// **认证要求**：提供方自己的测试必须覆盖全部 14 项结果的分级。
+// G3（已关闭）：套件无法强制提供方返回某个结果。
+// 处置：OutcomeSeeder 为必选接口；矩阵对 15 项结果各起一个独立提供方、
+// 布种后 Sign，sign.result 强制 actual == want，
+// pii.absent/sign.retry/sign.unknown 遍历同一矩阵核对各自不变量。
+// 唯一保留的豁免是能力豁免（photo_missing 无 ImageRequired、
+// device_unbound 无 DeviceBinding），且在标准输出显性登记。
 //
 // G4：数据竞争只在 `-race` 构建下可见。
 // 本包不启用竞争检测；验收命令必须带 `-race`。
