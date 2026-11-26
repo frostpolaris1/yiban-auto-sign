@@ -57,7 +57,7 @@ func (s cipherSealer) Seal(schoolID, accountID string, p legacy.CredentialPayloa
 func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate-legacy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	dir := fs.String("dir", "", "导出物目录（scripts/db_export.py 产物，必填）")
+	dir := fs.String("dir", "", "旧栈导出物目录（旧检出 scripts/db_export.py 产物，必填）")
 	out := fs.String("out", "", "报告输出目录（reconciliation.jsonl + summary.json，必填）")
 	dsnFlag := fs.String("dsn", "", "覆盖 YIBAN_DATABASE_URL")
 	schoolID := fs.String("school-id", "", "目标学校 id（须已存在于新库，必填）")

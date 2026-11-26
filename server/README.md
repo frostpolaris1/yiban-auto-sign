@@ -187,10 +187,10 @@ via ldflags. Release tags are `v$VERSION`.
 and the tag `v$VERSION` pointing at HEAD. Before the tag exists the item
 fails, which is expected while preparing a release. The contract's
 `info.version` is the API contract version and is never synchronized with
-it. The top `CHANGELOG.md` entry must equal one of the two version lines —
-the legacy Python `__version__` or the root `VERSION` (a two-line,
-one-repository rule pinned by `tests/test_release_version_source.py`). See
-[`contracts/README.md`](contracts/README.md) for the versioning split.
+it. The top `CHANGELOG.md` entry must equal `v$VERSION` from the root
+`VERSION`; that is the single-repository rule `scripts/release-check.sh
+--only version` enforces. See [`contracts/README.md`](contracts/README.md)
+for the versioning split.
 
 ## Status
 

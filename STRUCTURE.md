@@ -67,7 +67,7 @@ server/
 |---|---|---|
 | 纯领域 | `internal/core/<域>/` | 值对象、规则、状态机。不碰数据库与 HTTP |
 | 用例 | `internal/app/<域>/` | 一个用户动作一个函数。开事务、调仓储、写审计 |
-| 适配器 | `internal/adapters/<设施>/` | 按**设施**分，不按域分：`pg`、`session`、`config`、`mail`、`webhook`、`storage`、`legacy`（事实源：`server/structure.tsv` 的 `server/internal/adapters` 行） |
+| 适配器 | `internal/adapters/<设施>/` | 按**设施**分，不按域分：`pg`、`session`、`config`、`mail`、`webhook`、`storage`、`anchor`、`legacy`、`turnstile`（事实源：`server/structure.tsv` 的 `server/internal/adapters` 行） |
 | HTTP | `internal/entry/http/<域>/` | 解析请求、调用用例、写响应 |
 | 生成 | `internal/entry/http/oapi/` | OpenAPI 生成物，不手改 |
 

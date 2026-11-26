@@ -79,6 +79,10 @@ master 已存在时不要重复创建；用 `GET /api/auth/me` 取当前 master 
 
 ## 2. 导出
 
+> 本节与 §3.1 的脚本命令在旧栈 v0.6.5 的检出里执行。`scripts/db_export.py`
+> 与 `scripts/list_duplicate_owners.py` 已随旧线在 2026-11-27 退役；新栈检出
+> 没有这些脚本。
+
 ```bash
 install -d -m 0700 <导出目录>
 python3 scripts/db_export.py --out <导出目录> --db <旧库路径>
@@ -157,7 +161,7 @@ yiban-cli migrate-legacy \
 ### 3.1 一人一号冲突处置（同 owner 多账号）
 
 老库允许同一 owner 名下多个账号：旧 `accounts.owner` 没有唯一约束
-（`yiban/adapters/persistence/migrations.py:172-188`），旧栈自带的
+（`yiban/adapters/persistence/migrations.py:172-188`，旧栈检出），旧栈自带的
 `scripts/list_duplicate_owners.py` 就是为这种存量准备的
 （[`backup-restore.md`](../dev/backup-restore.md) 的取证与排障工具节）。
 `migrate-legacy` 直接 SQL 插 `accounts`
