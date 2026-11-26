@@ -7,7 +7,7 @@
 #
 # 用法（在仓库根目录或任意位置执行）：
 #   bash scripts/release-check.sh                # 跑全部九项
-#   bash scripts/release-check.sh --only version # 只跑一项（旧 Python 线遗留）
+#   bash scripts/release-check.sh --only version # 只跑一项
 #   bash scripts/release-check.sh --only go-version # Go 线：按根 VERSION 构建并验自报版本 + 发布 tag
 #   bash scripts/release-check.sh --list         # 列出项名
 #   bash scripts/release-check.sh --require-signing  # 发布操作档：signing 的 SKIP 升为 FAIL
@@ -59,41 +59,25 @@ usage() {
 # 约定：每个 check_* 把结果写进全局 STATUS_<item>（PASS/FAIL/SKIP/POINTER/MANUAL）
 # 与 REASON_<item>，明细直接打到 stdout。
 
-# 项 1 版本一致性（旧 Python 线遗留；Go 线用 go-version 项）。考古（2026-10-27，ref ad5b3639）：
-#   版本唯一来源 = yiban/__init__.py 的 __version__（tests/test_release_version_source.py 守卫）。
-#   二进制自报版本自 2026-11-04 起存在：yiban-server --version / yiban-cli version，
-#   三值由构建期 -ldflags -X 注入 server/internal/buildinfo（未注入显性 dev/unknown）。
-#   openapi info.version = "1.0.0"，是 API 契约版本，不随发布走；2026-11-05 口径落定：
-#   契约版本只在破坏性契约变更时升，发布 tag 用 v$VERSION（根 VERSION），两者独立，
-#   见 server/contracts/README.md 与 deploy/release.md 项 1b。
-#   本项钉存在的两处：发布 tag v$V 存在且指向 HEAD；CHANGELOG 顶部条目等于
-#   __version__（旧线最新发布）或根 VERSION（Go 线最新发布）——两线共库一份
-#   changelog，顶部只容一个「较新行」，见 :84-87 的双行语义注释。
+# 项 1 版本一致性。2026-11-27 旧线退役后只剩 Go 线：
+#   版本唯一来源 = 仓库根 VERSION（单行 X.Y.Z）。
+#   本项钉存在的两处：发布 tag v$VERSION 存在且指向 HEAD；CHANGELOG 顶部条目
+#   等于 v$VERSION。二进制自报版本由项 1b go-version 负责（真构建并断言）。
+#   openapi info.version 是 API 契约版本，不随发布走，见 server/contracts/README.md。
 check_version() {
-    local init="$ROOT/yiban/__init__.py" changelog="$ROOT/CHANGELOG.md"
+    local vfile="$ROOT/VERSION" changelog="$ROOT/CHANGELOG.md"
     STATUS_version=FAIL; REASON_version=""
-    [ -f "$init" ] || { REASON_version="missing $init"; return; }
+    [ -f "$vfile" ] || { REASON_version="missing $vfile"; return; }
     [ -f "$changelog" ] || { REASON_version="missing $changelog"; return; }
     local v
-    v="$(grep -E '^__version__ = "[0-9]+\.[0-9]+\.[0-9]+"$' "$init" \
-        | head -1 | sed -E 's/^__version__ = "([0-9.]+)"$/\1/')"
-    if [ -z "$v" ]; then
-        REASON_version="no __version__ literal in yiban/__init__.py"; return
-    fi
+    v="$(head -n 1 "$vfile" | tr -d '\r')"
+    printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+        REASON_version="VERSION is not X.Y.Z semver: '$v'"; return; }
     local top
     top="$(grep -m1 -E '^## \[v[0-9]+\.[0-9]+\.[0-9]+\]' "$changelog" \
         | sed -E 's/^## \[(v[0-9.]+)\].*/\1/')"
-    # 双行共库（2026-11-10 定稿）：旧 Python 线的 __version__ 冻结在 0.6.4，
-    # Go 线的产品版本在仓库根 VERSION（当前 0.7.5）。两条线共用一份 CHANGELOG，
-    # 顶部只能写一个条目，故「等于 __version__」或「等于根 VERSION」任一成立即放行；
-    # 两个都不是才红——那时顶部是第三个值，说明有人手改了版本或 CHANGELOG。
-    local go_v=""
-    if [ -f "$ROOT/VERSION" ]; then
-        go_v="$(head -n 1 "$ROOT/VERSION" | tr -d '\r')"
-        printf '%s' "$go_v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || go_v=""
-    fi
-    if [ "$top" != "v$v" ] && { [ -z "$go_v" ] || [ "$top" != "v$go_v" ]; }; then
-        REASON_version="__version__=$v, root VERSION=${go_v:-none}, but CHANGELOG top is '${top:-none}'"; return
+    if [ "$top" != "v$v" ]; then
+        REASON_version="VERSION=$v but CHANGELOG top is '${top:-none}'"; return
     fi
     if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
         REASON_version="$ROOT is not a git checkout"; return
@@ -108,12 +92,11 @@ check_version() {
         REASON_version="tag $tag points at $tag_sha, HEAD is $head_sha"; return
     fi
     STATUS_version=PASS
-    echo "version: __version__=$v, root VERSION=${go_v:-none}, CHANGELOG top=$top, tag $tag -> HEAD ok"
+    echo "version: VERSION=$v, CHANGELOG top=$top, tag $tag -> HEAD ok"
 }
 
 # 项 1b Go 线产品版本与发布 tag（2026-11-05 版本批）。
-#   单一来源 = 仓库根 VERSION（单行 X.Y.Z，换行结尾）；旧 Python 线的
-#   yiban/__init__.py 与 CHANGELOG 保持冻结，不在本项范围。
+#   单一来源 = 仓库根 VERSION（单行 X.Y.Z，换行结尾）。
 #   三个动作：
 #   a) tag 对账：v$VERSION 存在且指向 HEAD；不存在 ⇒ FAIL 并提示先打
 #      tag（先于构建：缺 tag 时不再白付一次编译）；
@@ -234,40 +217,37 @@ check_tests() {
     echo "  bash scripts/dev-verify.sh --ci                                    # 提交前；合并前全量"
 }
 
-# 项 5 容器烟测。引用既有演练：scripts/drill-container.sh（容器形态真签到链路）
-#   与 scripts/deploy_gate.sh --phase A（全新 docker 环境按 README 一次装成 + 健康
-#   检查，AGENTS §17 判据）。
+# 项 5 部署烟测。引用新栈两条干净环境 e2e：容器（工单 6jk，build→起服→
+#   /healthz→备份恢复→SIGTERM 收尾）与裸机（install.sh + 真 systemd）。
 check_container() {
     STATUS_container=FAIL; REASON_container=""
     local missing=0 f
-    for f in "$ROOT/scripts/drill-container.sh" "$ROOT/scripts/deploy_gate.sh"; do
+    for f in "$ROOT/scripts/e2e/deploy-container-e2e.sh" "$ROOT/scripts/e2e/deploy-baremetal-e2e.sh"; do
         if [ ! -f "$f" ]; then echo "container: missing $f" >&2; missing=1; fi
     done
-    [ "$missing" -eq 0 ] || { REASON_container="referenced drill missing"; return; }
+    [ "$missing" -eq 0 ] || { REASON_container="referenced deploy e2e missing"; return; }
     STATUS_container=POINTER; REASON_container="not executed here"
     echo "container: POINTER — release operator runs:"
-    echo "  bash scripts/deploy_gate.sh --phase A      # 干净容器按 README 装成 + /healthz"
-    echo "  bash scripts/drill-container.sh            # 容器形态整轮真签到（演练机）"
+    echo "  bash scripts/e2e/deploy-container-e2e.sh   # 干净容器装成 + /healthz + 备份恢复"
+    echo "  bash scripts/e2e/deploy-baremetal-e2e.sh   # 干净 Ubuntu 容器里真装 systemd 服务"
 }
 
-# 项 6 备份演练。引用既有件：scripts/backup.sh（--restore 解包后自动跑
-#   integrity_check + audit_verify）与 server/cmd/cli 的 backup/restore 子命令
-#   （server/cmd/cli/main.go 注册）；deploy_gate.sh --phase C 是容器形态备份恢复
-#   的一键判据。
+# 项 6 备份演练。引用新栈件：deploy/container/backup.sh（db.dump +
+#   db.list + photos.tar.gz + SHA256SUMS）与 server/cmd/cli 的 backup/restore
+#   子命令；容器 e2e 的 C4c/C4d 已把备份与恢复冒烟纳入每次运行。
 check_backup() {
     STATUS_backup=FAIL; REASON_backup=""
-    [ -f "$ROOT/scripts/backup.sh" ] || { REASON_backup="missing scripts/backup.sh"; return; }
+    [ -f "$ROOT/deploy/container/backup.sh" ] || {
+        REASON_backup="missing deploy/container/backup.sh"; return; }
     local cli="$ROOT/server/cmd/cli/main.go"
     [ -f "$cli" ] || { REASON_backup="missing $cli"; return; }
     if ! grep -q 'case "backup"' "$cli" || ! grep -q 'case "restore"' "$cli"; then
         REASON_backup="cli has no backup/restore subcommand"; return
     fi
-    [ -f "$ROOT/scripts/deploy_gate.sh" ] || { REASON_backup="missing scripts/deploy_gate.sh"; return; }
     STATUS_backup=POINTER; REASON_backup="not executed here"
     echo "backup: POINTER — release operator runs:"
-    echo "  bash scripts/backup.sh --restore <最新备份包> <临时目录>   # 退出码 0（6/7/8 = 自检失败）"
     echo "  yiban-cli backup && yiban-cli restore                      # Go 服务端形态（pg + GPG）"
-    echo "  bash scripts/deploy_gate.sh --phase C                      # 容器形态备份恢复判据"
+    echo "  bash scripts/e2e/deploy-container-e2e.sh                   # 含 C4c 备份 / C4d 恢复冒烟"
 }
 
 # 项 7 回滚演练。考古（2026-10-27，ref ad5b3639）：机制存在——
@@ -291,8 +271,7 @@ check_backup() {
 #   旧写法在脚本 rc=2 时打印跳过并退出 0，等于把环境错误洗成绿（P1-6），已删：
 #   deploy-gate.yml 不得再出现演练调用，两条轨都不得有降级分支。本项仍记
 #   POINTER：全矩阵只在自托管 runner 上跑，发布前按下面那条命令手跑一遍。
-#   旧线 deploy_gate.sh --phase B：本项不再指向；脚本与旧线 CI 仍在
-#   （phase B 未删）。
+#   旧线 deploy_gate.sh 已随旧栈退役删除，本项只指向新栈两条轨。
 check_rollback() {
     STATUS_rollback=FAIL; REASON_rollback=""
     local upd="$ROOT/deploy/baremetal/update.sh"
@@ -532,27 +511,21 @@ selftest() {
     tmp="$(mktemp -d)"
     git -C "$tmp" init -q
     git -C "$tmp" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-    mkdir -p "$tmp/yiban"
-    printf '__version__ = "9.9.9"\n' > "$tmp/yiban/__init__.py"
+    printf '9.9.9\n' > "$tmp/VERSION"
     printf '# 更新日志\n\n## [v9.9.9] - 2026-01-01\n' > "$tmp/CHANGELOG.md"
     git -C "$tmp" -c user.email=t@t -c user.name=t commit -q --allow-empty -m v
     git -C "$tmp" tag v9.9.9
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
     expect "version green on consistent fixture" 0 "$rc"
-    # 突变：改 __init__ 版本，tag 不再匹配 → 红。
-    printf '__version__ = "9.9.10"\n' > "$tmp/yiban/__init__.py"
-    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
-    expect "version red after breaking __version__" 1 "$rc"
-    # 双行共库（2026-11-10 定稿）：顶部等于根 VERSION 也放行。
-    printf '__version__ = "9.9.9"\n' > "$tmp/yiban/__init__.py"
+    # 突变：改 VERSION，tag 不再匹配 → 红。
     printf '9.9.10\n' > "$tmp/VERSION"
-    printf '# 更新日志\n\n## [v9.9.10] - 2026-01-02\n' > "$tmp/CHANGELOG.md"
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
-    expect "version green when CHANGELOG top matches root VERSION" 0 "$rc"
-    # 突变：顶部写成两线之外的第三个值 → 红。
+    expect "version red after breaking VERSION" 1 "$rc"
+    # 突变：CHANGELOG 顶部与 VERSION 不一致 → 红。
+    printf '9.9.9\n' > "$tmp/VERSION"
     printf '# 更新日志\n\n## [v9.9.11] - 2026-01-03\n' > "$tmp/CHANGELOG.md"
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
-    expect "version red when CHANGELOG top is a third version" 1 "$rc"
+    expect "version red when CHANGELOG top differs" 1 "$rc"
     rm -rf "$tmp"
 
     # 不变式 1g：go-version 项有牙（2026-11-05 版本批）。夹具用桩 builder

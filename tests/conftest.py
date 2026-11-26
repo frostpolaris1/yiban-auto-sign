@@ -1,73 +1,23 @@
 # -*- coding: utf-8 -*-
-"""pytest 全局配置：默认禁用 web.create_app 的每日清理后台线程。
+"""pytest 全局配置（旧 Python 栈退役后）。
 
-原因：全量测试会调用 122+ 次 create_app()，若每次都启动 daily-purge 守护线程，
-60 秒后大量线程会并发访问共享 SQLite 单例 db._conn，与各测试 teardown 的关库/重建
-竞争，导致 Windows fatal exception access violation。生产环境不设置该变量，
-因此默认行为不受影响；仅测试进程通过 conftest 在导入任何测试模块前启用。
+保留四类进程级纪律：
+  1. root logger 文件 handler 每个用例前后关闭，避免残留句柄。
+  2. 类级 os.environ 快照，setUpClass 的改动不泄漏给后续文件。
+  3. 进程 umask 逐用例还原。
+  4. 工作树卫生门（工单 qg8f）：会话前后检出根不得新增文件；
+     实现符号与 pytest_sessionstart/finish 由 tests/test_suite_cwd_isolation_gate.py
+     直接引用，不要改名或删掉。
 """
-import contextlib
 import logging
 import os
 import sys
 
 import pytest
 
-os.environ.setdefault("YIBAN_DISABLE_PURGE_LOOP", "1")
-
-# 测试默认禁用邮件通知。真值口径是「.env 文件优先、进程环境只补缺」
-# （mail.config._get，M27 全仓口径）——只在本进程环境里设 YIBAN_MAIL_ENABLE=0 挡不住
-# 工程 .env：yiban/infra/env_io.env_path() 在 YIBAN_ENV_FILE 未设时回落到 cwd 的 .env
-# （裸机 cron / 开发机上就是生产 .env）。该文件若写了 YIBAN_MAIL_ENABLE=1 且有可用
-# SMTP 条目，is_enabled() 仍为真，signin/web 测试的 send_notification("t","c",...)
-# 会真发信到真实收件人。故先把 YIBAN_ENV_FILE 指向测试专用 fixture（会话级临时目录里的
-# 空 .env），使 _read_env_file() / env_path() 在测试期读不到工程 .env；再把
-# YIBAN_MAIL_ENABLE 钉成 0 兜底。各测试类仍可显式覆盖 YIBAN_ENV_FILE 实现自己的隔离
-# （先例同下方 YIBAN_LOG_FILE / YIBAN_STATE_DIR）。
-if not os.environ.get("YIBAN_ENV_FILE", "").strip():
-    import tempfile
-    os.environ["YIBAN_ENV_FILE"] = os.path.join(
-        tempfile.mkdtemp(prefix="yiban-test-env-"), ".env"
-    )
-
-# 进程环境兜底：即便某用例把 fixture 之外的路径也曝了光，仍默认关闭。
-# test_mailer.py 自带 _isolate_env 清理 YIBAN_MAIL_* 后按用例显式设置，不受影响。
-os.environ.setdefault("YIBAN_MAIL_ENABLE", "0")
-
-# v0.26.3：web.create_app 会给 root logger 挂按天文件 handler（sign-*.log）。
-# 测试进程默认重定向到会话级临时目录——否则 Windows 开发机会意外创建
-# C:\var\log\yiban\（默认路径按当前盘符解析）。各测试类可显式覆盖该变量。
-if "YIBAN_LOG_FILE" not in os.environ:
-    import tempfile
-    os.environ["YIBAN_LOG_FILE"] = os.path.join(
-        tempfile.mkdtemp(prefix="yiban-test-logs-"), "sign.log"
-    )
-
-# 状态目录的会话级临时默认——与 YIBAN_LOG_FILE 同法。init_db / 迁移 v20 / 状态读写在
-# 没有 YIBAN_STATE_DIR 时回落到真实 `/var/log/yiban`（机器级路径）：WSL 以 root 跑测时
-# 会把临时用例写下的状态"补账"进真实部署目录，成为跨用例的环境依赖型 flake（本次
-# test_capacity_of 3 红、test_rekey flake 的共同放大器）。设一个会话级临时默认后，任何
-# 用例即便 pop 掉本键、经类级环境快照（_restore_environ_around_class）还原，也回到这个
-# 临时目录而非真实机器路径。各测试类仍可显式覆盖或摘除来验证"未设态回落"。
-if "YIBAN_STATE_DIR" not in os.environ:
-    import tempfile
-    os.environ["YIBAN_STATE_DIR"] = tempfile.mkdtemp(prefix="yiban-test-state-")
-
 
 def _close_root_file_handlers():
-    """关闭并移除 root logger 上全部文件 handler（DailyFlockFileHandler /
-    普通 FileHandler 均为 logging.FileHandler 子类）。
-
-    create_app 会给 root logger 挂按天文件 handler，测试后不关闭会在 Windows 上
-    持有 sign-*.log 文件句柄——test_logs_by_date 的 setUp 删除临时按天日志时抛
-    PermissionError（全量回归 11 failed）。移除 handler 后，下一轮 create_app 的
-    幂等逻辑会重新挂载，行为不受影响。
-
-    signin 的 handler 装配延迟到 main()（模块导入零副作用），
-    测试进程不再出现"游离于 root 之外"的 signin._handler；历史版本需显式关闭它
-    （import 期 basicConfig 被 pytest 捕获 handler 顶成 no-op、handler 未挂 root
-    却已打开日志文件）。
-    """
+    """关闭并移除 root logger 上全部文件 handler。"""
     root = logging.getLogger()
     for h in list(root.handlers):
         if isinstance(h, logging.FileHandler):
@@ -79,102 +29,14 @@ def _close_root_file_handlers():
 
 @pytest.fixture(autouse=True)
 def _close_root_file_handlers_after_each():
-    """每个测试前后清理 root logger 残留文件 handler。
-
-    测试前清理：create_app 挂到 root 的按天 handler 若指向已删除目录会反复写失败；
-    历史版本还需处理 signin 导入期游离打开的日志文件句柄（P3-13 后装配延迟到
-    main()，导入零副作用，此问题已消失）。测试后清理：移除本轮 create_app 挂到
-    root 的 handler。清理不破坏 test_registration_pause.py 的断言：其断言的是
-    create_app 之后 root 存在 DailyFlockFileHandler，setup 清理后再 create_app
-    会由幂等逻辑重新挂载。
-    """
     _close_root_file_handlers()
     yield
     _close_root_file_handlers()
-
-
-def _clear_sign_claim_pool():
-    """清空**当前生效连接**上的签到领取池（多执行体协调表）；异常一律不影响用例。
-
-    为什么用"当前连接"而不是"环境变量指向的库"：连接是模块级单例，而多数测试类
-    直接复用上一个类留下的连接（自己不设 `YIBAN_DB_FILE`）——引擎在新用例里用的
-    就是这个连接，池子里的行就是它挡住的。清一个已属于旧类的临时库无害。
-    （连接为空时**不**在此处开库：否则会顺手创建默认库，把后续类的库选择带偏。）
-    """
-    try:
-        import db
-        conn = db._conn
-        if conn is None:
-            return
-        with db._conn_lock:
-            conn.execute("DELETE FROM sign_claims")
-            conn.commit()
-    except Exception:  # 库/表不存在 → 该用例与领取池无关
-        pass
-
-
-@pytest.fixture(autouse=True)
-def _reset_sign_claim_pool():
-    """每个用例前清空签到领取池（`sign_claims`，多执行体协调表）。
-
-    为什么需要：领取池的语义是"**一个账号一个业务日只被一个执行体做一次**"
-    （成功/已签到/今日无任务记 `done`，其余落 `failed` 并放开租约可被接手）。
-    而单元测试普遍在**同一个库、同一天、同一个手机号**上反复调用
-    `run_queue_retry` 来验证不同分支——不清池的话，第二条用例的账号会直接
-    "已被领取"而根本不发起尝试，断言会以"没发请求/没写状态"的形式失败，
-    看起来像实现坏了，其实是池子记住了上一轮。
-
-    这也正是生产语义：同一账号同一天的重复自动执行本就该被拒（防重复登录），
-    只有补签轮（接手 `failed`）与手动指定账号（`reclaim=True`）才继续做。
-
-    清理放在**用例之后**：不少测试类在 setUp 里才把 `YIBAN_DB_FILE` 指向临时库
-    （夹具先跑就看不到那个库），而用例结束时环境与连接都还是该类的，判定最准。
-    """
-    yield
-    _clear_sign_claim_pool()
-
-
-@pytest.fixture(autouse=True, scope="class")
-def _fresh_db_connection_per_class():
-    """类边界丢弃继承来的 SQLite 单例连接（工单 mgq5）。
-
-    `init_db(另一个路径)` 现在 fail-closed；本夹具让每个测试类从"无连接"开始，
-    于是类内的 `init_db(...)` 一定打开自己的库，不会复用上一个类/上一个文件留下的
-    连接。旧行为下这种继承是**静默**的：用例绿，但读写其实落在上一个类的临时库。
-    （2026-10-20 实测：打开该检查后 38 个用例立刻暴露这个继承面。）
-
-    放在 `try/except ImportError` 里：`tests/test_conftest_umask_guard.py` 会把本文件
-    复制到一个**没有 yiban 包**的临时目录里跑子会话，那时导入失败是预期环境，不是缺陷。
-    """
-    try:
-        from yiban.adapters.persistence import connection
-    except ImportError:
-        yield
-        return
-    conn = connection.current()
-    if conn is not None:
-        with contextlib.suppress(Exception):
-            conn.close()
-        connection.reset_conn()
-    yield
 
 
 @pytest.fixture(autouse=True, scope="class")
 def _restore_environ_around_class():
-    """类级 os.environ 快照：setUpClass 的改动在 tearDownClass 之后整体还原。
-
-    大量测试类在 setUpClass 里把 YIBAN_STATE_DIR / YIBAN_ENV_FILE / YIBAN_DB_FILE
-    等指向各自的临时目录，tearDownClass 只 rmtree、不还原环境变量（个别类干脆 pop
-    conftest 设的会话默认值）。这些键被带进后续用例后指向已删目录，会让无关断言
-    以间歇形式失败——实测串行组合
-    tests/test_mailer.py + test_scheduler_gate 的锚点默认路径断言
-    必挂；xdist `-n 8` 下同一 worker 跨文件执行时表现为随机 1~2 项失败
-    （已复现并修复：test_scheduler_gate 锚点默认路径、test_web_auth_security 的
-    purge 线程门）。
-
-    在类边界统一快照/还原，既保留 setUpClass 为类内用例准备的隔离环境，
-    又不把该环境泄漏给其它文件；单个文件里忘还原的类也一并被兜住。
-    """
+    """类级 os.environ 快照：setUpClass 的改动在 tearDownClass 之后整体还原。"""
     snapshot = dict(os.environ)
     yield
     os.environ.clear()
@@ -183,20 +45,7 @@ def _restore_environ_around_class():
 
 @pytest.fixture(autouse=True)
 def _restore_process_umask():
-    """逐用例还原进程 umask：本仓有在**进程内**直调生产入口的用例，而那些入口会改 umask。
-
-    `yiban/app/runner.py` 与 `yiban/entry/cli/__init__.py` 都把进程 umask 收到 `077`
-    （生产入口的既定行为，自己不还原）。进程内调用它们的用例（`runner.main` /
-    `cli.main`）因此把 077 泄漏给同 worker 的后续用例：那些用例 `os.makedirs` 建出的
-    目录变 `0700`、`_write` 建出的文件变 `0600`，凡带降权（setpriv 到 nobody）或按
-    位格断言的用例就会爆。实测 `tests/test_deploy_prod_artifacts.py` 的非 root 暂存用例
-    报 `126 Permission denied`（或推到下一步的"清单为空"），而它单跑全绿——两个文件
-    都用例自身无改动，纯粹是 `--dist loadfile` 把它们分进了同一个 worker。
-
-    本 fixture 与 `_restore_environ_around_class` 属同一层纪律：进程级全局副作用必须逐
-    用例还原，不能押在"每个用例自己记得还原"上。读取 umask 只能靠设置它（`os.umask`
-    既设又返回旧值），故前两行是一次只读往返：设 022 拿到旧值，立刻设回旧值。
-    """
+    """逐用例还原进程 umask（本仓有直调生产入口的用例会改它）。"""
     before = os.umask(0o022)
     os.umask(before)
     yield
@@ -206,22 +55,6 @@ def _restore_process_umask():
 # ---------------------------------------------------------------------------
 # 工作树卫生门（工单 qg8f）：一次测试会话不得在检出根留下新增文件
 # ---------------------------------------------------------------------------
-# 为什么放在 conftest 而不是逐用例点名：污染源可以是任何用例（子进程 CLI、默认库/
-# 日志路径回落、被遗忘的临时目录……）。逐用例点名只能拦住"已经知道的那一个"；本门
-# 判**会话前后的检出根差集**，与污染源是谁无关。
-#
-# 不变式（任何时刻都不该被违反）：会话结束时，检出根里的文件集合不得比开始时多。
-# 历史缺陷形态：某用例按默认值打开库，`yiban.db`（后改为 `data/yiban.db`）被写进
-# 检出根；该文件又被 `.gitignore` 命中，`git status` 看不见——于是"全量绿"不可
-# 复现（工单 qg8f：同一内容 4 次全量 1 次红）。**看不见的污染比红更危险。**
-#
-# 判在 **controller 进程**（xdist 主进程，或串行跑测的同一进程）：worker 收尾时
-# 其它 worker 可能正在写临时件，逐 worker 判会把并发误报成污染。`workerinput`
-# 存在即为 xdist worker，跳过。
-#
-# 跳过面（显式，不静默）：工具缓存目录（`.pytest_cache` / `__pycache__` / ruff /
-# mypy / venv / node_modules）不是运行产物；`work/` 是过程产物目录（AGENTS §七）。
-# 其它任何新增路径——包括 `data/yiban.db`——一律判污染。
 _RUNTIME_ARTIFACT_IGNORED_DIRS = frozenset({
     ".git", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
     ".venv", "node_modules", "work",
@@ -240,7 +73,7 @@ def _runtime_artifact_paths(root):
 
 
 def _runtime_artifact_diff(root, before):
-    """会话新增的运行产物（排序后的相对路径列表）；`before` 为空表示未启用判定。"""
+    """会话新增的运行产物（排序后的相对路径列表）；before 为空表示未启用判定。"""
     if before is None:
         return []
     return sorted(_runtime_artifact_paths(root) - before)

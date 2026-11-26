@@ -3,7 +3,7 @@
  *
  * Source values: Adminator 2026 `src/assets/styles/2026/_tokens.scss`.
  * The token gate enforces exact parity with
- * `web/static/vendor/adminator/adminator.css`, for both themes:
+ * `ui/vendor/adminator/adminator.css`, for both themes:
  * 36 token names per theme, 72 declarations total.
  *
  * Do not add, rename, or re-value a token here. This file is the only place in

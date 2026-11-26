@@ -8,7 +8,7 @@
 # An empty file, an empty allowlist or an unknown scope is an error.
 # Files are not checked by the allowlist; naming rules apply separately.
 
-root	server,ui,docs,deploy,?docker,?yiban,?web,?frontend,tests,scripts,?config,.github,?work,?data,?out	top level
+root	server,ui,docs,deploy,tests,scripts,.github,?work,?data,?out	top level
 server/internal	core,app,adapters,entry,signing,assembly,buildinfo,configdata	layers + build-time metadata
 server/cmd	server,cli,bench,probe-login	process entrypoints
 server/migrations	postgres	SQL migrations

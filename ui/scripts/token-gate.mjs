@@ -12,7 +12,7 @@
  *    两项豁免在此登记，每次运行都打印。
  *
  * 2. vendor 副本。`src/styles/adminator.css` 必须与
- *    `../web/static/vendor/adminator/adminator.css` 逐字节相同。
+ *    `vendor/adminator/adminator.css` 逐字节相同。
  *    第 2 项检查是第 1 项豁免可信的前提。
  *
  * 3. 令牌对齐。`src/styles/tokens.css` 的令牌名与值必须与 vendor 完全一致，
@@ -41,7 +41,7 @@ const SRC_ROOT = join(UI_ROOT, 'src')
 const INDEX_FILE = join(UI_ROOT, 'index.html')
 const TOKENS_FILE = join(SRC_ROOT, 'styles', 'tokens.css')
 const VENDOR_COPY = join(SRC_ROOT, 'styles', 'adminator.css')
-const VENDOR_SOURCE = resolve(UI_ROOT, '..', 'web', 'static', 'vendor', 'adminator', 'adminator.css')
+const VENDOR_SOURCE = join(UI_ROOT, 'vendor', 'adminator', 'adminator.css')
 const THEMES = ['light', 'dark']
 
 /** 已登记豁免。名单保持短，每项写明理由。 */

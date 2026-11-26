@@ -1,5 +1,5 @@
 # 功能请求（结构化表单）
-# 三问贴合本仓清单文化：旧线对照、契约影响、迁移需求。
+# 两问贴合本仓清单文化：契约影响、迁移需求。
 # labels 只绑仓库已存在的标签；契约/迁移细节见 CONTRIBUTING.md §7.5。
 name: 功能请求
 description: 提议一个新能力或行为变更（先对齐判据，再写代码）
@@ -39,19 +39,6 @@ body:
       placeholder: |
         正向：...
         负向：...
-    validations:
-      required: true
-
-  - type: dropdown
-    id: old_stack
-    attributes:
-      label: 旧线对照？
-      description: 旧栈（yiban/、web/、frontend/、tests/）已冻结，但仍是行为参考。
-      options:
-        - 不涉及旧线
-        - 旧线已有类似能力，可作行为参考
-        - 旧线能力不足，需要在新栈重做
-        - 不确定，请维护者判断
     validations:
       required: true
 

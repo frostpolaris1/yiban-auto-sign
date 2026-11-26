@@ -1,112 +1,26 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""统一跑测入口 `scripts/dev-verify.sh` 的契约：跑法与 CI 关键子集命令不许漂移。
+"""统一跑测入口 scripts/dev-verify.sh 的契约（旧 Python 栈退役后）。
 
-标签：J · 运维：部署/备份/发布
-覆盖：本批把"跑测跑法"收成唯一入口——本地全量与 CI 关键子集同源，命令原文只存
-    在入口脚本里一份（配方见 docs/dev/dev-verify.md）。四条不变量：
-    ① **CI 关键子集命令逐字冻结**：从入口脚本的 `run_ci` 里按行抽出命令行，与
-       下面的期望清单**逐字比对（含顺序）**。改一个参数（`-n 4`、`-k` 词集、
-       `-p no:randomly`、ruff 扫描面、e2e smoke 目标）都必须同时改这里并在 PR 里
-       写理由。这不是"第二份事实源"，是**冻结的期望**——本批硬约束是"CI 结果与
-       改前等价"，此断言让漂移必须显式发生。
-    ①′ 抽出"执行行"的口径认三种调用形态：`"$py" -m 模块`、`bash 脚本`、
-       `"$py" 脚本路径`（B1 的 AST 门与 B2 的名册门都用第三种）。认少一种，那一步
-       就不进冻结清单，命令原文就此多出第二份事实源。
-    ①″ **长尾剔除清单必须有自动执行点**（R3-025）：`FAST_KNOWN_SLOW` 的每条 nodeid
-       在快集里被 `--deselect`，故必须由 `run_slow` 的长尾轨执行，而 `run_slow` 由
-       CI 的 `slow-lane` 作业调用。三者缺一即红——缺了就是"任何自动轨都不跑"。
-    ①‴ 注释里的条数口径必须等于数组长度（AGENTS §十三 第 31 条：数必须带口径，
-       口径漂移要由机器发现，不靠人记）。
-    ② **全量参数固定**：默认模式 `-n auto --dist loadfile`。`--dist loadfile`
-       不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红。
-    ③ **固定 venv**：全量模式只认 `/root/.venv-yiban-wsl/bin/python`，不可用就
-       响亮失败，不许退化成 PATH 上的任意 python。
-    ④ **日志口径**：日志文件名逐次唯一（含 PID，同秒并发不互撞）且份数可配——
-       整份落盘、不许只留 tail。
-关键断言：本文件走两条轨。① **文本冻结**（只读脚本原文）：CI 命令表逐字、全量
-    参数、固定 venv、日志口径。② **契约实测**（只在参数解析与纯函数上跑 bash）：
-    模式标志互斥、`--ci --base` 响亮拒绝、空覆盖退出码 3、范围档选择法。第二条轨
-    不建副本、不落日志、不联网；每条用例只跑脚本的参数解析段或一段纯函数。
-    "真跑脚本 + 守卫变异"的活体那一半在 `scripts/e2e/dev-verify-e2e.sh`（WSL 内手跑）。
-    CI 接线分两处审定：verify job → 入口脚本 → 门禁脚本由
-    tests/test_shared_facts_gate.py 的 SharedFactsCiWiringTest 钉住；
-    slow-lane 与 stacks 两个作业的执行行由本文件的 DevVerifyTailLaneTest 与
-    tests/test_stacks_ci_wiring.py 的 StacksCiWiringTest 钉住（只审"作业真调仓内入口"，不复制命令文本）。
-依赖：只读文件 + 本机 bash；无网络、无第三方库。
+钉住四件事：
+  1. CI 的 verify 作业真的调 bash scripts/dev-verify.sh --ci；
+  2. run_ci 真的跑 ruff（tests/ scripts/）；
+  3. 公开数据红线门与它的接线守卫在同一条逻辑命令里；
+  4. run_ci 真的跑 pytest tests/。
+
+不冻结完整命令清单：命令原文只住 run_ci 一份，本文件只钉"哪些面必须在"。
+依赖：只读文本；无网络。
 """
 import io
 import os
 import re
-import shlex
-import signal
-import subprocess
-import sys
-import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 CI_YML = os.path.join(BASE, ".github", "workflows", "ci.yml")
-
-#: 注释里关于 FAST_KNOWN_SLOW 条数的口径声明（AGENTS §十三 第 31 条的机器化）。
-#: 新增注释时按这三种写法之一定口径；换写法本组就核不到它（口径声明本身也会漂）。
-_COUNT_CLAIM = re.compile(
-    r"(?:FAST_KNOWN_SLOW 的|剔除清单共)\s*(\d+)\s*条"
-    r"|全量\s*[-−]\s*(\d+)\s*条")
-#: 同一批注释里的"分属 N 个文件"声明（文件数也是跨数比较，不许人记）。
-_FILE_CLAIM = re.compile(r"分属\s*(\d+)\s*个文件")
-
-#: `run_ci` 里必须逐字出现、且按此顺序执行的关键子集命令。
-#: `"$py"` = `--ci` 解析出的解释器绝对路径（CI 上是 setup-python 那个）。
-#: 2026-10-17（工单 vckk 阶段 2-a）：第 4 条从 `-k` 关键词子集换成**车道名册推导的快集**——
-#: 旧子集是关键词命中面，改动落在命中面之外时子集绿、全量红且**不重合本身静默**
-#: （AGENTS.md §十三 第 29 条）。改前原文：
-#:   "$py" -m pytest tests/ --ignore=tests/test_multi_executor_drill_e2e.py -q -n 4
-#:     --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit or claim or queue"
-#: 同批另两处：靶场的串行专轨（第 5 条）从**硬编码文件名**改成名册的 serial 行；
-#: shared-facts / path-env-reads 两个元测试步补 `FAST_DESELECT_ARGS`（那 4 条全仓扫描在 CI 上
-#: 实测占该两步 162s / 60s，剔掉后只剩十几秒；它们已由全量与 nightly 覆盖）。
-EXPECTED_CI_COMMANDS = (
-    # scope=shared（只动了共享配置名册）：点名跑读 registry.json 的旧线测试。
-    # 不再为「加一个 YIBAN_* 键」付整套旧线套件（2026-10-31）。
-    '"$py" -m pytest "${SHARED_CONFIG_TESTS[@]}" -q -n 4 --dist loadfile -p no:randomly',
-    '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet',
-    # 工单 dq2n（2026-10-20）：mypy 用隔离缓存目录。mypy 在 (path,size,mtime) 相同时
-    # 不校验内容哈希，会信任上一轮缓存里的错误；--ci 就地跑，最容易被脏 .mypy_cache
-    # 影响。缓存目录每次 mktemp -d 新建（见 run_ci），故同一代码同一结论。
-    '"$py" -m mypy --cache-dir "$CI_MYPY_CACHE"',
-    '"$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly',
-    # 快集：目标 tests/，排除项全部由名册/名单**数组**装配（不许在这里写死文件名）。
-    # 下面的期望值写成**续行已拼合**的形态（行尾反斜杠在拼合时被吃掉）——抽出口径见
-    # test_ci_subset_commands_are_frozen_byte_for_byte 的注释。
-    '"$py" -m pytest tests/ -q -n 4 --dist loadfile'
-    ' ${LANE_IGNORE_ARGS[@]+"${LANE_IGNORE_ARGS[@]}"}'
-    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}'
-    ' --junitxml="$CI_SKIP_XML"',
-    # 串行专轨：文件名来自名册的 serial 行，不带 -n（需独占 runner 的核，工单 zdvd）。
-    '"$py" -m pytest ${LANE_SERIAL_FILES[@]} -q -p no:randomly',
-    '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',
-    "bash scripts/check-shared-facts.sh",
-    '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly'
-    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
-    # CLEAN-1：公开数据红线门（AGENTS §46–49）在 scope 分支之外常跑。
-    '"$py" -m pytest tests/test_public_exposure_gate.py'
-    ' tests/test_public_exposure_gate_wiring.py -q -p no:randomly',
-    '"$py" -m pytest tests/test_tooling_gate_wiring.py -q -p no:randomly',
-    # 契约门接线守卫常跑（作业存在、钉版、显性早退）。
-    '"$py" -m pytest tests/test_contract_gate_wiring.py -q -p no:randomly',
-    '"$py" scripts/check-path-env-reads.py',
-    '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly'
-    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
-    '"$py" scripts/check-config-registry.py',
-    '"$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly',
-    '"$py" scripts/check-import-linter.py',
-    '"$py" -m pytest tests/test_import_linter_gate.py -q -p no:randomly',
-    # 2026-10-13（工单 j06f，复审指定）：依赖同步门的元测试进 CI 子集。
-    # 为什么是元测试而不是门本体：CI 的解释器刚按 lock 装过，门本体在那里是同义反复。
-    '"$py" -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly',
-)
+GATE = "tests/test_public_exposure_gate.py"
+WIRING = "tests/test_public_exposure_gate_wiring.py"
 
 
 def _read(path):
@@ -114,14 +28,8 @@ def _read(path):
         return f.read()
 
 
-def _func_body(text, func):
-    """切出 bash 脚本里某个函数的正文（列 1 的 `func() {` 起、到列 1 的 `}`）。
-
-    签名行允许带行尾注释（`run_ci() { # …` 是本仓 bash 的常规写法）——不认注释
-    会让抽出的正文恒为空串，把三条断言一起打成废断言。
-    返回空串表示没抽到——调用方必须判成失败，否则"结构改了"会让断言恒真。
-    """
-    m = re.search(r"^%s\(\) \{\s*(?:#.*)?$" % re.escape(func), text, re.M)
+def _func_body(text, name):
+    m = re.search(r"^%s\(\) \{\s*(?:#.*)?$" % re.escape(name), text, re.M)
     if m is None:
         return ""
     rest = text[m.end():]
@@ -129,646 +37,69 @@ def _func_body(text, func):
     return rest[:end.start()] if end else ""
 
 
-def _func_source(text, func):
-    """返回可直接喂给 bash 的**完整函数定义**（签名行 + 正文 + 闭合括号）。
-
-    `_func_body` 切出的是函数内部语句，单独喂给 `bash -c` 会报
-    `local: can only be used in a function`。返回空串表示没抽到。
-    """
-    body = _func_body(text, func)
-    if not body:
-        return ""
-    return "%s() {\n%s\n}\n" % (func, body)
-
-
-def _bash_array_items(text, name):
-    """抽出 bash 数组 `name=(...)` 的条目（去掉引号，跳过空行与注释行）。
-
-    返回空列表表示没抽到——调用方必须判成失败，否则"结构改了"会让断言恒真。
-    """
-    m = re.search(r"^%s=\(\s*$" % re.escape(name), text, re.M)
-    if m is None:
-        return []
-    rest = text[m.end():]
-    end = re.search(r"^\)\s*$", rest, re.M)
-    if end is None:
-        return []
-    items = []
-    for line in rest[:end.start()].splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
+def _commands(body):
+    """把函数正文拼成逻辑命令行；注释行不参与判据。"""
+    out = []
+    buf = ""
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not buf and (not line or line.startswith("#")):
             continue
-        items.append(s.strip('"').strip("'"))
-    return items
-
-
-def _pytest_exec_command(text):
-    """抽全量/fast 的**真跑** pytest 命令（执行行 + 续行，不含 echo 回显行）。
-
-    只认 `"$PY" -m pytest` 且含 `$TARGET` 的执行行（脚本里唯一的执行点）；续行按行尾
-    反斜杠拼接。返回空串表示没抽到——调用方必须判成失败，否则"结构改了"会让断言恒真。
-    """
-    lines = text.splitlines()
-    for i, ln in enumerate(lines):
-        if ln.lstrip().startswith('"$PY" -m pytest') and "$TARGET" in ln:
-            cmd = ln.strip()
-            while cmd.endswith("\\") and i + 1 < len(lines):
-                i += 1
-                cmd = cmd[:-1].rstrip() + " " + lines[i].strip()
-            return cmd
-    return ""
-
-
-def _bash(script, timeout=60):
-    """跑一段 bash 脚本，返回 (退出码, stdout+stderr 合并)。不建副本、不联网。"""
-    p = subprocess.run(["bash", "-c", script], stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT, timeout=timeout, text=True)
-    return p.returncode, p.stdout
-
-
-def _run_entry(args, timeout=60):
-    """跑入口脚本本体，返回 (退出码, stdout+stderr 合并)。
-
-    只喂"参数解析阶段就拒绝"的用法，故不建副本、不碰锁、不跑 pytest。超时即杀
-    **整个进程组**：脚本在 POSIX 上会把 pytest 拉成孙进程，只杀 bash 会留下孤儿
-    进程继续烧 CPU。
-    """
-    env = dict(os.environ, DEV_VERIFY_ENTRY_TEST_NESTED="1")
-    proc = subprocess.Popen(["bash", ENTRY, *args], stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, env=env,
-                            start_new_session=(os.name == "posix"))
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if os.name == "posix":
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        else:
-            proc.kill()
-        proc.communicate()
-        raise
-    return proc.returncode, out
+        buf = (buf + " " + line).strip()
+        if buf.endswith("\\"):
+            buf = buf[:-1].rstrip()
+            continue
+        out.append(buf)
+        buf = ""
+    if buf:
+        out.append(buf)
+    return out
 
 
 class DevVerifyEntryTest(unittest.TestCase):
-    def setUp(self):
-        self.text = _read(ENTRY)
-        self.ci_body = _func_body(self.text, "run_ci")
 
-    def test_ci_subset_commands_are_frozen_byte_for_byte(self):
-        self.assertGreater(len(self.ci_body), 100,
-                           "抽不出 run_ci 函数体——结构改了？本条会因此变废断言")
-        # 抽"执行行"的口径必须盖住全部三种调用形态：`-m 模块`、`bash 脚本`、
-        # `"$py" 脚本路径`（B1 的 AST 门是第三种）。漏一种 = 那一步不进冻结清单。
-        # 续行必须**拼进上一条**（2026-10-17 补）：不拼时，写在续行上的参数
-        # （`${LANE_IGNORE_ARGS[@]}` / `${FAST_DESELECT_ARGS[@]}`）根本不进冻结清单，
-        # 于是"把排除项从命令行里删掉"这类改动**静默通过**——那正是本条要挡的形状
-        # （AGENTS.md §十三 第 29 条：门看的东西 ≠ 实际改的东西，且不重合是静默的）。
-        got = []
-        for raw in self.ci_body.splitlines():
-            line = raw.strip()
-            if got and got[-1].endswith("\\"):
-                # 续行链还没结束：这一行是上一条命令的续行，**不看前缀**也要拼进去
-                # （续行常以 `${ARR[@]}` 这种非命令开头，按前缀过滤会把参数整段丢掉）
-                got[-1] = got[-1][:-1].rstrip() + " " + line
-                continue
-            if not line.startswith(('"$py" ', "bash scripts/")):
-                continue
-            got.append(line)
-        self.assertEqual(
-            got, list(EXPECTED_CI_COMMANDS),
-            "CI 关键子集命令漂了：命令原文只应存在 scripts/dev-verify.sh 一份。"
-            "确需改动时，同批改本清单并在 PR 描述里给出改前/改后命令原文")
+    @classmethod
+    def setUpClass(cls):
+        cls.entry = _read(ENTRY)
+        cls.ci = _read(CI_YML)
+        cls.body = _func_body(cls.entry, "run_ci")
 
-    def test_full_mode_uses_auto_xdist_with_loadfile(self):
-        # 只认**真正执行**的那一行：注释与 echo 里也会出现 `$TARGET`，它们不是跑法。
-        # 判据不变——全量的 pytest 执行行只许有一条，且参数逐项冻结。
-        lines = [line.strip() for line in self.text.splitlines()
-                 if line.lstrip().startswith('"$PY" -m pytest') and "$TARGET" in line]
-        self.assertEqual(len(lines), 1, f"全量 pytest 执行行应只有一条，实得 {len(lines)}")
-        line = lines[0]
-        for token in ("-m pytest", "-q", "-p no:randomly", "-n auto", "--dist loadfile"):
-            self.assertIn(token, line, f"全量行缺 {token}：{line}")
+    def test_ci_calls_the_entrypoint(self):
+        self.assertIn("bash scripts/dev-verify.sh --ci", self.ci)
 
-    def test_both_guards_are_invoked_in_the_full_mode_path(self):
-        """两道守卫必须被**调用**，不只是被定义（在场性）。
+    def test_no_retired_stack_inputs_in_verify(self):
+        verify = self.ci[self.ci.index("  verify:"):self.ci.index("\n  tooling-gate:")]
+        for dead in ("requirements.lock", "requirements.txt", "scripts/ci-scope.sh",
+                     "test_vue_build_reproducible.py", "--scope"):
+            self.assertNotIn(dead, verify, "verify 仍引用已退役输入：%s" % dead)
 
-        实测（2026-10-05）：只摘掉 `guard_copy_git "$DEST" "$SHA"` 与 `guard_lf "$DEST"`
-        两行调用、定义留着，scripts/e2e/dev-verify-e2e.sh 仍全绿（10 次调用 0 FAIL）——
-        e2e 的变异体只证"守卫被摘掉后伪红会出现"（必要性），钉不住"守卫还在跑"。
-        本条补在场性：调用行消失即红。
-        """
-        for call in ('guard_copy_git "$DEST" "$SHA"', 'guard_lf "$DEST"'):
-            self.assertIn(call, self.text, f"守卫调用行不见了：{call}")
+    def test_run_ci_covers_ruff_and_tests(self):
+        self.assertTrue(self.body, "抽不到 run_ci（脚本结构变了）")
+        joined = "\n".join(_commands(self.body))
+        self.assertRegex(joined, r"-m ruff check tests scripts")
+        self.assertIn("-m pytest tests/", joined)
+        self.assertIn(GATE, joined)
+        self.assertIn(WIRING, joined)
 
-    def test_fixed_venv_is_mandatory_in_full_mode(self):
-        self.assertIn("FIXED_VENV=/root/.venv-yiban-wsl", self.text,
-                      "固定 venv 路径不许改（解释器漂移是本批动机之一）")
-        self.assertIn('PY="$FIXED_VENV/bin/python"', self.text)
-        self.assertIn('[ -x "$PY" ] || die "固定 venv 不可用', self.text,
-                      "固定 venv 不可用时必须响亮失败，不许退回 PATH 上的 python")
+    def test_public_gate_shares_one_command_with_wiring(self):
+        """红线门与接线守卫必须同一条逻辑命令：拆开就可能只跑一边。"""
+        for cmd in _commands(self.body):
+            if GATE in cmd:
+                self.assertIn(WIRING, cmd)
+                return
+        self.fail("run_ci 未跑公开数据红线门")
 
-    def test_log_name_is_unique_per_run_and_retention_is_configurable(self):
-        m = re.search(r'LOG="\$LOG_DIR/([^"]+)"', self.text)
-        self.assertIsNotNone(m, "找不到日志文件名模板")
-        name = m.group(1)
-        self.assertIn("%Y%m%d-%H%M%S", name, "日志文件名必须带时间戳（保留期按名排序）")
-        self.assertIn("$$", name, "日志文件名必须带 PID：同一秒的两次运行不许互相覆盖")
-        self.assertIn("prune_logs", self.text, "日志必须按份数轮转（--keep）")
-        self.assertIn("DEV-VERIFY summary:", self.text, "日志必须落汇总四数，不许只留 tail")
+    def test_no_suppression(self):
+        for cmd in _commands(self.body):
+            for bad in ("|| true", "-k ", "--ignore", "--deselect"):
+                self.assertNotIn(bad, cmd, "run_ci 削弱了门：%s" % cmd)
 
-
-class DevVerifyFastModeTest(unittest.TestCase):
-    """fast 两档的契约（修复单 yiban-auto-sign-rqvx，2026-10-07）。
-
-    钉住六件事：长尾名单不许漂移（文件/类/用例三层都要存在）、副本必须按内容校验、
-    空覆盖必须与"真覆盖"可区分、空覆盖提示必须跟着最终退出码、日志目录按模式分开、
-    模式标志不许静默后者胜。
-    """
-
-    def setUp(self):
-        self.text = _read(ENTRY)
-
-    # ---- low#1：FAST_KNOWN_SLOW 防漂移（守卫的元测试）----
-
-    def test_fast_known_slow_entries_are_live_and_not_nested(self):
-        entries = _bash_array_items(self.text, "FAST_KNOWN_SLOW")
-        self.assertGreaterEqual(len(entries), 1,
-                                "抽不到 FAST_KNOWN_SLOW 条目——结构改了？本条会因此变废断言")
-        for e in entries:
-            path = e.split("::", 1)[0]
-            self.assertTrue(
-                os.path.isfile(os.path.join(BASE, path)),
-                f"FAST_KNOWN_SLOW 条目指向空气：{e}（文件 {path} 不存在）——"
-                "文件改名后 --deselect 静默失效，长尾会溜回全量")
-        for e in entries:
-            for pre in entries:
-                if e != pre and e.startswith(pre + "::"):
-                    self.fail(f"FAST_KNOWN_SLOW 有前缀嵌套：{e} 已被 {pre} 覆盖，"
-                              "长条目是假条目（pytest 的 ::Cls 已含 ::Cls::test_x）")
-
-    def test_fast_known_slow_guard_runs_before_the_copy(self):
-        self.assertGreater(len(_func_body(self.text, "guard_fast_known_slow")), 50,
-                           "guard_fast_known_slow 未定义或为空：名单没有防漂移守卫")
-        m = re.search(r"^\s+guard_fast_known_slow$", self.text, re.M)
-        self.assertIsNotNone(m, "guard_fast_known_slow 定义了却没人调用（在场性）")
-        self.assertLess(m.start(), self.text.index('"$REPO/" "$DEST/"'),
-                        "守卫必须在建副本（rsync）之前跑：名单坏了就要 fail fast")
-
-    def test_fast_known_slow_guard_catches_renamed_class_and_test(self):
-        """守卫必须拦"改名后静默变 no-op"：文件在、类或用例改名，剔除即失效。
-
-        pytest 对不存在的 `--deselect` **静默忽略**（审查实测 rc=0、无告警），
-        故只查文件存在挡不住"类/方法改名"。这里在临时目录上真跑守卫函数：
-        文本匹配类名与用例名，模块级 nodeid（无类名）按形状分支放行，不造假失败。
-        """
-        src = _func_source(self.text, "guard_fast_known_slow")
-        self.assertGreater(len(src), 100, "抽不出 guard_fast_known_slow——结构改了？")
-        with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "tests"))
-            mod = os.path.join(d, "tests", "test_x.py")
-
-            def run(entries, content):
-                with io.open(mod, "w", encoding="utf-8") as f:
-                    f.write(content)
-                arr = " ".join('"%s"' % e for e in entries)
-                script = ("REPO=%s\nFAST_KNOWN_SLOW=(%s)\n"
-                          "die() { echo \"环境错误：$*\" >&2; exit 2; }\n"
-                          "%s\nguard_fast_known_slow\n"
-                          % (shlex.quote(d), arr, src))
-                return _bash(script)
-
-            live = "class CliExitCodeTest:\n    def test_locked(self):\n        pass\n"
-            rc, out = run(["tests/test_x.py::CliExitCodeTest::test_locked"], live)
-            self.assertEqual(rc, 0, f"名字都在却判红（假失败）：{out}")
-            rc, out = run(["tests/test_x.py::CliExitCodeTest::test_locked"],
-                          "class CliExitCodeTestRENAMED:\n    def test_locked(self):\n        pass\n")
-            self.assertEqual(rc, 2, f"类改名没被拦：剔除静默失效。{out}")
-            self.assertIn("CliExitCodeTest", out, "拒绝信息必须点名出问题的条目")
-            rc, out = run(["tests/test_x.py::CliExitCodeTest::test_locked"],
-                          "class CliExitCodeTest:\n    def test_locked_RENAMED(self):\n        pass\n")
-            self.assertEqual(rc, 2, f"用例改名没被拦：剔除静默失效。{out}")
-            rc, out = run(["tests/test_x.py::test_module_level"],
-                          "def test_module_level():\n    pass\n")
-            self.assertEqual(rc, 0, f"模块级 nodeid（无类名）被误判：{out}")
-            # low#5：单段 `::` 还有第二种合法形状——类级 nodeid `x.py::Cls`（pytest
-            # --deselect 接受 file::Class 整类形状）。名字是真类名时不许判红。
-            rc, out = run(["tests/test_x.py::CliExitCodeTest"], live)
-            self.assertEqual(rc, 0, f"类级 nodeid（file::Class）被误判成不存在：{out}")
-            rc, out = run(["tests/test_x.py::NoSuchClass"], live)
-            self.assertEqual(rc, 2, f"假类名（既非类也非用例）没被拦：{out}")
-            rc, out = run(["tests/test_missing.py::Cls::t"], live)
-            self.assertEqual(rc, 2, f"文件不存在没被拦：{out}")
-
-    def test_fast_known_slow_guard_rejects_prefix_nested_entries(self):
-        """守卫必须拦前缀嵌套条目：短条目已覆盖长条目，长条目是假条目。
-
-        复审突变 M5（2026-10-08）：删掉 guard_fast_known_slow 里的嵌套双层循环后，
-        入口测试原 18 套仍全绿——嵌套分支没有测试钉。本条补钉：注入
-        `file::Cls` 与 `file::Cls::test_x` 前缀嵌套对，守卫必须判红（rc=2）。
-        判据：pytest 的 `file::Cls` 已含整类，`file::Cls::test_x` 是多余条目。
-        """
-        src = _func_source(self.text, "guard_fast_known_slow")
-        self.assertGreater(len(src), 100, "抽不出 guard_fast_known_slow——结构改了？")
-        with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "tests"))
-            mod = os.path.join(d, "tests", "test_x.py")
-            with io.open(mod, "w", encoding="utf-8") as f:
-                f.write("class Cls:\n    def test_x(self):\n        pass\n")
-            entries = ["tests/test_x.py::Cls", "tests/test_x.py::Cls::test_x"]
-            arr = " ".join('"%s"' % e for e in entries)
-            script = ("REPO=%s\nFAST_KNOWN_SLOW=(%s)\n"
-                      "die() { echo \"环境错误：$*\" >&2; exit 2; }\n"
-                      "%s\nguard_fast_known_slow\n"
-                      % (shlex.quote(d), arr, src))
-            rc, out = _bash(script)
-        self.assertEqual(rc, 2, f"前缀嵌套对没被拦（长条目是假条目）：guard rc={rc}，{out}")
-        self.assertIn("前缀嵌套", out, "拒绝信息必须点名前缀嵌套")
-        self.assertIn("tests/test_x.py::Cls::test_x", out, "拒绝信息必须点名多余的长条目")
-
-    # ---- F1：副本必须按内容校验 ----
-
-    def test_copy_verifies_content_by_checksum(self):
-        lines = [ln for ln in self.text.splitlines() if ln.startswith("rsync -")]
-        self.assertEqual(len(lines), 1, f"rsync 复制行应只有一条，实得 {len(lines)}")
-        tokens = lines[0].split()
-        self.assertIn("-c", tokens,
-                      "rsync 必须带 -c：默认快检只看尺寸+整秒 mtime，"
-                      "同尺寸同秒改动会被跳过，副本陈旧即静默假绿")
-        self.assertIn("--delete", tokens, "副本必须 --delete：源里删掉的文件副本里也要没")
-
-    # ---- M3：--deselect 拼接必须真进到跑测命令里 ----
-
-    def test_fast_pytest_command_splices_deselect_flags(self):
-        """fast 的真跑命令必须把 DESELECT 数组拼进去（M3）。
-
-        审查实测（2026-10-07）：把真跑命令里的 `${DESELECT[@]+"${DESELECT[@]}"}` 整段
-        删掉后，入口测试 16 套全绿 rc=0——上一行 echo 仍宣称"已剔除 5 条已知长尾"，
-        而真跑命令里一条 `--deselect` 也没有。5 条长尾因此全部溜回 --fast，
-        自查墙钟从 57s 回到 146s，且绿色是假象。本条钉住"拼接承重"：抽真跑命令
-        （执行行 + 续行，不含 echo 回显）断言数组拼接在场。
-        突变验证：删掉该段 ⇒ 本条红（见 work/m3-mutant.log）。
-
-        2026-10-17（工单 vckk 阶段 2-a）：装配点从 fast 模式的一行内联循环搬进
-        `build_fast_deselect_args`（快集与 CI 的各门步骤**共用**同一份 `--deselect`，
-        内联会把同一判据写成两处），故这里改钉"装配点仍只有一处 + 真跑命令仍拼它"。
-        """
-        cmd = _pytest_exec_command(self.text)
-        self.assertGreater(len(cmd), 50, "抽不出真跑 pytest 命令——结构改了？本条会因此变废断言")
-        self.assertRegex(
-            cmd, r"\$\{DESELECT\[@\]",
-            "真跑 pytest 命令没拼 DESELECT 数组：--deselect 不会生效，长尾静默溜回 --fast。"
-            "只留 echo 回显不算——回显不是跑测命令")
-        # 装配点：`FAST_DESELECT_ARGS` 只许由 FAST_KNOWN_SLOW 逐条装配，且只有一处。
-        build = [ln for ln in self.text.splitlines()
-                 if "FAST_DESELECT_ARGS+=(" in ln and "--deselect" in ln]
-        self.assertEqual(len(build), 1,
-                         "FAST_DESELECT_ARGS 必须由 FAST_KNOWN_SLOW 逐条装配 --deselect（装配点应只有一处）")
-        # 拼接点：fast 模式真跑命令必须引用装配出来的数组（引用被删即红）。
-        self.assertIn('FAST_DESELECT_ARGS[@]', self.text,
-                      "真跑命令没引用 FAST_DESELECT_ARGS：装配了但没拼进去")
-        splices = [ln for ln in self.text.splitlines()
-                   if ln.strip().startswith("DESELECT+=(") and "FAST_DESELECT_ARGS[@]" in ln]
-        self.assertEqual(len(splices), 1,
-                         "fast 模式的 DESELECT 拼接点应只有一处（拼两次会让同一判据有两个定义点）")
-
-    # ---- F4：空覆盖必须与"真覆盖"可区分 ----
-
-    def test_scoped_selection_marks_empty_coverage(self):
-        src = _func_source(self.text, "select_fast_targets")
-        self.assertGreater(len(src), 100, "抽不出 select_fast_targets——结构改了？")
-        with tempfile.TemporaryDirectory() as d:
-            empty = os.path.join(d, "changed.txt")
-            io.open(empty, "w", encoding="utf-8").close()
-            flag = os.path.join(d, "flag.txt")
-            script = ("REPO=%s\n%s\nselect_fast_targets %s %s\n"
-                      % (shlex.quote(BASE), src, shlex.quote(empty), shlex.quote(flag)))
-            rc, out = _bash(script)
-            self.assertEqual(rc, 0, f"空改动集跑 select_fast_targets 失败：{out}")
-            self.assertEqual(out.split()[-1], "tests/test_dev_verify_entry.py",
-                             "空改动集只跑入口自检")
-            self.assertEqual(_read(flag).strip(), "1",
-                             "空改动集必须写空覆盖标记：否则调用方把'只跑了入口自检'当'已覆盖'")
-            real = os.path.join(d, "changed2.txt")
-            with io.open(real, "w", encoding="utf-8") as f:
-                f.write("tests/test_dev_verify_entry.py\n")
-            flag2 = os.path.join(d, "flag2.txt")
-            script2 = ("REPO=%s\n%s\nselect_fast_targets %s %s\n"
-                       % (shlex.quote(BASE), src, shlex.quote(real), shlex.quote(flag2)))
-            rc2, out2 = _bash(script2)
-            self.assertEqual(rc2, 0, f"有改动集跑 select_fast_targets 失败：{out2}")
-            self.assertEqual(_read(flag2).strip(), "0",
-                             "有命中用例时不许写空覆盖标记（否则正常跑也退 3）")
-
-    def test_empty_coverage_maps_to_exit_code_three(self):
-        src = _func_source(self.text, "resolve_exit_code")
-        self.assertGreater(len(src), 30,
-                           "resolve_exit_code 未定义：退出码没有单一裁决点，空覆盖无法与失败区分")
-        # (ruff_rc, pytest_rc, 空覆盖) → 期望退出码。最终契约只有四种码：
-        # 0 通过 / 1 有红 / 2 环境错误 / 3 空覆盖。ruff 与 pytest 的任何非 0 一律归一为 1，
-        # 原始码只留在日志里（ruff_exit= / pytest_exit=）。3 由"空覆盖"独占，
-        # 故 pytest 自己的 3（INTERNALERROR）不许与空覆盖撞码。
-        cases = [((0, 0, 0), "0"), ((0, 0, 1), "3"), ((1, 0, 0), "1"),
-                 ((0, 2, 0), "1"), ((0, 2, 1), "1"), ((1, 0, 1), "1"),
-                 ((0, 3, 0), "1"), ((0, 5, 0), "1"), ((1, 3, 0), "1")]
-        for (ruff_rc, py_rc, empty), want in cases:
-            rc, out = _bash("%s\nresolve_exit_code %d %d %d\n" % (src, ruff_rc, py_rc, empty))
-            self.assertEqual((rc, out.strip()), (0, want),
-                             f"final rc 不对：ruff={ruff_rc} pytest={py_rc} 空覆盖={empty} → {out.strip()}")
-        self.assertIn('resolve_exit_code "$lint_rc" "$py_rc" "${FAST_EMPTY:-0}"', self.text,
-                      "调用点必须把空覆盖标记传进裁决点；第一参是 ruff+mypy 归一后的静态检查码")
-        self.assertIn("DEV-VERIFY(fast): covered=", self.text,
-                      "fast 档汇总行必须打覆盖数：只跑入口自检与真覆盖要能区分")
-
-    def test_raw_lint_and_pytest_codes_stay_visible_in_the_log(self):
-        """归一为 1 之后原始码必须仍逐行打印：否则定位信息随归一一起丢失。"""
-        self.assertIn('echo "DEV-VERIFY ruff_exit=$ruff_rc"', self.text,
-                      "ruff 原始退出码必须进日志")
-        self.assertIn('echo "DEV-VERIFY mypy_exit=$mypy_rc"', self.text,
-                      "mypy 原始退出码必须进日志")
-        self.assertIn('echo "DEV-VERIFY pytest_exit=$py_rc"', self.text,
-                      "pytest 原始退出码必须进日志")
-
-    def test_empty_coverage_note_follows_the_final_exit_code(self):
-        """空覆盖提示必须按最终 rc 打印：只按 FAST_EMPTY 打会与真红报的码自相矛盾。
-
-        实测（审查场景 B）：提示写"退出码 3"，下一行写"exit_code=1"。
-        """
-        src = _func_source(self.text, "note_fast_empty_coverage")
-        self.assertGreater(len(src), 50, "抽不出 note_fast_empty_coverage——结构改了？")
-        rc, out = _bash("%s\nnote_fast_empty_coverage 1 3\n" % src)
-        self.assertEqual(rc, 0, f"提示函数跑失败：{out}")
-        self.assertIn("空覆盖", out, "空覆盖必须被点名")
-        self.assertIn("退出码 3", out, "真正空覆盖时要报 3")
-        rc, out = _bash("%s\nnote_fast_empty_coverage 1 1\n" % src)
-        self.assertEqual(rc, 0, f"提示函数跑失败：{out}")
-        self.assertIn("实际退出码 1", out, "空覆盖同时有红时要报真实码 1")
-        self.assertNotIn("退出码 3", out, "有红时不许喊空覆盖的 3")
-        rc, out = _bash("%s\nnote_fast_empty_coverage 0 0\n" % src)
-        self.assertEqual((rc, out.strip()), (0, ""), "非空覆盖不许打印空覆盖提示")
-        m = re.search(r'^\s*note_fast_empty_coverage "\$\{FAST_EMPTY', self.text, re.M)
-        self.assertIsNotNone(m, "空覆盖提示没有调用点（在场性）")
-        self.assertGreater(m.start(), self.text.index('rc=$(resolve_exit_code'),
-                           "提示必须在最终 rc 算出之后打印：只看 FAST_EMPTY 会与真红报的码矛盾")
-
-    # ---- low#4：日志目录必须按模式分开（fast 与全量走不同的锁，可并发）----
-
-    def test_default_log_dir_is_separate_per_mode(self):
-        src = _func_source(self.text, "default_log_dir")
-        self.assertGreater(len(src), 50, "抽不出 default_log_dir——结构改了？")
-        rc, out = _bash("%s\ndefault_log_dir /x/y fast\necho\ndefault_log_dir /x/y full\n" % src)
-        self.assertEqual(rc, 0, f"default_log_dir 跑失败：{out}")
-        self.assertEqual(out.split(),
-                         ["/x/yiban-dev-verify-logs-fast", "/x/yiban-dev-verify-logs"],
-                         "fast 与全量的默认日志目录必须不同：两者走不同的锁、可并发，"
-                         "共用目录会让 prune_logs 轮转删掉对方的日志")
-        self.assertIn('LOG_DIR=$(default_log_dir "$REPO" "$MODE")', self.text,
-                      "默认日志目录必须由模式决定（调用点在场性）")
-
-    # ---- low#2 / low#3：参数不许静默忽略 ----
-
-    def test_repeated_same_mode_flag_is_idempotent(self):
-        """同一模式标志重复给必须幂等接受（L3）。
-
-        实测（2026-10-07 审查）：`--fast --fast` 被 `mark_mode` 当成"第二个模式标志"
-        报"互斥"退出 2。重复同一标志不改变语义，拒绝它只会误伤脚本化调用。
-        异名（`--fast --fast-scoped`）仍必须拒绝——那是危险方向，不许一起放开。
-        本条只跑纯函数，不拉起入口脚本（避免重跑 fast、触发套娃）。
-        """
-        src = _func_source(self.text, "mark_mode")
-        self.assertGreater(len(src), 50, "抽不出 mark_mode——结构改了？本条会因此变废断言")
-        prelude = "MODE_FLAG=\"\"\ndie() { echo \"环境错误：$*\" >&2; exit 2; }\n"
-        rc, out = _bash("%s%s\nmark_mode --fast\nmark_mode --fast\nprintf 'OK\\n'\n"
-                        % (prelude, src))
-        self.assertEqual((rc, out.strip()), (0, "OK"),
-                         f"同一模式标志重复给被拒绝（应为幂等接受）：{out}")
-        rc, out = _bash("%s%s\nmark_mode --fast\nmark_mode --fast-scoped\nprintf 'OK\\n'\n"
-                        % (prelude, src))
-        self.assertEqual(rc, 2, f"不同模式标志没被拒绝：{out}")
-        self.assertIn("互斥", out, f"拒绝信息必须说清互斥：{out}")
-
-    def test_second_mode_flag_is_rejected_loudly(self):
-        if os.environ.get("DEV_VERIFY_ENTRY_TEST_NESTED") == "1":
-            # 嵌套运行：本用例会拉起入口脚本，脚本可能再跑到本文件（修复前/变异体）。
-            # 不拦住就会无限套娃，把机器 CPU 吃满。
-            self.skipTest("嵌套运行：跳过拉起入口脚本的用例")
-        try:
-            # 拒绝发生在参数解析段，正常不到 1 秒；给 20 秒是给慢机器留余量，
-            # 同时把"没有拒绝、继续跑下去"这种情况快速判红。
-            rc, out = _run_entry(["--repo", BASE, "--fast", "--fast-scoped"], timeout=20)
-        except subprocess.TimeoutExpired:
-            self.fail("脚本没有拒绝两个模式标志：它继续跑了下去（20 秒未退出）")
-        self.assertNotEqual(rc, 0, "两个模式标志被静默接受（后者胜）：--fast --fast-scoped 会退成范围档")
-        self.assertIn("互斥", out, f"拒绝信息必须说清互斥：{out[-400:]}")
-
-    @unittest.skipUnless(os.name == "posix",
-                         "--ci 在 Windows 侧被上游拒绝（信息不同），只在 POSIX 侧验证")
-    def test_ci_mode_rejects_base_loudly(self):
-        if os.environ.get("DEV_VERIFY_ENTRY_TEST_NESTED") == "1":
-            self.skipTest("嵌套运行：跳过拉起入口脚本的用例")
-        rc, out = _run_entry(["--repo", BASE, "--ci", "--base", "HEAD"], timeout=30)
-        self.assertNotEqual(rc, 0, "--ci 静默忽略了 --base")
-        self.assertIn("--base", out, f"拒绝信息必须点名 --base：{out[-400:]}")
-
-
-class SharedConfigScopeTest(unittest.TestCase):
-    """scope=shared 的点名清单必须覆盖全部提到 config/registry.json 的旧线测试。
-
-    缺陷形状：`config/registry.json` 由两条线共享（旧线设置页与名册相关测试；
-    新栈 `update_env`、`doctor`、安装脚本）。Go 批次加 `YIBAN_*` 键必然改它，
-    而它曾算旧线代码 ⇒ 每个这种 PR 都被判 mixed、白付整套旧线 pytest
-    （2026-10-31 实测 verify 作业 6m28s / 8m31s）。现在单列 `shared` 一档，
-    只跑点名清单；全套旧线仍由 oldline/mixed 与 nightly 覆盖。
-
-    口径：按「文件里出现 registry.json」取保守超集（含只在注释里提到的），
-    两份只提不读的登记在 MENTION_ONLY。判定不做 I/O 语法推断——那会把
-    "换了读法"误判成"不再读"。门看的东西＝实际改的东西（AGENTS §29）：
-    清单漏一个读者，那个读法在 scope=shared 下就失去保护，且不重合是静的。
-    """
-
-    #: 只在注释/文档串里提到 registry.json、本身不读它的文件。
-    MENTION_ONLY = frozenset({
-        "tests/test_repo_structure_gate.py",  # 仓库结构清单里的一行注释
-        "tests/test_stream_api.py",           # 模块文档串里的路径示例
-        "tests/test_dev_verify_entry.py",     # 本文件：读的是别的测试的文本
-    })
-
-    def test_list_covers_every_registry_reader(self):
-        text = _read(ENTRY)
-        listed = set(_bash_array_items(text, "SHARED_CONFIG_TESTS"))
-        self.assertGreaterEqual(
-            len(listed), 1,
-            "抽不到 SHARED_CONFIG_TESTS——结构改了？本条会因此变废断言")
-        mentions = set()
-        tests_dir = os.path.join(BASE, "tests")
-        for name in sorted(os.listdir(tests_dir)):
-            if not name.endswith(".py"):
-                continue
-            if "registry.json" in _read(os.path.join(tests_dir, name)):
-                mentions.add("tests/" + name)
-        self.assertEqual(
-            listed, mentions - self.MENTION_ONLY,
-            "SHARED_CONFIG_TESTS 与「提到 registry.json 的测试」不重合："
-            "漏登记＝该读法在 scope=shared 下失去保护（不重合是静的，AGENTS §29）")
-
-    def test_shared_scope_is_handled_in_run_ci(self):
-        """`--scope shared` 必须真的被 run_ci 接住，不能只被参数解析收下。"""
-        body = _func_body(_read(ENTRY), "run_ci")
-        self.assertGreater(len(body), 100, "抽不出 run_ci 正文——结构改了？")
-        self.assertIn('elif [ "$CI_SCOPE" = "shared" ]', body,
-                      "scope=shared 落进了 else 分支：会跑整套旧线，优化失效")
-
-
-class DevVerifyTailLaneTest(unittest.TestCase):
-    """R3-025：`FAST_KNOWN_SLOW` 的每条 nodeid 必须有**一个会被 CI 执行**的集合。
-
-    缺陷形状（复审 R3-025）：这 4 条在快集里被 `--deselect` 剔除，而它们所在的文件在
-    名册里登记为 `fast` 行 ⇒ `slow-lane` 只取 slow 行。结果**两个 CI 作业都不跑**它们，
-    且不重合本身是静默的（AGENTS §十三 第 29 条）。
-
-    执行点定在 `run_slow`（`--slow` 的唯一实现）：`--deselect` 只作用于快集，故长尾轨
-    直接跑 nodeid 是它们唯一的自动执行点。本组钉三件事：
-      ① 执行点在 `run_slow` 里**真的生效**（真跑函数，pytest 换成打印参数的桩）；
-      ② `run_slow` 被 CI 的 `slow-lane` 作业调用（未注释的执行行在场）；
-      ③ 名单不指向空气（真 pytest 能收集全部 nodeid）；
-      ④ 注释里的条数口径等于数组长度（AGENTS §31）。
-    """
-
-    #: 假 pytest 打印参数的标记；用单元分隔符避免与路径里的字符相撞。
-    _SEP = "\x1f"
-
-    def setUp(self):
-        self.text = _read(ENTRY)
-        self.entries = _bash_array_items(self.text, "FAST_KNOWN_SLOW")
-        self.assertGreaterEqual(
-            len(self.entries), 1,
-            "抽不到 FAST_KNOWN_SLOW 条目——结构改了？本条会因此变废断言")
-
-    def _run_slow_with_stub(self):
-        """真跑 `run_slow`，把 `-m pytest` 解析到打印参数的桩上。
-
-        用 `PYTHONPATH` 上的假 `pytest` 模块而不是可执行脚本：不依赖可执行位，
-        WSL 与 Windows 两侧同口径。返回 (退出码, 输出, [每次调用的参数表])。
-        """
-        src = _func_source(self.text, "run_slow")
-        self.assertGreater(len(src), 100, "抽不出 run_slow——结构改了？")
-        with tempfile.TemporaryDirectory(prefix="dev-verify-tail-") as d:
-            with io.open(os.path.join(d, "pytest.py"), "w", encoding="utf-8") as f:
-                f.write("import sys\nprint(%r + %r.join(sys.argv[1:]))\n"
-                        % ("FAKE_PYTEST " + self._SEP, self._SEP))
-            arr = " ".join('"%s"' % e for e in self.entries)
-            script = (
-                "export DEV_VERIFY_PY=%s\n"          # run_slow 用它当解释器
-                "export PYTHONPATH=%s\n"             # 让 `-m pytest` 解析到桩
-                "REPO=%s\n"
-                "LANE_SLOW_FILES=(tests/test_dev_verify_entry.py)\n"
-                "FAST_KNOWN_SLOW=(%s)\n"
-                "die() { echo \"环境错误：$*\" >&2; exit 2; }\n"
-                "%s\nrun_slow\n"
-                % (shlex.quote(sys.executable), shlex.quote(d),
-                   shlex.quote(BASE), arr, src))
-            rc, out = _bash(script, timeout=60)
-        calls = [ln[len("FAKE_PYTEST "):].split(self._SEP)
-                 for ln in out.splitlines() if ln.startswith("FAKE_PYTEST ")]
-        return rc, out, calls
-
-    def test_every_entry_is_executed_by_run_slow(self):
-        """执行点在场性：每个 nodeid 都必须被 `run_slow` 传给一次 pytest。"""
-        rc, out, calls = self._run_slow_with_stub()
-        self.assertEqual(rc, 0, f"run_slow 跑不过（桩模式）：{out}")
-        self.assertEqual(len(calls), 2,
-                         "run_slow 应恰好发起两次 pytest（名册 slow 行 1 次 ＋ 长尾轨 1 次），"
-                         f"实得 {len(calls)} 次：{out}")
-        argv_seen = {arg for call in calls for arg in call}
-        for e in self.entries:
-            self.assertIn(e, argv_seen,
-                          f"FAST_KNOWN_SLOW 条目没有进任何 pytest 调用：{e}——"
-                          "它在快集被 --deselect，此后再没有自动执行点（R3-025）")
-        # 名册 slow 行不许被长尾轨挤掉：同一条轨要跑两件事。
-        self.assertIn("tests/test_dev_verify_entry.py", argv_seen,
-                      "run_slow 不再跑名册的 slow 行：长尾轨不能替代慢集")
-
-    def test_run_slow_is_wired_into_ci(self):
-        """执行点被 CI 调用：`slow-lane` 作业的执行行必须在场且未被注释。"""
-        yml = _read(CI_YML)
-        # 只认**执行行**（去掉首尾空白后整行相等）：注释掉的一行以 `#` 开头，不算。
-        runs = [ln.strip() for ln in yml.splitlines()
-                if ln.strip() == "run: bash scripts/dev-verify.sh --slow"]
-        self.assertEqual(
-            len(runs), 1,
-            "ci.yml 里没有一条未注释的 `run: bash scripts/dev-verify.sh --slow`："
-            "长尾轨于是没有任何自动执行点（R3-025）")
-
-    def test_every_entry_is_collectable(self):
-        """名单不指向空气：真 pytest 能收齐全部 nodeid（假 nodeid 会判红）。"""
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", *self.entries,
-             "--collect-only", "-q", "-p", "no:randomly"],
-            cwd=BASE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, timeout=300)
-        self.assertEqual(
-            proc.returncode, 0,
-            "FAST_KNOWN_SLOW 里有收集不到的 nodeid（改名后剔除与长尾轨同时指向空气）："
-            f"{proc.stdout[-800:]}")
-        m = re.search(r"(\d+) tests? collected", proc.stdout)
-        self.assertIsNotNone(m, f"读不到收集数（口径丢了）：{proc.stdout[-400:]}")
-        self.assertEqual(
-            int(m.group(1)), len(self.entries),
-            "收集数不等于数组长度：有条目指向空气或被重复登记")
-
-    def test_comment_node_counts_match_the_array(self):
-        """注释里的条数口径必须等于数组长度（AGENTS §31 的机器化）。"""
-        claims = [int(a or b) for a, b in _COUNT_CLAIM.findall(self.text)]
-        self.assertGreaterEqual(
-            len(claims), 2,
-            "脚本注释里找不到条数口径声明（`FAST_KNOWN_SLOW 的 N 条` / `剔除清单共 N 条` /"
-            "`全量 − N 条`）：口径没了，漂移就不可见")
-        for n in claims:
-            self.assertEqual(
-                n, len(self.entries),
-                f"注释声称 {n} 条，FAST_KNOWN_SLOW 实有 {len(self.entries)} 条——"
-                "数必须带口径，且两侧量同一对象（AGENTS §31）")
-        files = {e.split("::", 1)[0] for e in self.entries}
-        file_claims = [int(x) for x in _FILE_CLAIM.findall(self.text)]
-        self.assertGreaterEqual(len(file_claims), 1,
-                                "脚本注释里找不到「分属 N 个文件」声明")
-        for n in file_claims:
-            self.assertEqual(
-                n, len(files),
-                f"注释声称分属 {n} 个文件，实有 {len(files)} 个：{sorted(files)}")
-
-
-def _ci_job_body(yml, job):
-    """切出 ci.yml 里某个 job 的整段（2 空格缩进的 `<job>:` 到下一个同级 job）。"""
-    m = re.search(r"(?m)^  %s:\s*$" % re.escape(job), yml)
-    if m is None:
-        return ""
-    rest = yml[m.end():]
-    nxt = re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$", rest)
-    return rest[:nxt.start()] if nxt else rest
-
-
-class GateReceiptTest(unittest.TestCase):
-    """收尾回执不得枚举子集。
-
-    为什么：回执枚举子集＝同一事实的第二个定义点。实测漂过两次（tooling
-    wiring 与 contract wiring 都没加进回执）。唯一事实源是作业的步骤列表
-    与 `EXPECTED_CI_COMMANDS`。
-    """
-
-    def test_gate_ready_receipt_does_not_enumerate(self):
-        body = _ci_job_body(_read(CI_YML), "verify")
-        self.assertTrue(body, "ci.yml 抽不出 verify 作业——结构改了？")
-        lines = [ln.strip() for ln in body.splitlines()
-                 if "Fast gate active" in ln and not ln.strip().startswith("#")]
-        self.assertEqual(len(lines), 1,
-                         "应恰有一条 Fast gate active 回执：%r" % lines)
-        line = lines[0]
-        self.assertIn("does not enumerate", line,
-                      "回执必须写明它不枚举子集：枚举会漂（已各漏一次）")
-        for marker in ("config registry", "public exposure", "import-linter",
-                       "shared-facts", "path-env", "lint", "mypy"):
-            self.assertNotIn(marker, line,
-                             "回执重新枚举了子集（%r）：单一事实源是步骤列表" % marker)
+    def test_help_exits_zero(self):
+        import subprocess
+        proc = subprocess.run(["bash", ENTRY, "--help"],
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("dev-verify", proc.stdout)
 
 
 if __name__ == "__main__":

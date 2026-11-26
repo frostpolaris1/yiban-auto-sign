@@ -1,7 +1,6 @@
 # Dependabot：只做「发现 → 升级 PR」的闭环。
 #
-# 为什么还需要它：CI 的 `tooling-gate` 每个 PR 已跑 govulncheck 与 npm audit（high+），
-# `dependency-audit` 每个 PR 已跑 pip-audit（requirements.lock）。
+# 为什么还需要它：CI 的 `tooling-gate` 每个 PR 已跑 govulncheck 与 npm audit（high+）。
 # 这些作业只负责**发现**；发现之后不会自己开升级 PR。
 # 本文件补上后半段：每周检查四个生态的更新，合并成一条 PR 交给 CI 复核。
 #
@@ -27,15 +26,6 @@ updates:
       interval: "weekly"
     groups:
       ui-dependencies:
-        patterns: ["*"]
-    open-pull-requests-limit: 5
-
-  - package-ecosystem: "pip"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    groups:
-      python-dependencies:
         patterns: ["*"]
     open-pull-requests-limit: 5
 

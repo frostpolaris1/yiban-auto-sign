@@ -97,7 +97,7 @@ function selfTest() {
   const failures = []
   const positives = [
     'Clone the vendor tree outside the repository.',
-    'The vendored stylesheet is byte-identical to `web/static/vendor/adminator/adminator.css`.',
+    'The vendored stylesheet is byte-identical to `ui/vendor/adminator/adminator.css`.',
     'See `THIRD_PARTY_NOTICES.md` for the license.',
   ]
   const negatives = [
