@@ -229,6 +229,63 @@ func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID stri
 	return items, next, nil
 }
 
+// discoveryCandidateMax 是窗口发现候选查询允许的上限。
+//
+// 发现路径本身只轮换 discoveryCandidates（3）个候选；仓储再放宽到 10，
+// 让调用方按需扩大轮换而不必改 SQL。候选再多只是多余的行。
+const discoveryCandidateMax = 10
+
+// DiscoveryCandidatesForSchool 返回某校可用于窗口发现的活跃账号，
+// 按「最近验证优先」排序，最多 limit 行。
+//
+// 排序口径（四条判据，缺一都会让坏号挡住好号）：
+// last_verified_at DESC NULLS LAST：最近验证成功的号先探；
+// accounts.created_at ASC：同等验证状态时更早建立的老号先探；
+// accounts.id ASC：前两个键都相等时顺序仍然确定；
+// NULLS LAST：从未验证的行一律排在已验证行之后——刚注册的坏号
+// created_at 最新、last_verified_at 为空，旧口径（created_at DESC）
+// 会把它排到首位，于是全校发现连续失败。本口径下它排最后。
+//
+// 凭据聚合走派生表而非直接 JOIN credentials：credentials 也有
+// created_at/updated_at 列，直接 JOIN 会让 accountColumns 里的裸列名
+// 变成 ambiguous。派生表按账号聚成一行，与「一账号一凭据」的库约束等价。
+//
+// 只取 active 且未软删的账号；停用、待审、已删行不参与发现。
+func (r *AccountRepo) DiscoveryCandidatesForSchool(ctx context.Context, schoolID string, limit int) ([]coreaccount.Record, error) {
+	if limit < 1 || limit > discoveryCandidateMax {
+		return nil, validationError(fmt.Sprintf("limit must be between 1 and %d", discoveryCandidateMax))
+	}
+	query := `SELECT ` + accountColumns + `
+		FROM accounts
+		LEFT JOIN (
+			SELECT account_id, max(last_verified_at) AS last_verified_at
+			FROM credentials GROUP BY account_id
+		) c ON c.account_id = accounts.id
+		WHERE accounts.school_id = $1::uuid
+			AND accounts.status = 'active'
+			AND accounts.deleted_at IS NULL
+		ORDER BY c.last_verified_at DESC NULLS LAST, accounts.created_at ASC, accounts.id ASC
+		LIMIT $2`
+	rows, err := r.db.q(ctx).Query(ctx, query, schoolID, limit)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	items := make([]coreaccount.Record, 0, limit)
+	for rows.Next() {
+		record, err := scanAccount(rows)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		items = append(items, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return items, nil
+}
+
 // StatusCounts 按作用域统计未软删账号的 pending 与 rejected 行数。
 // 口径与 List 缺省一致：deleted_at IS NULL 才计入；软删行不进任何计数。
 // 一次扫描出两个计数；其余状态不进本结果。
