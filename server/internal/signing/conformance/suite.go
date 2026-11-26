@@ -41,8 +41,6 @@ const (
 )
 
 const (
-	// signSamples 与契约结果数量一致，使一次采样覆盖全部结果。
-	signSamples = 13
 	// concurrentWorkers 是并发判据的协程数。
 	concurrentWorkers = 8
 	// concurrentTimeout 是并发判据的完成上限。
@@ -63,6 +61,25 @@ type NewProvider func() contract.Provider
 // 返回 false 表示该请求没有确定期望。
 type Expecter interface {
 	ExpectedOutcome(req contract.SignRequest) (contract.Outcome, bool)
+}
+
+// OutcomeSeeder 由能复现指定契约结果的提供方实现。
+//
+// 符合性矩阵要求每个契约结果都被**单独复现一次**：
+// 提供方按 want 布置上游状态，允许修改 req 以制造缺图、缺目标等场景。
+// 返回 false 只允许两种情况（见 exemption）：
+// 未声明 ImageRequired 时做不出 photo_missing，
+// 未声明 DeviceBinding 时做不出 device_unbound。
+// 其余 false 一律判红——否则「做不出就返回 false」能把空绿洗成通过。
+type OutcomeSeeder interface {
+	SeedOutcome(req *contract.SignRequest, want contract.Outcome) (supported bool)
+}
+
+// NotApplicable 报告 err 是否为「本能力下不适用」的显性跳过。
+// 导出版本给各 provider 的测试用：跳过必须是**显性**的，
+// 不能让整条判据静默消失。
+func NotApplicable(err error) bool {
+	return errors.Is(err, errNotApplicable)
 }
 
 // Check 是一条判据。
@@ -145,7 +162,7 @@ func Run(t *testing.T, newProvider NewProvider) {
 // criterionTimeout 是单条判据的完成上限。
 // 变量而非常量：测试注入短值，不靠真等 15 秒。
 // 高于 sign.timeout 的 5 秒与并发判据的 10 秒，冲突时不抢判据自己的判决。
-// 采样类判据调 Sign 最多 13 次，隐含单次 SLA 约为上限的 1/13；
+// 布种类判据最多少调 len(contract.AllOutcomes()) 次 Sign，隐含单次 SLA 约为上限的 1/15；
 // 慢于此值的提供方得到「未在上限内完成」，文案不写「阻塞」。
 var criterionTimeout = 15 * time.Second
 
@@ -437,15 +454,76 @@ func checkVerifyResult(newProvider NewProvider) error {
 	return nil
 }
 
-// checkSignResult 要求结果在契约词表内。
-func checkSignResult(newProvider NewProvider) error {
-	results, err := sampleSign(newProvider(), "attempt-result", signSamples)
-	if err != nil {
-		return failf(CheckSignResult, "%v", err)
+// seededResult 记录一次布种：期望结果与实际结果。
+type seededResult struct {
+	want   contract.Outcome
+	actual contract.Result
+}
+
+// seedOutcomeMatrix 按契约结果表逐项布种并签到。
+//
+// 每个结果都用**独立的提供方实例**：假上游、幂等缓存与脚本序列
+// 都不得跨结果串味。返回切片按契约顺序排列，调用方各自校验
+// 自己关心的不变量；「结果与期望不符」只由 checkSignResult 报告，
+// 其余判据不抢判——否则一条错配会掩盖真正的分级缺陷。
+func seedOutcomeMatrix(checkName string, newProvider NewProvider) ([]seededResult, error) {
+	outcomes := contract.AllOutcomes()
+	seeded := make([]seededResult, 0, len(outcomes))
+	var exempt []string
+	for _, want := range outcomes {
+		p := newProvider()
+		seeder, ok := p.(OutcomeSeeder)
+		if !ok {
+			return nil, failf(checkName, "提供方未实现 OutcomeSeeder：无法复现契约结果 %q", want)
+		}
+		req := signRequest("attempt-outcome-" + string(want))
+		if !seeder.SeedOutcome(&req, want) {
+			if allowed, rule := exemption(p.Capabilities(), want); allowed {
+				exempt = append(exempt, rule)
+				continue
+			}
+			return nil, failf(checkName, "结果 %q 布种返回 false，但不属于契约豁免（能力不足不是免检理由）", want)
+		}
+		result, err := p.Sign(context.Background(), req)
+		if err != nil {
+			return nil, failf(checkName, "结果 %q 布种后 Sign 返回错误: %v", want, err)
+		}
+		seeded = append(seeded, seededResult{want: want, actual: result})
 	}
-	for i, result := range results {
-		if !result.Outcome.Valid() {
-			return failf(CheckSignResult, "第 %d 次结果 %q 不在契约词表内", i+1, result.Outcome)
+	if len(exempt) > 0 {
+		fmt.Printf("conformance: %s: 逐项布种命中 %d/%d，显性豁免 %d 项（%s）\n",
+			checkName, len(seeded), len(outcomes), len(exempt), strings.Join(exempt, "；"))
+	}
+	return seeded, nil
+}
+
+// exemption 判定布种失败是否属于契约豁免。
+// 只允许两项：无图能力没有 photo_missing，无设备绑定能力没有 device_unbound。
+// 其余 false 都是提供方的缺陷。
+func exemption(caps contract.Capabilities, want contract.Outcome) (bool, string) {
+	switch {
+	case want == contract.OutcomePhotoMissing && !caps.ImageRequired:
+		return true, string(want) + "：未声明 ImageRequired"
+	case want == contract.OutcomeDeviceUnbound && !caps.DeviceBinding:
+		return true, string(want) + "：未声明 DeviceBinding"
+	default:
+		return false, ""
+	}
+}
+
+// checkSignResult 要求每个契约结果都能复现，且结果与布种一致。
+// 依据：旧实现只采样 13 次、不比对期望，恒 success 的假上游必然空绿。
+func checkSignResult(newProvider NewProvider) error {
+	seeded, err := seedOutcomeMatrix(CheckSignResult, newProvider)
+	if err != nil {
+		return err
+	}
+	for _, item := range seeded {
+		if !item.actual.Outcome.Valid() {
+			return failf(CheckSignResult, "结果 %q 布种得到 %q，不在契约词表内", item.want, item.actual.Outcome)
+		}
+		if item.actual.Outcome != item.want {
+			return failf(CheckSignResult, "结果 %q 布种得到 %q，want %q", item.want, item.actual.Outcome, item.want)
 		}
 	}
 	return nil
@@ -461,13 +539,13 @@ func checkPIIAbsent(newProvider NewProvider) error {
 			return failf(CheckPIIAbsent, "身份信息泄漏%s", leak)
 		}
 	}
-	results, err := sampleSign(p, "attempt-pii", signSamples)
+	seeded, err := seedOutcomeMatrix(CheckPIIAbsent, newProvider)
 	if err != nil {
-		return failf(CheckPIIAbsent, "%v", err)
+		return err
 	}
-	for i, result := range results {
-		if leak := findLeak(result, cred); leak != "" {
-			return failf(CheckPIIAbsent, "第 %d 次签到结果泄漏%s", i+1, leak)
+	for _, item := range seeded {
+		if leak := findLeak(item.actual, cred); leak != "" {
+			return failf(CheckPIIAbsent, "结果 %q 的签到结果泄漏%s", item.want, leak)
 		}
 	}
 	return nil
@@ -475,11 +553,12 @@ func checkPIIAbsent(newProvider NewProvider) error {
 
 // checkSignRetry 要求重试分级与契约结果表一致。
 func checkSignRetry(newProvider NewProvider) error {
-	results, err := sampleSign(newProvider(), "attempt-retry", signSamples)
+	seeded, err := seedOutcomeMatrix(CheckSignRetry, newProvider)
 	if err != nil {
-		return failf(CheckSignRetry, "%v", err)
+		return err
 	}
-	for i, result := range results {
+	for i, item := range seeded {
+		result := item.actual
 		if !result.Outcome.Valid() {
 			continue // sign.result 负责报告词表越界。
 		}
@@ -506,11 +585,12 @@ func checkSignRetry(newProvider NewProvider) error {
 
 // checkSignUnknown 要求 unknown 永不自动重试。
 func checkSignUnknown(newProvider NewProvider) error {
-	results, err := sampleSign(newProvider(), "attempt-unknown", signSamples)
+	seeded, err := seedOutcomeMatrix(CheckSignUnknown, newProvider)
 	if err != nil {
-		return failf(CheckSignUnknown, "%v", err)
+		return err
 	}
-	for i, result := range results {
+	for i, item := range seeded {
+		result := item.actual
 		if result.Outcome == contract.OutcomeUnknown && result.Retry.Retryable {
 			return failf(CheckSignUnknown, "第 %d 次 unknown 被标记可重试", i+1)
 		}
@@ -787,20 +867,6 @@ func testCredential() contract.Credential {
 		DeviceCode: "device-conformance",
 		PhoneModel: "model-conformance",
 	}
-}
-
-// sampleSign 连续发起 n 次签到，AttemptID 互不相同。
-// **不同 AttemptID 才不会被幂等缓存折叠**。
-func sampleSign(p contract.Provider, prefix string, n int) ([]contract.Result, error) {
-	results := make([]contract.Result, 0, n)
-	for i := 0; i < n; i++ {
-		result, err := p.Sign(context.Background(), signRequest(fmt.Sprintf("%s-%d", prefix, i)))
-		if err != nil {
-			return nil, fmt.Errorf("第 %d 次 Sign 返回错误: %w", i+1, err)
-		}
-		results = append(results, result)
-	}
-	return results, nil
 }
 
 // findLeak 返回泄漏描述；无泄漏返回空串。

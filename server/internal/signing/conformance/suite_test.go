@@ -15,8 +15,8 @@ import (
 )
 
 // referenceProvider 返回通过全部判据的参考实现。
-// 它用假 Provider 铺满契约词表。
-func referenceProvider() contract.Provider {
+// 它用假 Provider 铺满契约词表，并实现 OutcomeSeeder 以复现每个结果。
+func referenceProvider() *fake.Provider {
 	return fake.New("conformance-fake", contract.Capabilities{
 		WindowDiscovery: true,
 		TargetDiscovery: true,
@@ -218,7 +218,32 @@ func TestOutcomeErrorSkipsUndeclaredDiscovery(t *testing.T) {
 
 // 参考实现必须全绿。
 func TestReferenceProviderPasses(t *testing.T) {
-	Run(t, referenceProvider)
+	Run(t, func() contract.Provider { return referenceProvider() })
+}
+
+// TestSignResultRequiresSeededOutcome 钉住「空绿」根因：
+// 只回 success、从不复现其余结果的提供方不得通过 sign.result。
+// 依据：旧判据只采样 13 次且不校验结果与期望，恒 success 的假上游必然空绿。
+func TestSignResultRequiresSeededOutcome(t *testing.T) {
+	alwaysSuccess := func() contract.Provider {
+		return silentSuccess{referenceProvider()}
+	}
+	err := runCheck(findCheck(t, CheckSignResult), alwaysSuccess)
+	if err == nil {
+		t.Fatal("恒 success 的提供方通过 sign.result：契约结果矩阵存在空绿")
+	}
+	if !strings.Contains(err.Error(), "OutcomeSeeder") {
+		t.Fatalf("失败原因未指向结果布种: %v", err)
+	}
+}
+
+// silentSuccess 模拟「假上游恒 success 且不声明布种能力」的提供方。
+// 嵌 contract.Provider 而不是 *fake.Provider：SeedOutcome 不被提升，
+// 于是它既复现不了别的结果，也无法自证——正是空绿的形状。
+type silentSuccess struct{ contract.Provider }
+
+func (silentSuccess) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	return fake.ResultFor(contract.OutcomeSuccess), nil
 }
 
 // 空 ID：id.nonempty 必须红。
@@ -291,14 +316,14 @@ func (failingVerify) Verify(context.Context, contract.VerifyRequest) (contract.P
 }
 
 // 结果不在词表：sign.result 必须红。
-type badOutcome struct{ contract.Provider }
+type badOutcome struct{ *fake.Provider }
 
 func (badOutcome) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
 	return contract.Result{Outcome: contract.Outcome("done")}, nil
 }
 
 // 证据带明文手机号：pii.absent 必须红。
-type leaksPhone struct{ contract.Provider }
+type leaksPhone struct{ *fake.Provider }
 
 func (leaksPhone) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
 	return contract.Result{
@@ -308,7 +333,7 @@ func (leaksPhone) Sign(context.Context, contract.SignRequest) (contract.Result, 
 }
 
 // unknown 可重试：sign.unknown 必须红。
-type retriesUnknown struct{ contract.Provider }
+type retriesUnknown struct{ *fake.Provider }
 
 func (retriesUnknown) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
 	return contract.Result{
@@ -332,7 +357,7 @@ func (ignoresCancelOnTargets) DiscoverTargets(context.Context, contract.Discover
 }
 
 // transient 却标记不可重试：sign.retry 必须红。
-type nonRetryableTransient struct{ contract.Provider }
+type nonRetryableTransient struct{ *fake.Provider }
 
 func (nonRetryableTransient) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
 	return contract.Result{Outcome: contract.OutcomeTransient}, nil
@@ -364,7 +389,7 @@ func (crossTalk) Sign(context.Context, contract.SignRequest) (contract.Result, e
 
 // 证据带分隔手机号：pii.absent 必须红。
 // 该形状与 W2C-R4-01 修复的形状相同；判据必须与被保护的边界同口径。
-type leaksSeparatedPhone struct{ contract.Provider }
+type leaksSeparatedPhone struct{ *fake.Provider }
 
 func (leaksSeparatedPhone) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
 	return contract.Result{
@@ -419,6 +444,32 @@ func (lateSuccess) Sign(ctx context.Context, _ contract.SignRequest) (contract.R
 // 不实现 Expecter：sign.concurrent 必须拒绝认证（G2）。
 type withoutExpecter struct{ contract.Provider }
 
+// 不实现 OutcomeSeeder：sign.result 必须拒绝认证（G2）。
+// 依据：无法布种的提供方证明不了它能复现契约结果，只能空绿。
+type withoutSeeder struct{ contract.Provider }
+
+// 非法豁免：success 布种返回 false，而 success 不属于任何豁免。
+// 依据：能力齐全时说「做不出 success」只能是缺陷，不能自证通过。
+type refusesSuccess struct{ *fake.Provider }
+
+func (p *refusesSuccess) SeedOutcome(req *contract.SignRequest, want contract.Outcome) bool {
+	if want == contract.OutcomeSuccess {
+		return false
+	}
+	return p.Provider.SeedOutcome(req, want)
+}
+
+// 布种错配：把 success 种成 already_done（合法的另一个结果）。
+// 依据：只校验词表合法的旧判据必然放过它，必须比对期望。
+type wrongSuccess struct{ *fake.Provider }
+
+func (p *wrongSuccess) SeedOutcome(req *contract.SignRequest, want contract.Outcome) bool {
+	if want == contract.OutcomeSuccess {
+		return p.Provider.SeedOutcome(req, contract.OutcomeAlreadyDone)
+	}
+	return p.Provider.SeedOutcome(req, want)
+}
+
 // 判据内 panic：runCheck 必须转成同格式失败。
 type panicsOnID struct{ contract.Provider }
 
@@ -455,6 +506,12 @@ func TestBrokenProvidersAreCaught(t *testing.T) {
 			func() contract.Provider { return failingVerify{referenceProvider()} }},
 		{"结果词表越界", CheckSignResult, "不在契约词表内",
 			func() contract.Provider { return badOutcome{referenceProvider()} }},
+		{"未实现布种接口", CheckSignResult, "OutcomeSeeder",
+			func() contract.Provider { return withoutSeeder{referenceProvider()} }},
+		{"布种非法豁免 success", CheckSignResult, "不属于契约豁免",
+			func() contract.Provider { return &refusesSuccess{referenceProvider()} }},
+		{"布种结果错配", CheckSignResult, `want "success"`,
+			func() contract.Provider { return &wrongSuccess{referenceProvider()} }},
 		{"证据泄漏手机号", CheckPIIAbsent, "泄漏手机号",
 			func() contract.Provider { return leaksPhone{referenceProvider()} }},
 		{"证据泄漏分隔手机号", CheckPIIAbsent, "明文手机号",
@@ -526,7 +583,7 @@ func TestConcurrencyExpectationIsEnforced(t *testing.T) {
 }
 
 // 检测口径的正例：证据里出现毫秒时间戳不得判为泄漏。
-type echoesTimestamp struct{ contract.Provider }
+type echoesTimestamp struct{ *fake.Provider }
 
 func (echoesTimestamp) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
 	return contract.Result{
@@ -546,7 +603,7 @@ func (pseudoOutcomeOnCancel) Sign(ctx context.Context, _ contract.SignRequest) (
 }
 
 // 泄漏邮箱：pii.absent 必须红，原因是明文邮箱。
-type leaksEmail struct{ contract.Provider }
+type leaksEmail struct{ *fake.Provider }
 
 func (leaksEmail) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
 	return contract.Result{
@@ -645,7 +702,7 @@ func TestStopAfterDecision(t *testing.T) {
 }
 
 // blocksSign 在 Sign 上永久阻塞，其余方法正常。
-type blocksSign struct{ contract.Provider }
+type blocksSign struct{ *fake.Provider }
 
 func (blocksSign) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
 	select {}
