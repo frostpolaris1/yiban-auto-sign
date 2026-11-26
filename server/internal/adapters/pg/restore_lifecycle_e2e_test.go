@@ -173,3 +173,107 @@ func TestRestoreSelfRejectsDeletedOwner(t *testing.T) {
 		t.Fatal("rejected self restore revived the account")
 	}
 }
+
+// TestRestoreSelfAccountSkipsWhenOwnerLive 覆盖用户自助恢复账号时
+// 属主名下已有 live 账号：返回 (false,nil)，不复活注销时刻的候选。
+func TestRestoreSelfAccountSkipsWhenOwnerLive(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("self-acct-owner-live@example.com")
+	school := e.createSchool("self-acct-owner-live")
+	candidate := e.createAccount(school.ID, owner.ID, "13900002008")
+	e.createAccount(school.ID, owner.ID, "13900002009")
+	at := selfDeleteTime()
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE accounts SET deleted_at = $2, deleted_by = $1::uuid WHERE id = $3::uuid",
+		owner.ID, at, candidate.ID); err != nil {
+		t.Fatalf("soft delete candidate: %v", err)
+	}
+
+	var restored bool
+	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
+		var err error
+		restored, err = e.users.RestoreSelfAccount(ctx, owner.ID, at, 10000)
+		return err
+	}), "self account restore with live sibling")
+	if restored {
+		t.Fatal("RestoreSelfAccount reported a restore under a live sibling")
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM accounts WHERE id = $1::uuid AND deleted_at IS NOT NULL", candidate.ID); got != 1 {
+		t.Fatal("candidate was revived despite the one-live rule")
+	}
+}
+
+// TestRestoreSelfAccountNoCandidate 覆盖无候选：返回 (false, nil)，不报错。
+func TestRestoreSelfAccountNoCandidate(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("self-acct-none@example.com")
+
+	var restored bool
+	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
+		var err error
+		restored, err = e.users.RestoreSelfAccount(ctx, owner.ID, selfDeleteTime(), 10000)
+		return err
+	}), "self account restore without candidate")
+	if restored {
+		t.Fatal("RestoreSelfAccount reported a restore without a candidate")
+	}
+}
+
+// TestRestoreSelfAccountCapacityStillCapacity 覆盖容量满仍报 capacity：
+// 属主无 live 号，但全局 live 数已达上限。
+func TestRestoreSelfAccountCapacityStillCapacity(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("self-acct-cap@example.com")
+	other := e.createUser("self-acct-cap-other@example.com")
+	school := e.createSchool("self-acct-cap")
+	candidate := e.createAccount(school.ID, owner.ID, "13900002010")
+	e.createAccount(school.ID, other.ID, "13900002011")
+	at := selfDeleteTime()
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE accounts SET deleted_at = $2, deleted_by = $1::uuid WHERE id = $3::uuid",
+		owner.ID, at, candidate.ID); err != nil {
+		t.Fatalf("soft delete candidate: %v", err)
+	}
+
+	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		_, err := e.users.RestoreSelfAccount(ctx, owner.ID, at, 1)
+		return err
+	})
+	if got := codeOf(t, err); got != errs.CodeCapacity {
+		t.Fatalf("self account restore at capacity: code = %q (err %v), want capacity_exceeded", got, err)
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM accounts WHERE id = $1::uuid AND deleted_at IS NOT NULL", candidate.ID); got != 1 {
+		t.Fatal("capacity-rejected self restore revived the candidate")
+	}
+}
+
+// TestRestoreSelfAccountRestoresFreeOwner 是正向对照：属主无 live 号、
+// 容量充足时恢复候选并清空 deleted_by。
+func TestRestoreSelfAccountRestoresFreeOwner(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("self-acct-ok@example.com")
+	school := e.createSchool("self-acct-ok")
+	candidate := e.createAccount(school.ID, owner.ID, "13900002012")
+	at := selfDeleteTime()
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE accounts SET deleted_at = $2, deleted_by = $1::uuid WHERE id = $3::uuid",
+		owner.ID, at, candidate.ID); err != nil {
+		t.Fatalf("soft delete candidate: %v", err)
+	}
+
+	var restored bool
+	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
+		var err error
+		restored, err = e.users.RestoreSelfAccount(ctx, owner.ID, at, 10000)
+		return err
+	}), "self account restore")
+	if !restored {
+		t.Fatal("RestoreSelfAccount did not restore the candidate")
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM accounts WHERE id = $1::uuid AND deleted_at IS NULL AND deleted_by IS NULL", candidate.ID); got != 1 {
+		t.Fatal("candidate is not live with cleared deleted_by")
+	}
+}
