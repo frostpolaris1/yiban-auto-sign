@@ -914,7 +914,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			schedulehttp.Config{Location: loc, Clock: clk})
 		// 执行监控：快照用例与循环进程时刻同一实例（UX-5）。
 		// 3a：快照带全局暂停态（settings 行 engine.paused），写面挂二次口令
-		// （暂停 master/admin、恢复仅 master；写与审计同事务在用例层）。
+		// （暂停与恢复都仅 master；写与审计同事务在用例层）。
 		engineState = appworker.NewEngineState()
 		engineLib = schedulehttp.NewEngineHandler(
 			appschedule.NewEngineQuery(scheduleRepo, clk, loc), engineState, adminSvc).
