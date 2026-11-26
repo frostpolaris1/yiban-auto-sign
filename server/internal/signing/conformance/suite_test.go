@@ -553,6 +553,8 @@ func TestBrokenProvidersAreCaught(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("失败文本 %q 未含原因 %q", err.Error(), tc.reason)
 			}
+			// 打印判红文本，便于把「负向变异被抓住」当作可核对的证据。
+			t.Logf("红：%v", err)
 		})
 	}
 }
