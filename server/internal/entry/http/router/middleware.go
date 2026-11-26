@@ -380,6 +380,8 @@ func unsafeMethod(method string) bool {
 //
 // # 放行面
 // publicPaths 全部优先放行：登出与恢复必须可用，否则用户被永久卡死。
+// 唯一例外是 /api/auth/registration：只放行 GET，PUT 是 master-only
+// 的写接口，必须继续挡。
 // 另加三条精确路由：
 //   - GET /api/auth/me：UI 读强制改密标志与 CSRF 令牌；
 //   - GET /api/auth/password-policy：改密对话框唯一的规则来源。
@@ -393,6 +395,11 @@ func unsafeMethod(method string) bool {
 // 之类漏过；方法与路径必须同时匹配。
 func mustChangePasswordAllowed(c *gin.Context) bool {
 	route := c.FullPath()
+	// 公开注册状态是 GET；同名 PUT 是 master-only 的写接口，
+	// 不能随 publicPaths 整表漏过，否则强制改密的 master 仍能改设置。
+	if route == "/api/auth/registration" {
+		return c.Request.Method == http.MethodGet
+	}
 	if _, public := publicPaths[route]; public {
 		return true
 	}

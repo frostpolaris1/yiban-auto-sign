@@ -29,6 +29,7 @@ import (
 
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -74,6 +75,18 @@ type gateAccountsService struct{ accounthttp.Service }
 
 func (gateAccountsService) List(context.Context, corescope.Scope, appaccount.ListFilter, string, int) (appaccount.Page, error) {
 	return appaccount.Page{}, nil
+}
+
+// mustChangeRegistrationSpy 记录注册开关写入是否进到处理器。
+// master 会话本身有权写；门生效时计数必须为 0。
+type mustChangeRegistrationSpy struct {
+	stubAuth
+	calls int
+}
+
+func (s *mustChangeRegistrationSpy) SetRegistration(context.Context, corescope.Scope, appaudit.Actor, bool) (appauth.RegistrationStatus, error) {
+	s.calls++
+	return appauth.RegistrationStatus{}, nil
 }
 
 // gateAuthorizer 把会话主体映射成普通用户作用域；列表不校验角色。
@@ -140,6 +153,7 @@ func TestMustChangePasswordGateBlocksOtherAPIs(t *testing.T) {
 		{"accounts", http.MethodGet, "/api/accounts", "", false},
 		{"me delete", http.MethodPost, "/api/me/delete", `{"current_password":"leak-me-not"}`, true},
 		{"admin settings", http.MethodGet, "/api/admin/settings", "", false},
+		{"registration write", http.MethodPut, "/api/auth/registration", `{"enabled":true}`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,6 +167,36 @@ func TestMustChangePasswordGateBlocksOtherAPIs(t *testing.T) {
 	}
 	if spy.calls != 0 {
 		t.Fatalf("注销账号用例被调用 %d 次，门失效", spy.calls)
+	}
+}
+
+// master 会话也必须被门拦住注册开关写入：它有权写设置，但强制改密期间
+// 不应再拥有业务写权限。计数为 0 证明请求没进处理器，而不是处理器拒绝。
+func TestMustChangePasswordGateBlocksRegistrationWrite(t *testing.T) {
+	issuer := newStubIssuer()
+	issued, err := issuer.Issue(context.Background(), auth.User{
+		ID: "u-master", Email: "master@example.com",
+		Role: auth.RoleMaster, Status: auth.StatusActive,
+		MustChangePassword: true,
+	})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	spy := &mustChangeRegistrationSpy{}
+	engine, err := router.New(router.Options{
+		Sessions: issuer,
+		Auth:     spy,
+		Clock:    clock.Fixed{T: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	rec := serve(engine, requestWithSession(http.MethodPut, "/api/auth/registration",
+		`{"enabled":true}`, issued.Session.CSRFToken, &issued.Session))
+	assertGateForbidden(t, rec, issued.Token)
+	if spy.calls != 0 {
+		t.Fatalf("注册开关用例被调用 %d 次，门失效", spy.calls)
 	}
 }
 
