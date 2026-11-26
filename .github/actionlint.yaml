@@ -1,0 +1,5 @@
+# actionlint 识别的自托管 runner 标签。
+# yiban-privileged 只在仓库自托管 runner 注册，GitHub 托管 runner 列表里没有。
+self-hosted-runner:
+  labels:
+    - yiban-privileged
