@@ -61,7 +61,7 @@ func TestOwnerSingleAccountInvariant(t *testing.T) {
 	}
 
 	// 管理员恢复受同一不变量约束：名下有 live 行时零行命中，
-	// 按既有零行分类报 capacity_exceeded；live 行软删后恢复成功。
+	// 按 B7b 分类报 conflict（不是容量不足）；live 行软删后恢复成功。
 	restoredID := e.scalarString(
 		"SELECT id::text FROM accounts WHERE phone = '13800000040'")
 	restore := func() error {
@@ -72,8 +72,10 @@ func TestOwnerSingleAccountInvariant(t *testing.T) {
 	}
 	if err := restore(); err == nil {
 		t.Fatal("restore while another live account exists succeeded")
-	} else if code := coreerrs.From(err).Code; code != coreerrs.CodeCapacity {
-		t.Fatalf("blocked restore code = %q, want capacity_exceeded", code)
+	} else if code := coreerrs.From(err).Code; code != coreerrs.CodeConflict {
+		t.Fatalf("blocked restore code = %q, want conflict", code)
+	} else if !strings.Contains(err.Error(), "owner already has a live account") {
+		t.Fatalf("blocked restore error = %v, want owner live-account wording", err)
 	}
 	if _, err := e.db.Exec(e.ctx,
 		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800000060'`); err != nil {
