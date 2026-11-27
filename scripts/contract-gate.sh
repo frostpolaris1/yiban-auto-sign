@@ -128,6 +128,8 @@ grep_status=0
 grep -Fxq "$SPEC" "$TMP_DIR/base-tree.txt" || grep_status=$?
 if [ "$grep_status" -eq 1 ]; then
     skip_oasdiff "$SPEC not present at base '$BASE'; first introduction"
+elif [ "$grep_status" -eq 127 ]; then
+    die_env "grep not found; cannot check $SPEC at base '$BASE'"
 elif [ "$grep_status" -ne 0 ]; then
     die_env "cannot read the base tree listing for $SPEC"
 fi

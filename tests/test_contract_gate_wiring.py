@@ -457,8 +457,8 @@ class EntryScriptBehaviorTest(unittest.TestCase):
     """真跑入口脚本：stub 掉两个工具，断言退出码与 SKIP 行。
 
     为什么需要这一组：EntryScriptTest 只读文本；脚本在 `set -euo pipefail`
-    之后插一句 `exit 0`，那 5 条断言仍全绿。这里用临时 stub 跑真脚本，
-    钉住「无底本退出 0 且打印 SKIP」「破坏性变更退出 1」「缺工具退出 2」。
+    之后插一句 `exit 0`，静态断言仍全绿。这里用临时 stub 跑真脚本，
+    钉住无底本 SKIP、破坏性变更、缺工具、首次引入与清单读不了的退出码。
     """
 
     def setUp(self):
@@ -482,8 +482,10 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         objects = os.path.join(self.tmp.name, "objects")
         os.makedirs(objects, exist_ok=True)
         common = subprocess.check_output(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            ["git", "rev-parse", "--git-common-dir"],
             cwd=BASE, text=True).strip()
+        if not os.path.isabs(common):
+            common = os.path.abspath(os.path.join(BASE, common))
         return {
             "GIT_OBJECT_DIRECTORY": objects,
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": os.path.join(common, "objects"),
@@ -544,6 +546,18 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         rc, out = self._run("--base", base, PATH=path, **objenv)
         self.assertEqual(rc, 2, out)
         self.assertIn("cannot read the base tree listing", out)
+        self.assertNotIn("first introduction", out)
+
+    def test_grep_unavailable_fails_closed(self):
+        # grep 退出 127 表示命令不可用；不能伪装成“没有匹配”而 SKIP。
+        fake_grep = os.path.join(self.tmp.name, "grep")
+        _write_stub(fake_grep, "#!/usr/bin/env bash\nexit 127\n")
+        objenv = self._object_env()
+        base = self._make_base()
+        path = self.tmp.name + os.pathsep + os.environ.get("PATH", "")
+        rc, out = self._run("--base", base, PATH=path, **objenv)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("grep not found", out)
         self.assertNotIn("first introduction", out)
 
     def test_unreadable_base_tree_exits_2(self):
