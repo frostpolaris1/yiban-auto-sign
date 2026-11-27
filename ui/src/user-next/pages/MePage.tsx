@@ -69,7 +69,7 @@ const WEEK_MARK: Record<CalendarDayTone, WeekMark> = {
 }
 
 function weekMark(day: SignCalendarDay): WeekMark {
-  if (day.total === 0) return { tone: 'empty', label: '没有任务' }
+  if (day.total === 0) return WEEK_MARK.none
   return WEEK_MARK[calendarDayTone(day)]
 }
 
@@ -355,7 +355,7 @@ export function MePage() {
                   <span>今天 {today.slice(5)}</span>
                 </div>
               ) : null}
-              {days.length > 0 && !calendarQuery.isError ? (
+              {days.length > 0 ? (
                 <div className="un-me__week-legend" aria-hidden="true">
                   <span><i className="un-me__week-key is-success" />成功</span>
                   <span><i className="un-me__week-key is-danger" />有失败</span>

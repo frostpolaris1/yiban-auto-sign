@@ -179,6 +179,8 @@ test('calendar day tone keeps failure above success, pending and skipped', () =>
   assert.equal(calendarDayTone(day({ failed: 1 })), 'danger')
   assert.equal(calendarDayTone(day({ success: 1 })), 'success')
   assert.equal(calendarDayTone(day({ success: 1, failed: 1 })), 'danger')
+  assert.equal(calendarDayTone(day({ failed: 1, unknown: 1 })), 'danger')
+  assert.equal(calendarDayTone(day({ failed: 1, skipped: 1 })), 'danger')
   assert.equal(calendarDayTone(day({ success: 1, unknown: 1 })), 'success')
   assert.equal(calendarDayTone(day({ unknown: 1, skipped: 1 })), 'pending')
   assert.equal(calendarDayTone(day({ skipped: 1 })), 'warning')

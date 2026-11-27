@@ -374,7 +374,7 @@ export function RecordsPage({
           ) : (
             <ol className="un-day-list">
               {dayAccounts.map((item) => (
-                <li className="un-day-list__item" key={`${item.account_id}-${item.state}`}>
+                <li className="un-day-list__item" key={item.account_id}>
                   <span className={cx('un-day-list__rail', 'is-' + stateTone(item.state))} aria-hidden="true" />
                   <div className="un-day-list__main">
                     <p className="un-day-list__name">{accountName(item, accounts)}</p>

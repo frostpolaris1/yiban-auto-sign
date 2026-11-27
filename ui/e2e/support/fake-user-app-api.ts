@@ -100,6 +100,11 @@ function addDays(day: string, amount: number): string {
  */
 const MOCK_TODAY = '2026-11-11'
 
+/** 未来日只按固定今天判定，日历与日明细共用这一口径。 */
+function isFutureDay(day: string): boolean {
+  return day > MOCK_TODAY
+}
+
 /** 指定某天的各状态条数；未指定的过去日默认为 1 条成功。 */
 export type CalendarDayCounts = {
   success?: number
@@ -130,19 +135,27 @@ function dayFromCounts(
 const DAY_STATES = ['failed', 'success', 'unknown', 'skipped'] as const
 
 /**
- * 日明细：每一种非零计数落一条账号记录，顺序与日主态一致。
- * 混合日不再只返回一条，避免与日历 total 矛盾。
+ * 日明细：按各状态计数展开，行数与日历 total 保持一致。
+ * 真实接口同账号同日只有一行；夹具给多出来的行加序号后缀，仅供混合日测试。
  */
 function accountsFor(day: string, counts: CalendarDayCounts | undefined): SignCalendarAccount[] {
   const source: CalendarDayCounts = counts ?? { success: 1 }
-  return DAY_STATES.filter((state) => (source[state] ?? 0) > 0).map((state) => ({
-    account_id: USER_ACCOUNT.id,
-    state,
-    ...(state === 'success' || state === 'failed'
-      ? { run_at: `${day}T07:02:00+08:00` }
-      : {}),
-    attempts: 1,
-  }))
+  const rows: SignCalendarAccount[] = []
+  for (const state of DAY_STATES) {
+    const count = source[state] ?? 0
+    for (let left = count; left > 0; left -= 1) {
+      rows.push({
+        account_id:
+          rows.length === 0 ? USER_ACCOUNT.id : `${USER_ACCOUNT.id}-${rows.length + 1}`,
+        state,
+        ...(state === 'success' || state === 'failed'
+          ? { run_at: `${day}T07:02:00+08:00` }
+          : {}),
+        attempts: state === 'skipped' ? 0 : 1,
+      })
+    }
+  }
+  return rows
 }
 
 export function userCalendar(
@@ -153,7 +166,7 @@ export function userCalendar(
   const days: SignCalendarDay[] = []
   let cursor = from
   while (cursor <= to) {
-    const future = cursor > MOCK_TODAY
+    const future = isFutureDay(cursor)
     const override = future ? undefined : overrides[cursor]
     days.push(
       override
@@ -342,7 +355,7 @@ export async function mockUserAppApi(
     const url = new URL(route.request().url())
     const day = url.pathname.split('/').pop() ?? ''
     const counts = options.calendarDays?.[day]
-    if (day > MOCK_TODAY) {
+    if (isFutureDay(day)) {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',

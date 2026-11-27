@@ -5,6 +5,10 @@
  * **归属**
  * `features/me` 域容器：取数、月份网格与日详情在此。
  *
+ * **保留**
+ * 已不挂路由：/app/history 由 user-next 的 RecordsPage 渲染。
+ * 仅作回滚参照；日态必须走 calendarDayTone，不再新增独立判定。
+ *
  * **口径**
  * 月范围一次请求 ≤31 天；未来日不可点，日详情为空。
  * 日格不只靠颜色：aria-label 同时写日期与结果。
@@ -87,6 +91,7 @@ function cellTone(info: SignCalendarDay | undefined, future: boolean): string {
     case 'success':
       return 'uapp-cal-dot'
     case 'pending':
+      return 'uapp-cal-dot uapp-cal-dot--pending'
     case 'warning':
       return 'uapp-cal-dot uapp-cal-dot--warning'
     default:
