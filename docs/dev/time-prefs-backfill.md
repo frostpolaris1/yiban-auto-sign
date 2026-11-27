@@ -8,7 +8,7 @@
 
 前提有两条：
 
-1. 旧库已用 `scripts/db_export.py` 导出。
+1. 旧库已用旧栈检出里的 `scripts/db_export.py` 导出（脚本随旧线退役，新栈检出没有）。
 2. `migrate-legacy` 已跑完，`legacy_ids` 已有旧账号到新账号的映射。
 
 补录靠 `legacy_ids` 找新账号，再取该账号的 `owner_user_id`。
@@ -16,7 +16,11 @@
 
 ## 2. 导出旧数据
 
+> 本节只在旧栈 **v0.6.5 的检出**里执行。`scripts/db_export.py` 已随旧线在
+> 2026-11-27 退役；新栈检出没有这个脚本，不要照抄到新栈根目录运行。
+
 ```bash
+# 在旧栈 v0.6.5 检出中执行
 python3 scripts/db_export.py --out /var/lib/yiban/export
 ```
 

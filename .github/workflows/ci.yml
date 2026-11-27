@@ -5,14 +5,14 @@ name: CI
 # （Go+UI 门，含 Postgres 18）、ui-e2e（行为与视觉）。
 # 旧 Python 栈已于 2026-11-27 退役；Go 全量与部署 e2e 在 server/scripts/verify.sh、
 # deploy-gate.yml 与 update-rollback-privileged.yml，不在本文件重复。
-# 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
+# 触发：向 develop / main 提 PR 或 push；feature 分支只跑 push；
 # 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）。
 on:
   workflow_dispatch:
   pull_request:
-    branches: [develop, server-web, main]
+    branches: [develop, main]
   push:
-    branches: [develop, server-web, main, 'feature/**']
+    branches: [develop, main, 'feature/**']
 
 # 同一 ref 的连续推送只保留最新一次：旧 run 排队/占 runner 会直接顶掉快轨 ≤3min 目标，
 # 且"最新一次绿"会被旧 run 的结果干扰（P13-10）。与 deploy-gate.yml 同口径。

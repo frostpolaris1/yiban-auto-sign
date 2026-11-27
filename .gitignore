@@ -92,18 +92,10 @@ docs/*
 !docs/dev/
 docs/dev/*
 !docs/dev/README.md
-!docs/dev/api-contract.md
-!docs/dev/api-executors.md
-!docs/dev/cli.md
 !docs/dev/dev-verify.md
 !docs/dev/acceptance-criteria.md
-!docs/dev/umask-decision.md
 !docs/dev/release-gate.md
-!docs/dev/scheduler-v3.md
-!docs/dev/architecture-target.md
 !docs/dev/backup-restore.md
-!docs/dev/implementation-notes.md
-!docs/dev/troubleshooting.md
 !docs/dev/deploy-e2e.md
 !docs/dev/release-signing.md
 # 发布签名：私钥与本地发布件目录永不入库（docs/dev/release-signing.md §2；
