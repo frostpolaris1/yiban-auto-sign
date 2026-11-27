@@ -561,6 +561,12 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return route.fulfill({ status: 204 })
     }
 
+    // 注销账号会同时作废会话；不清理会让登录页的 me 探针把人弹回 /app。
+    if (url.pathname === '/api/me/delete' && request.method() === 'POST') {
+      sessionRole = null
+      return route.fulfill({ status: 204 })
+    }
+
     // 更新日志：公开读端点，认证页版本行点开。返回合成 Markdown 源。
     if (url.pathname === '/api/changelog') {
       return json(route, request, {

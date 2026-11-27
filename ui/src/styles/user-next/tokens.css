@@ -63,7 +63,7 @@
   --un-mask-solid: #000;
 
   /* Type */
-  --un-font-sans: "HarmonyOS Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --un-font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   --un-font-serif: "Fraunces", "Source Han Serif SC", "Songti SC", Georgia, serif;
   --un-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
   --un-text-hero: clamp(3.25rem, 6.2vw, 4.5rem);
@@ -167,7 +167,7 @@
   --un-mask-solid: #000;
 
   /* Type (same in both themes) */
-  --un-font-sans: "HarmonyOS Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --un-font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   --un-font-serif: "Fraunces", "Source Han Serif SC", "Songti SC", Georgia, serif;
   --un-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
   --un-text-hero: clamp(3.25rem, 6.2vw, 4.5rem);

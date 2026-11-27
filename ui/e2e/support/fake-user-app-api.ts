@@ -323,10 +323,6 @@ export async function mockUserAppApi(
     route.fulfill({ status: 204, body: '' }),
   )
 
-  await page.route('**/api/me/delete', (route) =>
-    route.fulfill({ status: 204, body: '' }),
-  )
-
   await page.route('**/api/me/accounts/*/delete', (route) =>
     route.fulfill({ status: 204, body: '' }),
   )
