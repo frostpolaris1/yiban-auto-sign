@@ -1,4 +1,5 @@
-import { test, expect, type Locator, type Page } from '@playwright/test'
+import { existsSync, readFileSync } from 'node:fs'
+import { test, expect, type Locator, type Page, type TestInfo } from '@playwright/test'
 import { ACCOUNTS, mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
 import { mockAuditApi } from './support/fake-audit-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
@@ -267,16 +268,24 @@ async function waitForAnimations(page: Page) {
   await settleWindowTop(page)
 }
 
-/** 把 fullPage 截图高度抬到整十。
+/** 让 fullPage 截图高度对齐已有基线。
  *
  * Chromium arm64 与 x86 对文档末尾亚像素的取整可能差 1px；Playwright 的
- * `maxDiffPixelRatio` 不吸收尺寸差，尺寸不等会直接判失败。整十高度给两端留出
- * 同一取整空间，最多多出 9px 画布底色，不影响任何布局断言的判据。
+ * `maxDiffPixelRatio` 不吸收尺寸差，尺寸不等会直接判失败。比较时把基线高度
+ * 作为文档最小高度：页面实际更矮就补画布底色，实际更高仍会如实失败。
+ * 更新基线时按本机自然高度出图，不把某一端的取整结果写进基线。
  */
-async function pinScreenshotHeight(page: Page) {
-  const height = await page.evaluate(
-    () => Math.ceil(document.documentElement.scrollHeight / 10) * 10,
-  )
+async function pinScreenshotHeight(page: Page, testInfo: TestInfo, name: string) {
+  if (
+    testInfo.config.updateSnapshots === 'all' ||
+    testInfo.config.updateSnapshots === 'changed'
+  ) {
+    return
+  }
+  const snapshot = testInfo.snapshotPath(name)
+  if (!existsSync(snapshot)) return
+  const height = readFileSync(snapshot).readUInt32BE(20)
+  if (height < 1) return
   await page.evaluate((value) => {
     document.documentElement.style.minHeight = `${value}px`
   }, height)
@@ -732,7 +741,8 @@ test.describe('user app', () => {
       for (const viewport of USER_VIEWPORTS.filter(
         (item) => item.name === '390' || item.name === '1440',
       )) {
-        test(`user app ${view.name} ${viewport.name} ${theme}`, async ({ page }) => {
+        test(`user app ${view.name} ${viewport.name} ${theme}`, async ({ page }, testInfo) => {
+          const snapshot = `user-app-${view.name}-${viewport.name}-${theme}.png`
           await page.clock.setFixedTime(new Date('2026-11-11T08:00:00+08:00'))
           await page.emulateMedia({ reducedMotion: 'reduce' })
           await mockUserAppApi(
@@ -764,13 +774,13 @@ test.describe('user app', () => {
             })
           }
           await waitForAnimations(page)
-          await pinScreenshotHeight(page)
+          await pinScreenshotHeight(page, testInfo, snapshot)
           // 自带字体在 arm64 本机与 x86 CI 的字形抗锯齿不同，留 1% 像素容差；
           // 布局与语义仍由上面的可见性、无溢出和行为用例守住。
-          await expect(page).toHaveScreenshot(
-            `user-app-${view.name}-${viewport.name}-${theme}.png`,
-            { fullPage: true, maxDiffPixelRatio: 0.01 },
-          )
+          await expect(page).toHaveScreenshot(snapshot, {
+            fullPage: true,
+            maxDiffPixelRatio: 0.01,
+          })
         })
       }
     }
