@@ -1,8 +1,0 @@
-{# 早期引导（CSP 加固后全部外置，工单 56ed）：必须在 <head> 内、先于样式表执行，
-   避免主题闪烁与旧版本缓存错乱。
-   脚本本身是静态文件 `web/static/js/theme-boot.js`（承接主题 / BASE / 版本兜底 /
-   图片回退 / 委托点击）；它需要的两个值经 <meta> 下发，故脚本里没有 Jinja 表达式，
-   可被静态路由长缓存。`script-src 'self'` 下这是唯一允许的加载方式。 #}
-<meta name="yiban-base" content="{{ request.script_root }}">
-<meta name="yiban-web-version" content="{{ web_version }}">
-<script src="{{ request.script_root }}/static/js/theme-boot.js?v={{ web_version }}"></script>

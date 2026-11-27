@@ -6,14 +6,9 @@
 # Exit codes: 0 all gates pass; 1 a gate fails; 2 a toolchain is missing.
 # A missing toolchain is an environment error, never a green run.
 #
-# Registered gap: this script does NOT run the config-registry gate
-# (scripts/check-config-registry.py). The stacks CI job has no
-# python/portalocker, so the gate cannot run here. It runs in the verify job of
-# scripts/dev-verify.sh --ci, whose scan surface is the legacy Python tree
-# (server/ui keys are owned by server/internal/configdata/registry.json).
-# The difference is registered, not silent: server-side YIBAN_* keys are still
-# checked by the Go tests and by go vet, but the registry self-check only runs
-# in the dev-verify lane.
+# Both stacks own their gates: server/scripts/verify.sh checks Go (including
+# the config registry) and ui's npm run verify checks the frontend. The Python
+# lane (scripts/dev-verify.sh) no longer has a config-registry gate to register.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

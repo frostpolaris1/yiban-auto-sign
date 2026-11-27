@@ -5,12 +5,10 @@
 
 ## 1. 项目方向
 
-本仓有两套系统。
+本仓只有一条活跃开发线：`server/`（Go 后端）＋ `ui/`（React 前端）。
 
-- **新系统**：`server/`（Go 后端）＋ `ui/`（React 前端）。**唯一活跃开发线**。
-- **旧系统**：`yiban/`、`web/`、`frontend/`、`tests/`。Python/Vue 旧栈，**已冻结**。不再接受功能 PR，也不再接受缺陷修复 PR。
-
-新功能只写 `server/` 与 `ui/`。
+旧 Python/Vue 栈（`yiban/`、`web/`、`frontend/`、旧 `tests/`）已于
+2026-11-27 退役删除，不再接受任何 PR。新功能只写 `server/` 与 `ui/`。
 目录地图见 `STRUCTURE.md`。
 后端分层与命令见 `server/README.md`。
 前端结构、门与测试命令见 `ui/README.md`。
@@ -42,10 +40,9 @@
 
 | 任务 | 范围 | 验收 | 难度 |
 |---|---|---|---|
-| 顶层 README 重写 | 把 `README.md` 的主线改成 Go＋React；旧 Python 内容折叠为附录或移入归档文档 | 新读者 5 分钟内找到安装、配置、测试命令；引用路径都在库内；文档门绿 | 中 |
 | 升级维护页 | 在 `deploy/baremetal/` 下新增静态维护页，并在 `docs/dev/deploy-e2e.md` 写反代片段 | 服务停止时反代能返回该页；无 JavaScript；键盘可达；文案说明升级进度 | 小 |
 | 测试时序清理 | 把 `ui/e2e/` 里的固定等待改为等待条件 | 不改变任何断言；`test:behavior` 连跑 5 次稳定；不许放宽超时掩盖抖动 | 小 |
-| 部署故障排查 | 扩充 `docs/dev/troubleshooting.md` 的 Go 线条目 | 每类故障给症状、命令、期望输出；只写可复现内容 | 小 |
+| 部署故障排查（PR3） | 在 PR3 重写 `docs/dev/troubleshooting.md` 后补充 Go 线条目 | 每类故障给症状、命令、期望输出；只写可复现内容 | 小 |
 | 可访问性巡检 | 检查 `ui/src/` 的键盘可达、`label` 关联、焦点可见 | 先交报告与问题清单；修复按页分批；不新增依赖 | 中 |
 | 合成夹具扩展 | 在 `tests/synthetic-fixtures.json` 登记新的合成值，并补对应测试 | 只使用登记过的合成值；数据门绿；不得出现看似真实的数据 | 小 |
 
@@ -103,7 +100,7 @@
 5. **一个模块一个 PR**。不要混装机制替换、缺陷修复、新门与文档改写。
 6. **提交信息**用 Conventional Commits。
 7. **PR 指向 `develop`**。填写 `.github/pull_request_template.md`；UI 改动附截图。
-8. **提交身份**：用你自己的 `git user.name` 与 `git user.email`；本地钩子与白名单细则见 §7.1。
+8. **提交身份**：用你自己的 `git user.name` 与 `git user.email`；仓库不再提供本地 git hooks。
 
 ## 7. 外部贡献者
 
@@ -112,37 +109,26 @@
 ### 7.1 提交身份
 
 用自己的 `git user.name` 与 `git user.email`，不要冒用维护者身份。
-
-仓库自带的 `scripts/git-hooks/`（`pre-commit` 与 `commit-msg`）是维护者本地的卫生阀：
-
-- 它**不会**自动启用。只有本地执行过 `git config core.hooksPath scripts/git-hooks` 才会生效；
-  外部克隆不做这一步，钩子不触发。
-- 它的白名单只允许维护者身份。你若复制了维护者的本地配置而被拒，
-  用 `git commit --no-verify` 跳过本次校验——跳过只影响你本地，不影响 CI。
+仓库不再提供本地 git hooks；提交卫生由 CI 与审查承担。
 
 ### 7.2 PR 必须过全部 CI 门禁
 
-PR 上的全部检查绿，才进入人工审查。活跃线 `develop` 上共 12 个检查，
-来自 11 个作业（`ui-e2e` 一个作业按 behavior / shots 两片各报一个检查）：
+PR 上的全部检查绿，才进入人工审查。活跃线 `develop` 上共 8 个检查，
+分支保护要求 8 项检查，来自 7 个作业（`ci.yml` 五个；`deploy-gate.yml` 两个。`ui-e2e` 一个作业按 behavior / shots 两片各报一个检查）；最后一行是手动矩阵，不在 PR 检查里：
 
 | 检查名 | 来源 | 管什么 |
 |---|---|---|
-| `verify` | `.github/workflows/ci.yml` | 主验证：Python 门、旧线测试子集、新栈门（按改动面分流） |
-| `slow-lane` | 同上 | 慢集与串行轨 |
-| `dependency-audit` | 同上 | `pip-audit`（`requirements.lock`） |
+| `verify` | `.github/workflows/ci.yml` | Python 面：ruff + `pytest tests/` |
 | `tooling-gate` | 同上 | actionlint、shellcheck、golangci-lint、govulncheck、npm audit |
 | `contract-gate` | 同上 | spectral lint ＋ oasdiff 破坏性变更（只审契约面） |
-| `frontend` | 同上 | Vitest、构建可复现、Playwright（旧 Vue 线） |
-| `stacks` | 同上 | `scripts/verify-stacks.sh`（Go＋React 新栈门） |
-| `ui-e2e (behavior)` | 同上 | 新栈 Playwright 行为分片 |
-| `ui-e2e (shots)` | 同上 | 新栈 Playwright 截图分片 |
-| `deploy-gate` | `.github/workflows/deploy-gate.yml` | 干净环境按 README 从零装成 |
-| `container-deploy-e2e` | 同上 | 容器部署 e2e |
-| `update-rollback-e2e` | 同上 | 一键更新的干跑契约（required；全矩阵见下行） |
+| `stacks` | 同上 | `scripts/verify-stacks.sh`（Go 全量 + UI 构建/校验） |
+| `ui-e2e (behavior)` | 同上 | Playwright 行为分片 |
+| `ui-e2e (shots)` | 同上 | Playwright 截图分片 |
+| `container-deploy-e2e` | `.github/workflows/deploy-gate.yml` | 干净容器装成、备份恢复、SIGTERM |
+| `update-rollback-e2e` | 同上 | 一键更新干跑契约 |
 | `update-rollback-privileged` | `.github/workflows/update-rollback-privileged.yml` | R1..R10 全矩阵（手动、自托管 runner，不在 PR 检查里） |
 
 任一检查红都会阻塞合并。修完推送后等 CI 重跑；不要靠反复重试掩盖抖动。
-（`main` 上另有定时 workflow，不在 PR 检查里。）
 
 ### 7.3 合并方式
 
@@ -160,11 +146,9 @@ PR 上的全部检查绿，才进入人工审查。活跃线 `develop` 上共 12
 (cd server && golangci-lint run ./...)
 bash server/scripts/verify.sh              # 无 DSN 时 pg/auth/cli e2e 会显性 SKIP；SKIP 不等于绿
 
-# Python 四门（对已提交树跑）
-python -I tests/test_repo_structure_gate.py -q
-python -I tests/test_gate_lane_roster.py -q
-python -I tests/test_doc_reference_gate.py -q
-python -I tests/test_public_exposure_gate.py -q
+# Python 面（ruff + 全部测试）
+python3 -m pip install --require-hashes -r tests/requirements-gate-tools.txt
+bash scripts/dev-verify.sh --ci
 
 # 生成物一致性：手改生成物会在这里变红
 (cd server && bash scripts/generate.sh --check) && (cd ui && node scripts/generate-api.mjs --check)

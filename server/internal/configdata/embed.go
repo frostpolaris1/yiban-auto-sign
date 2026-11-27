@@ -16,8 +16,8 @@
 //
 // # 口径
 // 名册只登记 Go 服务端实际读取的键（唯一的读取点是
-// internal/adapters/config）。仓库根 config/ 下的旧名册与本包无关，
-// 它只服务旧 Python 栈，不得往本名册里补旧键。
+// internal/adapters/config）。仓库根 config/ 下的旧名册已随旧 Python 栈删除；
+// 不得往本名册里补旧键。
 package configdata
 
 import _ "embed"

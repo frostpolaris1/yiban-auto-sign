@@ -17,8 +17,8 @@
   §3.1，本地过程稿）。
 - 生产现状：旧栈 v0.6.5，目录 `/opt/yiban-auto-sign`，SQLite 库 `data/yiban.db`，
   服务 `yiban-web`；无 docker、无 PostgreSQL。生产机只读巡检可用（`ssh yiban`）。
-- 发布门证据只在 CI：`.github/workflows/deploy-gate.yml` 的三个作业
-  `deploy-gate`、`container-deploy-e2e`、`update-rollback-e2e`。
+- 发布门证据只在 CI：`.github/workflows/deploy-gate.yml` 的两个作业
+  `container-deploy-e2e`、`update-rollback-e2e`；旧 `deploy-gate` 作业已随旧栈退役删除。
 - 本机无 docker 时，`server/scripts/verify.sh` 的 container e2e 打显性 SKIP。
   **SKIP 不是绿**：它只证明「没跑」，不构成发布证据。
 - 导入流程已在一次性实例彩排通过（568 用户、520 账号、520 凭据、0 行错误、
@@ -54,8 +54,8 @@ bash server/scripts/build-release.sh <outdir>
 - Windows 宿主产物带 `.exe`（`yiban-server.exe` / `yiban-cli.exe`），仅本地冒烟。
 - Linux 发布件、`manifest.json` 与签名由发布者在本机按
   [`../dev/release-signing.md`](../dev/release-signing.md) §2–§4 产出：
-  `build-release.sh` → `make-manifest.sh` → `sign.sh`。CI `deploy-gate` 三作业
-  只提供门证据，不产出发布件。
+  `build-release.sh` → `make-manifest.sh` → `sign.sh`。CI `deploy-gate.yml`
+  的两条部署 e2e 只提供门证据，不产出发布件。
 
 ### 1.2 清单与签名
 
@@ -230,7 +230,7 @@ T0 之前逐项打勾。任何一项不过：不切流。
 - 执行人：<角色>
 - 发布件 version：<X.Y.Z>；commit：<短 sha>
 - manifest 校验：verify.sh rc=<值>；sha256 对账=<一致|不一致>
-- CI 发布门：<deploy-gate 作业链接占位>；<container-deploy-e2e 链接占位>；
+- CI 发布门：<container-deploy-e2e 链接占位>；
   <update-rollback-e2e 链接占位或手跑记录落点占位>
 - 导入 summary：users=<n>；accounts=<n>；row_errors=<n>；decrypt_failed=<n>
 - 冒烟：直连冒烟=<过|不过>；切流后 https 复测=<过|不过>

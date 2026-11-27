@@ -23,7 +23,7 @@ set -euo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SELF_DIR/.." && pwd)"
 
-# 新栈脚本清单。旧线（yiban/ web/ scripts/ 的旧入口）已冻结，不做同批整改。
+# 新栈脚本清单。旧栈已于 2026-11-27 退役，扫描面只含在役脚本。
 SHELL_FILES=(
     deploy/baremetal/install.sh
     deploy/baremetal/update.sh
@@ -35,8 +35,14 @@ SHELL_FILES=(
     scripts/e2e/ui-signing-e2e.sh
     scripts/e2e/lib/deploy-e2e.sh
     scripts/verify-stacks.sh
+    scripts/dev-verify.sh
+    scripts/release-check.sh
     scripts/workflow-run-interp-gate.sh
     scripts/release/make-ui-sums.sh
+    scripts/release/make-manifest.sh
+    scripts/release/sign.sh
+    scripts/release/verify.sh
+    scripts/check-git-config.sh
     scripts/tooling-gate.sh
     scripts/contract-gate.sh
     server/scripts/build-release.sh

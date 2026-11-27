@@ -87,7 +87,7 @@ ui/src/
 ## 设计令牌
 
 - `styles/tokens.css` 是唯一颜色来源。36 个浅色 token 加 36 个深色 token。取值与 Adminator `_tokens.scss` 一致。
-- `styles/adminator.css` 是 `web/static/vendor/adminator/adminator.css` 的逐字节副本。源文件 68,956 B，sha256 `c94aa111a7a769f273e03e8a90bb266811965b305ce340a451e4e7268d52acbe`。
+- `styles/adminator.css` 是 `ui/vendor/adminator/adminator.css` 的逐字节副本。源文件 68,956 B，sha256 `c94aa111a7a769f273e03e8a90bb266811965b305ce340a451e4e7268d52acbe`。
 - `styles/app.css` 只放项目覆盖层。颜色、圆角、阴影只允许引用 token。
 - 组件只用 Adminator 类名。`app-*` 是项目扩展层：样式规则集中在 `styles/app.css`，少数类只作行为或测试钩子（如 `.app-account-row`），没有样式规则。
 

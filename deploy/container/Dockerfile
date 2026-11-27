@@ -14,7 +14,7 @@
 #   docker compose --env-file deploy/container/compose.env \
 #     -f deploy/container/docker-compose.yml up -d
 #
-# 旧 Python 镜像（docker/）与本镜像并存；Go 线发布时旧栈退役。
+# 旧 Python 栈（含 docker/ 镜像）已于 2026-11-27 退役；本镜像是唯一生产镜像。
 
 # ---- 前端构建段 ------------------------------------------------------------
 FROM node:22-alpine AS ui

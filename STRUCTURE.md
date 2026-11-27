@@ -4,33 +4,24 @@
 
 ## 1. 一分钟版本
 
-本仓有**两套系统**，互不改写：
-
-- **新系统** = `server/`（Go 后端）+ `ui/`（React 前端）。新功能只写这里。
-- **旧系统** = `yiban/`、`web/`、`frontend/`、`tests/` 里的旧 Python 测试。Python/Vue 旧栈，**冻结**。只在被指派的缺陷修复中改动。`tests/` 里另有仓库级门（结构、引用等），仍活跃。
-
-其余是文档、部署与过程稿。
+本仓只有一条活跃线：`server/`（Go 后端）＋ `ui/`（React 前端）。
+旧 Python/Vue 栈已于 2026-11-27 退役删除；新功能只写 `server/` 或 `ui/`。
+其余目录是文档、部署件、门与过程稿。
 
 ## 2. 顶层目录
 
 | 目录 | 作用 | 状态 |
 |---|---|---|
-| `server/` | Go 后端。契约、领域、适配器、HTTP 入口 | 新，活跃 |
-| `ui/` | React 前端。Adminator 视觉语言 | 新，活跃 |
-| `docs/` | 入库文档。架构、开发规范、运行手册 | 共用 |
+| `server/` | Go 后端。契约、领域、适配器、HTTP 入口 | 活跃 |
+| `ui/` | React 前端。Adminator 视觉语言 | 活跃 |
+| `docs/` | 入库文档。架构、开发规范、运行手册 | 活跃 |
 | `work/` | 过程稿：计划、交接、审查产物。**不入库** | 本地 |
-| `deploy/container/`、`deploy/baremetal/`、`deploy/README.md` | 新栈部署件：容器编排、裸机安装/升级、从零部署指南 | 新，活跃 |
-| `deploy/release.md` | 跨栈发布门清单：旧线版本源与 Go 线段（项 1b）并存 | 共用，活跃 |
-| `deploy/prod/`、`docker/`、`docker-compose.yml` | 旧 Python 栈部署件 | 旧，冻结 |
-| `scripts/` | 运维脚本与门：`dev-verify.sh` 旧栈入口、`verify-stacks.sh` 新栈入口 | 共用 |
-| `yiban/` | Python 旧引擎：调度、领取、协议 | 旧，冻结 |
-| `web/` | Python 旧 Web 与静态资源 | 旧，冻结 |
-| `frontend/` | Vue 旧前端 | 旧，冻结 |
-| `tests/` | Python 旧测试 + 仓库级门（结构、引用等） | 旧栈测试冻结；仓库门活跃 |
-| `config/` | 旧 Python 栈配置名册（`registry.json`） | 旧，冻结 |
+| `deploy/container/`、`deploy/baremetal/`、`deploy/README.md` | 容器编排、裸机安装/升级、部署指南 | 活跃 |
+| `deploy/release.md` | 发布门清单 | 活跃 |
+| `scripts/` | 门与运维入口：`dev-verify.sh`（Python 面）、`verify-stacks.sh`（Go+UI 面）、部署 e2e | 活跃 |
+| `tests/` | Python 仓库级门（结构、公开数据、跳过面等） | 活跃 |
+| `.github/` | CI 编排与模板 | 活跃 |
 | `data/`、`out/` | 运行期产物 | 忽略 |
-
-规则：新功能代码不得写入旧系统目录。跨系统共用的只有 `docs/`、`scripts/` 的入口脚本、`tests/` 里的仓库级门、`deploy/release.md` 发布门清单与 `.github/` CI 编排；这些地方只放文档与门，不放业务代码。
 
 ## 3. 后端 `server/`
 
@@ -76,7 +67,7 @@ server/
 |---|---|---|
 | 纯领域 | `internal/core/<域>/` | 值对象、规则、状态机。不碰数据库与 HTTP |
 | 用例 | `internal/app/<域>/` | 一个用户动作一个函数。开事务、调仓储、写审计 |
-| 适配器 | `internal/adapters/<设施>/` | 按**设施**分，不按域分：`pg`、`session`、`config`、`mail`、`webhook`、`storage`、`legacy`（事实源：`server/structure.tsv` 的 `server/internal/adapters` 行） |
+| 适配器 | `internal/adapters/<设施>/` | 按**设施**分，不按域分：`pg`、`session`、`config`、`mail`、`webhook`、`storage`、`anchor`、`legacy`、`turnstile`（事实源：`server/structure.tsv` 的 `server/internal/adapters` 行） |
 | HTTP | `internal/entry/http/<域>/` | 解析请求、调用用例、写响应 |
 | 生成 | `internal/entry/http/oapi/` | OpenAPI 生成物，不手改 |
 
@@ -176,21 +167,21 @@ ui/src/
 
 前端导入方向由 `ui/scripts/structure-gate.mjs` 解析模块路径后判定。
 该门只扫 `ui/`。`docs/`、`server/`、`tests/` 不在它扫描面内，`server/` 的 `work/` 引用无自动门，靠审查。
-Python 文档门只管 `docs/…` 路径是否存在，不管 `work/` 引用。
-第 2 节的状态列（新/旧、活跃/冻结）没有自动门；它靠审查维护。
+文档里的路径引用没有自动门，靠审查维护。
+第 2 节的状态列没有自动门；它靠审查维护。
 
 两条入口：
 
-- 旧 Python 栈：`scripts/dev-verify.sh`。
-- 新 Go + React 栈：`bash scripts/verify-stacks.sh`。
-- CI 的三个 job 合起来跑这两条入口：`verify` 与 `slow-lane` 跑旧 Python 入口
-  （`--ci` / `--slow`），`stacks` 跑新栈入口。
+- Python 面：`scripts/dev-verify.sh`（`ruff + pytest tests/`）。
+- Go + React 面：`bash scripts/verify-stacks.sh`（内部调 `server/scripts/verify.sh` 与 `ui npm run verify`）。
+
+CI：`verify` 跑 Python 入口，`stacks` 跑 Go+UI 入口；其余 job 见 `.github/workflows/ci.yml`。
 
 运行：`cd server && ./scripts/verify.sh`。
 
 ## 7. 五分钟检查表
 
-1. 新功能写哪里？`server/` 或 `ui/`，不写旧栈。
+1. 新功能写哪里？`server/` 或 `ui/`；旧目录已删除，不要重建。
 2. 找领域规则？`server/internal/core/<域>/`。
 3. 找数据库语句？`server/internal/adapters/pg/`。
 4. 找接口形状？`server/contracts/openapi.yaml`。

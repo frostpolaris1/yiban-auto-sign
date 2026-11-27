@@ -2,7 +2,7 @@
   "_meta": {
     "version": 2,
     "stack": "go",
-    "doc": "Go 栈配置名册：scope=server 登记服务进程读取的键（internal/adapters/config），scope=cli 登记运维 CLI 读取的键（backup/migrate-legacy/bench）。类型/域/缺省/分组/敏感级别在这里定义；代码侧缺省由 registry_parity_test 双向钉住。设置页只列 scope=server；doctor 按全集校验未登记键。旧 Python 栈的名册在仓库根 config/registry.json，与本文件无关。"
+    "doc": "Go 栈配置名册：scope=server 登记服务进程读取的键（internal/adapters/config），scope=cli 登记运维 CLI 读取的键（backup/migrate-legacy/bench）。类型/域/缺省/分组/敏感级别在这里定义；代码侧缺省由 registry_parity_test 双向钉住。设置页只列 scope=server；doctor 按全集校验未登记键。旧 Python 栈名册已随旧线退役，与本文件无关。"
   },
   "YIBAN_ALLOW_NO_DB": {
     "type": "bool",

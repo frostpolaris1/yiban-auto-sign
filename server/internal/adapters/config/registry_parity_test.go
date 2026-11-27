@@ -425,23 +425,16 @@ func TestRegistrySensitiveMatchesCode(t *testing.T) {
 
 // TestGoStackDoesNotReadLegacyRoster 钉住旧名册的边界。
 //
-// 旧 Python 栈的 config/registry.json（187 键）继续服务旧线，但 Go 生产代码
-// 不得引用它：读旧文件等于把旧键混进新栈的键面。
+// 旧 Python 栈名册已随旧线退役；Go 生产代码仍不得引用旧路径，读旧文件
+// 等于把旧键混进新栈的键面。
 func TestGoStackDoesNotReadLegacyRoster(t *testing.T) {
 	for _, path := range productionGoFiles(t) {
 		if strings.Contains(readFile(t, path), "config/registry.json") {
 			t.Errorf("%s 引用了旧名册 config/registry.json；Go 栈读嵌入名册", path)
 		}
 	}
-	// 旧名册仍须留在仓库里（旧线在读），并保持比新名册大得多的键面。
-	legacy := readFile(t, filepath.Join("..", "..", "..", "..", "config", "registry.json"))
-	var old map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(legacy), &old); err != nil {
-		t.Fatalf("旧名册解析失败: %v", err)
-	}
-	if len(old) < 150 {
-		t.Fatalf("旧名册只剩 %d 条——旧线仍在读它，删键会让旧线判红", len(old))
-	}
+	// 旧名册已随旧线退役删除；本测试只守 Go 侧边界：生产代码不得引用它，
+	// 旧线专用键也不得混进嵌入名册。
 	reg := loadRegistry(t)
 	for _, key := range []string{"YIBAN_ENV_FILE", "YIBAN_WINDOW_EDGE_SEC", "YIBAN_MAIL_ENABLE"} {
 		if _, ok := reg[key]; ok {

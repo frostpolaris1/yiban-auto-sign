@@ -1,8 +1,8 @@
 # server
 
-Go service for the new stack (`server/` + `ui/`). The Python line
-(`yiban/`, `web/`) is frozen: this directory does not import it and does not
-change its behavior.
+Go service for the only active stack (`server/` + `ui/`). The Python line
+(`yiban/`, `web/`) was retired and deleted on 2026-11-27; this directory never
+imported it.
 
 ## Layout
 
@@ -187,10 +187,10 @@ via ldflags. Release tags are `v$VERSION`.
 and the tag `v$VERSION` pointing at HEAD. Before the tag exists the item
 fails, which is expected while preparing a release. The contract's
 `info.version` is the API contract version and is never synchronized with
-it. The top `CHANGELOG.md` entry must equal one of the two version lines —
-the legacy Python `__version__` or the root `VERSION` (a two-line,
-one-repository rule pinned by `tests/test_release_version_source.py`). See
-[`contracts/README.md`](contracts/README.md) for the versioning split.
+it. The top `CHANGELOG.md` entry must equal `v$VERSION` from the root
+`VERSION`; that is the single-repository rule `scripts/release-check.sh
+--only version` enforces. See [`contracts/README.md`](contracts/README.md)
+for the versioning split.
 
 ## Status
 
@@ -228,7 +228,7 @@ public pages `/api/changelog`, `/terms`, `/privacy` and `/robots.txt`. The
 production assembly wires every contract endpoint; a handler that is not
 wired answers 501.
 
-The Python line is frozen. Its behavior is reference material only.
+The Python line was retired on 2026-11-27 and is no longer in the tree.
 
 `scripts/generate.sh --check` fails when `contracts/openapi.yaml` and the
 generated code drift apart.

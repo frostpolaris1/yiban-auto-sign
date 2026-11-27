@@ -6,42 +6,34 @@
 > 汇总退出码：0 无 FAIL；1 有 FAIL；2 用法错误。
 > 考古基准：ref `ad5b3639`，考古日 2026-10-27。命令在 WSL 跑。
 
-## 项 1　版本三处一致（item 名 `version`）
+## 项 1　版本单一来源与发布 tag（item 名 `version`）
 
 命令：`bash scripts/release-check.sh --only version`
 
-考古结论（三处定义点）：
+2026-11-27 旧 Python 栈退役后只剩 Go 线，版本口径收敛为一处：
 
-1. **版本唯一来源**：`yiban/__init__.py` 的 `__version__`（基底为 `0.6.4`）。
-   守卫：`tests/test_release_version_source.py` 钉「版本字面量只在一处定义」。
-2. **CHANGELOG**：`CHANGELOG.md` 顶部 `[vX.Y.Z]` 条目与 `__version__` 一致
-   （同一守卫用例钉住）。
-3. **git tag**：发布时打 `vX.Y.Z`。`scripts/deploy_gate.sh` 的迁移演练按
-   `GATE_OLD_REF`（默认 `v0.6.2`）取不可变 tag。基底 `ad5b3639` 上
-   `v0.6.4` 的 tag 尚未打——本项在打完发布 tag 后跑。
-4. **二进制自报版本（2026-11-04 U1 落地）。** `yiban-server --version` 与
-   `yiban-cli version` 输出 version/commit/build_time；值由构建期
-   `-ldflags -X` 注入 `server/internal/buildinfo`，未注入时显性打印
-   dev/unknown（不编造 sha 或时间）。发布构建必须注入三个值，
-   命令见 `deploy/README.md` §4.1。
-5. **openapi `info.version`：契约版本，不随发布走（口径 2026-11-05 落定）。**
-   `server/contracts/openapi.yaml` 的 `version: "1.0.0"` 是 API 契约版本，
-   只在破坏性契约变更时升；产品发布版本在仓库根 `VERSION`（Go 线单一来源），
-   发布 tag 用 `v$VERSION`。两个计数器独立，不做同步（见项 1b 与
-   `server/contracts/README.md`）。
+1. **版本唯一来源**：仓库根 `VERSION`（单行 `X.Y.Z`，换行结尾）。
+2. **CHANGELOG**：`CHANGELOG.md` 顶部 `[vX.Y.Z]` 条目必须等于 `v$VERSION`。
+3. **git tag**：发布时打 `v$VERSION`；本项断言 tag 存在且指向 HEAD。
+4. **二进制自报版本**：`yiban-server --version` 与 `yiban-cli version`
+   的 version/commit/build_time 由构建期 `-ldflags -X` 注入
+   `server/internal/buildinfo`；未注入时显性打印 dev/unknown。真构建断言见项 1b。
+5. **openapi `info.version`：契约版本，不随发布走。**
+   `server/contracts/openapi.yaml` 的 `version: "1.0.0"` 只在破坏性契约变更时升；
+   产品发布版本仍是根 `VERSION`，两者独立（见 `server/contracts/README.md`）。
 
-本项可执行部分钉存在的两处：tag `v$__version__` 存在且指向 HEAD；
-`__version__` 与 CHANGELOG 顶部一致。期望输出
-`version: __version__=…, CHANGELOG top=…, tag vX.Y.Z -> HEAD ok`，退出码 0。
-红：tag 不存在／不指向 HEAD／两处版本不一致，退出码 1。
+期望输出 `version: VERSION=…, CHANGELOG top=vX.Y.Z, tag vX.Y.Z -> HEAD ok`，退出码 0。
+红：`VERSION` 缺失、非单行、非 semver、CHANGELOG 顶部不符、不是 git 检出、
+tag 不存在或不指向 HEAD，退出码 1。
 
 ## 项 1b　Go 线产品版本与发布 tag（item 名 `go-version`；2026-11-05 版本批）
 
 命令：`bash scripts/release-check.sh --only go-version`
 
 口径：Go 线（`server/` + `ui/`）的产品版本单一来源是仓库根 `VERSION`
-（单行 `X.Y.Z`，换行结尾）；旧 Python 线的 `yiban/__init__.py` 与 CHANGELOG
-保持冻结，不在此项范围。契约版本独立（项 1 第 5 条）。
+（单行 `X.Y.Z`，换行结尾）。旧线已退役，仓库里不再有第二个产品版本源；
+`ui/package.json` 的 `version` 只是前端包元数据，不参与发布；契约版本独立
+（项 1 第 5 条）。
 
 本项三个动作：
 
@@ -94,34 +86,43 @@ bash scripts/dev-verify.sh --ci      # 提交前；合并前跑全量
 DSN 时它显性打 SKIP，不算绿）。红：任一退出码非 0。
 脚本侧红：被引文件缺失。
 
-## 项 5　容器烟测（item 名 `container`，POINTER）
+## 项 5　部署烟测（item 名 `container`，POINTER）
 
 指向：
 
 ```bash
-bash scripts/deploy_gate.sh --phase A   # 全新 docker 环境按 README 一次装成 + 健康检查
-bash scripts/drill-container.sh         # 容器形态整轮真签到（演练机）
+# 容器：真跑干净环境 build→起服→/healthz→备份恢复→SIGTERM
+bash scripts/e2e/deploy-container-e2e.sh
+
+# 裸机：真跑 install.sh + systemd；需 docker --privileged 与 host cgroup
+bash scripts/e2e/deploy-baremetal-e2e.sh --keep --log-dir /tmp/yiban-baremetal-e2e
 ```
 
-期望：`deploy_gate.sh --phase A` 摘要全 PASS、退出码 0（发布判据：
-干净环境从零安装一次完成）。红：摘要含 FAIL，退出码 1。
-脚本侧红：被引文件缺失。
+期望：两条脚本退出码 0；摘要每步 PASS，失败时打印 `failed step: <ID>`。
+红：任一退出码非 0，或摘要含 FAIL。脚本侧红：被引脚本缺失。
 
 ## 项 6　备份演练（item 名 `backup`，POINTER）
 
 指向：
 
 ```bash
-bash scripts/backup.sh --restore <最新备份包> <临时目标目录>
-yiban-cli backup && yiban-cli restore   # server/cmd/cli 的 backup/restore 子命令
-bash scripts/deploy_gate.sh --phase C   # 容器形态备份恢复判据
+# Go 服务端形态（pg + GPG）：--out/--dsn/--passphrase-file 必填，恢复目标须为空库
+# YIBAN_RESTORE_DSN 必须显式给出；未设置时参数展开直接失败，绝不回退生产 DSN
+yiban-cli backup --out <备份文件> --dsn "$YIBAN_DATABASE_URL" \
+  --passphrase-file <0600 口令文件>
+yiban-cli restore --in <备份文件> \
+  --dsn "${YIBAN_RESTORE_DSN:?must point at an empty restore target, never YIBAN_DATABASE_URL}" \
+  --passphrase-file <0600 口令文件> --force
+bash scripts/e2e/deploy-container-e2e.sh   # 含 C4c 备份 / C4d 恢复冒烟
 ```
 
-期望：`backup.sh --restore` 解包后自动跑 `PRAGMA integrity_check` 与
-`scripts/audit_verify.py` 并通过，退出码 0（其自检失败码 6／7／8 任一
-出现即红）。`yiban-cli restore` 行数对账通过。红：任一退出码非 0。
-脚本侧红：`scripts/backup.sh` 缺失，或 `server/cmd/cli/main.go` 未登记
-backup/restore 子命令。
+恢复后若 `audit_logs` 非空，必须提供与备份一致的 `YIBAN_HASH_PEPPER`；缺失或错误时审计链校验 exit 1。
+
+期望：`deploy/container/backup.sh` 产出 `db.dump`、`photos.tar.gz`、
+`SHA256SUMS`；`db.list` 证明转储可读；恢复后探针与库计数一致。CLI 路径的
+通过判据是 restore 的行数对账与审计链校验全过。
+红：任一退出码非 0，或备份件缺失/自校验失败。脚本侧红：被引脚本缺失，
+或 `server/cmd/cli/main.go` 未登记 backup/restore 子命令。
 
 ## 项 7　回滚演练（item 名 `rollback`，POINTER）
 
@@ -162,8 +163,7 @@ R8c 状态目录软链、R9b 备份件被篡改）全 PASS
 红：任一退出码非 0 或摘要含 FAIL。
 安全边界：演练步骤只在一次性容器内执行；容器外跑 `run` 子命令被守卫
 拒绝（退出码 2、零写入），该拒绝本身是演练脚本 H1 步的常演断言。
-旧线 `deploy_gate.sh --phase B`（回滚 v0.6.2）：本项不再指向；
-脚本与旧线 CI 仍在（phase B 未删）。
+旧线 `deploy_gate.sh` 已随旧栈退役删除，本项不再指向任何旧脚本。
 脚本侧红：`update.sh` 无 `.bak` 回滚路径、无自检门/统一备份/数据库恢复标记、
 `deploy-gate.yml` 没有 `update-rollback-e2e` job 或没跑干跑契约、演练调用回流到
 托管 runner、`update-rollback-privileged.yml` 缺失或带自动触发/降级分支，

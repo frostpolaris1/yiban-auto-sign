@@ -222,5 +222,29 @@ class WorkflowRunInterpGateTest(unittest.TestCase):
         )
 
 
+class ShellFilesRegistrationTest(unittest.TestCase):
+    """发布/配置脚本必须进 tooling-gate 的 shellcheck 扫描面。"""
+
+    REQUIRED = (
+        "scripts/release/make-manifest.sh",
+        "scripts/release/sign.sh",
+        "scripts/release/verify.sh",
+        "scripts/check-git-config.sh",
+    )
+
+    def test_release_and_config_scripts_are_registered(self):
+        with io.open(os.path.join(BASE, "scripts", "tooling-gate.sh"),
+                     encoding="utf-8") as fh:
+            tooling = fh.read()
+        block = re.search(r"(?ms)^SHELL_FILES=\(\n(.*?)^\)", tooling)
+        self.assertIsNotNone(block, "tooling-gate.sh 里找不到 SHELL_FILES=(...) 数组")
+        for path in self.REQUIRED:
+            self.assertRegex(
+                block.group(1),
+                r"(?m)^\s*%s\s*$" % re.escape(path),
+                "%s 没登记进 tooling-gate 的 SHELL_FILES" % path,
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

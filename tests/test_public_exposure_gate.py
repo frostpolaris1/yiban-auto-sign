@@ -25,8 +25,8 @@
 
 # 归属
 
-门禁/测试面。规则正本是 AGENTS.md §十六。夹具来源说明在
-`tests/protocol/conftest.py`。
+门禁/测试面。规则正本是 AGENTS.md §十六。夹具登记表是
+`tests/synthetic-fixtures.json`。
 
 # 口径
 
@@ -50,18 +50,16 @@ SELF = os.path.join("tests", "test_public_exposure_gate.py")
 
 #: 不入扫描面的路径前缀与理由。新增一条必须写明为什么它不是个人数据。
 SKIP = {
-    "yiban/core/email_blocklist.txt": "公开 CC0 一次性邮箱域名数据集，非个人信息",
-    "frontend/package-lock.json": "依赖锁文件，机器生成",
     "ui/package-lock.json": "依赖锁文件，机器生成",
+    "ui/src/features/auth/SkyGradient.tsx": "GLSL 噪声常数对，不是地理坐标",
     ".github/": "工作流里的 40 位十六进制是公开提交 SHA，不是个人信息",
-    "web/static/vendor/": "第三方前端静态资源",
-    "web/static/vue/": "构建产物，源在 frontend/",
 }
 
 #: 只扫这些扩展名；其余按二进制或机器产物跳过。
 EXTS = (
-    ".py", ".md", ".txt", ".json", ".html", ".js", ".mjs", ".ts", ".vue",
-    ".go", ".sh", ".yml", ".yaml", ".tsv", ".toml", ".example", ".service",
+    ".py", ".md", ".txt", ".json", ".html", ".js", ".mjs", ".ts", ".tsx",
+    ".jsx", ".vue", ".go", ".sh", ".yml", ".yaml", ".tsv", ".toml", ".example",
+    ".service",
     ".conf", ".css", ".sql",
 )
 
@@ -78,8 +76,8 @@ SYNTH_MASKED = re.compile(r"^199\*{3,4}\d{4}$")
 SYNTH_UID = {"1", "10000001"}
 LNG_RANGE = (-2.0, 2.0)
 LAT_RANGE = (-1.0, 10.0)
-#: 扫描面下限：当前入库文本文件约 600；低于此数说明扫描面塌了。
-MIN_FILES = 500
+#: 扫描面下限：旧栈退役后实测入库文本文件 1152（含 .tsx/.jsx）；低于 800 说明扫描面塌了。
+MIN_FILES = 800
 
 REGISTRY = os.path.join(BASE, "tests", "synthetic-fixtures.json")
 

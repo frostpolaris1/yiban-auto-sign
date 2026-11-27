@@ -1,7 +1,7 @@
 # 部署（Go + React 线）
 
 > 适用对象：本仓的**新架构**（`server/` + `ui/`）。
-> 旧 Python 栈的部署说明在根 `README.md`，两者不要混用。
+> 根 `README.md` 是项目总览，本文只讲部署。
 > 部署 e2e 的命令与断言见 [`docs/dev/deploy-e2e.md`](../docs/dev/deploy-e2e.md)。
 > 「改什么去哪、秘密与非秘密、怎么生效」的一页地图见
 > [`docs/ops/config-map.md`](../docs/ops/config-map.md)。

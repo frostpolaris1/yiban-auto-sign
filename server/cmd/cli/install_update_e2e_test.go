@@ -46,7 +46,9 @@ func requireBash(t *testing.T) {
 // env 追加在进程环境之后：同名键以后写的为准。
 func runScript(t *testing.T, script string, env map[string]string, args ...string) (string, int) {
 	t.Helper()
-	cmd := exec.Command("bash", append([]string{script}, args...)...)
+	// 用固定 umask 起脚本：测试机（尤其 sudo -u）可能继承 0002，
+	// 让 mkdir 产生的父目录变成组可写，update.sh 的备份路径守卫会正确拒绝。
+	cmd := exec.Command("bash", append([]string{"-c", "umask 022; exec bash \"$@\"", "bash", script}, args...)...)
 	cmd.Env = os.Environ()
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)

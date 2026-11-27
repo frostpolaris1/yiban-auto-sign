@@ -51,7 +51,7 @@
 
 ### 2.3 高度契约（Adminator 原生实测反推）
 
-> 口径：把 `web/static/vendor/adminator/adminator.css` 单文件渲染进 Chromium（原生 body `14px/1.55`）逐选择器量 `getBoundingClientRect().height`，不按字号估算。复跑探针 `/home/ubuntu/agy-runs/vendor-probe.js`（本地取证，不入库）。
+> 口径：把 `ui/vendor/adminator/adminator.css` 单文件渲染进 Chromium（原生 body `14px/1.55`）逐选择器量 `getBoundingClientRect().height`，不按字号估算。复跑探针 `/home/ubuntu/agy-runs/vendor-probe.js`（本地取证，不入库）。
 
 | 原生选择器 | 原生实测 | 我们的落地 | 取整依据 |
 |---|---:|---|---|
@@ -112,7 +112,7 @@
 
 ### 2.8 间距基准与 Adminator 原生对照
 
-> 依据：`web/static/vendor/adminator/adminator.css`（`ui/src/styles/adminator.css` 逐字节副本）中的原生页骨架与卡片/KPI 规则，恢复「内紧外松」的三档视觉层级，消除全站间距塌缩到 `12/16px` 两档导致的紧迫感。
+> 依据：`ui/vendor/adminator/adminator.css`（`ui/src/styles/adminator.css` 逐字节副本）中的原生页骨架与卡片/KPI 规则，恢复「内紧外松」的三档视觉层级，消除全站间距塌缩到 `12/16px` 两档导致的紧迫感。
 
 **间距层级不变式**：
 - **桌面（`> 720px`）**：卡内 `gap` `14px` < 卡间栅格 `20px` = 区块间 `20px` < 页内距 `32px`。

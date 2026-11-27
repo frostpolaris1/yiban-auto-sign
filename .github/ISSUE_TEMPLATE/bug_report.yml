@@ -32,7 +32,6 @@ body:
       options:
         - Go 线 server（server/ 后端）
         - Go 线 ui（ui/ 前端）
-        - 旧栈（yiban/、web/、frontend/、tests/，已冻结）
         - 部署与 CI（deploy/、scripts/、.github/）
     validations:
       required: true

@@ -5,7 +5,7 @@ root = true
 # 缺这一条时，编辑器把新编辑的源写成 CRLF。
 # Vite 底层的 rolldown 按源字节算 Vue scopeId，CRLF 会让产物文件名漂移
 #（2026-10-06 工单 yiban-auto-sign-spn6 实测）。
-# 守卫：`scripts/check-vue-build-reproducible.sh`。
+# 守卫：`ui` 的构建与 `scripts/verify-stacks.sh`。
 [*]
 charset = utf-8
 end_of_line = lf

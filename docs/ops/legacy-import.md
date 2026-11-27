@@ -79,6 +79,11 @@ master 已存在时不要重复创建；用 `GET /api/auth/me` 取当前 master 
 
 ## 2. 导出
 
+> 本节与 §3.1 的脚本命令在旧栈 v0.6.5 的检出里执行。`scripts/db_export.py`
+> 与 `scripts/list_duplicate_owners.py` 已随旧线在 2026-11-27 退役；新栈检出
+> 没有这些脚本。§8 步 7 与 §3.1 引用的
+> [`time-prefs-backfill.md`](../dev/time-prefs-backfill.md) §2 同样要在旧栈检出里执行。
+
 ```bash
 install -d -m 0700 <导出目录>
 python3 scripts/db_export.py --out <导出目录> --db <旧库路径>
@@ -157,9 +162,9 @@ yiban-cli migrate-legacy \
 ### 3.1 一人一号冲突处置（同 owner 多账号）
 
 老库允许同一 owner 名下多个账号：旧 `accounts.owner` 没有唯一约束
-（`yiban/adapters/persistence/migrations.py:172-188`），旧栈自带的
-`scripts/list_duplicate_owners.py` 就是为这种存量准备的
-（[`backup-restore.md`](../dev/backup-restore.md) 的取证与排障工具节）。
+（`yiban/adapters/persistence/migrations.py:172-188`，旧栈检出），旧栈自带的
+`scripts/list_duplicate_owners.py` 就是为这种存量准备的；该脚本随旧栈退役，
+需在旧栈检出里运行（现行 [`backup-restore.md`](../dev/backup-restore.md) 只覆盖 Go 栈）。
 `migrate-legacy` 直接 SQL 插 `accounts`
 （`server/internal/adapters/legacy/import.go:483-486`），不经过新栈应用层
 「属主名下无 live 账号」的判据（`server/internal/adapters/pg/account.go:85`）。

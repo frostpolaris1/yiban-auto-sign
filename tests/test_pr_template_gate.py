@@ -5,7 +5,7 @@
 标签：J · 运维：部署/备份/发布
 
 **来历**：`develop` 分支保护要求所有变更经 PR（out/n4c 工单第一刀，
-`allow_force_pushes=false` / `allow_deletions=false` / 必需检查 `verify` + `frontend`
+`allow_force_pushes=false` / `allow_deletions=false` / 必需检查 `verify`
 / 必需审批数 0）。"合并必须经 PR"这条纪律的入口就是 PR 模板：它承载"e2e 先行 /
 门禁 / changelog"三项自检。模板只有**入库**才生效，而它此前被 `.gitignore` 第 160 行
 显式忽略（"协作备用文件未启用"）——本地写一份、`git add` 静默跳过，PR 上永远没有清单。

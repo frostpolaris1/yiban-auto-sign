@@ -13,7 +13,7 @@
 为什么有它：仓库整理的目标是"顶层形状固定、新东西不得悄悄出现"。此前只有
     `test_root_artifacts.py` 管"根目录不得有运行产物"，**没有任何门管结构本身**——
     一个新会话把 `_census/`、`out/`、`tmp/` 之类误入库，没人会红。
-边界：本门只看**顶层**（`web/`、`yiban/` 内部形状不在判据面；那是分层契约的事）。
+边界：本门只看**顶层**（子目录内部形状不在判据面；那是分层契约的事）。
 依赖：`git ls-files`；非 git 树（临时目录）时由合成夹具驱动，不联网、不起应用。
 """
 import os
@@ -28,35 +28,24 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALLOWED_TOP = {
     # 通用文件
     "LICENSE", "README.md", "CHANGELOG.md", "USER_AGREEMENT.md", "PRIVACY_POLICY.md",
-    # 2026-10-31 入库：贡献指南（外部贡献者的方向、任务、边界与流程）。
-    # 本项消失即红，故它同时是「贡献指南必须入库」的守卫。
-    "CONTRIBUTING.md",
-    # 2026-11-10 入库：安全政策（漏洞私密上报、适用面、响应口径）。
-    # 与 PRIVACY_POLICY.md 互链；本项消失即红，守卫「安全政策必须入库」。
-    "SECURITY.md",
-    ".gitignore", ".gitattributes", ".editorconfig", ".dockerignore", ".importlinter",
-    ".env.example", ".env.docker.example",   # 配置模板：只放占位值，真值不入库
-    "pyproject.toml", "requirements.txt", "requirements.lock",
-    # 项目自有入口与编排件
-    "run.sh", "run_probe.sh", "docker-compose.yml",
-    "config",        # 配置名册（config/registry.json）：加载器与配置门共用的唯一定义点
-    "deploy",        # 部署执行件（prod 清单、cron、备份 wrapper）
-    "docker",        # 容器形态（Dockerfile、supervisord、nginx）
-    "docs",          # 只放行契约类（.gitignore 白名单；过程稿不进库）
-    "frontend",      # Vue 源码与前端 e2e（产物在 web/static/vue）
-    "scripts",       # CLI 入口与门（.sh 用连字符、.py 用下划线，见实现笔记）
-    "tests",         # 测试（test_*.py 平铺 + protocol/ 与 golden/ 子目录）
-    "web",           # 管理后端（app/routes/services/templates/static）
-    "yiban",         # 后端命名空间（core/ports/adapters/engine/app/entry/workers/infra/attempt）
+    "CONTRIBUTING.md",   # 贡献指南：本项消失即红
+    "SECURITY.md",       # 安全政策：本项消失即红
+    ".gitignore", ".gitattributes", ".editorconfig", ".dockerignore",
+    "pyproject.toml",
+    # 项目自有目录与编排件
+    "deploy",        # 部署执行件（baremetal/container）
+    "docs",          # 契约与开发文档
+    "scripts",       # 门禁与发布脚本
+    "tests",         # Python 门与 fixtures
     ".github",       # CI 与 PR 模板
-    "server",        # 实验线 Go 后端（P0 起新栈；结构与门禁见 server/structure.tsv）
-    "ui",            # 实验线 React 前端（Adminator；结构与门禁见 server/structure.tsv）
-    "STRUCTURE.md",  # 实验线仓库结构说明（B1 目标树契约的入口文档）
-    "VERSION",       # Go 线产品版本单源（build-release.sh / release-check go-version 读取）
+    "server",        # Go 后端（结构与门禁见 server/structure.tsv）
+    "ui",            # React 前端（Adminator）
+    "STRUCTURE.md",  # 仓库结构说明
+    "VERSION",       # 产品版本单源
 }
 
 #: 顶层条目数的下限：白名单再小也不会少于这个数。用于"扫空不得当绿"。
-MIN_TOP = 20
+MIN_TOP = 18
 
 
 def _git_top_entries(root):
@@ -130,9 +119,6 @@ class ScannerHasTeethTest(unittest.TestCase):
     def test_synthetic_unregistered_entry_is_flagged(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "_census"))
-            os.makedirs(os.path.join(tmp, "web"))
-            with open(os.path.join(tmp, "web", "x.py"), "w", encoding="utf-8") as f:
-                f.write("")
             with open(os.path.join(tmp, "_census", "roster.csv"), "w", encoding="utf-8") as f:
                 f.write("a,b\n")
             subprocess.run(["git", "init", "-q", tmp], check=True,
