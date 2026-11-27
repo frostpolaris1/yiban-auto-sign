@@ -477,6 +477,35 @@ class EntryScriptBehaviorTest(unittest.TestCase):
                     "\"level\":1,\"text\":\"oasdiff-stub-note\"}]'\n"
                     "exit \"${STUB_OASDIFF_RC:-0}\"\n")
 
+    def _object_env(self):
+        """把测试用对象写进临时对象库，主仓 odb 不再留 dangling 对象。"""
+        objects = os.path.join(self.tmp.name, "objects")
+        os.makedirs(objects, exist_ok=True)
+        common = subprocess.check_output(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=BASE, text=True).strip()
+        return {
+            "GIT_OBJECT_DIRECTORY": objects,
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": os.path.join(common, "objects"),
+            "GIT_AUTHOR_NAME": "contract-gate-test",
+            "GIT_AUTHOR_EMAIL": "contract-gate-test@example.invalid",
+            "GIT_COMMITTER_NAME": "contract-gate-test",
+            "GIT_COMMITTER_EMAIL": "contract-gate-test@example.invalid",
+        }
+
+    def _make_base(self, body=None):
+        env = dict(os.environ, **self._object_env())
+        if body is None:
+            tree = subprocess.check_output(
+                ["git", "hash-object", "-t", "tree", "-w", "--stdin"],
+                cwd=BASE, input="", text=True, env=env).strip()
+            return subprocess.check_output(
+                ["git", "commit-tree", tree, "-m", "empty base"],
+                cwd=BASE, text=True, env=env).strip()
+        return subprocess.check_output(
+            ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
+            cwd=BASE, input=body, text=True, env=env).strip()
+
     def _run(self, *args, **env):
         run_env = dict(os.environ)
         # 不继承 CI 的 step summary 文件：否则本测试会给 verify 作业的
@@ -496,15 +525,26 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         self.assertIn("contract-gate SKIP (oasdiff:", out)
 
     def test_base_without_spec_skips_visibly_and_passes(self):
-        # 用仓库根提交当底本：它早于契约文件，天然满足“base 里没有 spec”。
-        base = subprocess.check_output(
-            ["git", "rev-list", "--max-parents=0", "HEAD"],
-            cwd=BASE, text=True).strip().splitlines()[0]
-        rc, out = self._run("--base", base)
+        # 临时对象库里造一棵空树：不依赖仓库历史，shallow clone 也成立。
+        objenv = self._object_env()
+        base = self._make_base()
+        rc, out = self._run("--base", base, **objenv)
         self.assertEqual(rc, 0, out)
         self.assertIn("first introduction", out)
         self.assertIn("contract-gate: ok", out)
         self.assertNotIn("== oasdiff breaking", out)
+
+    def test_unreadable_base_listing_is_not_first_introduction(self):
+        # grep 的 2 是“清单读不了”，不是“没匹配”；必须 exit 2，不能 SKIP。
+        fake_grep = os.path.join(self.tmp.name, "grep")
+        _write_stub(fake_grep, "#!/usr/bin/env bash\nexit 2\n")
+        objenv = self._object_env()
+        base = self._make_base()
+        path = self.tmp.name + os.pathsep + os.environ.get("PATH", "")
+        rc, out = self._run("--base", base, PATH=path, **objenv)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot read the base tree listing", out)
+        self.assertNotIn("first introduction", out)
 
     def test_unreadable_base_tree_exits_2(self):
         body = (
@@ -513,10 +553,9 @@ class EntryScriptBehaviorTest(unittest.TestCase):
             "committer T <t@example.invalid> 0 +0000\n\n"
             "missing tree\n"
         )
-        base = subprocess.check_output(
-            ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
-            cwd=BASE, input=body, text=True, env=dict(os.environ)).strip()
-        rc, out = self._run("--base", base)
+        objenv = self._object_env()
+        base = self._make_base(body)
+        rc, out = self._run("--base", base, **objenv)
         self.assertEqual(rc, 2, out)
         self.assertIn("cannot list", out)
         self.assertNotIn("first introduction", out)

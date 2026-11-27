@@ -31,7 +31,7 @@ jobs:
   # 改名会让必需检查静默失效。若确要改名，先在 GitHub 设置里同步更新（批 1 约束 6）。
   verify:
     runs-on: ubuntu-latest
-    # 当前 Python 面 193 个用例，本地约 12 秒；15 分钟只作 runner 卡死兜底，
+    # 当前 Python 面 194 个用例，本地约 12 秒；15 分钟只作 runner 卡死兜底，
     # 不代表目标时长。
     timeout-minutes: 15
     steps:

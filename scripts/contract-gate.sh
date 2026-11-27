@@ -122,8 +122,14 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 if ! git ls-tree -r --name-only "$BASE" -- "$SPEC" > "$TMP_DIR/base-tree.txt" 2>/dev/null; then
     die_env "cannot list $SPEC at base ref '$BASE'"
 fi
-if ! grep -Fxq "$SPEC" "$TMP_DIR/base-tree.txt"; then
+# grep 的 1 = 确实没有；2 = 读不了清单（I/O、权限等）。后者必须 exit 2，
+# 不能再落进“首次引入”的 SKIP 分支（fail-open）。
+grep_status=0
+grep -Fxq "$SPEC" "$TMP_DIR/base-tree.txt" || grep_status=$?
+if [ "$grep_status" -eq 1 ]; then
     skip_oasdiff "$SPEC not present at base '$BASE'; first introduction"
+elif [ "$grep_status" -ne 0 ]; then
+    die_env "cannot read the base tree listing for $SPEC"
 fi
 git show "$BASE:$SPEC" > "$TMP_DIR/base.yaml" 2>/dev/null ||
     die_env "cannot read $SPEC at base ref '$BASE'"
