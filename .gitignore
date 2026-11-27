@@ -88,22 +88,20 @@ hardening/
 # 的文件（git 的"父目录已排除则子文件不可重新包含"）。下一行的负向规则依赖这一点。
 docs/*
 # 例外：开发文档按白名单入库（2026-10-01 裁定：内部工作文档——计划/审查/修复台账/
-# 演练预案/过程记录——一律不入库，仅本地留存；历史不追溯清理）。白名单=指南与契约：
+# 演练预案/带日期的过程记录——一律不入库，仅本地留存；历史不追溯清理）。
+# 白名单=指南、契约与随代码维护的现行实现记录。其中 retry-advice-wiring.md、
+# lease-deadline-guard.md、attempt-key-claim-cycle.md 含分支/行号坐标，
+# 改动相关代码时同步更新，不当历史快照保存：
 !docs/dev/
 docs/dev/*
 !docs/dev/README.md
-!docs/dev/api-contract.md
-!docs/dev/api-executors.md
-!docs/dev/cli.md
 !docs/dev/dev-verify.md
+!docs/dev/retry-advice-wiring.md
+!docs/dev/lease-deadline-guard.md
+!docs/dev/attempt-key-claim-cycle.md
 !docs/dev/acceptance-criteria.md
-!docs/dev/umask-decision.md
 !docs/dev/release-gate.md
-!docs/dev/scheduler-v3.md
-!docs/dev/architecture-target.md
 !docs/dev/backup-restore.md
-!docs/dev/implementation-notes.md
-!docs/dev/troubleshooting.md
 !docs/dev/deploy-e2e.md
 !docs/dev/release-signing.md
 # 发布签名：私钥与本地发布件目录永不入库（docs/dev/release-signing.md §2；

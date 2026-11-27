@@ -13,9 +13,9 @@ name: Deploy gate
 on:
   workflow_dispatch:
   pull_request:
-    branches: [develop, server-web, main]
+    branches: [develop, main]
   push:
-    branches: [develop, server-web, main]
+    branches: [develop, main]
 
 # 最小权限：仅读取代码
 permissions:

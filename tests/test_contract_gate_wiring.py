@@ -19,9 +19,9 @@
    oasdiff 按 `v1.35.0` 安装；`npm ci` 带 `--ignore-scripts`（阻断
    postinstall 联网）。
 7. 入口脚本的行为：非注释行真的跑 spectral（`--fail-severity warn`）与
-   oasdiff（`--format json` ＋ allowlist 过滤）；缺工具 exit 2；无底本时
-   打印显性 SKIP；破坏性变更的退出码原样传出；allowlist 过期行失效
-   （过期/缺列都回到红）。
+   oasdiff（`--format json` ＋ allowlist 过滤）；缺工具 exit 2；无底本或
+   base 里没有 spec 时打印显性 SKIP；base 树读不出 exit 2；破坏性变更的
+   退出码原样传出；allowlist 过期行失效（过期/缺列都回到红）。
 
 # 归属
 
@@ -395,9 +395,13 @@ class EntryScriptTest(unittest.TestCase):
         self.assertIn("contract-gate SKIP (oasdiff:", self.script,
                       "没有底本时必须打印显性 SKIP 行")
 
-    def test_base_without_spec_is_an_environment_error(self):
-        self.assertIn("does not exist at base ref", self.script,
-                      "给了 --base 但取不到 spec 必须 exit 2，不得静默跳过")
+    def test_base_without_spec_is_first_introduction_skip(self):
+        self.assertIn("first introduction", self.script,
+                      "base 里没有 spec 必须打印首次引入 SKIP")
+        self.assertIn("git ls-tree", self.script,
+                      "首次引入判据必须真的列出 base 树")
+        self.assertIn("cannot list", self.script,
+                      "base 树读不出必须 exit 2，不得误判为首次引入")
 
 
 def _ruleset_violations(body):
@@ -453,8 +457,8 @@ class EntryScriptBehaviorTest(unittest.TestCase):
     """真跑入口脚本：stub 掉两个工具，断言退出码与 SKIP 行。
 
     为什么需要这一组：EntryScriptTest 只读文本；脚本在 `set -euo pipefail`
-    之后插一句 `exit 0`，那 5 条断言仍全绿。这里用临时 stub 跑真脚本，
-    钉住「无底本退出 0 且打印 SKIP」「破坏性变更退出 1」「缺工具退出 2」。
+    之后插一句 `exit 0`，静态断言仍全绿。这里用临时 stub 跑真脚本，
+    钉住无底本 SKIP、破坏性变更、缺工具、首次引入与清单读不了的退出码。
     """
 
     def setUp(self):
@@ -473,6 +477,37 @@ class EntryScriptBehaviorTest(unittest.TestCase):
                     "\"level\":1,\"text\":\"oasdiff-stub-note\"}]'\n"
                     "exit \"${STUB_OASDIFF_RC:-0}\"\n")
 
+    def _object_env(self):
+        """把测试用对象写进临时对象库，主仓 odb 不再留 dangling 对象。"""
+        objects = os.path.join(self.tmp.name, "objects")
+        os.makedirs(objects, exist_ok=True)
+        common = subprocess.check_output(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=BASE, text=True).strip()
+        if not os.path.isabs(common):
+            common = os.path.abspath(os.path.join(BASE, common))
+        return {
+            "GIT_OBJECT_DIRECTORY": objects,
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": os.path.join(common, "objects"),
+            "GIT_AUTHOR_NAME": "contract-gate-test",
+            "GIT_AUTHOR_EMAIL": "contract-gate-test@example.invalid",
+            "GIT_COMMITTER_NAME": "contract-gate-test",
+            "GIT_COMMITTER_EMAIL": "contract-gate-test@example.invalid",
+        }
+
+    def _make_base(self, body=None):
+        env = dict(os.environ, **self._object_env())
+        if body is None:
+            tree = subprocess.check_output(
+                ["git", "hash-object", "-t", "tree", "-w", "--stdin"],
+                cwd=BASE, input="", text=True, env=env).strip()
+            return subprocess.check_output(
+                ["git", "commit-tree", tree, "-m", "empty base"],
+                cwd=BASE, text=True, env=env).strip()
+        return subprocess.check_output(
+            ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
+            cwd=BASE, input=body, text=True, env=env).strip()
+
     def _run(self, *args, **env):
         run_env = dict(os.environ)
         # 不继承 CI 的 step summary 文件：否则本测试会给 verify 作业的
@@ -490,6 +525,54 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         rc, out = self._run()
         self.assertEqual(rc, 0, out)
         self.assertIn("contract-gate SKIP (oasdiff:", out)
+
+    def test_base_without_spec_skips_visibly_and_passes(self):
+        # 临时对象库里造一棵空树：不依赖仓库历史，shallow clone 也成立。
+        objenv = self._object_env()
+        base = self._make_base()
+        rc, out = self._run("--base", base, **objenv)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("first introduction", out)
+        self.assertIn("contract-gate: ok", out)
+        self.assertNotIn("== oasdiff breaking", out)
+
+    def test_unreadable_base_listing_is_not_first_introduction(self):
+        # grep 的 2 是“清单读不了”，不是“没匹配”；必须 exit 2，不能 SKIP。
+        fake_grep = os.path.join(self.tmp.name, "grep")
+        _write_stub(fake_grep, "#!/usr/bin/env bash\nexit 2\n")
+        objenv = self._object_env()
+        base = self._make_base()
+        path = self.tmp.name + os.pathsep + os.environ.get("PATH", "")
+        rc, out = self._run("--base", base, PATH=path, **objenv)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot read the base tree listing", out)
+        self.assertNotIn("first introduction", out)
+
+    def test_grep_unavailable_fails_closed(self):
+        # grep 退出 127 表示命令不可用；不能伪装成“没有匹配”而 SKIP。
+        fake_grep = os.path.join(self.tmp.name, "grep")
+        _write_stub(fake_grep, "#!/usr/bin/env bash\nexit 127\n")
+        objenv = self._object_env()
+        base = self._make_base()
+        path = self.tmp.name + os.pathsep + os.environ.get("PATH", "")
+        rc, out = self._run("--base", base, PATH=path, **objenv)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("grep not found", out)
+        self.assertNotIn("first introduction", out)
+
+    def test_unreadable_base_tree_exits_2(self):
+        body = (
+            "tree " + "0" * 40 + "\n"
+            "author T <t@example.invalid> 0 +0000\n"
+            "committer T <t@example.invalid> 0 +0000\n\n"
+            "missing tree\n"
+        )
+        objenv = self._object_env()
+        base = self._make_base(body)
+        rc, out = self._run("--base", base, **objenv)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot list", out)
+        self.assertNotIn("first introduction", out)
 
     def test_skip_line_reaches_step_summary(self):
         summary = os.path.join(self.tmp.name, "summary.md")

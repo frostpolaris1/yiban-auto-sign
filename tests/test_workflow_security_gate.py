@@ -88,6 +88,14 @@ class RetiredWorkflowGuardTest(unittest.TestCase):
         # main 分支上仍有它们（默认分支治理未完成）——本仓检出基于 develop，
         # 这里钉的是「别在 develop 上加回来」，不是 main 的现状。
 
+    def test_retired_server_web_branch_is_not_a_trigger(self):
+        """旧部署分支 server-web 已退役；任何自动触发都不得再挂它。"""
+        files = _workflow_files()
+        self.assertTrue(files, "workflow 目录为空，分支检查会空转")
+        offenders = [n for n in files if "server-web" in _read(os.path.join(WORKFLOWS, n))]
+        self.assertEqual(offenders, [],
+                         "server-web 已随旧栈退役，不得再出现在 workflow 触发面：%s" % offenders)
+
     def test_no_workflow_references_a_gitee_private_key(self):
         """mirror.yml 的危害面是带 Gitee 私钥；任何 workflow 都不得再引这个 secret。"""
         files = _workflow_files()

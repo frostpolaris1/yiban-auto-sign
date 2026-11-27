@@ -35,7 +35,9 @@
 #   - 缺工具 = 环境错误，exit 2（跳过 ≠ 绿）。
 #   - 不给 --base 时 oasdiff 这一半显式打印 SKIP 行：推送新分支等没有可比底本，
 #     不能默认绿，也不能默认红。
-#   - 给了 --base 但取不到 base spec = 环境错误 exit 2：调用方说要比，却比不了。
+#   - 给了 --base 但 base 里没有 spec = 首次引入契约：打印显性 SKIP 行；
+#     spectral 仍执行。base 树或 spec 读不出 = 环境错误 exit 2（先 ls-tree
+#     证明树可读，不能把对象缺失误判成首次引入）。
 #   - base spec 从 git 对象直接读出到临时目录，不切换工作树。
 #   - 工具版本：spectral 由 server/contracts/tools/package-lock.json 钉住；
 #     oasdiff 由调用方安装（CI 钉 v1.35.0，见 .github/workflows/ci.yml）。
@@ -61,6 +63,17 @@ die_env() {
 usage() {
     echo "usage: bash scripts/contract-gate.sh [--base <git-ref>]" >&2
     exit 2
+}
+
+skip_oasdiff() {
+    local line
+    line="contract-gate SKIP (oasdiff: $1)"
+    echo "$line"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        echo "$line" >> "$GITHUB_STEP_SUMMARY"
+    fi
+    echo "contract-gate: ok"
+    exit 0
 }
 
 while [ "$#" -gt 0 ]; do
@@ -95,13 +108,7 @@ echo "== spectral lint（warning 及以上）=="
 "$SPECTRAL" lint "$SPEC" -r "$RULESET" --fail-severity warn
 
 if [ -z "$BASE" ]; then
-    line="contract-gate SKIP (oasdiff: no --base given; breaking-diff was not run)"
-    echo "$line"
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        echo "$line" >> "$GITHUB_STEP_SUMMARY"
-    fi
-    echo "contract-gate: ok"
-    exit 0
+    skip_oasdiff "no --base given; breaking-diff was not run"
 fi
 
 command -v "$OASDIFF" >/dev/null 2>&1 || die_env "oasdiff not found; install it with: go install github.com/oasdiff/oasdiff@v1.35.0"
@@ -112,8 +119,22 @@ git rev-parse --verify "$BASE^{commit}" >/dev/null 2>&1 ||
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+if ! git ls-tree -r --name-only "$BASE" -- "$SPEC" > "$TMP_DIR/base-tree.txt" 2>/dev/null; then
+    die_env "cannot list $SPEC at base ref '$BASE'"
+fi
+# grep 的 1 = 确实没有；2 = 读不了清单（I/O、权限等）。后者必须 exit 2，
+# 不能再落进“首次引入”的 SKIP 分支（fail-open）。
+grep_status=0
+grep -Fxq "$SPEC" "$TMP_DIR/base-tree.txt" || grep_status=$?
+if [ "$grep_status" -eq 1 ]; then
+    skip_oasdiff "$SPEC not present at base '$BASE'; first introduction"
+elif [ "$grep_status" -eq 127 ]; then
+    die_env "grep not found; cannot check $SPEC at base '$BASE'"
+elif [ "$grep_status" -ne 0 ]; then
+    die_env "cannot read the base tree listing for $SPEC"
+fi
 git show "$BASE:$SPEC" > "$TMP_DIR/base.yaml" 2>/dev/null ||
-    die_env "$SPEC does not exist at base ref '$BASE'; nothing to compare"
+    die_env "cannot read $SPEC at base ref '$BASE'"
 
 echo "== oasdiff breaking（$BASE -> HEAD，ERR 级，allowlist 过滤后）=="
 PY="$(command -v python3 || command -v python || true)"

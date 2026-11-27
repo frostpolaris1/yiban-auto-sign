@@ -17,6 +17,7 @@
 依赖：`git ls-files`；非 git 树（临时目录）时由合成夹具驱动，不联网、不起应用。
 """
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -111,6 +112,36 @@ class TopLevelStructureTest(unittest.TestCase):
         self.assertIsNotNone(tops, "读不到 git 跟踪集：本门无法判定（不是绿）")
         stale = sorted(ALLOWED_TOP - tops)
         self.assertEqual(stale, [], "白名单里的条目已不在跟踪集，应删掉登记：" + "；".join(stale))
+
+
+class DocsIndexWhitelistTest(unittest.TestCase):
+    """README 索引与 docs/dev 跟踪集一致，且每篇都被 .gitignore 放行。"""
+
+    def test_every_indexed_doc_is_not_ignored(self):
+        readme = os.path.join(BASE, "docs", "dev", "README.md")
+        with open(readme, encoding="utf-8") as fh:
+            text = fh.read()
+        names = set(re.findall(r"^\|\s*`([^`]+\.md)`\s*\|", text, re.MULTILINE))
+        tracked = subprocess.check_output(
+            ["git", "-C", BASE, "ls-files", "docs/dev"], text=True).split()
+        expected = {os.path.basename(p) for p in tracked} - {"README.md"}
+        self.assertGreaterEqual(len(expected), 5,
+                                "docs/dev 跟踪集为空或异常：本门扫空不得当绿")
+        self.assertEqual(
+            names, expected,
+            "README 索引与跟踪集不一致：缺行=%s；多行=%s"
+            % (sorted(expected - names), sorted(names - expected)))
+        for name in sorted(names):
+            rel = os.path.join("docs", "dev", name)
+            self.assertTrue(os.path.isfile(os.path.join(BASE, rel)),
+                            f"README 索引指向不存在的文件：{rel}")
+            proc = subprocess.run(
+                ["git", "-C", BASE, "check-ignore", "-q", "--no-index", rel],
+                capture_output=True, timeout=120)
+            self.assertEqual(
+                proc.returncode, 1,
+                f"{rel} 在 README 索引里但被 .gitignore 忽略（rc={proc.returncode}）；"
+                "必须补 !docs/dev/<name> 白名单行，否则文件会被静默忽略")
 
 
 class ScannerHasTeethTest(unittest.TestCase):
