@@ -1444,9 +1444,10 @@ test('ux2 master: a failed restore tells the user', async ({ page }) => {
   const reauth = page.getByRole('dialog', { name: '恢复账号？' })
   await fillReauth(reauth)
   await reauth.getByRole('button', { name: '确认恢复' }).click()
-  await expect(restoreCalls(api, 'acc-del')).toHaveLength(1)
-  // 失败必须可见：容量满不是静默（M1）。
+  // 失败必须可见：容量满不是静默（M1）。先等错误落地，再断言请求已记账，
+  // 避免慢 runner 上请求尚在途、数组先被读成空的竞态。
   await expect(reauth.getByText('容量已满')).toBeVisible()
+  await expect.poll(() => restoreCalls(api, 'acc-del')).toHaveLength(1)
   await expect(reauth).toBeVisible()
 })
 

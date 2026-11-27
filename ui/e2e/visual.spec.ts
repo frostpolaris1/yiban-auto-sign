@@ -749,9 +749,11 @@ test.describe('user app', () => {
             })
           }
           await waitForAnimations(page)
+          // 自带字体在 arm64 本机与 x86 CI 的字形抗锯齿不同，留 1% 像素容差；
+          // 布局与语义仍由上面的可见性、无溢出和行为用例守住。
           await expect(page).toHaveScreenshot(
             `user-app-${view.name}-${viewport.name}-${theme}.png`,
-            { fullPage: true },
+            { fullPage: true, maxDiffPixelRatio: 0.01 },
           )
         })
       }
