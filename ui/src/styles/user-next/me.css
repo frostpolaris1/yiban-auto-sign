@@ -263,6 +263,48 @@
   letter-spacing: 0.02em;
 }
 
+.un-me__week-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px var(--un-space-4);
+  margin-top: var(--un-space-3);
+  color: var(--un-ink-faint);
+  font-size: var(--un-text-micro);
+}
+
+.un-me__week-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.un-me__week-key {
+  width: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--un-line-soft);
+}
+
+.un-me__week-key.is-success {
+  background: var(--un-blue);
+}
+
+.un-me__week-key.is-danger {
+  background: var(--un-danger);
+}
+
+.un-me__week-key.is-pending {
+  background: var(--un-pending);
+}
+
+.un-me__week-key.is-warning {
+  background: var(--un-warning);
+}
+
+.un-me__week-key.is-empty {
+  background: var(--un-line-soft);
+}
+
 .un-me__week-mark.is-success {
   background: var(--un-blue);
 }

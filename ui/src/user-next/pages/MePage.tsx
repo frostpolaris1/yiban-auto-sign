@@ -35,9 +35,11 @@ import {
   useTimePref,
 } from '@/features/me/queries'
 import {
+  calendarDayTone,
   nextRunText,
   schoolLabel,
   todayKey,
+  type CalendarDayTone,
   weekdayLabel,
 } from '@/features/me/display'
 import { ReauthDialog } from '@/features/me/ReauthDialog'
@@ -55,21 +57,20 @@ function chipTone(tone: string): string {
 
 type WeekMarkTone = 'success' | 'danger' | 'pending' | 'warning' | 'empty'
 
-function weekMarkTone(day: SignCalendarDay): WeekMarkTone {
-  if (day.total === 0) return 'empty'
-  if (day.failed > 0) return 'danger'
-  if (day.success > 0) return 'success'
-  if (day.unknown > 0) return 'pending'
-  if (day.skipped > 0) return 'warning'
-  return 'empty'
+type WeekMark = { tone: WeekMarkTone; label: string }
+
+/** 色阶与文案同源，避免热力条颜色和读屏文案各自漂移。 */
+const WEEK_MARK: Record<CalendarDayTone, WeekMark> = {
+  success: { tone: 'success', label: '成功' },
+  danger: { tone: 'danger', label: '有失败' },
+  pending: { tone: 'pending', label: '待确认' },
+  warning: { tone: 'warning', label: '未执行' },
+  none: { tone: 'empty', label: '未执行' },
 }
 
-function weekMarkLabel(day: SignCalendarDay): string {
-  if (day.total === 0) return '没有任务'
-  if (day.failed > 0) return '有失败'
-  if (day.success > 0) return '成功'
-  if (day.unknown > 0) return '待确认'
-  return '未执行'
+function weekMark(day: SignCalendarDay): WeekMark {
+  if (day.total === 0) return { tone: 'empty', label: '没有任务' }
+  return WEEK_MARK[calendarDayTone(day)]
 }
 
 function deleteErrorText(error: unknown): string {
@@ -119,10 +120,13 @@ export function MePage() {
   const skippedDays = recorded.filter(
     (day) => day.success === 0 && day.failed === 0 && day.unknown === 0,
   ).length
+  const extraStats = [
+    pendingDays > 0 ? pendingDays + ' 天待确认' : '',
+    skippedDays > 0 ? skippedDays + ' 天未执行' : '',
+  ].filter(Boolean)
   const statsNote =
     '只统计已有任务的日期' +
-    (pendingDays > 0 ? '；其中 ' + pendingDays + ' 天待确认' : '') +
-    (skippedDays > 0 ? '，' + skippedDays + ' 天未执行' : '') +
+    (extraStats.length > 0 ? '；其中 ' + extraStats.join('，') : '') +
     '。'
   let streak = 0
   let streakIndex = days.length - 1
@@ -140,8 +144,7 @@ export function MePage() {
     ' 天全部成功，' +
     failedDays +
     ' 天有失败' +
-    (pendingDays > 0 ? '，' + pendingDays + ' 天待确认' : '') +
-    (skippedDays > 0 ? '，' + skippedDays + ' 天未执行' : '') +
+    extraStats.map((item) => '，' + item).join('') +
     '，当前连续 ' +
     streak +
     ' 天'
@@ -332,15 +335,19 @@ export function MePage() {
                 role="group"
                 aria-label={calendarQuery.isError ? '近 30 天统计暂时不可用' : statsSummary}
               >
-                {days.map((day) => (
-                  <span
-                    key={day.day}
-                    className={cx('un-me__week-mark', 'is-' + weekMarkTone(day))}
-                    role="img"
-                    aria-label={`${weekdayLabel(day.day)} ${day.day}：${weekMarkLabel(day)}`}
-                    title={weekdayLabel(day.day) + ' ' + day.day}
-                  />
-                ))}
+                {days.map((day) => {
+                  const mark = weekMark(day)
+                  const label = `${weekdayLabel(day.day)} ${day.day}：${mark.label}`
+                  return (
+                    <span
+                      key={day.day}
+                      className={cx('un-me__week-mark', 'is-' + mark.tone)}
+                      role="img"
+                      aria-label={label}
+                      title={label}
+                    />
+                  )
+                })}
               </div>
               {days.length > 0 ? (
                 <div className="un-me__week-range" aria-hidden="true">
@@ -348,6 +355,13 @@ export function MePage() {
                   <span>今天 {today.slice(5)}</span>
                 </div>
               ) : null}
+              <div className="un-me__week-legend" aria-hidden="true">
+                <span><i className="un-me__week-key is-success" />成功</span>
+                <span><i className="un-me__week-key is-danger" />有失败</span>
+                <span><i className="un-me__week-key is-pending" />待确认</span>
+                <span><i className="un-me__week-key is-warning" />未执行</span>
+                <span><i className="un-me__week-key is-empty" />没有任务</span>
+              </div>
             </div>
           </section>
 

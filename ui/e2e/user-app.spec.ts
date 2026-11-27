@@ -247,8 +247,16 @@ test('records deep link shows the month and day detail', async ({ page }) => {
   await expect(page).toHaveURL(/day=2026-11-09/)
 })
 
-test('records and me agree on a pending-only day', async ({ page }) => {
-  await mockUserAppApi(page, { role: 'user', calendarPendingDay: '2026-11-09' })
+test('records and me agree on pending, skipped and mixed days', async ({ page }) => {
+  await mockUserAppApi(page, {
+    role: 'user',
+    calendarDays: {
+      '2026-11-09': { unknown: 1 },
+      '2026-11-08': { skipped: 1 },
+      '2026-11-07': { success: 1, failed: 1 },
+      '2026-11-06': { success: 1, unknown: 1 },
+    },
+  })
   await page.goto('/app/history?day=2026-11-09')
 
   const pendingCell = page.locator('.un-cal__cell[data-day="2026-11-09"]')
@@ -258,13 +266,37 @@ test('records and me agree on a pending-only day', async ({ page }) => {
   await expect(page.locator('.un-day-card .un-chip--pending')).toContainText('待确认')
   await expect(page.locator('.un-day-list__rail.is-pending')).toBeVisible()
 
+  const skippedCell = page.locator('.un-cal__cell[data-day="2026-11-08"]')
+  await expect(skippedCell).toHaveAttribute('aria-label', /1 个未执行/)
+  await expect(skippedCell.locator('.un-cal__dot.is-warning')).toBeVisible()
+  await skippedCell.click()
+  await expect(page).toHaveURL(/day=2026-11-08/)
+  await expect(page.locator('.un-day-card .un-chip--warning')).toContainText('未执行')
+  await expect(page.locator('.un-day-list__rail.is-warning')).toBeVisible()
+
+  const mixedCell = page.locator('.un-cal__cell[data-day="2026-11-07"]')
+  await expect(mixedCell).toHaveAttribute('aria-label', /1 个失败，1 个成功/)
+  await expect(mixedCell.locator('.un-cal__dot.is-danger')).toBeVisible()
+  await mixedCell.click()
+  await expect(page).toHaveURL(/day=2026-11-07/)
+  await expect(page.locator('.un-day-card__meta .un-chip--danger')).toContainText('有失败')
+
+  const successMixedCell = page.locator('.un-cal__cell[data-day="2026-11-06"]')
+  await expect(successMixedCell).toHaveAttribute('aria-label', /1 个成功，1 个待确认/)
+  await expect(successMixedCell.locator('.un-cal__dot.is-success')).toBeVisible()
+
   await page.goto('/app/me')
   const week = page.locator('.un-me__week[role="group"]')
+  await expect(week).toHaveAttribute('aria-label', /1 天有失败/)
   await expect(week).toHaveAttribute('aria-label', /1 天待确认/)
+  await expect(week).toHaveAttribute('aria-label', /1 天未执行/)
+  await expect(page.locator('.un-me__week-mark.is-danger')).toHaveCount(1)
+  await expect(page.locator('.un-me__week-mark.is-pending')).toHaveCount(1)
+  await expect(page.locator('.un-me__week-mark.is-warning')).toHaveCount(1)
   await expect(
     page.locator('section[aria-labelledby="un-me-stats"] .un-me__section-note'),
-  ).toContainText('1 天待确认')
-  await expect(page.locator('.un-me__week-mark.is-pending')).toHaveCount(1)
+  ).toContainText('1 天待确认，1 天未执行')
+  await expect(page.locator('.un-me__week-legend')).toContainText('没有任务')
 })
 
 test('me shows account facts, preferences and toggles failure mail', async ({ page }) => {

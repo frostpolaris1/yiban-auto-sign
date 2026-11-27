@@ -20,7 +20,7 @@ import { formatClock, parseDay } from '@/lib/format'
 import type { SignCalendarAccount, SignCalendarDay } from '@/lib/api/me'
 import { displayName } from '@/lib/account-display'
 import { useMyAccounts, useSignCalendar, useSignCalendarDay } from './queries'
-import { todayKey } from './display'
+import { calendarDayTone, todayKey } from './display'
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'] as const
 
@@ -81,18 +81,28 @@ function dayLabel(day: string): string {
 }
 
 function cellTone(info: SignCalendarDay | undefined, future: boolean): string {
-  if (future) return 'uapp-cal-dot uapp-cal-dot--empty'
-  if (!info || info.total === 0) return 'uapp-cal-dot uapp-cal-dot--empty'
-  if (info.failed > 0) return 'uapp-cal-dot uapp-cal-dot--missed'
-  if (info.success > 0) return 'uapp-cal-dot'
-  return 'uapp-cal-dot uapp-cal-dot--warning'
+  switch (calendarDayTone(info, future)) {
+    case 'danger':
+      return 'uapp-cal-dot uapp-cal-dot--missed'
+    case 'success':
+      return 'uapp-cal-dot'
+    case 'pending':
+    case 'warning':
+      return 'uapp-cal-dot uapp-cal-dot--warning'
+    default:
+      return 'uapp-cal-dot uapp-cal-dot--empty'
+  }
 }
 
 function cellAria(day: string, info: SignCalendarDay | undefined, future: boolean): string {
   if (future) return `${dayLabel(day)}，未来`
   if (!info || info.total === 0) return `${dayLabel(day)}，无记录`
-  if (info.failed > 0) return `${dayLabel(day)}，${info.failed} 个失败`
-  return `${dayLabel(day)}，${info.success} 个成功`
+  const parts: string[] = []
+  if (info.failed > 0) parts.push(info.failed + ' 个失败')
+  if (info.success > 0) parts.push(info.success + ' 个成功')
+  if (info.skipped > 0) parts.push(info.skipped + ' 个未执行')
+  if (info.unknown > 0) parts.push(info.unknown + ' 个待确认')
+  return `${dayLabel(day)}，${parts.join('，')}`
 }
 
 function accountName(

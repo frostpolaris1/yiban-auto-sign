@@ -19,7 +19,7 @@ import {
   useSignCalendar,
   useSignCalendarDay,
 } from '@/features/me/queries'
-import { todayKey } from '@/features/me/display'
+import { calendarDayTone, todayKey } from '@/features/me/display'
 import { cx } from '@/lib/cx'
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'] as const
@@ -79,15 +79,6 @@ function dayLabel(day: string): string {
   const date = new Date(day + 'T12:00:00+08:00')
   if (Number.isNaN(date.getTime())) return day
   return dayFormatter.format(date).replace(/(日)(星期)/, '$1 $2')
-}
-
-function toneOf(info: SignCalendarDay | undefined, future: boolean): string {
-  if (future || !info || info.total === 0) return 'none'
-  if (info.failed > 0) return 'danger'
-  if (info.success > 0) return 'success'
-  if (info.unknown > 0) return 'pending'
-  if (info.skipped > 0) return 'warning'
-  return 'none'
 }
 
 function cellAria(
@@ -285,7 +276,7 @@ export function RecordsPage({
                 const future = cell > today
                 const isSelected = cell === selected
                 const isToday = cell === today
-                const tone = toneOf(info, future)
+                const tone = calendarDayTone(info, future)
                 return (
                   <button
                     key={cell}

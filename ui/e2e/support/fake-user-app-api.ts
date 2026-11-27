@@ -99,25 +99,48 @@ function addDays(day: string, amount: number): string {
  */
 const MOCK_TODAY = '2026-11-11'
 
+/** 指定某天的各状态条数；未指定的过去日默认为 1 条成功。 */
+export type CalendarDayCounts = {
+  success?: number
+  failed?: number
+  skipped?: number
+  unknown?: number
+}
+
+function dayFromCounts(
+  day: string,
+  future: boolean,
+  counts: CalendarDayCounts,
+): SignCalendarDay {
+  const merged = {
+    success: counts.success ?? 0,
+    failed: counts.failed ?? 0,
+    skipped: counts.skipped ?? 0,
+    unknown: counts.unknown ?? 0,
+  }
+  return {
+    day,
+    total: merged.success + merged.failed + merged.skipped + merged.unknown,
+    ...merged,
+    future,
+  }
+}
+
 export function userCalendar(
   from: string,
   to: string,
-  pendingDay?: string,
+  overrides: Record<string, CalendarDayCounts> = {},
 ): SignCalendar {
   const days: SignCalendarDay[] = []
   let cursor = from
   while (cursor <= to) {
     const future = cursor > MOCK_TODAY
-    const pending = cursor === pendingDay
-    days.push({
-      day: cursor,
-      total: future ? 0 : 1,
-      success: future || pending ? 0 : 1,
-      failed: 0,
-      skipped: 0,
-      unknown: !future && pending ? 1 : 0,
-      future,
-    })
+    const override = future ? undefined : overrides[cursor]
+    days.push(
+      override
+        ? dayFromCounts(cursor, future, override)
+        : dayFromCounts(cursor, future, { success: future ? 0 : 1 }),
+    )
     cursor = addDays(cursor, 1)
   }
   return {
@@ -137,8 +160,8 @@ export type UserAppOptions = MockOptions & {
   announcement?: string
   registrationEnabled?: boolean
   detect?: AccountDetectResult
-  /** 指定一个过去日期只返回 unknown，用来覆盖“待确认”渲染路径。 */
-  calendarPendingDay?: string
+  /** 指定过去日期各状态的条数，用来覆盖待确认、未执行与混合日。 */
+  calendarDays?: Record<string, CalendarDayCounts>
 }
 
 export async function mockUserAppApi(
@@ -235,7 +258,7 @@ export async function mockUserAppApi(
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(userCalendar(from, to, options.calendarPendingDay)),
+      body: JSON.stringify(userCalendar(from, to, options.calendarDays)),
     })
   })
 
@@ -299,7 +322,18 @@ export async function mockUserAppApi(
   await page.route('**/api/me/sign-calendar/*', (route) => {
     const url = new URL(route.request().url())
     const day = url.pathname.split('/').pop() ?? ''
-    const pending = day === options.calendarPendingDay
+    const counts = options.calendarDays?.[day]
+    const state =
+      counts?.failed
+        ? 'failed'
+        : counts?.success
+          ? 'success'
+          : counts?.unknown
+            ? 'unknown'
+            : counts?.skipped
+              ? 'skipped'
+              : 'success'
+    const hasRunAt = state === 'success' || state === 'failed'
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -310,8 +344,8 @@ export async function mockUserAppApi(
         accounts: [
           {
             account_id: USER_ACCOUNT.id,
-            state: pending ? 'unknown' : 'success',
-            ...(pending ? {} : { run_at: `${day}T07:02:00+08:00` }),
+            state,
+            ...(hasRunAt ? { run_at: `${day}T07:02:00+08:00` } : {}),
             attempts: 1,
           },
         ],
