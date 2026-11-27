@@ -301,6 +301,8 @@ class UpdateRollbackE2EWiringTest(unittest.TestCase):
         self.assertIn("go test", block, "required job 不再跑 update.sh 干跑契约")
         self.assertIn("TestUpdateSh", block, "干跑命令没点名 TestUpdateSh")
         self.assertIn("TestInstallSh", block, "干跑命令没点名 TestInstallSh")
+        self.assertIn("| tee /tmp/update-sh-e2e.json", block,
+                      "go test 失败/跳过时日志必须留在 CI 输出里")
         self.assertEqual(_false_green_escapes(block), [],
                          "required job 出现把非 0 洗成绿的分支：任何失败都必须判红")
 

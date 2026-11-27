@@ -83,6 +83,17 @@ def _reason(call):
     return DYNAMIC
 
 
+def _bare_unittest_name(dec):
+    """会静默吞掉函数的裸装饰器：只认 unittest 形态。"""
+    if isinstance(dec, ast.Name):
+        return dec.id
+    if (isinstance(dec, ast.Attribute)
+            and isinstance(dec.value, ast.Name)
+            and dec.value.id == "unittest"):
+        return dec.attr
+    return None
+
+
 def _bare_skip_name(dec):
     """裸跳过装饰器名；带括号的调用节点不在此列。"""
     if isinstance(dec, ast.Name):
@@ -185,13 +196,14 @@ class BareDecoratorTest(unittest.TestCase):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     continue
                 for dec in node.decorator_list:
-                    name = _bare_skip_name(dec)
+                    name = _bare_unittest_name(dec)
                     if name in {"skip", "skipIf", "skipUnless"}:
                         self.fail("%s:%d 裸跳过装饰器" % (path, node.lineno))
 
     def test_pytest_mark_without_call_is_recognized(self):
         tree = ast.parse("@pytest.mark.skip\ndef f(): pass")
         self.assertEqual(_bare_skip_name(tree.body[0].decorator_list[0]), "skip")
+        self.assertIsNone(_bare_unittest_name(tree.body[0].decorator_list[0]))
 
     def test_pytest_mark_call_is_not_a_bare_decorator(self):
         tree = ast.parse("@pytest.mark.skipif(True, reason='x')\ndef f(): pass")

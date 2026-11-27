@@ -16,7 +16,8 @@ bash scripts/dev-verify.sh --help
 所有模式跑**同一集合**，没有范围档、没有车道名册、没有快集/慢集/串行轨之分。
 `--slow`、`--fast-all`、`--fast-scoped` 仍被接受，但不再改变行为。
 
-`--log-dir DIR` 只作兼容参数：接受取值，不再建副本、不落日志。
+`--log-dir DIR` 只作兼容参数：接受取值，不再建副本、不落日志；缺值、
+`--log-dir=` 空值或以 `-` 开头的值均退出码 2。
 `--repo` 已不支持（脚本只跑自身仓库），传了即退出码 2，避免误跑别的树。
 
 解释器默认 `python3`，可用 `DEV_VERIFY_PY` 覆盖；必须能
@@ -33,7 +34,7 @@ python -m pytest tests/ -q -n <workers> --dist loadfile
 - 公开数据门在 `run_ci` 内**显式点名**，且与接线守卫同一步执行；不放在任何条件分支里。
 - pytest 并发默认 `max(1, nproc-1)`，可用 `PYTEST_WORKERS` 覆盖；`--dist loadfile`
   保证同一文件落在同一 worker。
-- 当前 `tests/` 为 18 个文件、180 个用例，本机约 5 秒；数字只作观察，门以命令退出码为准。
+- 当前 `tests/` 为 18 个文件、190 个用例，本机约 5 秒；数字只作观察，门以命令退出码为准。
 
 ## 3. 退出码
 

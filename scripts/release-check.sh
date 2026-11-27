@@ -640,6 +640,8 @@ STUB
     rm -rf "$tmp"
 
     out="$(bash "$SELF" --help 2>&1 || true)"
+    printf '%s' "$out" | grep -q '^用法' \
+        || { say "MISMATCH: release-check usage missing 用法"; fails=$((fails+1)); }
     printf '%s' "$out" | grep -q '^shellcheck disable' \
         && { say "MISMATCH: release-check usage includes shellcheck directive"; fails=$((fails+1)); }
 

@@ -72,11 +72,21 @@ def _is_direct_gate_command(cmd):
 
 
 def _gate_placement(body):
-    """返回 (命中红线门的逻辑命令, 该命令所在的条件深度)；没命中返回 (None, 0)。"""
+    """返回 (命中红线门的逻辑命令, 该命令所在的条件深度)；没命中返回 (None, 0)。
+
+    只把命令首词当控制关键字：`echo fi` 不是闭合，不能把深度洗回 0。
+    """
     depth = 0
     for cmd in _logical_commands(body):
-        depth += len(re.findall(r"(?<![\w-])(?:if|case|for|while)\b", cmd))
-        depth -= len(re.findall(r"(?<![\w-])(?:fi|esac|done)\b", cmd))
+        for part in re.split(r"\s*(?:;|&&|\|\||\bthen\b|\bdo\b|\belse\b|\belif\b)\s*", cmd):
+            words = part.strip().split()
+            if not words:
+                continue
+            head = words[0]
+            if head in {"if", "case", "for", "while"}:
+                depth += 1
+            elif head in {"fi", "esac", "done"}:
+                depth = max(0, depth - 1)
         if GATE_FILE in cmd:
             return cmd, depth
     return None, 0
@@ -127,6 +137,12 @@ class GatePlacementHelperTest(unittest.TestCase):
                 % (GATE_FILE, WIRING_FILE))
         _cmd, depth = _gate_placement(body)
         self.assertEqual(depth, 1)
+
+    def test_echo_fi_does_not_close_a_block(self):
+        body = ("if [ -f x ]; then\n  echo fi\n  pytest %s %s\nfi"
+                % (GATE_FILE, WIRING_FILE))
+        _cmd, depth = _gate_placement(body)
+        self.assertEqual(depth, 1, "echo fi 不得被当成闭合")
 
     def test_gate_after_one_line_if_is_top_level(self):
         body = ("if [ -f x ]; then echo ok; fi\npytest %s %s"

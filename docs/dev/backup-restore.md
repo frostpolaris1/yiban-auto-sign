@@ -75,7 +75,8 @@ yiban-cli backup --out /var/backups/yiban/db-$(date -u +%Y%m%dT%H%M%SZ).dump.gpg
 
 # 恢复：目标须为空库/schema；非交互环境必须加 --force
 yiban-cli restore --in /var/backups/yiban/db-<时间戳>.dump.gpg \
-  --dsn "$YIBAN_RESTORE_DSN" --passphrase-file /etc/yiban/backup-passphrase --force
+  --dsn "${YIBAN_RESTORE_DSN:?must point at an empty restore target, never YIBAN_DATABASE_URL}" \
+  --passphrase-file /etc/yiban/backup-passphrase --force
 ```
 
 `restore` 会先解密、导入、跑迁移，再按转储尾部的 `yiban-backup-manifest`

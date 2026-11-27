@@ -74,7 +74,8 @@ jobs:
       - name: update.sh 干跑契约（自检门/备份/回滚/argv 无口令）
         run: |
           cd server
-          go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh' -count=1 -json > /tmp/update-sh-e2e.json
+          set -o pipefail
+          go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh' -count=1 -json | tee /tmp/update-sh-e2e.json
           python3 - <<'PY'
           import json
           import sys

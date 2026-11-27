@@ -132,8 +132,10 @@ class DevVerifyEntryTest(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("bash"), "需要 bash：--log-dir 要真跑入口脚本")
     def test_empty_log_dir_is_rejected(self):
-        proc = self._run("--log-dir=")
-        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        for args in (("--log-dir=",), ("--log-dir", "")):
+            with self.subTest(args=args):
+                proc = self._run(*args)
+                self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":

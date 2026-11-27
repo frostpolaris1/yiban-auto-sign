@@ -109,6 +109,7 @@ CI 的 `verify`、`tooling-gate`、`contract-gate`、`stacks`、`ui-e2e` 与部�
 - 备份三部分：数据库、照片卷、配置与密钥（`server.env`、`compose.env`、发布公钥）。
   容器用 compose 的 backup 任务（`deploy/container/backup.sh`），裸机用
   `yiban-cli backup` / `yiban-cli restore`；裸机命令不备份照片卷，照片需另行打包。
+  `server.env`、`compose.env` 与发布公钥须手工离线另存，两条备份命令都不包含它们。
   配置或密钥丢失时，已加密的账号凭据不可恢复。步骤与恢复演练见
   [`docs/dev/backup-restore.md`](docs/dev/backup-restore.md)。
 - 裸机升级走 `deploy/baremetal/update.sh`：先验签、再自检、再快照、再迁移；回退步骤见
