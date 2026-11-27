@@ -206,6 +206,9 @@ test('signing account page shows identity, device and controls', async ({ page }
   await expect(page.getByRole('heading', { name: '控制' })).toBeVisible()
   await expect(page.locator('.un-row', { hasText: '暂停签到' })).toContainText('运行中')
   await expect(page.locator('.un-row', { hasText: '签到地点' })).toContainText('自动定位')
+  const staticRow = page.locator('.un-row--static', { hasText: '签到地点' })
+  await staticRow.hover()
+  await expect(staticRow).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await expect(page.locator('.uapp-top-link.active')).toContainText('我的')
 })
 
@@ -245,6 +248,16 @@ test('records deep link shows the month and day detail', async ({ page }) => {
 
   await page.getByRole('button', { name: /11月9日/ }).click()
   await expect(page).toHaveURL(/day=2026-11-09/)
+})
+
+test('records future deep link falls back to today and keeps one tab stop', async ({ page }) => {
+  await mockUserAppApi(page, { role: 'user' })
+  await page.goto('/app/history?day=2027-01-09')
+
+  await expect(page.locator('.un-cal__month')).toContainText('2026年11月')
+  const selected = page.locator('.un-cal__cell[aria-pressed="true"]')
+  await expect(selected).toHaveAttribute('data-day', '2026-11-11')
+  await expect(page.locator('.un-cal__cell[tabindex="0"]')).toHaveCount(1)
 })
 
 test('records and me agree on pending, skipped and mixed days', async ({ page }) => {

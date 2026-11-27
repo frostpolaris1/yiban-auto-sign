@@ -140,7 +140,9 @@ export function RecordsPage({
   onDayChange: (day: string) => void
 }) {
   const today = todayKey(new Date())
-  const selected = day && parseDay(day) ? day : today
+  const requested = day && parseDay(day) ? day : today
+  // 未来日期不可达；URL 手写未来日时回退今天，保证日历始终有一个可聚焦格。
+  const selected = requested > today ? today : requested
   const [month, setMonth] = useState(() => monthOf(selected))
   const lastSelected = useRef(selected)
 
@@ -182,10 +184,10 @@ export function RecordsPage({
   const dayAccounts = dayQuery.data?.accounts ?? []
   const dayFailed = dayAccounts.some((item) => item.state === 'failed')
   const gridRef = useRef<HTMLDivElement>(null)
-  const tabStop =
-    cells.includes(selected) && selected <= today
-      ? selected
-      : cells.find((cell) => cell <= today) ?? cells[0]
+  const pastCells = cells.filter((cell) => cell <= today)
+  const tabStop = pastCells.includes(selected)
+    ? selected
+    : pastCells[pastCells.length - 1] ?? selected
 
   const moveFocus = (event: KeyboardEvent<HTMLDivElement>, offset: number) => {
     const current = (event.target as HTMLElement).dataset.day

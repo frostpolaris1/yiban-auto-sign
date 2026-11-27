@@ -62,7 +62,7 @@ export function withViewTransition(
   source?: HTMLElement | null,
 ): void {
   if (!canViewTransition() || active) {
-    void Promise.resolve(update()).catch(() => undefined)
+    void Promise.resolve().then(update).catch(() => undefined)
     return
   }
 
@@ -86,7 +86,7 @@ export function withViewTransition(
     active = false
     delete root.dataset.unVt
     if (source) source.style.viewTransitionName = ''
-    void Promise.resolve(update()).catch(() => undefined)
+    void Promise.resolve().then(update).catch(() => undefined)
     return
   }
 

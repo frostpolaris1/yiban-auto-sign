@@ -129,7 +129,8 @@ export function TodayPage() {
     todayState !== null
       ? rulerGeometry(timePref, statusItem?.run_at ?? null)
       : null
-  const chosenText = geometry?.chosenText ?? ''
+  // 预选时间只依赖偏好；paused/pending 也要显示，不跟着今日状态一起消失。
+  const chosenText = rulerGeometry(timePref, null)?.chosenText ?? ''
   const actualText = formatClock(statusItem?.run_at ?? null)
   const story = current
     ? todayStory(
@@ -582,7 +583,7 @@ export function TodayPage() {
                 <div>
                   <dt>预选时间</dt>
                   <dd>
-                    {geometry?.chosenText ? geometry.chosenText + ' 左右' : '按窗口安排'}
+                    {chosenText ? chosenText + ' 左右' : '按窗口安排'}
                   </dd>
                 </div>
                 <div>

@@ -201,6 +201,19 @@ export function MePage() {
     )
   }
 
+  let accountAction: {
+    to: '/app/me/account' | '/app/me/account/new'
+    label: string
+  }
+  if (items.length === 0) {
+    accountAction = { to: '/app/me/account/new', label: '新建账号' }
+  } else {
+    accountAction = {
+      to: '/app/me/account',
+      label: account ? '管理账号' : '恢复账号',
+    }
+  }
+
   if (accountsQuery.isError) {
     return (
       <div className="un-me">
@@ -297,15 +310,8 @@ export function MePage() {
             ) : null}
 
             <div className="un-profile__actions">
-              <Link
-                to={items.length > 0 ? '/app/me/account' : '/app/me/account/new'}
-                className="un-btn un-btn--primary"
-              >
-                {items.length > 0
-                  ? account
-                    ? '管理账号'
-                    : '恢复账号'
-                  : '新建账号'}
+              <Link to={accountAction.to} className="un-btn un-btn--primary">
+                {accountAction.label}
               </Link>
             </div>
           </section>

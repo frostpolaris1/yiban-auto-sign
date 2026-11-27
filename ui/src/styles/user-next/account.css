@@ -107,13 +107,6 @@
   font-size: 1.5rem;
 }
 
-.un-account-hero__avatar img {
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
-  object-fit: cover;
-}
-
 .un-account-hero__text {
   position: relative;
   z-index: 1;
@@ -292,7 +285,7 @@
   transition: background-color var(--un-switch) var(--un-ease);
 }
 
-.un-row:not(:disabled):hover {
+.un-row:hover:not(:disabled):not(.un-row--static) {
   background: color-mix(in srgb, var(--un-surface) 72%, transparent);
 }
 

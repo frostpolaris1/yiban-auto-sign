@@ -215,6 +215,7 @@
   box-shadow: var(--un-shadow);
   transition:
     border-color var(--un-switch) var(--un-ease),
+    background-color var(--un-switch) var(--un-ease),
     color var(--un-switch) var(--un-ease),
     opacity var(--un-switch) var(--un-ease);
 }
@@ -498,6 +499,6 @@
   }
 }
 
-.un-time > .un-alert {
-  margin: 0 0 var(--un-space-5);
+.un-time .un-alert {
+  margin: var(--un-space-4) 0 var(--un-space-5);
 }

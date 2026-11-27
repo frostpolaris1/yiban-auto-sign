@@ -46,6 +46,7 @@ import {
   nextRunText,
   photoUploadErrorText,
   todayKey,
+  type CalendarDayTone,
   weekdayLabel,
 } from '@/features/me/display'
 import {
@@ -57,6 +58,14 @@ import {
   useSignStatus,
   useTimePref,
 } from '@/features/me/queries'
+
+const MINI_WEEK_STATE: Record<CalendarDayTone, string> = {
+  success: 'success',
+  danger: 'failed',
+  pending: 'pending',
+  warning: 'skipped',
+  none: 'empty',
+}
 
 type EditKind = 'remark' | 'credentials'
 type ReauthKind = 'delete' | 'restore' | 'refresh'
@@ -475,7 +484,7 @@ export function AccountPage() {
       <section className="un-account-hero" aria-label="账号身份">
         <span className="un-avatar un-avatar--xl un-account-hero__avatar" aria-hidden="true">
           {avatarPhoto ? (
-            <img src={photoBytesPath(avatarPhoto.id)} alt="" />
+            <img src={photoBytesPath(avatarPhoto.id)} alt="" className="un-avatar__img" />
           ) : (
             monogram(account)
           )}
@@ -674,15 +683,7 @@ export function AccountPage() {
             {calendarDays.length > 0 ? (
               <div className="un-miniweek" aria-label="近 7 天签到">
                 {calendarDays.map((day) => {
-                  const tone = calendarDayTone(day)
-                  const state =
-                    tone === 'danger'
-                      ? 'failed'
-                      : tone === 'warning'
-                        ? 'skipped'
-                        : tone === 'none'
-                          ? 'empty'
-                          : tone
+                  const state = MINI_WEEK_STATE[calendarDayTone(day)]
                   return (
                     <span
                       key={day.day}
