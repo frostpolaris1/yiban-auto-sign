@@ -129,7 +129,6 @@ PR 上的全部检查绿，才进入人工审查。活跃线 `develop` 上共 8 
 | `update-rollback-privileged` | `.github/workflows/update-rollback-privileged.yml` | R1..R10 全矩阵（手动、自托管 runner，不在 PR 检查里） |
 
 任一检查红都会阻塞合并。修完推送后等 CI 重跑；不要靠反复重试掩盖抖动。
-（`main` 上另有定时 workflow，不在 PR 检查里。）
 
 ### 7.3 合并方式
 
@@ -148,6 +147,7 @@ PR 上的全部检查绿，才进入人工审查。活跃线 `develop` 上共 8 
 bash server/scripts/verify.sh              # 无 DSN 时 pg/auth/cli e2e 会显性 SKIP；SKIP 不等于绿
 
 # Python 面（ruff + 全部测试）
+python3 -m pip install --require-hashes -r tests/requirements-gate-tools.txt
 bash scripts/dev-verify.sh --ci
 
 # 生成物一致性：手改生成物会在这里变红

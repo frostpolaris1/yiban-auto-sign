@@ -1,7 +1,7 @@
 # 备份与恢复（Go 栈）
 
 > 2026-11-27 旧 Python 栈退役后，备份面只剩 PostgreSQL、照片卷与配置/密钥三部分。
-> 容器路径的执行细节见 `deploy/README.md` §3「容器备份与恢复」；裸机路径的
+> 容器路径的执行细节见 `deploy/README.md` §3.1「容器备份（数据库＋照片）」；裸机路径的
 > 一键更新备份见 `deploy/baremetal/update.sh` 头注。本文只写判据与命令入口。
 
 ## 1. 备份什么
@@ -36,7 +36,7 @@ systemd timer 拉起同一条命令；任务本身不常驻，也不复制 `comp
 ## 3. 容器恢复
 
 ```bash
-# 1) 先验备份完整
+# 1) 先验备份完整；若设置了 YIBAN_BACKUP_HOST_DIR，把下面的默认路径替换成它
 cd deploy/container/backups/<时间戳> && sha256sum -c SHA256SUMS
 
 # 2) 停 app，避免恢复期间继续写入

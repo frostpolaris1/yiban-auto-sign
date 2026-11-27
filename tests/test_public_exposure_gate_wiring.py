@@ -63,6 +63,14 @@ def _logical_commands(body):
         out.append(buf)
     return out
 
+_DIRECT_GATE = re.compile(r'^\s*(?:"?\$\{?py\}?"?\s+-m\s+)?pytest\b')
+
+
+def _is_direct_gate_command(cmd):
+    """门命令必须直接以 pytest 开头，不能被同一行的条件前缀包住。"""
+    return bool(_DIRECT_GATE.match(cmd))
+
+
 def _gate_placement(body):
     """返回 (命中红线门的逻辑命令, 该命令所在的条件深度)；没命中返回 (None, 0)。"""
     depth = 0
@@ -98,6 +106,8 @@ class GateWiringTest(unittest.TestCase):
         cmd, depth = _gate_placement(self.body)
         self.assertIsNotNone(cmd, "run_ci 未跑公开数据红线门")
         self.assertEqual(depth, 0, "红线门被放进条件块：%s" % cmd)
+        self.assertTrue(_is_direct_gate_command(cmd),
+                        "红线门命令被前缀包住：%s" % cmd)
         self.assertIn(WIRING_FILE, cmd)
         for bad in ("|| true", "-k ", "--ignore", "--deselect"):
             self.assertNotIn(bad, cmd, "红线门被削弱：%s" % cmd)
@@ -105,9 +115,6 @@ class GateWiringTest(unittest.TestCase):
 
 class GatePlacementHelperTest(unittest.TestCase):
     """合成脚本体：条件块里的门必须判红，单行 if 之后的门必须判绿。"""
-
-    def _body(self, gate_cmd):
-        return "run_ci() {\n%s\n}" % gate_cmd
 
     def test_gate_in_else_is_conditional(self):
         body = ("if [ -f x ]; then\n  echo ok\nelse\n  pytest %s %s\nfi"
@@ -127,6 +134,18 @@ class GatePlacementHelperTest(unittest.TestCase):
         cmd, depth = _gate_placement(body)
         self.assertEqual(depth, 0)
         self.assertIn(GATE_FILE, cmd)
+
+    def test_gate_after_one_line_if_is_still_conditional(self):
+        body = ("if [ -f x ]; then echo ok; fi; pytest %s %s"
+                % (GATE_FILE, WIRING_FILE))
+        cmd, depth = _gate_placement(body)
+        self.assertEqual(depth, 0)
+        self.assertFalse(_is_direct_gate_command(cmd),
+                         "单行 if 前缀不得被净额深度洗白")
+
+    def test_direct_pytest_command_is_accepted(self):
+        self.assertTrue(_is_direct_gate_command(
+            '"$py" -m pytest %s %s -q' % (GATE_FILE, WIRING_FILE)))
 
 
 if __name__ == "__main__":

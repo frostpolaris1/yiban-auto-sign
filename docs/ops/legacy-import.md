@@ -163,8 +163,8 @@ yiban-cli migrate-legacy \
 
 老库允许同一 owner 名下多个账号：旧 `accounts.owner` 没有唯一约束
 （`yiban/adapters/persistence/migrations.py:172-188`，旧栈检出），旧栈自带的
-`scripts/list_duplicate_owners.py` 就是为这种存量准备的
-（[`backup-restore.md`](../dev/backup-restore.md) 的取证与排障工具节）。
+`scripts/list_duplicate_owners.py` 就是为这种存量准备的；该脚本随旧栈退役，
+需在旧栈检出里运行（现行 [`backup-restore.md`](../dev/backup-restore.md) 只覆盖 Go 栈）。
 `migrate-legacy` 直接 SQL 插 `accounts`
 （`server/internal/adapters/legacy/import.go:483-486`），不经过新栈应用层
 「属主名下无 live 账号」的判据（`server/internal/adapters/pg/account.go:85`）。

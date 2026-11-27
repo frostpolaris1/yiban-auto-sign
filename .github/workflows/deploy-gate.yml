@@ -73,13 +73,30 @@ jobs:
 
       - name: update.sh 干跑契约（自检门/备份/回滚/argv 无口令）
         run: |
-          set -o pipefail
           cd server
-          go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh' -count=1 -v | tee /tmp/update-sh-e2e.log
-          passes=$(awk '/^--- PASS/{n++} END{print n+0}' /tmp/update-sh-e2e.log)
-          min_passes=2
-          echo "update.sh contract: $passes passing cases"
-          if [ "$passes" -lt "$min_passes" ]; then
-            echo "expected at least $min_passes passing cases, got $passes"
-            exit 1
-          fi
+          go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh' -count=1 -json > /tmp/update-sh-e2e.json
+          python3 - <<'PY'
+          import json
+          import sys
+
+          required = {
+              "TestInstallShDryRun",
+              "TestUpdateShRollsBackOnFailedMigration",
+              "TestUpdateShSnapshotsBeforeMigrate",
+              "TestUpdateShVerifiesSignedManifest",
+              "TestUpdateShRejectsTamperedManifest",
+          }
+          seen = {}
+          with open("/tmp/update-sh-e2e.json", encoding="utf-8") as fh:
+              for line in fh:
+                  event = json.loads(line)
+                  test = event.get("Test")
+                  if test in required and event.get("Action") in {"pass", "fail", "skip"}:
+                      seen[test] = event["Action"]
+          missing = sorted(required - seen.keys())
+          bad = {name: action for name, action in seen.items() if action != "pass"}
+          if missing or bad:
+              print(f"update.sh contract missing={missing} bad={bad}", file=sys.stderr)
+              sys.exit(1)
+          print("update.sh contract: 5/5 required cases passed")
+          PY

@@ -112,6 +112,11 @@ class DevVerifyEntryTest(unittest.TestCase):
             for bad in ("|| true", "-k ", "--ignore", "--deselect"):
                 self.assertNotIn(bad, cmd, "run_ci 削弱了门：%s" % cmd)
 
+    def _run(self, *args):
+        import subprocess
+        return subprocess.run(["bash", ENTRY, *args], capture_output=True,
+                              text=True, timeout=30)
+
     @unittest.skipUnless(shutil.which("bash"), "需要 bash：--help 要真跑入口脚本")
     def test_help_exits_zero(self):
         import subprocess
@@ -119,6 +124,16 @@ class DevVerifyEntryTest(unittest.TestCase):
                                capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("dev-verify", proc.stdout)
+
+    @unittest.skipUnless(shutil.which("bash"), "需要 bash：--log-dir 要真跑入口脚本")
+    def test_log_dir_cannot_swallow_the_next_flag(self):
+        proc = self._run("--log-dir", "--ci")
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+
+    @unittest.skipUnless(shutil.which("bash"), "需要 bash：--log-dir 要真跑入口脚本")
+    def test_empty_log_dir_is_rejected(self):
+        proc = self._run("--log-dir=")
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":

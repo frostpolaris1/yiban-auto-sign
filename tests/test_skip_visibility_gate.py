@@ -11,6 +11,7 @@ import ast
 import io
 import os
 import unittest
+from collections import Counter
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS_DIR = os.path.join(BASE, "tests")
@@ -23,6 +24,8 @@ _SKIP_MARKERS = frozenset({
 KNOWN_SKIP_SITES = {
     "tests/test_dev_verify_entry.py": [
         ["skipUnless", "需要 bash：--help 要真跑入口脚本"],
+        ["skipUnless", "需要 bash：--log-dir 要真跑入口脚本"],
+        ["skipUnless", "需要 bash：--log-dir 要真跑入口脚本"],
     ],
     "tests/test_deploy_e2e_wiring.py": [
         ["skipTest", "bash 不在 PATH：部署 e2e 脚本语法检查跳过（CI/WSL 有 bash）"],
@@ -80,6 +83,32 @@ def _reason(call):
     return DYNAMIC
 
 
+def _bare_skip_name(dec):
+    """裸跳过装饰器名；带括号的调用节点不在此列。"""
+    if isinstance(dec, ast.Name):
+        return dec.id
+    if not isinstance(dec, ast.Attribute):
+        return None
+    if isinstance(dec.value, ast.Name) and dec.value.id in {"unittest", "pytest"}:
+        return dec.attr
+    if (isinstance(dec.value, ast.Attribute)
+            and dec.value.attr == "mark"
+            and isinstance(dec.value.value, ast.Name)
+            and dec.value.value.id == "pytest"):
+        return dec.attr
+    return None
+
+
+def _missing_entries(actual, allowed):
+    """actual 中未登记的多重集差；重复条目必须逐条登记。"""
+    return list((Counter(map(tuple, actual)) - Counter(map(tuple, allowed))).elements())
+
+
+def _stale_entries(actual, allowed):
+    """allowed 中已不存在的多重集差。"""
+    return list((Counter(map(tuple, allowed)) - Counter(map(tuple, actual))).elements())
+
+
 def _iter_sources():
     """tests/ 下全部 Python 文件；子目录也算，扫描面不得静默缩小。"""
     for root, _dirs, files in os.walk(TESTS_DIR):
@@ -104,6 +133,13 @@ def scan_tests():
             if marker not in _SKIP_MARKERS:
                 continue
             items.append([marker, _reason(node)])
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            for dec in node.decorator_list:
+                marker = _bare_skip_name(dec)
+                if marker in _SKIP_MARKERS:
+                    items.append([marker, DYNAMIC])
         if items:
             found[rel] = items
     return found
@@ -119,7 +155,7 @@ class SkipSurfaceRegisteredTest(unittest.TestCase):
         missing = {}
         for path, pairs in self.found.items():
             allowed = KNOWN_SKIP_SITES.get(path, [])
-            extra = [p for p in pairs if p not in allowed]
+            extra = _missing_entries(pairs, allowed)
             if extra:
                 missing[path] = extra
         self.assertEqual(missing, {}, "新增跳过未登记：%r" % missing)
@@ -128,7 +164,7 @@ class SkipSurfaceRegisteredTest(unittest.TestCase):
         stale = {}
         for path, pairs in KNOWN_SKIP_SITES.items():
             actual = self.found.get(path, [])
-            gone = [p for p in pairs if p not in actual]
+            gone = _stale_entries(actual, pairs)
             if gone:
                 stale[path] = gone
         self.assertEqual(stale, {}, "登记表有陈旧条目：%r" % stale)
@@ -149,16 +185,30 @@ class BareDecoratorTest(unittest.TestCase):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     continue
                 for dec in node.decorator_list:
-                    if isinstance(dec, ast.Name):
-                        name = dec.id
-                    elif (isinstance(dec, ast.Attribute)
-                          and isinstance(dec.value, ast.Name)
-                          and dec.value.id == "unittest"):
-                        name = dec.attr
-                    else:
-                        continue
+                    name = _bare_skip_name(dec)
                     if name in {"skip", "skipIf", "skipUnless"}:
                         self.fail("%s:%d 裸跳过装饰器" % (path, node.lineno))
+
+    def test_pytest_mark_without_call_is_recognized(self):
+        tree = ast.parse("@pytest.mark.skip\ndef f(): pass")
+        self.assertEqual(_bare_skip_name(tree.body[0].decorator_list[0]), "skip")
+
+    def test_pytest_mark_call_is_not_a_bare_decorator(self):
+        tree = ast.parse("@pytest.mark.skipif(True, reason='x')\ndef f(): pass")
+        self.assertIsNone(_bare_skip_name(tree.body[0].decorator_list[0]))
+
+
+class RegistryDiffTest(unittest.TestCase):
+
+    def test_duplicate_actual_is_not_masked(self):
+        actual = [["skipTest", "x"], ["skipTest", "x"]]
+        self.assertEqual(_missing_entries(actual, [["skipTest", "x"]]),
+                         [("skipTest", "x")])
+
+    def test_duplicate_allowed_is_not_masked(self):
+        actual = [["skipTest", "x"]]
+        self.assertEqual(_stale_entries(actual, [["skipTest", "x"], ["skipTest", "x"]]),
+                         [("skipTest", "x")])
 
 
 if __name__ == "__main__":

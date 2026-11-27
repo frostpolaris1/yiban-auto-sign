@@ -31,7 +31,9 @@ D1 的验收**不**看“删掉多少行”“测试源码比”。主判据只�
 | 不得把“因环境不满足而跳过”读成“通过” | `tests/**` 的 skip 点 | `tests/test_skip_visibility_gate.py` |
 | 不得把空扫描、空名册当成绿 | 各扫描型门自身的合成用例 | 结构、公开数据、私钥、工作树卫生四门 |
 | 不得在入库文件里放真实数据 | `tests/synthetic-fixtures.json` 之外的登记值 | `tests/test_public_exposure_gate.py` |
-| 不得把私钥、keystore 一类敏感件入库 | 全部跟踪文件 | `tests/test_private_key_gate.py` |
+| 不得把 PEM 私钥入库 | 全部跟踪文件 | `tests/test_private_key_gate.py` |
+
+JKS/PKCS#12/keystore 不在自动扫描面，交付前人工核。
 
 “不得在入库文件里引用库外路径”的 Python 文档门已删除；`docs/dev` 当前无自动门，靠审查；UI 文档引用由 `ui` 的 `doc-ref-gate.mjs` 守。
 新增负数条款的纪律不变：**写下它的那一刻**同时写门，或在本表登记“无门 + 理由”。

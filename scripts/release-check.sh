@@ -53,7 +53,7 @@ ITEMS="version go-version license generate tests container backup rollback signi
 
 # 帮助文本只取文件头注释块（到第一个非注释行为止）：行号会随改动漂移。
 usage() {
-    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$SELF"
+    awk 'NR == 1 { next } /^# shellcheck / { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$SELF"
 }
 
 # ---------- 各项检查 ----------
@@ -626,10 +626,22 @@ STUB
     expect "container pointer green when both e2e scripts exist" 0 "$rc"
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only backup >/dev/null 2>&1; rc=$?
     expect "backup pointer green when backup.sh and cli cases exist" 0 "$rc"
+    rm -f "$tmp/scripts/e2e/deploy-baremetal-e2e.sh"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only container >/dev/null 2>&1; rc=$?
+    expect "container pointer red when baremetal e2e is missing" 1 "$rc"
+    : > "$tmp/scripts/e2e/deploy-baremetal-e2e.sh"
     rm -f "$tmp/deploy/container/backup.sh"
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only backup >/dev/null 2>&1; rc=$?
     expect "backup pointer red when backup.sh is missing" 1 "$rc"
+    : > "$tmp/deploy/container/backup.sh"
+    printf 'case "backup"\n' > "$tmp/server/cmd/cli/main.go"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only backup >/dev/null 2>&1; rc=$?
+    expect "backup pointer red when cli has no restore case" 1 "$rc"
     rm -rf "$tmp"
+
+    out="$(bash "$SELF" --help 2>&1 || true)"
+    printf '%s' "$out" | grep -q '^shellcheck disable' \
+        && { say "MISMATCH: release-check usage includes shellcheck directive"; fails=$((fails+1)); }
 
     # 不变式 1e：帮助文本只取文件头注释块，不得把实现行（set -euo pipefail）
     # 打进帮助；三段脚本都要有「用法」段（2026-10-29 审查 P3）。

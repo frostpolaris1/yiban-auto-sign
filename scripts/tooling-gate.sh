@@ -39,6 +39,10 @@ SHELL_FILES=(
     scripts/release-check.sh
     scripts/workflow-run-interp-gate.sh
     scripts/release/make-ui-sums.sh
+    scripts/release/make-manifest.sh
+    scripts/release/sign.sh
+    scripts/release/verify.sh
+    scripts/check-git-config.sh
     scripts/tooling-gate.sh
     scripts/contract-gate.sh
     server/scripts/build-release.sh

@@ -11,6 +11,8 @@
 > 🔐 安全政策：[`SECURITY.md`](SECURITY.md)（漏洞走私密上报）
 > 🤝 贡献指南：[`CONTRIBUTING.md`](CONTRIBUTING.md)（分支、门禁与合并方式）
 
+> ⚠️ **不要使用他人的公开实例。** 本项目保存易班账号凭据；公开实例可能记录、滥用或泄露你的密码与签到数据。请只部署在你自己控制的主机上。
+
 ## 项目介绍
 
 易班（yiban）是部分高校使用的学生平台，一些学校要求每天完成早操或晚点名签到。
@@ -23,7 +25,7 @@
 ## 功能
 
 - **自动签到**：按学校窗口排期，窗口内分片错峰；支持时间偏好、周末门与每日计划预览。
-- **多账号与多学校**：账号归属用户，管理员按学校绑定；批量导入、批量签到、失败重试带租约与幂等键。
+- **多账号与多学校**：账号归属用户，管理员按学校绑定；批量动作与批量签到（单次最多 10 条）、失败重试带租约与幂等键。
 - **签到结果可核对**：每次尝试记录结局、耗时与重试建议；未知结局不伪装成成功。
 - **网页管理台**：账号、用户、学校、管理员、排期、照片、审计、事件诊断、公告与运行时设置。
 - **定位策略**：按平台任务下发的签到围栏生成定位点，不伪造设备指纹。
@@ -62,20 +64,26 @@
 没有网页初始化向导。第一个 master 用 CLI 创建：
 
 ```bash
+# 裸机：先载入 root:root 0600 的运行配置
+set -a; . /etc/yiban/server.env; set +a
 yiban-cli user create-master --email you@example.com --password-stdin
+
+# 容器：在已启动的 compose 项目里执行
+docker compose --env-file deploy/container/compose.env \
+  -f deploy/container/docker-compose.yml exec -T app \
+  yiban-cli user create-master --email you@example.com --password-stdin
 ```
 
 容器与裸机的完整命令见 [`deploy/README.md`](deploy/README.md) §3、§4。
 
 ## 配置
 
-配置只从进程环境读取，键名册编译进二进制
+配置分两层：引导密钥（DSN、`YIBAN_HASH_PEPPER`、`YIBAN_CREDENTIAL_KEY`）只从进程环境读取；
+键名册编译进二进制
 （[`server/internal/configdata/registry.json`](server/internal/configdata/registry.json)）。
-哪些键必填、哪些是秘密、改了怎么生效，见
-[`docs/ops/config-map.md`](docs/ops/config-map.md)。
-
-运行时设置（排期余量、配额、SMTP、引擎暂停等）可在管理台修改，落库并写同事务审计，
-无需重启。密钥类配置只来自部署环境，不进数据库、不进仓库。
+SMTP 六键按数据库 > 环境 > 编译默认取值，`mail.pass` 以密文落库；排期余量、配额、引擎暂停等
+运行时设置也在管理台修改，落库并写同事务审计，无需重启。哪些键必填、哪些是秘密、改了
+怎么生效，见 [`docs/ops/config-map.md`](docs/ops/config-map.md)。
 
 ## 本地开发与门禁
 
@@ -98,9 +106,11 @@ CI 的 `verify`、`tooling-gate`、`contract-gate`、`stacks`、`ui-e2e` 与部�
 
 ## 备份与升级
 
-- 备份数据库与照片卷：容器用 compose 的 backup 任务（`deploy/container/backup.sh`），
-  裸机用 `yiban-cli backup` / `yiban-cli restore`；裸机命令不备份照片卷，照片需
-  另行打包。步骤与恢复演练见 [`docs/dev/backup-restore.md`](docs/dev/backup-restore.md)。
+- 备份三部分：数据库、照片卷、配置与密钥（`server.env`、`compose.env`、发布公钥）。
+  容器用 compose 的 backup 任务（`deploy/container/backup.sh`），裸机用
+  `yiban-cli backup` / `yiban-cli restore`；裸机命令不备份照片卷，照片需另行打包。
+  配置或密钥丢失时，已加密的账号凭据不可恢复。步骤与恢复演练见
+  [`docs/dev/backup-restore.md`](docs/dev/backup-restore.md)。
 - 裸机升级走 `deploy/baremetal/update.sh`：先验签、再自检、再快照、再迁移；回退步骤见
   [`deploy/release.md`](deploy/release.md)。容器升级重建镜像后重新 `up -d`，同样先备份。
 

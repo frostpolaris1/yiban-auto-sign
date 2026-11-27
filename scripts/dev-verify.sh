@@ -26,8 +26,15 @@ while [ "$#" -gt 0 ]; do
         --ci|--fast|--slow|--fast-all|--fast-scoped) MODE="${1#--}" ;;
         --log-dir)
             [ "$#" -ge 2 ] || { echo "dev-verify: --log-dir 需要取值" >&2; exit 2; }
+            case "$2" in
+                -*) echo "dev-verify: --log-dir 需要一个目录，不是选项：$2" >&2; exit 2 ;;
+            esac
             shift 2
             continue
+            ;;
+        --log-dir=)
+            echo "dev-verify: --log-dir= 不能为空" >&2
+            exit 2
             ;;
         --log-dir=*) ;;
         --repo|--repo=*)

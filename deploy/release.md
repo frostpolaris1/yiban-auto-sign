@@ -6,7 +6,7 @@
 > 汇总退出码：0 无 FAIL；1 有 FAIL；2 用法错误。
 > 考古基准：ref `ad5b3639`，考古日 2026-10-27。命令在 WSL 跑。
 
-## 项 1　版本三处一致（item 名 `version`）
+## 项 1　版本单一来源与发布 tag（item 名 `version`）
 
 命令：`bash scripts/release-check.sh --only version`
 
@@ -91,9 +91,11 @@ DSN 时它显性打 SKIP，不算绿）。红：任一退出码非 0。
 指向：
 
 ```bash
-# 参数与前置（docker、构建缓存、镜像名等）见各自 --help
-bash scripts/e2e/deploy-container-e2e.sh --help
-bash scripts/e2e/deploy-baremetal-e2e.sh --help
+# 容器：真跑干净环境 build→起服→/healthz→备份恢复→SIGTERM
+bash scripts/e2e/deploy-container-e2e.sh
+
+# 裸机：真跑 install.sh + systemd；需 docker --privileged 与 host cgroup
+bash scripts/e2e/deploy-baremetal-e2e.sh --keep --log-dir /tmp/yiban-baremetal-e2e
 ```
 
 期望：两条脚本退出码 0；摘要每步 PASS，失败时打印 `failed step: <ID>`。
@@ -105,12 +107,16 @@ bash scripts/e2e/deploy-baremetal-e2e.sh --help
 
 ```bash
 # Go 服务端形态（pg + GPG）：--out/--dsn/--passphrase-file 必填，恢复目标须为空库
+# YIBAN_RESTORE_DSN 必须显式给出；未设置时参数展开直接失败，绝不回退生产 DSN
 yiban-cli backup --out <备份文件> --dsn "$YIBAN_DATABASE_URL" \
   --passphrase-file <0600 口令文件>
-yiban-cli restore --in <备份文件> --dsn "$YIBAN_RESTORE_DSN" \
+yiban-cli restore --in <备份文件> \
+  --dsn "${YIBAN_RESTORE_DSN:?must point at an empty restore target, never YIBAN_DATABASE_URL}" \
   --passphrase-file <0600 口令文件> --force
 bash scripts/e2e/deploy-container-e2e.sh   # 含 C4c 备份 / C4d 恢复冒烟
 ```
+
+恢复后若 `audit_logs` 非空，必须提供与备份一致的 `YIBAN_HASH_PEPPER`；缺失或错误时审计链校验 exit 1。
 
 期望：`deploy/container/backup.sh` 产出 `db.dump`、`photos.tar.gz`、
 `SHA256SUMS`；`db.list` 证明转储可读；恢复后探针与库计数一致。CLI 路径的

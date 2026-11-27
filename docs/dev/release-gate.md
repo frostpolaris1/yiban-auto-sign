@@ -39,8 +39,8 @@
 # Python 面：ruff + pytest tests/
 bash scripts/dev-verify.sh --ci
 
-# Go + UI：格式、vet、全量测试、生成物 --check、结构/许可证门
-YIBAN_TEST_DATABASE_URL='<测试库 DSN>' bash server/scripts/verify.sh
+# Go + UI：先 server 后 ui，缺工具链 exit 2（不是绿）
+YIBAN_TEST_DATABASE_URL='<测试库 DSN>' bash scripts/verify-stacks.sh
 
 # 发布清单（发布时跑：version/go-version 在打 tag 前预期 FAIL）
 bash scripts/release-check.sh

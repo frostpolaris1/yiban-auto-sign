@@ -30,6 +30,33 @@ updates:
         patterns: ["*"]
     open-pull-requests-limit: 5
 
+  - package-ecosystem: "pip"
+    directory: "/tests"
+    schedule:
+      interval: "weekly"
+    groups:
+      gate-tools:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "npm"
+    directory: "/server/contracts/tools"
+    schedule:
+      interval: "weekly"
+    groups:
+      contract-tools:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "npm"
+    directory: "/ui/scripts/api-codegen"
+    schedule:
+      interval: "weekly"
+    groups:
+      api-codegen:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
   - package-ecosystem: "gomod"
     directory: "/server"
     schedule:
