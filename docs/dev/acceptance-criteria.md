@@ -15,7 +15,7 @@ D1 的验收**不**看“删掉多少行”“测试源码比”。主判据只�
 |---|------|----------|----------------|
 | 1 | 顶层结构 `tests/test_repo_structure_gate.py` | 顶层条目必须与 `ALLOWED_TOP` 双向一致；新增未登记目录即红 | `ScannerHasTeethTest`（合成未登记条目 ⇒ 红） |
 | 2 | 跳过显性化 `tests/test_skip_visibility_gate.py` | 每个 skip 点必须登记；登记不得陈旧；扫描面不得空 | `SkipSurfaceRegisteredTest` 三条 |
-| 3 | 公开数据 `tests/test_public_exposure_gate.py` | 扫描面不得为空；真实形状必须被拒；合成值必须放行 | `test_empty_scan_is_red`、`test_gate_rejects_every_shape` |
+| 3 | 公开数据 `tests/test_public_exposure_gate.py` | 扫描面不得为空；真实形状必须被拒；合成值必须放行 | `test_real_repo_has_no_real_looking_values`（空扫描下限）、`test_gate_rejects_every_shape`、`test_gate_accepts_synthetic_values` |
 | 4 | 私钥 `tests/test_private_key_gate.py` | 入库文件不得含私钥；扫描器对合成仓中的私钥必须报警 | `test_scanner_has_teeth`、`TempRepoGateTest` |
 | 5 | 工作树卫生 `tests/test_suite_cwd_isolation_gate.py` | 测试不得在仓库留下运行期产物；xdist controller 下同样必须捕获 | `ArtifactDiffLogicTest`、`SessionGateE2ETest` |
 
@@ -33,7 +33,7 @@ D1 的验收**不**看“删掉多少行”“测试源码比”。主判据只�
 | 不得在入库文件里放真实数据 | `tests/synthetic-fixtures.json` 之外的登记值 | `tests/test_public_exposure_gate.py` |
 | 不得把私钥、keystore 一类敏感件入库 | 全部跟踪文件 | `tests/test_private_key_gate.py` |
 
-“不得在入库文件里引用库外路径”的旧门已随 Python 文档门删除；当前无自动门，靠审查。
+“不得在入库文件里引用库外路径”的 Python 文档门已删除；`docs/dev` 当前无自动门，靠审查；UI 文档引用由 `ui` 的 `doc-ref-gate.mjs` 守。
 新增负数条款的纪律不变：**写下它的那一刻**同时写门，或在本表登记“无门 + 理由”。
 
 ## 3. 对外交付验收

@@ -81,7 +81,8 @@ master 已存在时不要重复创建；用 `GET /api/auth/me` 取当前 master 
 
 > 本节与 §3.1 的脚本命令在旧栈 v0.6.5 的检出里执行。`scripts/db_export.py`
 > 与 `scripts/list_duplicate_owners.py` 已随旧线在 2026-11-27 退役；新栈检出
-> 没有这些脚本。
+> 没有这些脚本。§8 步 7 与 §3.1 引用的
+> [`time-prefs-backfill.md`](../dev/time-prefs-backfill.md) §2 同样要在旧栈检出里执行。
 
 ```bash
 install -d -m 0700 <导出目录>

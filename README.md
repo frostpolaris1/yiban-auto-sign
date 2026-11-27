@@ -26,7 +26,7 @@
 - **多账号与多学校**：账号归属用户，管理员按学校绑定；批量导入、批量签到、失败重试带租约与幂等键。
 - **签到结果可核对**：每次尝试记录结局、耗时与重试建议；未知结局不伪装成成功。
 - **网页管理台**：账号、用户、学校、管理员、排期、照片、审计、事件诊断、公告与运行时设置。
-- **定位策略**：按围栏生成定位点；围栏与策略由管理员配置。
+- **定位策略**：按平台任务下发的签到围栏生成定位点，不伪造设备指纹。
 - **照片**：签到照片留存、保留期、可选随机安全裁剪、学校默认图。
 - **审计与诊断**：审计链可校验；事件与诊断保留策略可配置。
 - **通知**：站内通知、邮件与 webhook（Server 酱 Turbo 或自定义 HTTPS 出口）。
@@ -55,7 +55,7 @@
 
 开始前需要三样东西：
 
-1. PostgreSQL 18 与可连的 DSN。
+1. PostgreSQL 18 与可连的 DSN（容器 compose 自带 PG 18；裸机需自备）。
 2. 两个随机密钥：`YIBAN_HASH_PEPPER`、`YIBAN_CREDENTIAL_KEY`（生成命令见部署文档）。
 3. 反向代理与证书。Go 进程不终结 TLS，也不监听公网端口。
 
@@ -84,6 +84,7 @@ yiban-cli user create-master --email you@example.com --password-stdin
 bash server/scripts/verify.sh
 
 # Python 仓库门（结构、公开数据、跳过登记、工作树卫生）
+python3 -m pip install --require-hashes -r tests/requirements-gate-tools.txt
 bash scripts/dev-verify.sh --ci
 
 # 前端：类型、构建、token 与许可证
@@ -97,10 +98,10 @@ CI 的 `verify`、`tooling-gate`、`contract-gate`、`stacks`、`ui-e2e` 与部�
 
 ## 备份与升级
 
-- 备份数据库与照片卷：容器用 `deploy/container/backup.sh`，裸机用
-  `yiban-cli backup` / `yiban-cli restore`。步骤与恢复演练见
-  [`docs/dev/backup-restore.md`](docs/dev/backup-restore.md)。
-- 裸机升级走 `deploy/baremetal/update.sh`：先快照、再验签、再迁移；回退步骤见
+- 备份数据库与照片卷：容器用 compose 的 backup 任务（`deploy/container/backup.sh`），
+  裸机用 `yiban-cli backup` / `yiban-cli restore`；裸机命令不备份照片卷，照片需
+  另行打包。步骤与恢复演练见 [`docs/dev/backup-restore.md`](docs/dev/backup-restore.md)。
+- 裸机升级走 `deploy/baremetal/update.sh`：先验签、再自检、再快照、再迁移；回退步骤见
   [`deploy/release.md`](deploy/release.md)。容器升级重建镜像后重新 `up -d`，同样先备份。
 
 ## 文档

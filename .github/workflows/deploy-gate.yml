@@ -73,5 +73,13 @@ jobs:
 
       - name: update.sh 干跑契约（自检门/备份/回滚/argv 无口令）
         run: |
-          command -v go >/dev/null 2>&1 || { echo "go not found on the runner"; exit 1; }
-          cd server && go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh' -count=1
+          set -o pipefail
+          cd server
+          go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh' -count=1 -v | tee /tmp/update-sh-e2e.log
+          passes=$(awk '/^--- PASS/{n++} END{print n+0}' /tmp/update-sh-e2e.log)
+          min_passes=2
+          echo "update.sh contract: $passes passing cases"
+          if [ "$passes" -lt "$min_passes" ]; then
+            echo "expected at least $min_passes passing cases, got $passes"
+            exit 1
+          fi

@@ -23,16 +23,17 @@
    产品发布版本仍是根 `VERSION`，两者独立（见 `server/contracts/README.md`）。
 
 期望输出 `version: VERSION=…, CHANGELOG top=vX.Y.Z, tag vX.Y.Z -> HEAD ok`，退出码 0。
-红：`VERSION` 缺失或非 semver、CHANGELOG 顶部不符、tag 不存在或不指向 HEAD，
-退出码 1。
+红：`VERSION` 缺失、非单行、非 semver、CHANGELOG 顶部不符、不是 git 检出、
+tag 不存在或不指向 HEAD，退出码 1。
 
 ## 项 1b　Go 线产品版本与发布 tag（item 名 `go-version`；2026-11-05 版本批）
 
 命令：`bash scripts/release-check.sh --only go-version`
 
 口径：Go 线（`server/` + `ui/`）的产品版本单一来源是仓库根 `VERSION`
-（单行 `X.Y.Z`，换行结尾）。旧线已退役，仓库里不再有第二个版本源；
-契约版本独立（项 1 第 5 条）。
+（单行 `X.Y.Z`，换行结尾）。旧线已退役，仓库里不再有第二个产品版本源；
+`ui/package.json` 的 `version` 只是前端包元数据，不参与发布；契约版本独立
+（项 1 第 5 条）。
 
 本项三个动作：
 
@@ -90,8 +91,9 @@ DSN 时它显性打 SKIP，不算绿）。红：任一退出码非 0。
 指向：
 
 ```bash
-bash scripts/e2e/deploy-container-e2e.sh   # 干净容器：build→起服→/healthz→备份恢复→SIGTERM
-bash scripts/e2e/deploy-baremetal-e2e.sh   # 干净 Ubuntu 容器：install.sh + 真 systemd
+# 参数与前置（docker、构建缓存、镜像名等）见各自 --help
+bash scripts/e2e/deploy-container-e2e.sh --help
+bash scripts/e2e/deploy-baremetal-e2e.sh --help
 ```
 
 期望：两条脚本退出码 0；摘要每步 PASS，失败时打印 `failed step: <ID>`。
@@ -102,12 +104,17 @@ bash scripts/e2e/deploy-baremetal-e2e.sh   # 干净 Ubuntu 容器：install.sh +
 指向：
 
 ```bash
-yiban-cli backup && yiban-cli restore   # Go 服务端形态（pg + GPG）
+# Go 服务端形态（pg + GPG）：--out/--dsn/--passphrase-file 必填，恢复目标须为空库
+yiban-cli backup --out <备份文件> --dsn "$YIBAN_DATABASE_URL" \
+  --passphrase-file <0600 口令文件>
+yiban-cli restore --in <备份文件> --dsn "$YIBAN_RESTORE_DSN" \
+  --passphrase-file <0600 口令文件> --force
 bash scripts/e2e/deploy-container-e2e.sh   # 含 C4c 备份 / C4d 恢复冒烟
 ```
 
 期望：`deploy/container/backup.sh` 产出 `db.dump`、`photos.tar.gz`、
-`SHA256SUMS`；`db.list` 证明转储可读；恢复后探针与库计数一致。
+`SHA256SUMS`；`db.list` 证明转储可读；恢复后探针与库计数一致。CLI 路径的
+通过判据是 restore 的行数对账与审计链校验全过。
 红：任一退出码非 0，或备份件缺失/自校验失败。脚本侧红：被引脚本缺失，
 或 `server/cmd/cli/main.go` 未登记 backup/restore 子命令。
 

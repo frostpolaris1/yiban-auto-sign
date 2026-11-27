@@ -63,6 +63,16 @@ def _logical_commands(body):
         out.append(buf)
     return out
 
+def _gate_placement(body):
+    """返回 (命中红线门的逻辑命令, 该命令所在的条件深度)；没命中返回 (None, 0)。"""
+    depth = 0
+    for cmd in _logical_commands(body):
+        depth += len(re.findall(r"(?<![\w-])(?:if|case|for|while)\b", cmd))
+        depth -= len(re.findall(r"(?<![\w-])(?:fi|esac|done)\b", cmd))
+        if GATE_FILE in cmd:
+            return cmd, depth
+    return None, 0
+
 
 class GateWiringTest(unittest.TestCase):
 
@@ -80,24 +90,43 @@ class GateWiringTest(unittest.TestCase):
         self.assertIn("bash scripts/dev-verify.sh --ci", runs)
 
     def test_entrypoint_invokes_run_ci_at_top_level(self):
-        self.assertRegex(self.entry, r"(?m)^run_ci\b",
+        self.assertRegex(self.entry, r"(?m)^run_ci(?!\s*\()",
                          "run_ci 不在脚本顶层调用")
 
     def test_entrypoint_runs_gate_and_wiring_together(self):
         self.assertTrue(self.body, "抽不到 run_ci（脚本结构变了）")
-        depth = 0
-        for cmd in _logical_commands(self.body):
-            if cmd.startswith(("if ", "if!", "case ", "for ", "while ")):
-                depth += 1
-            elif cmd in ("fi", "esac", "done") or cmd.startswith(("fi;", "done;")):
-                depth -= 1
-            if GATE_FILE in cmd:
-                self.assertEqual(depth, 0, "红线门被放进条件块：%s" % cmd)
-                self.assertIn(WIRING_FILE, cmd)
-                for bad in ("|| true", "-k ", "--ignore", "--deselect"):
-                    self.assertNotIn(bad, cmd, "红线门被削弱：%s" % cmd)
-                return
-        self.fail("run_ci 未跑公开数据红线门")
+        cmd, depth = _gate_placement(self.body)
+        self.assertIsNotNone(cmd, "run_ci 未跑公开数据红线门")
+        self.assertEqual(depth, 0, "红线门被放进条件块：%s" % cmd)
+        self.assertIn(WIRING_FILE, cmd)
+        for bad in ("|| true", "-k ", "--ignore", "--deselect"):
+            self.assertNotIn(bad, cmd, "红线门被削弱：%s" % cmd)
+
+
+class GatePlacementHelperTest(unittest.TestCase):
+    """合成脚本体：条件块里的门必须判红，单行 if 之后的门必须判绿。"""
+
+    def _body(self, gate_cmd):
+        return "run_ci() {\n%s\n}" % gate_cmd
+
+    def test_gate_in_else_is_conditional(self):
+        body = ("if [ -f x ]; then\n  echo ok\nelse\n  pytest %s %s\nfi"
+                % (GATE_FILE, WIRING_FILE))
+        _cmd, depth = _gate_placement(body)
+        self.assertEqual(depth, 1)
+
+    def test_gate_in_case_is_conditional(self):
+        body = ("case \"$x\" in\n  a) pytest %s %s ;;\nesac"
+                % (GATE_FILE, WIRING_FILE))
+        _cmd, depth = _gate_placement(body)
+        self.assertEqual(depth, 1)
+
+    def test_gate_after_one_line_if_is_top_level(self):
+        body = ("if [ -f x ]; then echo ok; fi\npytest %s %s"
+                % (GATE_FILE, WIRING_FILE))
+        cmd, depth = _gate_placement(body)
+        self.assertEqual(depth, 0)
+        self.assertIn(GATE_FILE, cmd)
 
 
 if __name__ == "__main__":

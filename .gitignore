@@ -21,6 +21,15 @@ node_modules/
 
 # 本地配置（避免泄露密钥）
 *.local
+# 旧栈本地敏感件（旧线已退役；保留忽略，防止历史工作树残留被 git add -A 带入）
+accounts.json
+users.json
+*.bak-*
+notify-ledger*
+notify-throttle*
+yiban.db*
+# 旧库导出物（docs/ops/legacy-import.md）：一律本地留存，永不入库
+*.jsonl
 
 # IDE
 .vscode/

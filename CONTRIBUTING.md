@@ -100,7 +100,7 @@
 5. **一个模块一个 PR**。不要混装机制替换、缺陷修复、新门与文档改写。
 6. **提交信息**用 Conventional Commits。
 7. **PR 指向 `develop`**。填写 `.github/pull_request_template.md`；UI 改动附截图。
-8. **提交身份**：用你自己的 `git user.name` 与 `git user.email`；本地钩子与白名单细则见 §7.1。
+8. **提交身份**：用你自己的 `git user.name` 与 `git user.email`；仓库不再提供本地 git hooks。
 
 ## 7. 外部贡献者
 

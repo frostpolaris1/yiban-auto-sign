@@ -42,7 +42,7 @@ bash scripts/dev-verify.sh --ci
 # Go + UI：格式、vet、全量测试、生成物 --check、结构/许可证门
 YIBAN_TEST_DATABASE_URL='<测试库 DSN>' bash server/scripts/verify.sh
 
-# 发布清单：版本、许可证、生成物、签名、部署与回滚入口
+# 发布清单（发布时跑：version/go-version 在打 tag 前预期 FAIL）
 bash scripts/release-check.sh
 ```
 
@@ -61,7 +61,7 @@ bash scripts/e2e/deploy-baremetal-e2e.sh
 bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>
 ```
 
-CI 只跑干跑契约（`update-rollback-e2e`）；全矩阵在
+一键更新在 CI 只跑干跑契约（`update-rollback-e2e`）；全矩阵在
 `update-rollback-privileged.yml` 手动触发、自托管 runner 执行，非 0 原样判红。
 
 ## 5. 有效轮次的定义（沿用旧线口径，载体待 PR3）

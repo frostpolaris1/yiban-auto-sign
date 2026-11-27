@@ -5,8 +5,6 @@ name: CI
 # （Go+UI 门，含 Postgres 18）、ui-e2e（行为与视觉）。
 # 旧 Python 栈已于 2026-11-27 退役；Go 全量与部署 e2e 在 server/scripts/verify.sh、
 # deploy-gate.yml 与 update-rollback-privileged.yml，不在本文件重复。
-# 排程定义点：nightly.yml 与 e2e-nightly.yml 只在默认分支 main；develop 不持有，
-# 两文件的 checkout 显式 ref: develop，被测对象始终是活跃线。
 # 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
 # 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）。
 on:
@@ -44,13 +42,13 @@ jobs:
         with:
           python-version: '3.13'
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: tests/requirements-gate-tools.txt
 
       - name: Install gate tools
         run: |
           python -m pip install --upgrade pip
-          # 门禁工具钉版：ruff/pytest/pytest-xdist 三个足够跑 Python 面。
-          pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0
+          # 门禁工具的唯一安装入口；--require-hashes 钉住直接与传递依赖。
+          pip install --require-hashes -r tests/requirements-gate-tools.txt
 
       # 提交/PR 标题规范校验（Conventional Commits）
       # 不符合 feat/fix/docs/... 前缀则门禁失败。

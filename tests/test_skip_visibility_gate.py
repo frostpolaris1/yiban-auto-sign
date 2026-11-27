@@ -103,9 +103,7 @@ def scan_tests():
                 func.id if isinstance(func, ast.Name) else "")
             if marker not in _SKIP_MARKERS:
                 continue
-            item = [marker, _reason(node)]
-            if item not in items:
-                items.append(item)
+            items.append([marker, _reason(node)])
         if items:
             found[rel] = items
     return found
@@ -151,8 +149,14 @@ class BareDecoratorTest(unittest.TestCase):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     continue
                 for dec in node.decorator_list:
-                    name = dec.attr if isinstance(dec, ast.Attribute) else (
-                        dec.id if isinstance(dec, ast.Name) else "")
+                    if isinstance(dec, ast.Name):
+                        name = dec.id
+                    elif (isinstance(dec, ast.Attribute)
+                          and isinstance(dec.value, ast.Name)
+                          and dec.value.id == "unittest"):
+                        name = dec.attr
+                    else:
+                        continue
                     if name in {"skip", "skipIf", "skipUnless"}:
                         self.fail("%s:%d 裸跳过装饰器" % (path, node.lineno))
 

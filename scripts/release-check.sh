@@ -41,6 +41,7 @@
 #   go-version 项（2026-11-05 版本批）钉四类突变：缺 VERSION、坏 semver、
 #   构建不注入（自报 dev）、tag 不指向 HEAD，各必须非零；一致夹具必须绿。
 # ============================================================
+# shellcheck disable=SC2034  # STATUS_*/REASON_* 由 run_items 的 eval 间接读取
 set -u
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"

@@ -74,7 +74,9 @@ run_ci() {
     echo "DEV-VERIFY($MODE) OK"
 }
 
-rc=0
-run_ci || rc=$?
+set +e
+run_ci
+rc=$?
+set -e
 echo "DEV-VERIFY($MODE) exit_code=$rc"
 exit "$rc"

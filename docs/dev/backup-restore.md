@@ -8,7 +8,7 @@
 
 | 件 | 载体 | 说明 |
 |---|---|---|
-| 数据库 | `pg_dump -Fc` | 含凭据密文、审计行、调度状态；恢复后必须跑迁移 |
+| 数据库 | 容器：`pg_dump -Fc`；裸机：`yiban-cli backup`（默认纯文本转储 + 尾部 `yiban-backup-manifest`） | 含凭据密文、审计行、调度状态；恢复后必须跑迁移 |
 | 照片 | 照片卷 / 目录 | 照片不进数据库备份，需单独打包 |
 | 配置与密钥 | `server.env`、`compose.env`、发布公钥 | 与数据分开存放；密钥丢失＝已加密账号不可恢复 |
 
@@ -43,7 +43,7 @@ cd deploy/container/backups/<时间戳> && sha256sum -c SHA256SUMS
 docker compose --env-file deploy/container/compose.env \
   -f deploy/container/docker-compose.yml stop app
 
-# 3) 数据库：从 stdin 导入 db.dump
+# 3) 数据库：从 stdin 导入 db.dump（执行用户须对目标库有属主/写权限）
 docker compose --env-file deploy/container/compose.env \
   -f deploy/container/docker-compose.yml exec -T db \
   pg_restore -U yiban -d yiban --clean --if-exists --no-owner --no-privileges \
@@ -63,8 +63,10 @@ curl -fsS http://127.0.0.1:8080/healthz
 ## 4. 裸机备份与恢复
 
 `yiban-cli` 的 `backup` 与 `restore` 是 Go 服务端形态（pg_dump + GPG +
-行数对账）。数据库口令只经 0600 `PGPASSFILE` 传给子进程；GPG 口令经
-`--passphrase-file` 或 `YIBAN_BACKUP_PASSPHRASE` 从 stdin 单跳，不进 argv。
+行数对账）。数据库口令只经 0600 `PGPASSFILE` 传给子进程；GPG 口令优先用
+0600 的 `--passphrase-file`，只在无文件时退回 `YIBAN_BACKUP_PASSPHRASE`。
+环境变量形态会留在进程环境里，同用户可从 `/proc/<pid>/environ` 读到；
+两种形态都不进 argv，但生产应优先用口令文件。
 
 ```bash
 # 备份：数据库 + 行数清单，GPG 对称加密
@@ -77,8 +79,9 @@ yiban-cli restore --in /var/backups/yiban/db-<时间戳>.dump.gpg \
 ```
 
 `restore` 会先解密、导入、跑迁移，再按转储尾部的 `yiban-backup-manifest`
-逐表对账；任一业务表行数不一致即退出 1。照片 blob 目录不在该命令内，需另行
-打包与恢复。
+逐表对账；随后校验审计链（链非空时缺 `YIBAN_HASH_PEPPER` 即退出 1）。
+任一业务表行数不一致或对账零交集即退出 1。照片 blob 目录不在该命令内，
+需另行打包与恢复。
 
 ## 5. 演练与发布判据
 
@@ -92,7 +95,9 @@ yiban-cli restore --in /var/backups/yiban/db-<时间戳>.dump.gpg \
 
 - 容器脚本不加密，GPG 需在宿主另做；口令不要放进 `compose.env`。
 - `yiban-cli` 不备份照片；照片卷必须单独打包并验证可解。
-- 恢复目标必须为空库/schema；`--clean --if-exists` 只覆盖同名对象，不清理
-  备份之外的新表。
+- `yiban-cli restore` 的目标必须为空库/schema（纯文本转储 + `psql` 导入，
+  非空库会失败）。
+- 容器路径用 `pg_restore --clean --if-exists` 覆盖同名对象；它不清理由备份
+  之外的新表。
 - 备份件含凭据密文，按敏感数据保管；保留策略由宿主负责，不要删除仍被
   更新回退引用的备份。
