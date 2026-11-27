@@ -28,7 +28,7 @@ function classCount(value: string): number {
     Number(/[A-Z]/.test(value)) +
     Number(/[a-z]/.test(value)) +
     Number(/[0-9]/.test(value)) +
-    Number(/[^A-Za-z0-9\s]/.test(value))
+    Number(/[^A-Za-z0-9]/.test(value))
   )
 }
 
@@ -58,7 +58,8 @@ export function PasswordPage() {
 
   const policy = policyQuery.data
   const classes = classCount(next)
-  const lengthOk = policy ? next.length >= policy.min_chars : false
+  const charCount = Array.from(next).length
+  const lengthOk = policy ? charCount >= policy.min_chars : false
   const classesOk = policy ? classes >= policy.min_classes : false
   const bytesOk = policy ? byteLength(next) <= policy.max_bytes : false
   const complete = current !== '' && next !== '' && confirm !== ''
@@ -183,9 +184,12 @@ export function PasswordPage() {
                 type={showCurrent ? 'text' : 'password'}
                 autoComplete="current-password"
                 value={current}
+                aria-invalid={currentError ? true : undefined}
+                aria-describedby={currentError ? 'un-pw-current-error' : undefined}
                 onChange={(event) => {
                   setCurrent(event.target.value)
                   setCurrentError(null)
+                  setError(null)
                 }}
               />
               <button
@@ -198,7 +202,11 @@ export function PasswordPage() {
                 {showCurrent ? '隐藏' : '显示'}
               </button>
             </div>
-            {currentError ? <p className="un-field__error">{currentError}</p> : null}
+            {currentError ? (
+              <p id="un-pw-current-error" className="un-field__error" role="alert">
+                {currentError}
+              </p>
+            ) : null}
           </div>
 
           <div className="un-field">
@@ -213,7 +221,12 @@ export function PasswordPage() {
                 type={showNext ? 'text' : 'password'}
                 autoComplete="new-password"
                 value={next}
-                onChange={(event) => setNext(event.target.value)}
+                aria-invalid={attempted && (!lengthOk || !classesOk || !bytesOk) ? true : undefined}
+                aria-describedby={policy ? 'un-pw-policy' : undefined}
+                onChange={(event) => {
+                  setNext(event.target.value)
+                  setError(null)
+                }}
               />
               <button
                 type="button"
@@ -236,7 +249,10 @@ export function PasswordPage() {
                 type={showConfirm ? 'text' : 'password'}
                 autoComplete="new-password"
                 value={confirm}
-                onChange={(event) => setConfirm(event.target.value)}
+                onChange={(event) => {
+                  setConfirm(event.target.value)
+                  setError(null)
+                }}
               />
               <button
                 type="button"
@@ -265,13 +281,19 @@ export function PasswordPage() {
         <aside className="un-security-page__policy" aria-label="密码规则">
           <h2 className="un-security-page__policy-title">密码规则</h2>
           {policy ? (
-            <ul className="un-security-page__checks">
+            <ul id="un-pw-policy" className="un-security-page__checks">
               <li className={lengthOk ? 'is-ok' : attempted ? 'is-bad' : ''}>
-                至少 {policy.min_chars} 位
+                至少 {policy.min_chars} 个字符（当前 {charCount}）
+                <span className="un-sr-only">{lengthOk ? '，已满足' : '，尚未满足'}</span>
               </li>
               <li className={classesOk ? 'is-ok' : attempted ? 'is-bad' : ''}>
-                至少 {policy.min_classes} 类字符（大写、小写、数字、符号）
+                至少 {policy.min_classes} 类字符（大写、小写、数字、符号；空白算符号）
                 <span className="un-security-page__count">{classes}/{policy.min_classes}</span>
+                <span className="un-sr-only">{classesOk ? '，已满足' : '，尚未满足'}</span>
+              </li>
+              <li className={bytesOk ? 'is-ok' : attempted ? 'is-bad' : ''}>
+                不超过 {policy.max_bytes} 字节（当前 {byteLength(next)}）
+                <span className="un-sr-only">{bytesOk ? '，已满足' : '，尚未满足'}</span>
               </li>
             </ul>
           ) : (

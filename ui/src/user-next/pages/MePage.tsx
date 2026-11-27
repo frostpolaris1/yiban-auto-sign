@@ -76,28 +76,30 @@ export function MePage() {
 
   const items = accountsQuery.data?.items ?? []
   const live = items.filter((item) => item.deleted_at === null)
-  const account = live[0] ?? null
+  const account = live.find((item) => item.status === 'active') ?? live[0] ?? null
   const photoQuery = useLatestPhoto(account?.id ?? null)
   const photo = photoQuery.data?.items[0] ?? null
   const photoUrl = photo ? photoBytesPath(photo.id) : null
   const schoolName =
     schoolsQuery.data?.find((school) => school.id === account?.school_id)?.name ??
-    account?.school_id ??
-    '—'
+    (schoolsQuery.isError ? '学校信息暂时读不到' : '学校信息加载中')
   const days = calendarQuery.data?.days ?? []
   const recorded = days.filter((day) => day.total > 0)
-  const successDays = recorded.filter((day) => day.success > 0).length
+  const successDays = recorded.filter((day) => day.success > 0 && day.failed === 0).length
   const failedDays = recorded.filter((day) => day.failed > 0).length
   let streak = 0
-  for (let index = days.length - 1; index >= 0; index -= 1) {
-    const day = days[index]
-    if (day.total > 0 && day.success > 0) streak += 1
+  let streakIndex = days.length - 1
+  // 今天还没有任务时从最近一个有任务的日期起算，不把“尚未执行”误判为断签。
+  while (streakIndex >= 0 && days[streakIndex].total === 0) streakIndex -= 1
+  for (; streakIndex >= 0; streakIndex -= 1) {
+    const day = days[streakIndex]
+    if (day.total > 0 && day.success > 0 && day.failed === 0) streak += 1
     else break
   }
   const pref = timePrefQuery.data
   const chosenSlot =
     pref?.slots?.find((slot) => slot.offset_min === pref.offset_min)?.label ?? null
-  const mailEnabled = mailQuery.data?.enabled ?? true
+  const mailEnabled = mailQuery.data?.enabled ?? false
   const retention = retentionQuery.data?.days ?? 90
 
   const mailMutation = useMutation({
@@ -148,6 +150,27 @@ export function MePage() {
     )
   }
 
+  if (accountsQuery.isError) {
+    return (
+      <div className="un-me">
+        <header className="un-me__head">
+          <h1 className="un-me__title">我的</h1>
+          <p className="un-me__lede">签到档案、时间偏好与账号安全都收在这里。</p>
+        </header>
+        <p className="un-me__error" role="alert">
+          账号信息没有加载成功，请检查网络后再试。
+        </p>
+        <button
+          type="button"
+          className="un-btn un-btn--secondary"
+          onClick={() => void accountsQuery.refetch()}
+        >
+          重新加载
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="un-me">
       <header className="un-me__head">
@@ -158,6 +181,15 @@ export function MePage() {
       {error ? (
         <p className="un-me__error" role="alert">
           {error}
+        </p>
+      ) : null}
+
+      {live.length === 0 && items.length > 0 ? (
+        <p className="un-alert un-alert--warning" role="status">
+          签到账号已删除，7 天内可以恢复。
+          <Link to="/app/me/account" className="un-link">
+            去恢复
+          </Link>
         </p>
       ) : null}
 
@@ -175,10 +207,18 @@ export function MePage() {
               <div className="un-profile__names">
                 <p className="un-eyebrow">签到账号</p>
                 <h2 id="un-profile-title" className="un-profile__name">
-                  {account ? displayName(account.name, account.phone_masked) : '还没有账号'}
+                  {account
+                    ? displayName(account.name, account.phone_masked)
+                    : items.length > 0
+                      ? '签到账号已删除'
+                      : '还没有账号'}
                 </h2>
                 <p className="un-profile__sub">
-                  {account ? schoolName + ' · ' + account.phone_masked : '绑定易班账号后开始自动签到'}
+                  {account
+                    ? schoolName + ' · ' + account.phone_masked
+                    : items.length > 0
+                      ? '7 天内可以恢复，恢复后继续自动签到'
+                      : '绑定易班账号后开始自动签到'}
                 </p>
               </div>
               {account ? (
@@ -223,34 +263,54 @@ export function MePage() {
             <dl className="un-stats">
               <div className="un-stats__item">
                 <dt>成功</dt>
-                <dd>{successDays}</dd>
+                <dd>{calendarQuery.isError ? '—' : successDays}</dd>
                 <span>天</span>
               </div>
               <div className="un-stats__item">
                 <dt>连续</dt>
-                <dd>{streak}</dd>
+                <dd>{calendarQuery.isError ? '—' : streak}</dd>
                 <span>天</span>
               </div>
               <div className="un-stats__item">
                 <dt>失败</dt>
-                <dd>{failedDays}</dd>
+                <dd>{calendarQuery.isError ? '—' : failedDays}</dd>
                 <span>天</span>
               </div>
             </dl>
             <div className="un-me__week-block">
-              <div className="un-me__week" aria-hidden="true">
-                {days.map((day) => (
-                  <span
-                    key={day.day}
-                    className={cx(
-                      'un-me__week-mark',
-                      day.success > 0 && 'is-success',
-                      day.failed > 0 && 'is-danger',
-                      day.total === 0 && 'is-empty',
-                    )}
-                    title={weekdayLabel(day.day) + ' ' + day.day}
-                  />
-                ))}
+              <div
+                className="un-me__week"
+                role="group"
+                aria-label={
+                  calendarQuery.isError
+                    ? '近 30 天统计暂时不可用'
+                    : `近 30 天：${successDays} 天全部成功，${failedDays} 天有失败，当前连续 ${streak} 天`
+                }
+              >
+                {days.map((day) => {
+                  const outcome =
+                    day.total === 0
+                      ? '未执行'
+                      : day.failed > 0
+                        ? '有失败'
+                        : day.success > 0
+                          ? '成功'
+                          : '未执行'
+                  return (
+                    <span
+                      key={day.day}
+                      className={cx(
+                        'un-me__week-mark',
+                        day.success > 0 && 'is-success',
+                        day.failed > 0 && 'is-danger',
+                        day.total === 0 && 'is-empty',
+                      )}
+                      role="img"
+                      aria-label={`${weekdayLabel(day.day)} ${day.day}：${outcome}`}
+                      title={weekdayLabel(day.day) + ' ' + day.day}
+                    />
+                  )
+                })}
               </div>
               {days.length > 0 ? (
                 <div className="un-me__week-range" aria-hidden="true">
@@ -271,7 +331,13 @@ export function MePage() {
               <div className="un-pref__copy">
                 <p className="un-pref__label">签到时间</p>
                 <p className="un-pref__hint">
-                  {pref?.window ? '每天 ' + pref.window.start + '–' + pref.window.end + ' 之间自动执行' : '还没有设置时间窗口'}
+                  {timePrefQuery.isError
+                    ? '时间偏好暂时读不到，请稍后刷新。'
+                    : timePrefQuery.isPending
+                      ? '正在读取时间偏好…'
+                      : pref?.window
+                        ? '每天 ' + pref.window.start + '–' + pref.window.end + ' 之间自动执行'
+                        : '还没有设置时间窗口'}
                 </p>
               </div>
               <Link to="/app/me/time" className="un-pref__action">
@@ -290,7 +356,7 @@ export function MePage() {
                 aria-checked={mailEnabled}
                 aria-label="失败邮件"
                 className="un-switch"
-                disabled={mailMutation.isPending}
+                disabled={mailMutation.isPending || mailQuery.isPending || mailQuery.isError}
                 onClick={() => mailMutation.mutate(!mailEnabled)}
               />
             </div>
@@ -304,7 +370,7 @@ export function MePage() {
                 className="un-select un-pref__select"
                 aria-label="照片保留期"
                 value={retention}
-                disabled={retentionMutation.isPending}
+                disabled={retentionMutation.isPending || retentionQuery.isPending || retentionQuery.isError}
                 onChange={(event) => {
                   const next = Number(event.target.value) as (typeof RETENTION_OPTIONS)[number]
                   retentionMutation.mutate(next)

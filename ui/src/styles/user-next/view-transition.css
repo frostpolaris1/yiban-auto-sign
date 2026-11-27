@@ -12,14 +12,6 @@ html[data-un-vt="identity"] .un-shared-identity {
   view-transition-name: un-identity;
 }
 
-html[data-un-vt="account"] .un-shared-account {
-  view-transition-name: un-account;
-}
-
-html[data-un-vt="day"] .un-shared-day {
-  view-transition-name: un-day;
-}
-
 ::view-transition-group(*) {
   animation-duration: var(--un-transition);
   animation-timing-function: var(--un-ease);
@@ -36,11 +28,7 @@ html[data-un-vt="day"] .un-shared-day {
 ::view-transition-old(un-result),
 ::view-transition-new(un-result),
 ::view-transition-old(un-identity),
-::view-transition-new(un-identity),
-::view-transition-old(un-account),
-::view-transition-new(un-account),
-::view-transition-old(un-day),
-::view-transition-new(un-day) {
+::view-transition-new(un-identity) {
   animation-duration: var(--un-transition);
   animation-timing-function: var(--un-ease);
 }

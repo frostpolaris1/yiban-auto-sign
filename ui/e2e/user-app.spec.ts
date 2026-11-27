@@ -13,6 +13,11 @@ import { USER_ACCOUNT, mockUserAppApi } from './support/fake-user-app-api'
  * - 公告可关闭；390 无横向溢出，日历格与时间片保持可用触达。
  */
 
+test.beforeEach(async ({ page }) => {
+  // 夹具的“今天”固定为 2026-11-11；浏览器时钟必须同频，否则未来日与相对日期会错位。
+  await page.clock.setFixedTime(new Date('2026-11-11T08:00:00+08:00'))
+})
+
 test('unauthenticated /app lands on login with redirect', async ({ page }) => {
   await mockUserAppApi(page, { role: null })
   await page.goto('/app')

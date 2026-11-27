@@ -11,7 +11,7 @@
  * 顶栏与底栏都不使用玻璃、发光或胶囊堆叠；状态只靠字重、细线与雾蓝。
  */
 
-import { useEffect } from 'react'
+import { useEffect, type MouseEvent } from 'react'
 import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Icon } from '@/components/ui/Icon'
 import { cx } from '@/lib/cx'
@@ -48,6 +48,10 @@ function titleFor(pathname: string): string {
   return '签到助手'
 }
 
+function plainLeftClick(event: MouseEvent<HTMLElement>): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
+}
+
 function navActive(item: NavItem, pathname: string): boolean {
   if (item.to === '/app') return pathname === '/app'
   if (item.to === '/app/history') return pathname === '/app/history'
@@ -56,8 +60,14 @@ function navActive(item: NavItem, pathname: string): boolean {
 
 function ShellLoading() {
   return (
-    <div className="un-root uapp un-shell-loading" aria-busy="true">
+    <div
+      className="un-root uapp un-shell-loading"
+      role="status"
+      aria-busy="true"
+      aria-label="正在加载签到助手"
+    >
       <div className="un-container un-shell-loading__inner">
+        <span className="un-sr-only">正在加载签到助手。</span>
         <span className="un-skeleton un-shell-loading__bar" />
         <span className="un-skeleton un-shell-loading__title" />
         <span className="un-skeleton un-shell-loading__sheet" />
@@ -125,7 +135,7 @@ export function UserNextShell() {
                   activeOptions={{ exact: item.to !== '/app/me' }}
                   aria-current={active ? 'page' : undefined}
                   onClick={(event) => {
-                    if (active) return
+                    if (active || !plainLeftClick(event)) return
                     event.preventDefault()
                     withViewTransition('page', () => navigate({ to: item.to }))
                   }}
@@ -150,9 +160,9 @@ export function UserNextShell() {
             <Link
               to="/app/me"
               className="un-avatar-link"
-              aria-label="我的"
+              aria-label="打开我的档案"
               onClick={(event) => {
-                if (pathname === '/app/me') return
+                if (pathname === '/app/me' || !plainLeftClick(event)) return
                 event.preventDefault()
                 withViewTransition('identity', () => navigate({ to: '/app/me' }))
               }}

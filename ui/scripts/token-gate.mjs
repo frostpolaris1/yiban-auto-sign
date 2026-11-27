@@ -57,7 +57,7 @@ const EXEMPT = new Map([
   ],
   [
     'src/styles/user-next/tokens.css',
-    'isolated user-next tokens, checked by the scoped theme rule below',
+    'isolated user-next tokens, checked by the bare-root theme rule below',
   ],
 ])
 
@@ -249,12 +249,12 @@ function checkTokenParity(tokensPath = TOKENS_FILE, vendorPath = VENDOR_SOURCE) 
 
 function extractScopedTokenBlocks(css) {
   const blocks = {}
-  const pattern = /:root\[data-theme=["']?(light|dark)["']?\]\s+\.un-root\s*\{([^}]*)\}/g
+  const pattern = /:root\[data-theme=["']?(light|dark)["']?\]\s*\{([^}]*)\}/g
   let match
   while ((match = pattern.exec(css)) !== null) {
     const theme = match[1]
     if (blocks[theme]) {
-      throw new ConfigError(`duplicate :root[data-theme=${theme}] .un-root block`)
+      throw new ConfigError(`duplicate :root[data-theme=${theme}] block`)
     }
     const body = match[2].replace(/\/\*[\s\S]*?\*\//g, '')
     const map = new Map()
@@ -296,13 +296,18 @@ function checkUserNextTokens(tokensPath = USER_NEXT_TOKENS_FILE) {
   const clean = css.replace(/\/\*[\s\S]*?\*\//g, '')
   const blocks = extractScopedTokenBlocks(clean)
   const problems = []
+  const pattern = /:root\[data-theme=["']?(light|dark)["']?\]\s*\{([^}]*)\}/g
+  const outside = clean.replace(pattern, '')
+  if (/--un-/.test(outside)) {
+    problems.push('user-next tokens must live inside :root[data-theme] blocks')
+  }
   const rootSelectors = (clean.match(/:root\[data-theme=["']?(?:light|dark)["']?\]/g) ?? []).length
   const scopedSelectors = Object.keys(blocks).length
   if (rootSelectors !== scopedSelectors) {
-    problems.push(`user-next tokens must be scoped to .un-root (found ${rootSelectors} theme selectors, ${scopedSelectors} scoped)`)
+    problems.push(`user-next tokens must be bare :root[data-theme] blocks (found ${rootSelectors} theme selectors, ${scopedSelectors} parsed blocks)`)
   }
   for (const theme of THEMES) {
-    if (!blocks[theme]) problems.push(`user-next tokens have no :root[data-theme="${theme}"] .un-root block`)
+    if (!blocks[theme]) problems.push(`user-next tokens have no :root[data-theme="${theme}"] block`)
   }
   for (const [theme, map] of Object.entries(blocks)) {
     for (const name of map.keys()) {
@@ -416,10 +421,10 @@ function selfTest() {
     const userNextFile = join(temp, 'user-next-tokens.css')
     const lightTokens = Array.from({ length: 10 }, (_, index) => `--un-t${index}: ${index}px;`).join(' ')
     const darkTokens = Array.from({ length: 10 }, (_, index) => `--un-t${index}: ${index + 10}px;`).join(' ')
-    const scopedBlock = (theme, body) => `:root[data-theme="${theme}"] .un-root { ${body} }\n`
+    const scopedBlock = (theme, body) => `:root[data-theme="${theme}"] { ${body} }\n`
     writeFileSync(userNextFile, scopedBlock('light', lightTokens) + scopedBlock('dark', darkTokens))
     if (checkUserNextTokens(userNextFile).length !== 0) {
-      failures.push('user-next token rule flagged a valid scoped pair')
+      failures.push('user-next token rule flagged a valid root pair')
     }
     writeFileSync(userNextFile, scopedBlock('light', lightTokens))
     if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('no :root[data-theme="dark"]'))) {
@@ -442,10 +447,17 @@ function selfTest() {
       userNextFile,
       scopedBlock('light', lightTokens) +
         scopedBlock('dark', darkTokens) +
-        ':root[data-theme="light"] { --un-bare: 1px; }\n',
+        ':root[data-theme="light"] .un-root { --un-bare: 1px; }\n',
     )
-    if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('must be scoped'))) {
-      failures.push('user-next token rule missed an unscoped theme block')
+    if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('bare :root'))) {
+      failures.push('user-next token rule missed a scoped block')
+    }
+    writeFileSync(
+      userNextFile,
+      scopedBlock('light', lightTokens) + scopedBlock('dark', darkTokens) + '.un-root { --un-raw: 1px; }\n',
+    )
+    if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('must live inside'))) {
+      failures.push('user-next token rule missed a token outside a theme block')
     }
     writeFileSync(
       userNextFile,
@@ -465,7 +477,7 @@ function selfTest() {
   }
   console.log(
     `token-gate self-test: ${positives.length} positive, ${negatives.length} negative, ` +
-      '2 config guards + vendor byte + token parity + user-next scope mutations, exemption registry OK',
+      '2 config guards + vendor byte + token parity + user-next root-scope mutations, exemption registry OK',
   )
   return 0
 }
@@ -498,7 +510,7 @@ function main() {
       `rules ${RULES.map((rule) => rule.label).join(', ')}, 0 violations`,
   )
   console.log('token-gate: vendor copy byte-identical; 36 light + 36 dark tokens match vendor values')
-  console.log('token-gate: user-next tokens scoped to .un-root; --un- prefix; identical light/dark names')
+  console.log('token-gate: user-next tokens live under bare :root[data-theme]; --un- prefix; identical light/dark names')
   return 0
 }
 

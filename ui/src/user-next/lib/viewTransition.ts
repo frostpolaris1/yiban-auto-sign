@@ -10,6 +10,8 @@
  * in user-next pass plain options and wrap them with `withViewTransition`.
  */
 
+export type ViewTransitionName = 'page' | 'identity'
+
 type ViewTransitionLike = {
   finished: Promise<void>
   ready: Promise<void>
@@ -32,7 +34,15 @@ export function canViewTransition(): boolean {
 
 function nextPaint(): Promise<void> {
   return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      resolve()
+    }
+    const timer = window.setTimeout(finish, 120)
+    requestAnimationFrame(() => requestAnimationFrame(finish))
   })
 }
 
@@ -47,7 +57,7 @@ function nextPaint(): Promise<void> {
  * snapshot so two transitions can never race.
  */
 export function withViewTransition(
-  name: string,
+  name: ViewTransitionName,
   update: () => void | Promise<void>,
   source?: HTMLElement | null,
 ): void {

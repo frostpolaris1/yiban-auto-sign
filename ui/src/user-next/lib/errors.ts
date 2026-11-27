@@ -14,7 +14,7 @@ import { ApiError } from '@/lib/api/client'
 export function signErrorText(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 403) return '没有权限执行这个操作。'
-    if (error.status === 404) return '账号不存在或已删除。'
+    if (error.status === 404) return '没有找到可签到的任务或窗口，请稍后重试。'
     if (error.status === 429) return '操作太频繁，请稍后再试。'
     if (error.status === 503) return '系统维护中，请稍后再试。'
     if (error.status === 409) {
@@ -39,7 +39,7 @@ export function signErrorText(error: unknown): string {
 export function pauseErrorText(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 400) return '当前状态不允许这个操作。'
-    if (error.status === 403) return '口令不正确，或没有权限。'
+    if (error.status === 403) return '没有权限执行这个操作。'
     if (error.status === 409) return '当前状态不允许这个操作。'
     if (error.status === 429) return '尝试过多，请稍后再试。'
     if (error.status === 503) return '系统维护中，请稍后再试。'

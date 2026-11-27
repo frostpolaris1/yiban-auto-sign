@@ -55,6 +55,7 @@ export function TimePrefPage() {
   const allowed = pref?.allowed ?? true
   const selected = draft ?? stored
   const selectedSlot = slots.find((slot) => slot.offset_min === selected) ?? null
+  const firstEnabled = slots.findIndex((slot) => !slot.disabled)
   const windowStart = pref?.window?.start ?? null
   const windowEnd = pref?.window?.end ?? null
   const endShown = slots.some((slot) => slot.label === windowEnd)
@@ -192,7 +193,7 @@ export function TimePrefPage() {
               <h2 className="un-time__section-title">选择时间片</h2>
               <span className="un-time__hint">
                 <span className="un-time__hint-desktop">点击或方向键选择</span>
-                <span className="un-time__hint-mobile">左右滑动选择</span>
+                <span className="un-time__hint-mobile">左右滑动查看</span>
                 <span className="un-time__hint-unit">5 分钟一档</span>
                 {windowEnd ? (
                   <span className="un-time__hint-end">截止 {windowEnd}</span>
@@ -227,7 +228,16 @@ export function TimePrefPage() {
                   >
                     {slots.map((slot, index) => {
                       const isSelected = slot.offset_min === selected
+                      const isTabbable = isSelected || (selectedSlot === null && index === firstEnabled)
                       const note = slotNote(slot)
+                      const tone =
+                        slot.disabled || !allowed
+                          ? ' is-disabled'
+                          : slot.pct >= 100
+                            ? ' is-full'
+                            : slot.pct >= 80
+                              ? ' is-tight'
+                              : ''
                       return (
                         <button
                           key={slot.offset_min}
@@ -238,10 +248,10 @@ export function TimePrefPage() {
                           className={
                             'un-time__slot' +
                             (isSelected ? ' is-selected' : '') +
-                            (slot.disabled || !allowed ? ' is-disabled' : '') +
-                            (slot.pct >= 100 ? ' is-full' : slot.pct >= 80 ? ' is-tight' : '')
+                            tone
                           }
                           disabled={slot.disabled || !allowed}
+                          tabIndex={isTabbable ? 0 : -1}
                           style={{ '--slot-pct': String(Math.min(100, slot.pct)) + '%' } as CSSProperties}
                           onClick={() => {
                             setDraft(slot.offset_min)

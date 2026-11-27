@@ -311,7 +311,12 @@
 }
 
 .un-link {
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--un-ink);
+  font: inherit;
+  cursor: pointer;
   text-decoration-line: underline;
   text-decoration-color: color-mix(in srgb, var(--un-ink-muted) 46%, transparent);
   text-decoration-thickness: 1px;
@@ -388,10 +393,17 @@
   border-color: var(--un-line-strong);
 }
 
-.un-input:focus,
-.un-textarea:focus,
-.un-select:focus {
+.un-input:focus:not(:focus-visible),
+.un-textarea:focus:not(:focus-visible),
+.un-select:focus:not(:focus-visible) {
   outline: none;
+  border-color: var(--un-blue);
+  box-shadow: 0 0 0 3px var(--un-blue-faint);
+}
+
+.un-input:focus-visible,
+.un-textarea:focus-visible,
+.un-select:focus-visible {
   border-color: var(--un-blue);
   box-shadow: 0 0 0 3px var(--un-blue-faint);
 }

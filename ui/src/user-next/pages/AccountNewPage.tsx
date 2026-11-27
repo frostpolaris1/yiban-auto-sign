@@ -403,7 +403,10 @@ export function AccountNewPage() {
             ) : null}
 
             <div className="un-field">
-              <label className="un-field__label" htmlFor="uapp-school-search">
+              <label
+                className="un-field__label"
+                htmlFor={!manual && detected?.school ? undefined : 'uapp-school-search'}
+              >
                 学校
               </label>
               {!manual && detected?.school ? (
@@ -449,15 +452,29 @@ export function AccountNewPage() {
                   ) : (
                     <div
                       className="un-school-list"
-                      role="listbox"
+                      role="radiogroup"
                       aria-label="学校"
+                      onKeyDown={(event) => {
+                        if (!['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key)) return
+                        event.preventDefault()
+                        const list = Array.from(
+                          event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+                        )
+                        const current = list.indexOf(document.activeElement as HTMLButtonElement)
+                        if (current < 0) return
+                        const step = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1
+                        const next = (current + step + list.length) % list.length
+                        list[next].focus()
+                        setSchoolId(filteredSchools[next].id)
+                      }}
                     >
-                      {filteredSchools.map((school) => (
+                      {filteredSchools.map((school, index) => (
                         <button
                           key={school.id}
                           type="button"
-                          role="option"
-                          aria-selected={schoolId === school.id}
+                          role="radio"
+                          aria-checked={schoolId === school.id}
+                          tabIndex={schoolId === school.id || (schoolId === '' && index === 0) ? 0 : -1}
                           className={
                             schoolId === school.id
                               ? 'un-school-option is-selected'

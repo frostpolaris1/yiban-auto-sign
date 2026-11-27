@@ -9,7 +9,7 @@
  * 一屏先回答「今天签上了吗」；无账号、异常、读取失败都给出下一步。
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Modal } from '@/components/ui/Modal'
@@ -149,15 +149,17 @@ export function TodayPage() {
     announcement.text.trim() !== ''
 
   const days = calendarQuery.data?.days ?? []
-  const recorded = days.filter((day) => day.total > 0)
-  const successDays = recorded.filter((day) => day.success > 0).length
   let streak = 0
-  for (let index = days.length - 1; index >= 0; index -= 1) {
-    const day = days[index]
-    if (day.total > 0 && day.success > 0) streak += 1
+  let streakIndex = days.length - 1
+  while (streakIndex >= 0 && days[streakIndex].total === 0) streakIndex -= 1
+  for (; streakIndex >= 0; streakIndex -= 1) {
+    const day = days[streakIndex]
+    if (day.total > 0 && day.success > 0 && day.failed === 0) streak += 1
     else break
   }
   const weekDays = days.slice(-7)
+  const weekRecorded = weekDays.filter((day) => day.total > 0)
+  const weekSuccessDays = weekRecorded.filter((day) => day.success > 0 && day.failed === 0).length
 
   useEffect(() => {
     return () => {
@@ -167,6 +169,10 @@ export function TodayPage() {
 
   useEffect(() => {
     if (running) setFast(true)
+    // A finished run can turn into a pending one; keep the faster cadence for
+    // one more minute after the status changes, then fall back to the normal poll.
+    const timer = window.setTimeout(() => setFast(false), 60_000)
+    return () => window.clearTimeout(timer)
   }, [running])
 
   const armFast = () => {
@@ -219,10 +225,11 @@ export function TodayPage() {
           ? '恢复后从下一次开始'
           : nextRunText(timePref)
 
-  const helpReturnFocus =
-    typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null
+  const helpReturnFocus = useRef<HTMLElement | null>(null)
+  const openHelp = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    helpReturnFocus.current = event.currentTarget
+    setHelpOpen(true)
+  }
 
   if (accountsQuery.isPending) {
     return (
@@ -254,6 +261,21 @@ export function TodayPage() {
             </button>
           </div>
         </section>
+      </div>
+    )
+  }
+
+  if (signStatusQuery.isPending) {
+    return (
+      <div className="un-today">
+        <div className="un-today__dateline">
+          <span className="un-skeleton un-skeleton--line" />
+        </div>
+        <div
+          className="un-skeleton un-skeleton--hero"
+          aria-busy="true"
+          aria-label="正在读取今天的签到状态"
+        />
       </div>
     )
   }
@@ -304,7 +326,7 @@ export function TodayPage() {
             <button
               type="button"
               className="un-btn un-btn--ghost"
-              onClick={() => setHelpOpen(true)}
+              onClick={openHelp}
             >
               联系管理员
             </button>
@@ -326,7 +348,7 @@ export function TodayPage() {
             <button
               type="button"
               className="un-btn un-btn--ghost"
-              onClick={() => setHelpOpen(true)}
+              onClick={openHelp}
             >
               先了解流程
             </button>
@@ -426,7 +448,7 @@ export function TodayPage() {
                   <button
                     type="button"
                     className="un-btn un-btn--ghost"
-                    onClick={() => setHelpOpen(true)}
+                    onClick={openHelp}
                   >
                     联系管理员
                   </button>
@@ -453,9 +475,9 @@ export function TodayPage() {
                     近 7 天
                   </h2>
                   <p className="un-week__summary">
-                    <span className="un-week__count">{successDays}</span>
-                    <span className="un-week__of">/{recorded.length || 7}</span>
-                    <span className="un-week__cap">天有记录</span>
+                    <span className="un-week__count">{weekSuccessDays}</span>
+                    <span className="un-week__of">/{weekRecorded.length || 7}</span>
+                    <span className="un-week__cap">天全部成功</span>
                     {streak > 0 ? (
                       <span className="un-week__streak">· 连续 {streak} 天</span>
                     ) : null}
@@ -464,7 +486,22 @@ export function TodayPage() {
                 <ol className="un-week__days">
                   {weekDays.map((day) => {
                     const isToday = day.day === today
-                    const tone = day.success > 0 ? 'success' : day.failed > 0 ? 'danger' : day.skipped > 0 ? 'warning' : 'none'
+                    const tone =
+                      day.failed > 0
+                        ? 'danger'
+                        : day.success > 0
+                          ? 'success'
+                          : day.skipped > 0
+                            ? 'warning'
+                            : 'none'
+                    const outcome =
+                      tone === 'success'
+                        ? '成功'
+                        : tone === 'danger'
+                          ? '有失败'
+                          : tone === 'warning'
+                            ? '未执行'
+                            : '无记录'
                     return (
                       <li
                         key={day.day}
@@ -474,7 +511,7 @@ export function TodayPage() {
                           to="/app/history"
                           search={{ day: day.day }}
                           className="un-week__link"
-                          aria-label={day.day + ' 的记录'}
+                          aria-label={day.day + ' 的记录，' + outcome}
                         >
                           <span className="un-week__weekday">{weekdayLabel(day.day)}</span>
                           <span className="un-week__date un-serif">{day.day.slice(8)}</span>
@@ -557,7 +594,7 @@ export function TodayPage() {
         open={helpOpen}
         onOpenChange={setHelpOpen}
         title="联系管理员"
-        returnFocusTo={helpReturnFocus}
+        returnFocusTo={helpReturnFocus.current}
         className="un-dialog"
         description="把账号手机号后四位与失败时间发给部署方管理员；不要发送易班口令。"
         footer={
@@ -644,22 +681,26 @@ function Ruler({
           }}
           aria-hidden="true"
         />
-        <span
-          className="un-ruler__now"
-          style={{ left: geometry.nowLeft + '%' }}
-          aria-hidden="true"
-        />
-        <span
-          className="un-ruler__callout is-chosen"
-          style={{ left: geometry.chosenLeft + '%' }}
-          aria-hidden="true"
-        >
-          {geometry.chosenText}
-        </span>
-        {geometry.actualText ? (
+        {geometry.nowLeft !== null ? (
+          <span
+            className="un-ruler__now"
+            style={{ left: geometry.nowLeft + '%' }}
+            aria-hidden="true"
+          />
+        ) : null}
+        {geometry.chosenLeft !== null && geometry.chosenText !== null ? (
+          <span
+            className="un-ruler__callout is-chosen"
+            style={{ left: geometry.chosenLeft + '%' }}
+            aria-hidden="true"
+          >
+            {geometry.chosenText}
+          </span>
+        ) : null}
+        {geometry.actualLeft !== null && geometry.actualText !== null ? (
           <span
             className="un-ruler__callout is-actual"
-            style={{ left: geometry.actualLeft === null ? geometry.chosenLeft + '%' : geometry.actualLeft + '%' }}
+            style={{ left: geometry.actualLeft + '%' }}
             aria-hidden="true"
           >
             {geometry.actualText}
@@ -674,11 +715,13 @@ function Ruler({
             现在
           </span>
         ) : null}
-        <span
-          className={cx('un-ruler__pin', 'is-chosen', running && 'is-running')}
-          style={{ left: geometry.chosenLeft + '%' }}
-          aria-hidden="true"
-        />
+        {geometry.chosenLeft !== null ? (
+          <span
+            className={cx('un-ruler__pin', 'is-chosen', running && 'is-running')}
+            style={{ left: geometry.chosenLeft + '%' }}
+            aria-hidden="true"
+          />
+        ) : null}
         {geometry.actualLeft !== null ? (
           <span
             className={cx('un-ruler__pin', 'is-actual', failed && 'is-failed')}
@@ -705,10 +748,17 @@ function Ruler({
         ))}
       </div>
       <div className="un-ruler__legend uapp-window-legend">
-        <span className="un-ruler__legend-item">
-          <span className="un-ruler__key is-chosen" aria-hidden="true" />
-          你选 {geometry.chosenText}
-        </span>
+        {geometry.chosenText !== null ? (
+          <span className="un-ruler__legend-item">
+            <span className="un-ruler__key is-chosen" aria-hidden="true" />
+            你选 {geometry.chosenText}
+          </span>
+        ) : (
+          <span className="un-ruler__legend-item is-muted">
+            <span className="un-ruler__key is-chosen" aria-hidden="true" />
+            系统按窗口自动分配
+          </span>
+        )}
         <span className="un-ruler__legend-item">
           <span className="un-ruler__key is-actual" aria-hidden="true" />
           实际 {geometry.actualText ?? '—'}

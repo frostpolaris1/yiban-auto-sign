@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent } from 'react'
 import { formatClock, parseDay } from '@/lib/format'
 import { displayName } from '@/lib/account-display'
 import type { SignCalendarAccount, SignCalendarDay } from '@/lib/api/me'
@@ -94,8 +95,14 @@ function cellAria(
 ): string {
   if (future) return dayLabel(day) + '，未来'
   if (!info || info.total === 0) return dayLabel(day) + '，无记录'
-  if (info.failed > 0) return dayLabel(day) + '，' + info.failed + ' 个失败'
-  return dayLabel(day) + '，' + info.success + ' 个成功'
+  if (info.failed > 0) {
+    const parts = [info.failed + ' 个失败']
+    if (info.success > 0) parts.push(info.success + ' 个成功')
+    if (info.skipped > 0) parts.push(info.skipped + ' 个未执行')
+    return dayLabel(day) + '，' + parts.join('，')
+  }
+  if (info.success > 0) return dayLabel(day) + '，' + info.success + ' 个成功'
+  return dayLabel(day) + '，' + info.total + ' 个未执行'
 }
 
 function accountName(
@@ -167,7 +174,7 @@ export function RecordsPage({
   let success = 0
   let failed = 0
   for (const item of monthQuery.data?.days ?? []) {
-    if (item.success > 0) success += 1
+    if (item.success > 0 && item.failed === 0) success += 1
     if (item.failed > 0) failed += 1
   }
 
@@ -181,6 +188,30 @@ export function RecordsPage({
 
   const dayAccounts = dayQuery.data?.accounts ?? []
   const dayFailed = dayAccounts.some((item) => item.state === 'failed')
+  const gridRef = useRef<HTMLDivElement>(null)
+
+  const moveFocus = (event: KeyboardEvent<HTMLDivElement>, offset: number) => {
+    const current = (event.target as HTMLElement).dataset.day
+    if (!current) return
+    const date = new Date(current + 'T00:00:00Z')
+    date.setUTCDate(date.getUTCDate() + offset)
+    const next = date.toISOString().slice(0, 10)
+    const target = gridRef.current?.querySelector<HTMLButtonElement>(
+      `[data-day="${next}"]`,
+    )
+    if (!target) return
+    event.preventDefault()
+    target.focus()
+  }
+
+  const onGridKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') moveFocus(event, -1)
+    else if (event.key === 'ArrowRight') moveFocus(event, 1)
+    else if (event.key === 'ArrowUp') moveFocus(event, -7)
+    else if (event.key === 'ArrowDown') moveFocus(event, 7)
+    else if (event.key === 'Home') moveFocus(event, -((new Date((event.target as HTMLElement).dataset.day + 'T00:00:00Z').getUTCDay() + 6) % 7))
+    else if (event.key === 'End') moveFocus(event, 6 - ((new Date((event.target as HTMLElement).dataset.day + 'T00:00:00Z').getUTCDay() + 6) % 7))
+  }
 
   return (
     <div className="un-records">
@@ -237,7 +268,12 @@ export function RecordsPage({
               </button>
             </div>
           ) : (
-            <div className="un-cal__grid" aria-busy={monthQuery.isPending}>
+            <div
+              ref={gridRef}
+              className="un-cal__grid"
+              aria-busy={monthQuery.isPending}
+              onKeyDown={onGridKeyDown}
+            >
               {cells.map((cell) => {
                 const inMonth = monthOf(cell) === month
                 const info = dayMap.get(cell)
@@ -259,6 +295,8 @@ export function RecordsPage({
                     aria-pressed={isSelected}
                     aria-current={isToday ? 'date' : undefined}
                     aria-disabled={future || undefined}
+                    data-day={cell}
+                    tabIndex={isSelected ? 0 : -1}
                     onClick={() => pick(cell)}
                   >
                     <span className="un-cal__day">
@@ -276,6 +314,7 @@ export function RecordsPage({
           <div className="un-cal__legend">
             <span><i className="un-cal__dot is-success" aria-hidden="true" />成功</span>
             <span><i className="un-cal__dot is-danger" aria-hidden="true" />失败</span>
+            <span><i className="un-cal__dot is-warning" aria-hidden="true" />未执行</span>
             <span><i className="un-cal__dot is-none" aria-hidden="true" />无记录</span>
           </div>
         </section>

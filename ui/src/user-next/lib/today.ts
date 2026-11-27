@@ -94,10 +94,14 @@ export function rulerGeometry(
       ? null
       : start + Math.max(0, Math.min(offset, end - start))
   const actualClock = runAt ? formatClock(runAt) : '—'
-  const actual = actualClock === '—' ? null : parseClock(actualClock)
+  const actualMinute = actualClock === '—' ? null : parseClock(actualClock)
 
   const chosenText = chosen === null ? null : clockOf(chosen)
-  const actualText = actual === null ? null : clockOf(actual)
+  const actualText = actualMinute === null ? null : clockOf(actualMinute)
+  const actualLeft =
+    actualMinute === null
+      ? null
+      : pct(Math.min(domainEnd, Math.max(domainStart, actualMinute)))
   const caption =
     chosenText === null
       ? actualText
@@ -128,7 +132,7 @@ export function rulerGeometry(
     bandLeft: pct(start),
     bandWidth: pct(end) - pct(start),
     chosenLeft: chosen === null ? null : pct(chosen),
-    actualLeft: actual === null ? null : pct(actual),
+    actualLeft,
     nowLeft: nowInside ? pct(nowMinute) : null,
     chosenText,
     actualText,

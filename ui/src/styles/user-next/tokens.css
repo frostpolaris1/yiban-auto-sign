@@ -1,13 +1,14 @@
 /*
  * user-next/tokens.css — isolated design tokens for the user-facing app.
  *
- * Scope: every declaration lives under :root[data-theme] .un-root.
- * The admin token file (src/styles/tokens.css) stays untouched.
+ * Scope: every declaration lives under a bare :root[data-theme] block so
+ * portals and view-transition pseudo-elements inherit them. The admin token
+ * file (src/styles/tokens.css) stays untouched.
  * token-gate exempts this file only for the color literal scan; its own
  * checker verifies both themes, the --un- prefix, and identical token names.
  */
 
-:root[data-theme="light"] .un-root {
+:root[data-theme="light"] {
   /* Paper surfaces */
   --un-canvas: #f5f7f7;
   --un-canvas-deep: #e9edec;
@@ -97,7 +98,7 @@
   --un-radius-md: 10px;
   --un-radius-sm: 8px;
   --un-radius-pill: 999px;
-  --un-bar-h: 56px;
+  --un-bar-h: 64px;
   --un-bottom-h: 64px;
   --un-touch: 44px;
 
@@ -111,7 +112,7 @@
   --un-draw: 360ms;
 }
 
-:root[data-theme="dark"] .un-root {
+:root[data-theme="dark"] {
   /* Night mineral surfaces */
   --un-canvas: #13181a;
   --un-canvas-deep: #0e1214;
@@ -201,7 +202,7 @@
   --un-radius-md: 10px;
   --un-radius-sm: 8px;
   --un-radius-pill: 999px;
-  --un-bar-h: 56px;
+  --un-bar-h: 64px;
   --un-bottom-h: 64px;
   --un-touch: 44px;
 

@@ -444,6 +444,13 @@
   opacity: 1;
 }
 
+/* 触屏没有 hover：删除入口必须常显，否则照片无法移除。 */
+@media (hover: none) {
+  .un-photos__remove {
+    opacity: 1;
+  }
+}
+
 .un-photos__add,
 .un-photos__empty {
   display: grid;

@@ -28,6 +28,7 @@ import {
 } from '@/lib/api/account'
 import type { Account } from '@/lib/api/account'
 import { ApiError } from '@/lib/api/client'
+import { formatClock } from '@/lib/format'
 import {
   deletePhoto,
   listAccountPhotos,
@@ -193,15 +194,18 @@ export function AccountPage() {
   } else if (todayItem) {
     if (todayItem.state === 'success') {
       todayTone = 'success'
-      todayLabel = todayItem.run_at ? '今天已签到 · ' + todayItem.run_at.slice(11, 16) : '今天已签到'
+      todayLabel = todayItem.run_at ? '今天已签到 · ' + formatClock(todayItem.run_at) : '今天已签到'
     } else if (todayItem.state === 'failed') {
-      todayTone = 'danger'
+      todayTone = 'failed'
       todayLabel = '今天失败，等待重试'
     } else if (todayItem.state === 'skipped') {
       todayTone = 'warning'
       todayLabel = '今天未执行'
     } else if (todayItem.state === 'running') {
       todayLabel = '今天进行中'
+    } else if (todayItem.state === 'pending') {
+      todayTone = 'info'
+      todayLabel = '今天排队中'
     }
   }
 

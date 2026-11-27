@@ -92,7 +92,11 @@ function addDays(day: string, amount: number): string {
   return date.toISOString().slice(0, 10)
 }
 
-/** 视觉与行为共用固定今天：此前每天全成功，此后 future=true 且无记录。 */
+/**
+ * 视觉与行为共用固定今天：此前每天全成功，此后 future=true 且无记录。
+ * 行为测试须同时把浏览器时钟固定到这一天（user-app.spec.ts 的 beforeEach），
+ * 否则 UI 的“今天”与这里生成的 from/to 会跨日错位。
+ */
 const MOCK_TODAY = '2026-11-11'
 
 export function userCalendar(from: string, to: string): SignCalendar {

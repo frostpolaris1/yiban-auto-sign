@@ -181,6 +181,12 @@
   background: var(--un-surface-sunken);
 }
 
+.un-cal__cell.is-selected:hover:not([aria-disabled="true"])::before,
+.un-cal__cell.is-selected:focus-visible::before {
+  border-color: color-mix(in srgb, var(--un-blue) 30%, transparent);
+  background: var(--un-blue-faint);
+}
+
 .un-cal__cell:active:not([aria-disabled="true"]) {
   transform: scale(0.97);
 }

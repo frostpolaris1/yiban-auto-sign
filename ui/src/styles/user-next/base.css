@@ -107,7 +107,6 @@
 .un-root :focus-visible {
   outline: 2px solid var(--un-focus);
   outline-offset: 3px;
-  border-radius: 4px;
 }
 
 .un-root :where(hr) {

@@ -10,7 +10,7 @@
   top: 0;
   z-index: 40;
   height: auto;
-  padding: 0;
+  padding: env(safe-area-inset-top) 0 0;
   border-bottom: 1px solid var(--un-line-soft);
   background: var(--un-canvas);
   box-shadow: none;
@@ -330,7 +330,7 @@
 
   .un-bottom-spacer {
     display: block;
-    height: var(--un-bottom-h);
+    height: calc(var(--un-bottom-h) + env(safe-area-inset-bottom));
   }
 }
 
