@@ -140,8 +140,11 @@ export function TodayPage() {
   const photoUrl = photo ? photoBytesPath(photo.id) : null
   const schoolName =
     schoolsQuery.data?.find((school) => school.id === current?.school_id)?.name ??
-    current?.school_id ??
-    '—'
+    (schoolsQuery.isError
+      ? '学校信息暂时读不到'
+      : schoolsQuery.data
+        ? '学校未登记'
+        : '学校信息加载中')
   const announcement = announcementQuery.data
   const showAnnouncement =
     !announcementDismissed &&
@@ -168,11 +171,26 @@ export function TodayPage() {
   }, [])
 
   useEffect(() => {
-    if (running) setFast(true)
+    if (fastTimer.current !== null) {
+      window.clearTimeout(fastTimer.current)
+      fastTimer.current = null
+    }
+    if (running) {
+      setFast(true)
+      return
+    }
     // A finished run can turn into a pending one; keep the faster cadence for
     // one more minute after the status changes, then fall back to the normal poll.
-    const timer = window.setTimeout(() => setFast(false), 60_000)
-    return () => window.clearTimeout(timer)
+    fastTimer.current = window.setTimeout(() => {
+      fastTimer.current = null
+      setFast(false)
+    }, 60_000)
+    return () => {
+      if (fastTimer.current !== null) {
+        window.clearTimeout(fastTimer.current)
+        fastTimer.current = null
+      }
+    }
   }, [running])
 
   const armFast = () => {
@@ -476,7 +494,7 @@ export function TodayPage() {
                   </h2>
                   <p className="un-week__summary">
                     <span className="un-week__count">{weekSuccessDays}</span>
-                    <span className="un-week__of">/{weekRecorded.length || 7}</span>
+                    <span className="un-week__of">/{weekDays.length || 7}</span>
                     <span className="un-week__cap">天全部成功</span>
                     {streak > 0 ? (
                       <span className="un-week__streak">· 连续 {streak} 天</span>

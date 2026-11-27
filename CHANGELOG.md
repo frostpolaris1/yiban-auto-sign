@@ -16,6 +16,10 @@
 **变更**
 - 用户端路径收进「我的」：`/app/settings` → `/app/me`，`/app/account` → `/app/me/account`，`/app/account/new` → `/app/me/account/new`，`/app/settings/time-pref` → `/app/me/time`，`/app/settings/password` → `/app/me/password`；旧路径保留重定向。
 
+**修复**
+- 用户端读取失败时不再显示空账号与全零统计；学校信息缺失时给出明确兜底；日历方向键不再把焦点移到未来日期。
+- 主题令牌改挂根节点，弹层与共享元素转场继承同一套颜色与动效时长。
+
 ## [v0.7.5] - 2026-11-24 · 用户端收口、登录注册竖屏改版与人机验证接入
 
 **新增**

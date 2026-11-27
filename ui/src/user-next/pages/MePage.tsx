@@ -82,7 +82,11 @@ export function MePage() {
   const photoUrl = photo ? photoBytesPath(photo.id) : null
   const schoolName =
     schoolsQuery.data?.find((school) => school.id === account?.school_id)?.name ??
-    (schoolsQuery.isError ? '学校信息暂时读不到' : '学校信息加载中')
+    (schoolsQuery.isError
+      ? '学校信息暂时读不到'
+      : schoolsQuery.data
+        ? '学校未登记'
+        : '学校信息加载中')
   const days = calendarQuery.data?.days ?? []
   const recorded = days.filter((day) => day.total > 0)
   const successDays = recorded.filter((day) => day.success > 0 && day.failed === 0).length

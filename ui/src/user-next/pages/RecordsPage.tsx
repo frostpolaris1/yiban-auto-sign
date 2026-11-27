@@ -199,7 +199,7 @@ export function RecordsPage({
     const target = gridRef.current?.querySelector<HTMLButtonElement>(
       `[data-day="${next}"]`,
     )
-    if (!target) return
+    if (!target || target.getAttribute('aria-disabled') === 'true') return
     event.preventDefault()
     target.focus()
   }
