@@ -4,7 +4,7 @@ target-version = "py313"
 exclude = [".git", "__pycache__"]
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "SIM", "RUF"]
+select = ["E", "W", "F", "I", "B", "SIM", "RUF", "DTZ"]
 ignore = [
     "BLE001",
     "SIM115",

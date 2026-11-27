@@ -352,8 +352,6 @@ os_exec mkdir -p /opt/e2e-src /opt/e2e-dist >>"$E2E_STEP_LOG" 2>&1 \
     || e2e_die "创建 /opt/e2e-src 失败"
 docker cp "$REPO/deploy" "$OS:/opt/e2e-src/deploy" >>"$E2E_STEP_LOG" 2>&1 \
     || e2e_die "复制 deploy/ 失败"
-docker cp "$REPO/config" "$OS:/opt/e2e-src/config" >>"$E2E_STEP_LOG" 2>&1 \
-    || e2e_die "复制 config/ 失败"
 docker cp "$BIN_OUT/yiban-server" "$OS:/opt/e2e-dist/yiban-server" >>"$E2E_STEP_LOG" 2>&1 \
     || e2e_die "复制 server 二进制失败"
 docker cp "$BIN_OUT/yiban-cli" "$OS:/opt/e2e-dist/yiban-cli" >>"$E2E_STEP_LOG" 2>&1 \

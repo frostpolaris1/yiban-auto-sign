@@ -493,7 +493,6 @@ EOF
     docker exec "$OS" mkdir -p /opt/e2e-src /opt/e2e-dist /opt/e2e/sql /opt/e2e/scripts/e2e/lib /opt/pg18 \
         >>"$E2E_STEP_LOG" 2>&1 || e2e_die "容器内目录创建失败"
     docker cp "$REPO/deploy" "$OS:/opt/e2e-src/deploy" >>"$E2E_STEP_LOG" 2>&1 || e2e_die "复制 deploy/ 失败"
-    docker cp "$REPO/config" "$OS:/opt/e2e-src/config" >>"$E2E_STEP_LOG" 2>&1 || e2e_die "复制 config/ 失败"
     # R2 走真签名链：update.sh 从 <repo>/scripts/release/verify.sh 验签。
     docker exec "$OS" mkdir -p /opt/e2e-src/scripts >>"$E2E_STEP_LOG" 2>&1 || e2e_die "创建 scripts 目录失败"
     docker cp "$REPO/scripts/release" "$OS:/opt/e2e-src/scripts/release" >>"$E2E_STEP_LOG" 2>&1 \

@@ -33,7 +33,7 @@ python -m pytest tests/ -q -n <workers> --dist loadfile
 - 公开数据门在 `run_ci` 内**显式点名**，且与接线守卫同一步执行；不放在任何条件分支里。
 - pytest 并发默认 `max(1, nproc-1)`，可用 `PYTEST_WORKERS` 覆盖；`--dist loadfile`
   保证同一文件落在同一 worker。
-- 当前 `tests/` 为 18 个文件、177 个用例，本机约 5 秒；数字只作观察，门以命令退出码为准。
+- 当前 `tests/` 为 18 个文件、180 个用例，本机约 5 秒；数字只作观察，门以命令退出码为准。
 
 ## 3. 退出码
 

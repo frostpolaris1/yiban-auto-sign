@@ -47,8 +47,8 @@ type p6Frame struct {
 //
 // 客户端 Close 后，服务端的请求 ctx 与每用户槽位归还由 net/http
 // 的连接关闭检测异步完成；同一用户立刻重连可能先撞上自己的旧槽位
-// （429, Retry-After: 5）。这里按服务端给的节奏短暂退避重试，
-// 最多等 3s；槽位真的泄漏时仍以 429 判红，不掩盖缺陷。
+// （429, Retry-After: 5）。这里固定 10ms 退避重试，最多等 3s；
+// 槽位真的泄漏时仍以 429 判红，不掩盖缺陷。
 func p6OpenStream(t *testing.T, e *w2cEnv, issued *coreauth.Issued, lastEventID string) *p6Stream {
 	t.Helper()
 	srv := httptest.NewServer(e.engine)
