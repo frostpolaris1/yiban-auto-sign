@@ -20,8 +20,8 @@
    postinstall 联网）。
 7. 入口脚本的行为：非注释行真的跑 spectral（`--fail-severity warn`）与
    oasdiff（`--format json` ＋ allowlist 过滤）；缺工具 exit 2；无底本或
-   base 里没有 spec 时打印显性 SKIP；破坏性变更的退出码原样传出；
-   allowlist 过期行失效（过期/缺列都回到红）。
+   base 里没有 spec 时打印显性 SKIP；base 树读不出 exit 2；破坏性变更的
+   退出码原样传出；allowlist 过期行失效（过期/缺列都回到红）。
 
 # 归属
 
@@ -398,8 +398,10 @@ class EntryScriptTest(unittest.TestCase):
     def test_base_without_spec_is_first_introduction_skip(self):
         self.assertIn("first introduction", self.script,
                       "base 里没有 spec 必须打印首次引入 SKIP")
-        self.assertIn("git cat-file -e", self.script,
-                      "首次引入判据必须真的查 base 对象库")
+        self.assertIn("git ls-tree", self.script,
+                      "首次引入判据必须真的列出 base 树")
+        self.assertIn("cannot list", self.script,
+                      "base 树读不出必须 exit 2，不得误判为首次引入")
 
 
 def _ruleset_violations(body):
@@ -512,6 +514,21 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         self.assertIn("first introduction", out)
         self.assertIn("contract-gate: ok", out)
         self.assertNotIn("== oasdiff breaking", out)
+
+    def test_unreadable_base_tree_exits_2(self):
+        body = (
+            "tree " + "0" * 40 + "\n"
+            "author T <t@example.invalid> 0 +0000\n"
+            "committer T <t@example.invalid> 0 +0000\n\n"
+            "missing tree\n"
+        )
+        base = subprocess.check_output(
+            ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
+            cwd=BASE, input=body, text=True, env=dict(os.environ)).strip()
+        rc, out = self._run("--base", base)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot list", out)
+        self.assertNotIn("first introduction", out)
 
     def test_skip_line_reaches_step_summary(self):
         summary = os.path.join(self.tmp.name, "summary.md")
