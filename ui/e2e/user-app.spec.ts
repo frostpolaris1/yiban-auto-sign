@@ -65,6 +65,8 @@ test('today success shows the calm result, chosen time and 7-day strip', async (
   await expect(page.locator('.un-result__clock')).toHaveText('07:02')
   await expect(page.locator('.uapp-hero-name')).toHaveText('东区宿舍')
   await expect(page.locator('.un-identity .un-chip')).toContainText('正常')
+  // 身份区头像应保持 48px；外层 40px 规则不能靠后覆盖它。
+  await expect(page.locator('.un-identity .un-avatar--lg')).toHaveCSS('width', '48px')
   await expect(page.locator('.un-week')).toContainText('近 7 天')
   await expect(page.locator('.un-ruler__range')).toContainText('06:30 – 07:50')
   await expect(page.locator('.un-ruler__callout.is-chosen')).toContainText('06:45')
@@ -236,6 +238,7 @@ test('records deep link shows the month and day detail', async ({ page }) => {
 
   await expect(page.getByRole('heading', { name: '签到记录' })).toBeVisible()
   await expect(page.locator('.un-cal__month')).toContainText('2026年11月')
+  await expect(page.locator('.un-cal__legend')).toContainText('待确认')
   await expect(page.locator('.un-day-card')).toContainText('11月10日 星期二')
   await expect(page.locator('.un-day-card')).toContainText('东区宿舍')
   await expect(page.locator('.un-day-card')).toContainText('成功')

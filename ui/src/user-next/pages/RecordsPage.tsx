@@ -86,6 +86,7 @@ function toneOf(info: SignCalendarDay | undefined, future: boolean): string {
   if (info.failed > 0) return 'danger'
   if (info.success > 0) return 'success'
   if (info.skipped > 0) return 'warning'
+  if (info.unknown > 0) return 'pending'
   return 'none'
 }
 
@@ -317,6 +318,7 @@ export function RecordsPage({
             <span><i className="un-cal__dot is-success" aria-hidden="true" />成功</span>
             <span><i className="un-cal__dot is-danger" aria-hidden="true" />失败</span>
             <span><i className="un-cal__dot is-warning" aria-hidden="true" />未执行</span>
+            <span><i className="un-cal__dot is-pending" aria-hidden="true" />待确认</span>
             <span><i className="un-cal__dot is-none" aria-hidden="true" />无记录</span>
           </div>
         </section>

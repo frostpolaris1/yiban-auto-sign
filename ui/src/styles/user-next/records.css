@@ -276,6 +276,10 @@
   background: var(--un-warning);
 }
 
+.un-cal__dot.is-pending {
+  background: var(--un-pending);
+}
+
 .un-cal__dot.is-none {
   background: var(--un-line);
 }

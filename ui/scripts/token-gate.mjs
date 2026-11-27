@@ -298,11 +298,12 @@ function checkUserNextTokens(tokensPath = USER_NEXT_TOKENS_FILE) {
   const problems = []
   const pattern = /:root\[data-theme=["']?(light|dark)["']?\]\s*\{([^}]*)\}/g
   const outside = clean.replace(pattern, '')
-  if (/--un-/.test(outside)) {
-    problems.push('user-next tokens must live inside :root[data-theme] blocks')
-  }
   if (outside.trim() !== '') {
-    problems.push('user-next token file may only contain bare :root[data-theme] blocks')
+    problems.push(
+      /--un-/.test(outside)
+        ? 'user-next tokens must live inside :root[data-theme] blocks'
+        : 'user-next token file may only contain bare :root[data-theme] blocks',
+    )
   }
   const rootSelectors = (clean.match(/:root\[data-theme=["']?(?:light|dark)["']?\]/g) ?? []).length
   const scopedSelectors = Object.keys(blocks).length

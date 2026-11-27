@@ -24,7 +24,6 @@ import {
   userStatusTone,
 } from '@/lib/account-display'
 import { clearSessionExpired, useMe } from '@/lib/session'
-import { schoolLabel } from '@/features/me/display'
 import {
   ME_KEYS,
   useLatestPhoto,
@@ -35,7 +34,12 @@ import {
   useSignCalendar,
   useTimePref,
 } from '@/features/me/queries'
-import { nextRunText, todayKey, weekdayLabel } from '@/features/me/display'
+import {
+  nextRunText,
+  schoolLabel,
+  todayKey,
+  weekdayLabel,
+} from '@/features/me/display'
 import { ReauthDialog } from '@/features/me/ReauthDialog'
 
 const RETENTION_OPTIONS = [30, 90, 180, 365] as const
@@ -298,7 +302,9 @@ export function MePage() {
                         ? '有失败'
                         : day.success > 0
                           ? '成功'
-                          : '未执行'
+                          : day.unknown > 0
+                            ? '待确认'
+                            : '未执行'
                   return (
                     <span
                       key={day.day}
@@ -306,6 +312,7 @@ export function MePage() {
                         'un-me__week-mark',
                         day.success > 0 && 'is-success',
                         day.failed > 0 && 'is-danger',
+                        day.success === 0 && day.failed === 0 && day.unknown > 0 && 'is-pending',
                         day.total === 0 && 'is-empty',
                       )}
                       role="img"

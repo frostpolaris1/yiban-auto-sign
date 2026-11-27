@@ -316,7 +316,7 @@
 
 1. **唯一容器**：七页共用 `.un-container`，宽度只由 `--un-container` 给，不按页给第二档 `max-width`；切页时 H1 与内容左边界不跳。
 2. **单列断点**：`<= 899px` 全部页面收单列；`<= 767px` 才切移动顶栏/底栏。不要在 `768–899px` 之间留半双栏。
-3. **共享转场**：`withViewTransition(name, update, source?)` 是唯一转场入口；CSS 契约是 `html[data-un-vt=result|identity|account|day] .un-shared-*`。group 220ms，root old 120ms / new 180ms；`prefers-reduced-motion` 下关闭。
+3. **共享转场**：`withViewTransition(name, update, source?)` 是唯一转场入口，name 只有 `page` 与 `identity`；共享元素契约是 `html[data-un-vt="identity"] .un-shared-identity`，其余页面切换只做 root 交叉淡化。group 220ms，root old 120ms / new 180ms；`prefers-reduced-motion` 下关闭。
 
 ### 5.3 门户令牌映射（管理端/门户沿用；用户端以 §5.2 与 §5.4 为准）
 
