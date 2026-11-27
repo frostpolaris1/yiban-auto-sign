@@ -19,9 +19,9 @@
    oasdiff 按 `v1.35.0` 安装；`npm ci` 带 `--ignore-scripts`（阻断
    postinstall 联网）。
 7. 入口脚本的行为：非注释行真的跑 spectral（`--fail-severity warn`）与
-   oasdiff（`--format json` ＋ allowlist 过滤）；缺工具 exit 2；无底本时
-   打印显性 SKIP；破坏性变更的退出码原样传出；allowlist 过期行失效
-   （过期/缺列都回到红）。
+   oasdiff（`--format json` ＋ allowlist 过滤）；缺工具 exit 2；无底本或
+   base 里没有 spec 时打印显性 SKIP；破坏性变更的退出码原样传出；
+   allowlist 过期行失效（过期/缺列都回到红）。
 
 # 归属
 
@@ -395,9 +395,11 @@ class EntryScriptTest(unittest.TestCase):
         self.assertIn("contract-gate SKIP (oasdiff:", self.script,
                       "没有底本时必须打印显性 SKIP 行")
 
-    def test_base_without_spec_is_an_environment_error(self):
-        self.assertIn("does not exist at base ref", self.script,
-                      "给了 --base 但取不到 spec 必须 exit 2，不得静默跳过")
+    def test_base_without_spec_is_first_introduction_skip(self):
+        self.assertIn("first introduction", self.script,
+                      "base 里没有 spec 必须打印首次引入 SKIP")
+        self.assertIn("git cat-file -e", self.script,
+                      "首次引入判据必须真的查 base 对象库")
 
 
 def _ruleset_violations(body):
@@ -490,6 +492,26 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         rc, out = self._run()
         self.assertEqual(rc, 0, out)
         self.assertIn("contract-gate SKIP (oasdiff:", out)
+
+    def test_base_without_spec_skips_visibly_and_passes(self):
+        ident = dict(
+            GIT_AUTHOR_NAME="contract-gate-test",
+            GIT_AUTHOR_EMAIL="contract-gate-test@example.invalid",
+            GIT_COMMITTER_NAME="contract-gate-test",
+            GIT_COMMITTER_EMAIL="contract-gate-test@example.invalid",
+        )
+        env = dict(os.environ, **ident)
+        tree = subprocess.check_output(
+            ["git", "hash-object", "-t", "tree", "/dev/null"],
+            cwd=BASE, env=env, text=True).strip()
+        base = subprocess.check_output(
+            ["git", "commit-tree", tree, "-m", "empty base"],
+            cwd=BASE, env=env, text=True).strip()
+        rc, out = self._run("--base", base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("first introduction", out)
+        self.assertIn("contract-gate: ok", out)
+        self.assertNotIn("== oasdiff breaking", out)
 
     def test_skip_line_reaches_step_summary(self):
         summary = os.path.join(self.tmp.name, "summary.md")

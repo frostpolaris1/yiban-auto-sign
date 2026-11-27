@@ -93,6 +93,9 @@ docs/*
 docs/dev/*
 !docs/dev/README.md
 !docs/dev/dev-verify.md
+!docs/dev/retry-advice-wiring.md
+!docs/dev/lease-deadline-guard.md
+!docs/dev/attempt-key-claim-cycle.md
 !docs/dev/acceptance-criteria.md
 !docs/dev/release-gate.md
 !docs/dev/backup-restore.md

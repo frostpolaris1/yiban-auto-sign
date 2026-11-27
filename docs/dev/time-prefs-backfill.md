@@ -21,6 +21,7 @@
 
 ```bash
 # 在旧栈 v0.6.5 检出中执行
+cd <旧栈 v0.6.5 检出>
 python3 scripts/db_export.py --out /var/lib/yiban/export
 ```
 

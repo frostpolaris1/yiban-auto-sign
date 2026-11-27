@@ -1,11 +1,12 @@
 name: CI
 
-# CI：verify（Python 面：ruff + pytest tests/）、tooling-gate（actionlint/shellcheck/
+# CI：verify（门禁测试：ruff + pytest tests/）、tooling-gate（actionlint/shellcheck/
 # golangci-lint/govulncheck/npm audit）、contract-gate（契约破坏性变更）、stacks
 # （Go+UI 门，含 Postgres 18）、ui-e2e（行为与视觉）。
 # 旧 Python 栈已于 2026-11-27 退役；Go 全量与部署 e2e 在 server/scripts/verify.sh、
 # deploy-gate.yml 与 update-rollback-privileged.yml，不在本文件重复。
-# 触发：向 develop / main 提 PR 或 push；feature 分支只跑 push；
+# 触发：向 develop / main 提 PR 会在 PR 阶段跑门；push 只覆盖 develop、main 与
+# feature/**。chore/fix/docs 等工作分支只在 PR 阶段跑门，推送本身不触发。
 # 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）。
 on:
   workflow_dispatch:
@@ -30,7 +31,7 @@ jobs:
   # 改名会让必需检查静默失效。若确要改名，先在 GitHub 设置里同步更新（批 1 约束 6）。
   verify:
     runs-on: ubuntu-latest
-    # 当前 Python 面 190 个用例，本地约 5 秒；15 分钟只作 runner 卡死兜底，
+    # 当前 Python 面 192 个用例，本地约 12 秒；15 分钟只作 runner 卡死兜底，
     # 不代表目标时长。
     timeout-minutes: 15
     steps:

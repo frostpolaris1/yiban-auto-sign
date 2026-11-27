@@ -35,7 +35,8 @@
 #   - 缺工具 = 环境错误，exit 2（跳过 ≠ 绿）。
 #   - 不给 --base 时 oasdiff 这一半显式打印 SKIP 行：推送新分支等没有可比底本，
 #     不能默认绿，也不能默认红。
-#   - 给了 --base 但取不到 base spec = 环境错误 exit 2：调用方说要比，却比不了。
+#   - 给了 --base 但 base 里没有 spec = 首次引入契约：打印显性 SKIP 行；
+#     spectral 仍执行。base 里存在却读不出 = 环境错误 exit 2。
 #   - base spec 从 git 对象直接读出到临时目录，不切换工作树。
 #   - 工具版本：spectral 由 server/contracts/tools/package-lock.json 钉住；
 #     oasdiff 由调用方安装（CI 钉 v1.35.0，见 .github/workflows/ci.yml）。
@@ -112,8 +113,17 @@ git rev-parse --verify "$BASE^{commit}" >/dev/null 2>&1 ||
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+if ! git cat-file -e "$BASE:$SPEC" 2>/dev/null; then
+    line="contract-gate SKIP (oasdiff: $SPEC not present at base '$BASE'; first introduction)"
+    echo "$line"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        echo "$line" >> "$GITHUB_STEP_SUMMARY"
+    fi
+    echo "contract-gate: ok"
+    exit 0
+fi
 git show "$BASE:$SPEC" > "$TMP_DIR/base.yaml" 2>/dev/null ||
-    die_env "$SPEC does not exist at base ref '$BASE'; nothing to compare"
+    die_env "cannot read $SPEC at base ref '$BASE'"
 
 echo "== oasdiff breaking（$BASE -> HEAD，ERR 级，allowlist 过滤后）=="
 PY="$(command -v python3 || command -v python || true)"
