@@ -267,6 +267,21 @@ async function waitForAnimations(page: Page) {
   await settleWindowTop(page)
 }
 
+/** 把 fullPage 截图高度抬到整十。
+ *
+ * Chromium arm64 与 x86 对文档末尾亚像素的取整可能差 1px；Playwright 的
+ * `maxDiffPixelRatio` 不吸收尺寸差，尺寸不等会直接判失败。整十高度给两端留出
+ * 同一取整空间，最多多出 9px 画布底色，不影响任何布局断言的判据。
+ */
+async function pinScreenshotHeight(page: Page) {
+  const height = await page.evaluate(
+    () => Math.ceil(document.documentElement.scrollHeight / 10) * 10,
+  )
+  await page.evaluate((value) => {
+    document.documentElement.style.minHeight = `${value}px`
+  }, height)
+}
+
 /** 把窗口滚回文档原点并等合成层跟上。
  *
  * Playwright 点击前会把触发器滚进视口，文档就停在下方；Chromium 的
@@ -749,6 +764,7 @@ test.describe('user app', () => {
             })
           }
           await waitForAnimations(page)
+          await pinScreenshotHeight(page)
           // 自带字体在 arm64 本机与 x86 CI 的字形抗锯齿不同，留 1% 像素容差；
           // 布局与语义仍由上面的可见性、无溢出和行为用例守住。
           await expect(page).toHaveScreenshot(

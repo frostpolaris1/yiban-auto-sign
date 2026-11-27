@@ -1256,6 +1256,13 @@
     font-size: 1.3rem;
   }
 
+  /* 日期在窄屏改用正文字体：等宽字体的字宽随平台变化，会把末尾数字挤成孤行。 */
+  .un-account-hero__dates {
+    font-family: var(--un-font-sans);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+
   .un-account-hero__side {
     width: 100%;
     justify-items: start;
