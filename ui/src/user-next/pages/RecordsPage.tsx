@@ -85,8 +85,8 @@ function toneOf(info: SignCalendarDay | undefined, future: boolean): string {
   if (future || !info || info.total === 0) return 'none'
   if (info.failed > 0) return 'danger'
   if (info.success > 0) return 'success'
-  if (info.skipped > 0) return 'warning'
   if (info.unknown > 0) return 'pending'
+  if (info.skipped > 0) return 'warning'
   return 'none'
 }
 
@@ -126,7 +126,9 @@ function stateLabel(state: SignCalendarAccount['state']): string {
   }
 }
 
-function stateTone(state: SignCalendarAccount['state']): string {
+function stateTone(
+  state: SignCalendarAccount['state'],
+): 'success' | 'danger' | 'warning' | 'pending' {
   switch (state) {
     case 'success':
       return 'success'
@@ -135,7 +137,7 @@ function stateTone(state: SignCalendarAccount['state']): string {
     case 'skipped':
       return 'warning'
     default:
-      return 'blue'
+      return 'pending'
   }
 }
 

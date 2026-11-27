@@ -275,6 +275,10 @@
   background: var(--un-pending);
 }
 
+.un-me__week-mark.is-warning {
+  background: var(--un-warning);
+}
+
 .un-me__week-mark.is-empty {
   background: var(--un-line-soft);
 }

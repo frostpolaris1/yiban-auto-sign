@@ -300,7 +300,7 @@ function checkUserNextTokens(tokensPath = USER_NEXT_TOKENS_FILE) {
   const outside = clean.replace(pattern, '')
   if (outside.trim() !== '') {
     problems.push(
-      /--un-/.test(outside)
+      /--un-[\w-]*\s*:/.test(outside)
         ? 'user-next tokens must live inside :root[data-theme] blocks'
         : 'user-next token file may only contain bare :root[data-theme] blocks',
     )
@@ -462,6 +462,20 @@ function selfTest() {
     )
     if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('must live inside'))) {
       failures.push('user-next token rule missed a token outside a theme block')
+    }
+    writeFileSync(
+      userNextFile,
+      scopedBlock('light', lightTokens) +
+        scopedBlock('dark', darkTokens) +
+        '.un-root { color: var(--un-ink); }\n',
+    )
+    if (
+      !checkUserNextTokens(userNextFile).some((problem) =>
+        problem.includes('may only contain'),
+      ) ||
+      checkUserNextTokens(userNextFile).some((problem) => problem.includes('must live inside'))
+    ) {
+      failures.push('user-next token rule misclassified a var reference outside a theme block')
     }
     writeFileSync(
       userNextFile,

@@ -16,7 +16,7 @@ import { notifySuccess } from '@/components/ui/toast'
 import { cx } from '@/lib/cx'
 import { deleteMyAccount, logout } from '@/lib/api/auth'
 import { ApiError } from '@/lib/api/client'
-import { setMailNotify, setPhotoRetention } from '@/lib/api/me'
+import { setMailNotify, setPhotoRetention, type SignCalendarDay } from '@/lib/api/me'
 import { photoBytesPath } from '@/lib/api/photo'
 import {
   displayName,
@@ -51,6 +51,25 @@ function shiftDay(key: string, delta: number): string {
 
 function chipTone(tone: string): string {
   return tone === 'info' ? 'blue' : tone
+}
+
+type WeekMarkTone = 'success' | 'danger' | 'pending' | 'warning' | 'empty'
+
+function weekMarkTone(day: SignCalendarDay): WeekMarkTone {
+  if (day.total === 0) return 'empty'
+  if (day.failed > 0) return 'danger'
+  if (day.success > 0) return 'success'
+  if (day.unknown > 0) return 'pending'
+  if (day.skipped > 0) return 'warning'
+  return 'empty'
+}
+
+function weekMarkLabel(day: SignCalendarDay): string {
+  if (day.total === 0) return '没有任务'
+  if (day.failed > 0) return '有失败'
+  if (day.success > 0) return '成功'
+  if (day.unknown > 0) return '待确认'
+  return '未执行'
 }
 
 function deleteErrorText(error: unknown): string {
@@ -94,6 +113,17 @@ export function MePage() {
   const recorded = days.filter((day) => day.total > 0)
   const successDays = recorded.filter((day) => day.success > 0 && day.failed === 0).length
   const failedDays = recorded.filter((day) => day.failed > 0).length
+  const pendingDays = recorded.filter(
+    (day) => day.success === 0 && day.failed === 0 && day.unknown > 0,
+  ).length
+  const skippedDays = recorded.filter(
+    (day) => day.success === 0 && day.failed === 0 && day.unknown === 0,
+  ).length
+  const statsNote =
+    '只统计已有任务的日期' +
+    (pendingDays > 0 ? '；其中 ' + pendingDays + ' 天待确认' : '') +
+    (skippedDays > 0 ? '，' + skippedDays + ' 天未执行' : '') +
+    '。'
   let streak = 0
   let streakIndex = days.length - 1
   // 今天还没有任务时从最近一个有任务的日期起算，不把“尚未执行”误判为断签。
@@ -103,6 +133,18 @@ export function MePage() {
     if (day.total > 0 && day.success > 0 && day.failed === 0) streak += 1
     else break
   }
+
+  const statsSummary =
+    '近 30 天：' +
+    successDays +
+    ' 天全部成功，' +
+    failedDays +
+    ' 天有失败' +
+    (pendingDays > 0 ? '，' + pendingDays + ' 天待确认' : '') +
+    (skippedDays > 0 ? '，' + skippedDays + ' 天未执行' : '') +
+    '，当前连续 ' +
+    streak +
+    ' 天'
   const pref = timePrefQuery.data
   const chosenSlot =
     pref?.slots?.find((slot) => slot.offset_min === pref.offset_min)?.label ?? null
@@ -265,7 +307,7 @@ export function MePage() {
           <section className="un-me__section" aria-labelledby="un-me-stats">
             <div className="un-me__section-head">
               <h2 id="un-me-stats" className="un-me__section-title">近 30 天</h2>
-              <p className="un-me__section-note">只统计已有任务的日期。</p>
+              <p className="un-me__section-note">{statsNote}</p>
             </div>
             <dl className="un-stats">
               <div className="un-stats__item">
@@ -288,39 +330,17 @@ export function MePage() {
               <div
                 className="un-me__week"
                 role="group"
-                aria-label={
-                  calendarQuery.isError
-                    ? '近 30 天统计暂时不可用'
-                    : `近 30 天：${successDays} 天全部成功，${failedDays} 天有失败，当前连续 ${streak} 天`
-                }
+                aria-label={calendarQuery.isError ? '近 30 天统计暂时不可用' : statsSummary}
               >
-                {days.map((day) => {
-                  const outcome =
-                    day.total === 0
-                      ? '没有任务'
-                      : day.failed > 0
-                        ? '有失败'
-                        : day.success > 0
-                          ? '成功'
-                          : day.unknown > 0
-                            ? '待确认'
-                            : '未执行'
-                  return (
-                    <span
-                      key={day.day}
-                      className={cx(
-                        'un-me__week-mark',
-                        day.success > 0 && 'is-success',
-                        day.failed > 0 && 'is-danger',
-                        day.success === 0 && day.failed === 0 && day.unknown > 0 && 'is-pending',
-                        day.total === 0 && 'is-empty',
-                      )}
-                      role="img"
-                      aria-label={`${weekdayLabel(day.day)} ${day.day}：${outcome}`}
-                      title={weekdayLabel(day.day) + ' ' + day.day}
-                    />
-                  )
-                })}
+                {days.map((day) => (
+                  <span
+                    key={day.day}
+                    className={cx('un-me__week-mark', 'is-' + weekMarkTone(day))}
+                    role="img"
+                    aria-label={`${weekdayLabel(day.day)} ${day.day}：${weekMarkLabel(day)}`}
+                    title={weekdayLabel(day.day) + ' ' + day.day}
+                  />
+                ))}
               </div>
               {days.length > 0 ? (
                 <div className="un-me__week-range" aria-hidden="true">

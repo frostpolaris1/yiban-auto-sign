@@ -247,6 +247,26 @@ test('records deep link shows the month and day detail', async ({ page }) => {
   await expect(page).toHaveURL(/day=2026-11-09/)
 })
 
+test('records and me agree on a pending-only day', async ({ page }) => {
+  await mockUserAppApi(page, { role: 'user', calendarPendingDay: '2026-11-09' })
+  await page.goto('/app/history?day=2026-11-09')
+
+  const pendingCell = page.locator('.un-cal__cell[data-day="2026-11-09"]')
+  await expect(pendingCell).toHaveAttribute('aria-label', /1 个待确认/)
+  await expect(pendingCell.locator('.un-cal__dot.is-pending')).toBeVisible()
+  await expect(page.locator('.un-day-card')).toContainText('待确认')
+  await expect(page.locator('.un-day-card .un-chip--pending')).toContainText('待确认')
+  await expect(page.locator('.un-day-list__rail.is-pending')).toBeVisible()
+
+  await page.goto('/app/me')
+  const week = page.locator('.un-me__week[role="group"]')
+  await expect(week).toHaveAttribute('aria-label', /1 天待确认/)
+  await expect(
+    page.locator('section[aria-labelledby="un-me-stats"] .un-me__section-note'),
+  ).toContainText('1 天待确认')
+  await expect(page.locator('.un-me__week-mark.is-pending')).toHaveCount(1)
+})
+
 test('me shows account facts, preferences and toggles failure mail', async ({ page }) => {
   await mockUserAppApi(page, { role: 'user' })
   await page.goto('/app/me')

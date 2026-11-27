@@ -99,18 +99,23 @@ function addDays(day: string, amount: number): string {
  */
 const MOCK_TODAY = '2026-11-11'
 
-export function userCalendar(from: string, to: string): SignCalendar {
+export function userCalendar(
+  from: string,
+  to: string,
+  pendingDay?: string,
+): SignCalendar {
   const days: SignCalendarDay[] = []
   let cursor = from
   while (cursor <= to) {
     const future = cursor > MOCK_TODAY
+    const pending = cursor === pendingDay
     days.push({
       day: cursor,
       total: future ? 0 : 1,
-      success: future ? 0 : 1,
+      success: future || pending ? 0 : 1,
       failed: 0,
       skipped: 0,
-      unknown: 0,
+      unknown: !future && pending ? 1 : 0,
       future,
     })
     cursor = addDays(cursor, 1)
@@ -132,6 +137,8 @@ export type UserAppOptions = MockOptions & {
   announcement?: string
   registrationEnabled?: boolean
   detect?: AccountDetectResult
+  /** 指定一个过去日期只返回 unknown，用来覆盖“待确认”渲染路径。 */
+  calendarPendingDay?: string
 }
 
 export async function mockUserAppApi(
@@ -228,7 +235,7 @@ export async function mockUserAppApi(
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(userCalendar(from, to)),
+      body: JSON.stringify(userCalendar(from, to, options.calendarPendingDay)),
     })
   })
 
@@ -292,6 +299,7 @@ export async function mockUserAppApi(
   await page.route('**/api/me/sign-calendar/*', (route) => {
     const url = new URL(route.request().url())
     const day = url.pathname.split('/').pop() ?? ''
+    const pending = day === options.calendarPendingDay
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -302,8 +310,8 @@ export async function mockUserAppApi(
         accounts: [
           {
             account_id: USER_ACCOUNT.id,
-            state: 'success',
-            run_at: `${day}T07:02:00+08:00`,
+            state: pending ? 'unknown' : 'success',
+            ...(pending ? {} : { run_at: `${day}T07:02:00+08:00` }),
             attempts: 1,
           },
         ],

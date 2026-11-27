@@ -422,8 +422,8 @@
   background: var(--un-warning);
 }
 
-.un-day-list__rail.is-blue {
-  background: var(--un-blue);
+.un-day-list__rail.is-pending {
+  background: var(--un-pending);
 }
 
 .un-day-list__main {
