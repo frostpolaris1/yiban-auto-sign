@@ -257,7 +257,8 @@ func TestStructureRowsPinned(t *testing.T) {
 	// user-app：ui/src/features 增 me（我的区），components/shell 增 UserAppShell。
 	// turnstile：adapters 增 turnstile（公开注册的 siteverify 出口）。
 	// 2026-11-27 PR2：旧线目录已删，root 行同步移除对应 token。
-	const want = "1c3f49fb036516468cbeabf0d7e2e468260149532d4fa334cc871d96c8725eed"
+	// user-next：ui/src 允许 user-next 层。
+	const want = "d28b51c25b54bead8d138db1510d319d3c7f684af8fe7dbba0375a97b39213ed"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}
