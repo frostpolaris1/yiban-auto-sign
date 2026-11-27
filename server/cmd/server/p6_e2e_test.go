@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ import (
 // p6Stream 是一条 SSE 连接的读取端。
 type p6Stream struct {
 	frames chan p6Frame
-	cancel context.CancelFunc
+	cancel func()
 }
 
 type p6Frame struct {
@@ -43,31 +44,50 @@ type p6Frame struct {
 }
 
 // p6OpenStream 打开 SSE 流并后台读帧。
+//
+// 客户端 Close 后，服务端的请求 ctx 与每用户槽位归还由 net/http
+// 的连接关闭检测异步完成；同一用户立刻重连可能先撞上自己的旧槽位
+// （429, Retry-After: 5）。这里按服务端给的节奏短暂退避重试，
+// 最多等 3s；槽位真的泄漏时仍以 429 判红，不掩盖缺陷。
 func p6OpenStream(t *testing.T, e *w2cEnv, issued *coreauth.Issued, lastEventID string) *p6Stream {
 	t.Helper()
 	srv := httptest.NewServer(e.engine)
 	t.Cleanup(srv.Close)
-	ctx, cancel := context.WithCancel(context.Background())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/admin/events", nil)
-	if err != nil {
-		cancel()
-		t.Fatalf("new request: %v", err)
-	}
-	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
-	if lastEventID != "" {
-		req.Header.Set("Last-Event-ID", lastEventID)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		cancel()
-		t.Fatalf("open stream: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	deadline := clock.System{}.Now().Add(3 * time.Second)
+	var resp *http.Response
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/admin/events", nil)
+		if err != nil {
+			cancelCtx()
+			t.Fatalf("new request: %v", err)
+		}
+		req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+		if lastEventID != "" {
+			req.Header.Set("Last-Event-ID", lastEventID)
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			cancelCtx()
+			t.Fatalf("open stream: %v", err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		cancel()
-		t.Fatalf("stream status = %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusTooManyRequests || (clock.System{}).Now().After(deadline) {
+			cancelCtx()
+			t.Fatalf("stream status = %d body=%s retry=%s", resp.StatusCode, body, resp.Header.Get("Retry-After"))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	st := &p6Stream{frames: make(chan p6Frame, 64), cancel: cancel}
+	// 取消客户端请求不一定立刻关闭响应体；显式 Close 让服务端读到 EOF、
+	// 归还每用户 SSE 槽位，重连才不会被自己的上一条连接挡成 429。
+	st := &p6Stream{frames: make(chan p6Frame, 64), cancel: func() {
+		cancelCtx()
+		_ = resp.Body.Close()
+	}}
 	go func() {
 		defer close(st.frames)
 		scanner := bufio.NewScanner(resp.Body)
@@ -89,10 +109,7 @@ func p6OpenStream(t *testing.T, e *w2cEnv, issued *coreauth.Issued, lastEventID 
 			}
 		}
 	}()
-	t.Cleanup(func() {
-		cancel()
-		_ = resp.Body.Close()
-	})
+	t.Cleanup(st.cancel)
 	return st
 }
 
