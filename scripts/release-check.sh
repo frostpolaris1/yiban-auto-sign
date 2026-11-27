@@ -678,20 +678,20 @@ STUB
             --in "$tmp/release/manifest.json" --out "$tmp/release/manifest.json.sig" >/dev/null 2>&1
         pin="$(sha256sum "$tmp/release/release-pubkey.pem" | cut -d' ' -f1)"
         # a) 缺锚：默认 SKIP（可见），发布档红。
-        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        YIBAN_RELEASE_PUBKEY_SHA256='' RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
         expect "signing SKIP without trust anchor is not FAIL" 0 "$rc"
-        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
+        YIBAN_RELEASE_PUBKEY_SHA256='' RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
             | grep -q '^signing *SKIP' || { say "MISMATCH: anchor-missing SKIP not visible"; fails=$((fails+1)); }
-        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
+        YIBAN_RELEASE_PUBKEY_SHA256='' RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
         expect "signing red without trust anchor under --require-signing" 1 "$rc"
         # b) 发布件目录内自带指纹不得被信：整包不可信时锚也不可信。
         printf '%s  release-pubkey.pem\n' "$pin" > "$tmp/release/release-pubkey.sha256"
-        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
+        YIBAN_RELEASE_PUBKEY_SHA256='' RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
         expect "signing red on in-dir fingerprint under --require-signing" 1 "$rc"
-        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing 2>/dev/null \
+        YIBAN_RELEASE_PUBKEY_SHA256='' RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing 2>/dev/null \
             | grep -q 'anchored fingerprint must come from outside the release directory' \
             || { say "MISMATCH: in-dir anchor rejection not named"; fails=$((fails+1)); }
-        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        YIBAN_RELEASE_PUBKEY_SHA256='' RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
         expect "signing SKIP on in-dir fingerprint is not FAIL" 0 "$rc"
         # c) 环境变量给正确指纹 → 默认与发布档都 PASS。
         YIBAN_RELEASE_PUBKEY_SHA256="$pin" RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
@@ -700,10 +700,10 @@ STUB
         expect "signing green under --require-signing with external anchor" 0 "$rc"
         # d) 显式外部文件锚：目录外通过，目录内拒绝。
         printf '%s  release-pubkey.pem\n' "$pin" > "$tmp/trusted.sha256"
-        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing \
+        YIBAN_RELEASE_PUBKEY_SHA256='' RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing \
             --pubkey-sha256-file "$tmp/trusted.sha256" --require-signing >/dev/null 2>&1; rc=$?
         expect "signing green with external --pubkey-sha256-file" 0 "$rc"
-        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing \
+        YIBAN_RELEASE_PUBKEY_SHA256='' RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing \
             --pubkey-sha256-file "$tmp/release/release-pubkey.sha256" --require-signing >/dev/null 2>&1; rc=$?
         expect "signing red with in-dir --pubkey-sha256-file" 1 "$rc"
         # e) 篡改清单一字节 → 红。
@@ -753,7 +753,7 @@ STUB
         src="$(command -v "$c" 2>/dev/null || true)"
         if [ -n "$src" ]; then ln -s "$src" "$tmp/bin/$c"; fi
     done
-    PATH="$tmp/bin" YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" \
+    PATH="$tmp/bin" YIBAN_RELEASE_PUBKEY_SHA256='' RELEASE_CHECK_ROOT="$tmp" \
         "$bash_abs" "$SELF" --only signing --pubkey-sha256-file "$tmp/anchor.sha256" >/dev/null 2>&1; rc=$?
     expect "signing FAIL when realpath is unavailable (fail-closed)" 1 "$rc"
     rm -rf "$tmp"
