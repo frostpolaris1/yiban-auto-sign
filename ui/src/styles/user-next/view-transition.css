@@ -1,0 +1,48 @@
+/*
+ * user-next/view-transition.css — one shared-element transition system.
+ * The data attribute is set by lib/viewTransition.ts for the duration of a
+ * native transition; routes opt in by carrying the matching class.
+ */
+
+html[data-un-vt="identity"] .un-shared-identity {
+  view-transition-name: un-identity;
+}
+
+::view-transition-group(*) {
+  animation-duration: var(--un-transition);
+  animation-timing-function: var(--un-ease);
+}
+
+::view-transition-old(root) {
+  animation: un-vt-out 120ms var(--un-ease) both;
+}
+
+::view-transition-new(root) {
+  animation: un-vt-in 180ms var(--un-ease) both;
+}
+
+::view-transition-old(un-identity),
+::view-transition-new(un-identity) {
+  animation-duration: var(--un-transition);
+  animation-timing-function: var(--un-ease);
+}
+
+@keyframes un-vt-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes un-vt-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}

@@ -1909,6 +1909,10 @@ button.uapp-row:hover:not(:disabled) {
   background: var(--warning);
 }
 
+.uapp-cal-dot--pending {
+  background: var(--info);
+}
+
 .uapp-cal-legend {
   display: flex;
   flex-wrap: wrap;

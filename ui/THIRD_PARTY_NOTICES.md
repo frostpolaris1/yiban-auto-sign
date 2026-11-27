@@ -35,3 +35,29 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Fonts
+
+### Noto Sans SC (subset)
+
+- Source: https://fonts.google.com/noto/specimen/Noto+Sans+SC
+- Upstream: https://github.com/notofonts/noto-cjk
+- File: `public/fonts/NotoSansSC-VF-subset.woff2`
+- Modification: subset to the UI character set with fontTools/pyftsubset; the
+  variable `wght` axis is retained.
+- License: SIL Open Font License 1.1. Full text:
+  `public/fonts/OFL-NotoSansSC.txt`.
+
+### Fraunces (subset)
+
+- Source: https://fonts.google.com/specimen/Fraunces
+- Upstream: https://github.com/undercasetype/Fraunces
+- File: `public/fonts/Fraunces-subset.woff2`
+- Modification: subset to numerals, punctuation and Latin UI characters with
+  fontTools/pyftsubset; the variable axes are retained.
+- License: SIL Open Font License 1.1. Full text:
+  `public/fonts/OFL-Fraunces.txt`.
+
+HarmonyOS Sans SC is listed first in the UI font stack for devices that already
+have it installed. The repository does not redistribute HarmonyOS Sans files;
+its license does not permit modified (including subsetted) copies.

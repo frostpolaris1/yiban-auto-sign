@@ -5,12 +5,14 @@ import { resolveLanding, landingForRole } from '../../src/lib/landing.ts'
 import { skyPaletteFor, SKY_PALETTES } from '../../src/features/auth/sky.ts'
 import {
   businessDateLabel,
+  calendarDayTone,
   detectErrorText,
   greetingFor,
   heroClock,
   homeState,
   windowGeometry,
   nextRunText,
+  schoolLabel,
 } from '../../src/features/me/display.ts'
 import { ApiError } from '../../src/lib/api/client.ts'
 
@@ -158,6 +160,40 @@ test('next run says today while the window is still ahead', () => {
   assert.equal(nextRunText(PREF, new Date('2026-11-11T07:00:00+09:00')), '今天 06:45 左右')
   // 无窗口时不编造时刻。
   assert.equal(nextRunText(undefined, beforeStart), '明天早上')
+})
+
+test('calendar day tone keeps failure above success, pending and skipped', () => {
+  const day = (counts, future = false) => {
+    const merged = { success: 0, failed: 0, skipped: 0, unknown: 0, ...counts }
+    return {
+      day: '2026-11-09',
+      total: merged.success + merged.failed + merged.skipped + merged.unknown,
+      ...merged,
+      future,
+    }
+  }
+
+  assert.equal(calendarDayTone(undefined), 'none')
+  assert.equal(calendarDayTone(day({})), 'none')
+  assert.equal(calendarDayTone(day({}), true), 'none')
+  assert.equal(calendarDayTone(day({ success: 1 }), true), 'none')
+  assert.equal(calendarDayTone(day({ failed: 1 })), 'danger')
+  assert.equal(calendarDayTone(day({ success: 1 })), 'success')
+  assert.equal(calendarDayTone(day({ success: 1, failed: 1 })), 'danger')
+  assert.equal(calendarDayTone(day({ failed: 1, unknown: 1 })), 'danger')
+  assert.equal(calendarDayTone(day({ failed: 1, skipped: 1 })), 'danger')
+  assert.equal(calendarDayTone(day({ success: 1, unknown: 1 })), 'success')
+  assert.equal(calendarDayTone(day({ unknown: 1, skipped: 1 })), 'pending')
+  assert.equal(calendarDayTone(day({ skipped: 1 })), 'warning')
+})
+
+test('school label separates unbound, loading, unreadable and unregistered', () => {
+  const school = [{ id: 's1', name: '东区宿舍' }]
+  assert.equal(schoolLabel(undefined, false, undefined), '尚未绑定学校')
+  assert.equal(schoolLabel(undefined, false, 's1'), '学校信息加载中')
+  assert.equal(schoolLabel(undefined, true, 's1'), '学校信息暂时读不到')
+  assert.equal(schoolLabel(school, false, 's1'), '东区宿舍')
+  assert.equal(schoolLabel([], false, 's1'), '学校未登记')
 })
 
 test('detect error text names an unregistered school and falls back for unknown status', () => {

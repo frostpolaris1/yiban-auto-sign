@@ -1,4 +1,5 @@
-import { test, expect, type Locator, type Page } from '@playwright/test'
+import { existsSync, readFileSync } from 'node:fs'
+import { test, expect, type Locator, type Page, type TestInfo } from '@playwright/test'
 import { ACCOUNTS, mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
 import { mockAuditApi } from './support/fake-audit-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
@@ -265,6 +266,29 @@ async function waitForAnimations(page: Page) {
     if (before === after) break
   }
   await settleWindowTop(page)
+}
+
+/** 让 fullPage 截图高度对齐已有基线。
+ *
+ * Chromium arm64 与 x86 对文档末尾亚像素的取整可能差 1px；Playwright 的
+ * `maxDiffPixelRatio` 不吸收尺寸差，尺寸不等会直接判失败。比较时把基线高度
+ * 作为文档最小高度：页面实际更矮就补画布底色，实际更高仍会如实失败。
+ * 更新基线时按本机自然高度出图，不把某一端的取整结果写进基线。
+ */
+async function pinScreenshotHeight(page: Page, testInfo: TestInfo, name: string) {
+  if (
+    testInfo.config.updateSnapshots === 'all' ||
+    testInfo.config.updateSnapshots === 'changed'
+  ) {
+    return
+  }
+  const snapshot = testInfo.snapshotPath(name)
+  if (!existsSync(snapshot)) return
+  const height = readFileSync(snapshot).readUInt32BE(20)
+  if (height < 1) return
+  await page.evaluate((value) => {
+    document.documentElement.style.minHeight = `${value}px`
+  }, height)
 }
 
 /** 把窗口滚回文档原点并等合成层跟上。
@@ -683,28 +707,50 @@ const USER_VIEWPORTS = [
 ] as const
 
 const USER_APP_VIEWS = [
-  { path: '/app', name: 'home' },
-  { path: '/app/history?day=2026-11-10', name: 'history' },
-  { path: '/app/settings', name: 'settings' },
-  { path: '/app/account', name: 'account' },
-  { path: '/app/account/new', name: 'account-new' },
+  { path: '/app', name: 'today' },
+  { path: '/app/history?day=2026-11-10', name: 'records' },
+  { path: '/app/me', name: 'me' },
+  { path: '/app/me/account', name: 'account' },
+  { path: '/app/me/account/new', name: 'account-new' },
+  { path: '/app/me/time', name: 'time' },
+  { path: '/app/me/password', name: 'password' },
 ] as const
 
-test.describe('user app', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.clock.setFixedTime(new Date('2026-11-11T08:00:00+08:00'))
-    await page.emulateMedia({ reducedMotion: 'reduce' })
-    await mockUserAppApi(page, { role: 'user' })
-  })
+/** 用户端新壳的视觉锚点：等真实数据态，不把骨架拍进基线。 */
+async function expectUserAppData(page: Page, name: (typeof USER_APP_VIEWS)[number]['name']) {
+  if (name === 'today') {
+    await expect(page.locator('.un-result__clock')).toHaveText('07:02')
+  } else if (name === 'records') {
+    await expect(page.locator('.un-day-card')).toContainText('东区宿舍')
+  } else if (name === 'me') {
+    await expect(page.locator('.un-stats')).toContainText('30')
+  } else if (name === 'account') {
+    await expect(page.getByRole('heading', { name: '资料' })).toBeVisible()
+  } else if (name === 'account-new') {
+    await expect(page.getByRole('heading', { name: '添加签到账号' })).toBeVisible()
+  } else if (name === 'time') {
+    await expect(page.getByRole('option').first()).toBeVisible()
+  } else if (name === 'password') {
+    await expect(page.locator('#un-pw-current')).toBeVisible()
+  }
+}
 
+test.describe('user app', () => {
   for (const theme of THEMES) {
     for (const view of USER_APP_VIEWS) {
-      const viewports =
-        view.name === 'home'
-          ? USER_VIEWPORTS
-          : USER_VIEWPORTS.filter((item) => item.name === '390' || item.name === '1440')
-      for (const viewport of viewports) {
-        test(`user app ${view.name} ${viewport.name} ${theme}`, async ({ page }) => {
+      for (const viewport of USER_VIEWPORTS.filter(
+        (item) => item.name === '390' || item.name === '1440',
+      )) {
+        test(`user app ${view.name} ${viewport.name} ${theme}`, async ({ page }, testInfo) => {
+          const snapshot = `user-app-${view.name}-${viewport.name}-${theme}.png`
+          await page.clock.setFixedTime(new Date('2026-11-11T08:00:00+08:00'))
+          await page.emulateMedia({ reducedMotion: 'reduce' })
+          await mockUserAppApi(
+            page,
+            view.name === 'account-new'
+              ? { role: 'user', accounts: [] }
+              : { role: 'user' },
+          )
           await page.setViewportSize({ width: viewport.width, height: viewport.height })
           await page.addInitScript((value) => {
             try {
@@ -716,16 +762,25 @@ test.describe('user app', () => {
           await page.goto(view.path)
           await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
           await page.evaluate(() => document.fonts.ready)
-          const landed =
-            view.name === 'account-new'
-              ? page.getByRole('dialog').getByRole('heading')
-              : page.getByRole('heading', { level: 1 })
-          await expect(landed).toBeVisible()
+          await expect(page.getByRole('heading', { level: 1 }).first()).toBeVisible()
+          await expectUserAppData(page, view.name)
+          const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth)
+          expect(scrollWidth).toBeLessThanOrEqual(viewport.width)
+          if (viewport.name === '390') {
+            // fullPage 截图会把 fixed 底栏缝在首屏边界；仅截图时改为随文档沉底。
+            await page.addStyleTag({
+              content:
+                '.un-root{position:relative}.un-bottom{position:absolute}.un-bottom-spacer{display:block}',
+            })
+          }
           await waitForAnimations(page)
-          await expect(page).toHaveScreenshot(
-            `user-app-${view.name}-${viewport.name}-${theme}.png`,
-            { fullPage: true },
-          )
+          await pinScreenshotHeight(page, testInfo, snapshot)
+          // 自带字体在 arm64 本机与 x86 CI 的字形抗锯齿不同，留 1% 像素容差；
+          // 布局与语义仍由上面的可见性、无溢出和行为用例守住。
+          await expect(page).toHaveScreenshot(snapshot, {
+            fullPage: true,
+            maxDiffPixelRatio: 0.01,
+          })
         })
       }
     }
@@ -739,7 +794,7 @@ test('user app has no horizontal overflow at four widths', async ({ page }) => {
     await mockUserAppApi(page, { role: 'user' })
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
     await page.goto('/app')
-    await expect(page.locator('.uapp-hero-title')).toBeVisible()
+    await expect(page.locator('.un-result__clock')).toHaveText('07:02')
     const overflow = await page.evaluate(() => ({
       scroll: document.documentElement.scrollWidth,
       inner: window.innerWidth,

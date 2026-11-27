@@ -3,11 +3,13 @@ import type { Account, AccountDetectResult } from '../../src/lib/api/account'
 import type {
   DiagnosticsItem,
   SignCalendar,
+  SignCalendarAccount,
   SignCalendarDay,
   SignStatusItem,
 } from '../../src/lib/api/me'
 import type { TimePref } from '../../src/lib/api/schedule'
 import { mockAccountsApi, type FakeApi, type MockOptions } from './fake-accounts-api'
+import { createPhotoFixture } from './fake-photos'
 
 /**
  * 用户端首页的假 API。
@@ -91,25 +93,91 @@ function addDays(day: string, amount: number): string {
   return date.toISOString().slice(0, 10)
 }
 
-/** 7 天全成功；今天标记 future=false，其余天数同样有记录。 */
-export function userCalendar(from: string, to: string): SignCalendar {
+/**
+ * 视觉与行为共用固定今天：此前每天全成功，此后 future=true 且无记录。
+ * 行为测试须同时把浏览器时钟固定到这一天（user-app.spec.ts 的 beforeEach），
+ * 否则 UI 的“今天”与这里生成的 from/to 会跨日错位。
+ */
+const MOCK_TODAY = '2026-11-11'
+
+/** 未来日只按固定今天判定，日历与日明细共用这一口径。 */
+function isFutureDay(day: string): boolean {
+  return day > MOCK_TODAY
+}
+
+/** 指定某天的各状态条数；未指定的过去日默认为 1 条成功。 */
+export type CalendarDayCounts = {
+  success?: number
+  failed?: number
+  skipped?: number
+  unknown?: number
+}
+
+function dayFromCounts(
+  day: string,
+  future: boolean,
+  counts: CalendarDayCounts,
+): SignCalendarDay {
+  const merged = {
+    success: counts.success ?? 0,
+    failed: counts.failed ?? 0,
+    skipped: counts.skipped ?? 0,
+    unknown: counts.unknown ?? 0,
+  }
+  return {
+    day,
+    total: merged.success + merged.failed + merged.skipped + merged.unknown,
+    ...merged,
+    future,
+  }
+}
+
+const DAY_STATES = ['failed', 'success', 'unknown', 'skipped'] as const
+
+/**
+ * 日明细：按各状态计数展开，行数与日历 total 保持一致。
+ * 真实接口同账号同日只有一行；夹具给多出来的行加序号后缀，仅供混合日测试。
+ */
+function accountsFor(day: string, counts: CalendarDayCounts | undefined): SignCalendarAccount[] {
+  const source: CalendarDayCounts = counts ?? { success: 1 }
+  const rows: SignCalendarAccount[] = []
+  for (const state of DAY_STATES) {
+    const count = source[state] ?? 0
+    for (let left = count; left > 0; left -= 1) {
+      rows.push({
+        account_id:
+          rows.length === 0 ? USER_ACCOUNT.id : `${USER_ACCOUNT.id}-${rows.length + 1}`,
+        state,
+        ...(state === 'success' || state === 'failed'
+          ? { run_at: `${day}T07:02:00+08:00` }
+          : {}),
+        attempts: state === 'skipped' ? 0 : 1,
+      })
+    }
+  }
+  return rows
+}
+
+export function userCalendar(
+  from: string,
+  to: string,
+  overrides: Record<string, CalendarDayCounts> = {},
+): SignCalendar {
   const days: SignCalendarDay[] = []
   let cursor = from
   while (cursor <= to) {
-    days.push({
-      day: cursor,
-      total: 1,
-      success: 1,
-      failed: 0,
-      skipped: 0,
-      unknown: 0,
-      future: false,
-    })
+    const future = isFutureDay(cursor)
+    const override = future ? undefined : overrides[cursor]
+    days.push(
+      override
+        ? dayFromCounts(cursor, future, override)
+        : dayFromCounts(cursor, future, { success: future ? 0 : 1 }),
+    )
     cursor = addDays(cursor, 1)
   }
   return {
     timezone: 'Asia/Shanghai',
-    today: to,
+    today: MOCK_TODAY,
     updated_at: '2026-11-11T07:02:00+08:00',
     days,
   }
@@ -124,18 +192,28 @@ export type UserAppOptions = MockOptions & {
   announcement?: string
   registrationEnabled?: boolean
   detect?: AccountDetectResult
+  /** 指定过去日期各状态的条数，用来覆盖待确认、未执行与混合日。 */
+  calendarDays?: Record<string, CalendarDayCounts>
 }
 
 export async function mockUserAppApi(
   page: Page,
   options: UserAppOptions = { role: 'user' },
 ): Promise<UserAppApi> {
+  // 本文件的账号 ID 是 acc-user，照片夹具默认只登记 acc-1/acc-3。
+  // 不补映射会让「现场照片」落到 404 错误态；没有显式传入照片时用空库，
+  // 避免 1×1 合成占位被拉成头像与照片墙。
+  const photos = options.photos ?? createPhotoFixture()
+  photos.accountOwner[USER_ACCOUNT.id] = 'user-1'
+  if (!options.photos) photos.byOwner = {}
+
   const api = await mockAccountsApi(page, {
     ...options,
     // null 是「未登录」，不能被 ?? 吃掉。
     role: options.role === undefined ? 'user' : options.role,
     accounts: options.accounts ?? [USER_ACCOUNT],
     deletedAccounts: options.accounts ? [] : options.deletedAccounts,
+    photos,
   })
 
   const status = options.signStatus ?? USER_SIGN_STATUS
@@ -212,7 +290,7 @@ export async function mockUserAppApi(
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(userCalendar(from, to)),
+      body: JSON.stringify(userCalendar(from, to, options.calendarDays)),
     })
   })
 
@@ -245,10 +323,6 @@ export async function mockUserAppApi(
     route.fulfill({ status: 204, body: '' }),
   )
 
-  await page.route('**/api/me/delete', (route) =>
-    route.fulfill({ status: 204, body: '' }),
-  )
-
   await page.route('**/api/me/accounts/*/delete', (route) =>
     route.fulfill({ status: 204, body: '' }),
   )
@@ -276,6 +350,19 @@ export async function mockUserAppApi(
   await page.route('**/api/me/sign-calendar/*', (route) => {
     const url = new URL(route.request().url())
     const day = url.pathname.split('/').pop() ?? ''
+    const counts = options.calendarDays?.[day]
+    if (isFutureDay(day)) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          day,
+          timezone: 'Asia/Shanghai',
+          future: true,
+          accounts: [],
+        }),
+      })
+    }
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -283,14 +370,7 @@ export async function mockUserAppApi(
         day,
         timezone: 'Asia/Shanghai',
         future: false,
-        accounts: [
-          {
-            account_id: USER_ACCOUNT.id,
-            state: 'success',
-            run_at: `${day}T07:02:00+08:00`,
-            attempts: 1,
-          },
-        ],
+        accounts: accountsFor(day, counts),
       }),
     })
   })

@@ -15,9 +15,31 @@
 
 import type { AccountStatus } from '@/lib/api/account'
 import { ApiError } from '@/lib/api/client'
-import type { DiagnosticsSuggestion } from '@/lib/api/me'
+import type { DiagnosticsSuggestion, SignCalendarDay } from '@/lib/api/me'
 import type { TimePref } from '@/lib/api/schedule'
+import type { School } from '@/lib/api/school'
 import { formatClock } from '@/lib/format'
+
+/** 日结果主态；none 表示未来、无记录或没有任何结果。 */
+export type CalendarDayTone = 'success' | 'danger' | 'warning' | 'pending' | 'none'
+
+/**
+ * 一天的主态：失败 > 成功 > 待确认 > 未执行 > 无结果。
+ *
+ * 记录页日历与「我的」30 天热力条共用这一条优先级，
+ * 避免同一天在不同页面显示成不同状态；日明细按账号分别展示。
+ */
+export function calendarDayTone(
+  info: SignCalendarDay | undefined,
+  future = false,
+): CalendarDayTone {
+  if (future || !info || info.total === 0) return 'none'
+  if (info.failed > 0) return 'danger'
+  if (info.success > 0) return 'success'
+  if (info.unknown > 0) return 'pending'
+  if (info.skipped > 0) return 'warning'
+  return 'none'
+}
 
 const SHANGHAI = 'Asia/Shanghai'
 
@@ -360,6 +382,20 @@ export function detectErrorText(error: unknown): string {
     return '没有找到账号，请检查手机号与口令。'
   }
   return '网络异常，请稍后重试。'
+}
+
+/** 学校名兜底：优先匹配；未绑定、查询失败、未登记、加载中给四种不同提示。 */
+export function schoolLabel(
+  schools: School[] | undefined,
+  isError: boolean,
+  schoolId: string | null | undefined,
+): string {
+  const matched = schools?.find((school) => school.id === schoolId)?.name
+  if (matched) return matched
+  if (!schoolId) return '尚未绑定学校'
+  if (isError) return '学校信息暂时读不到'
+  if (schools) return '学校未登记'
+  return '学校信息加载中'
 }
 
 export function photoUploadErrorText(error: unknown): string {

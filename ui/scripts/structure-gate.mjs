@@ -297,7 +297,8 @@ const POSITIVES = {
   'components/ui/Icon.tsx': 'export function Icon() {}\n',
   'features/school/S.ts': 'export const S = 1\n',
   'features/auth/A2.ts': 'export const A = 1\n',
-  'app/router.tsx': 'export const R = 1\n',
+  'app/router.tsx': "import { V } from '@/user-next/View'\nexport const R = 1\n",
+  'user-next/View.tsx': "import { A } from '@/features/auth/A'\nimport { Button } from '@/components/ui/Button'\nimport { cx } from '@/lib/cx'\nexport function V() { return null }\n",
 }
 
 const NEGATIVES = {
@@ -317,6 +318,12 @@ const NEGATIVES = {
   'features/auth/BadSecond.tsx': "import { A } from './A'\nimport { S } from '@/features/school/S'\n",
   'components/ui/Unresolved.tsx': "import { X } from '@/features/missing/X'\n",
   'lib/Escape.ts': "import { X } from '../../outside/X'\n",
+  'user-next/BadApp.ts': "import { R } from '@/app/router'\n",
+  'user-next/BadPage.ts': "import { H } from '@/pages/HomePage'\n",
+  'components/ui/BadUserNext.tsx': "import { V } from '@/user-next/View'\n",
+  'features/auth/BadUserNext.ts': "import { V } from '@/user-next/View'\n",
+  'lib/BadUserNext.ts': "import { V } from '@/user-next/View'\n",
+  'pages/BadUserNextPage.tsx': "import { V } from '@/user-next/View'\n",
 }
 
 function selfTest() {
@@ -338,6 +345,12 @@ function selfTest() {
     'lib/bad-app.ts',
     'pages/BadAppPage.tsx',
     'lib/BadCase.ts',
+    'user-next/BadApp.ts',
+    'user-next/BadPage.ts',
+    'components/ui/BadUserNext.tsx',
+    'features/auth/BadUserNext.ts',
+    'lib/BadUserNext.ts',
+    'pages/BadUserNextPage.tsx',
   ]
 
   const root = mkdtempSync(join(tmpdir(), 'structure-gate-'))

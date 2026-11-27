@@ -2,6 +2,7 @@
  * **功能**
  * 应用入口。挂载 React 根节点，注册全局 401 处置。
  * 样式表按 vendor、颜色令牌、尺寸基准、项目覆盖、用户端五层加载。
+ * 新的 user-next 层接在用户端旧表之后；旧表只服务尚未迁移的页面。
  *
  * **归属**
  * `app` 装配层：只组合，不承载域逻辑。
@@ -27,6 +28,17 @@ import '@/styles/tokens.css'
 import '@/styles/scale.css'
 import '@/styles/app.css'
 import '@/styles/user-app.css'
+import '@/styles/user-next/tokens.css'
+import '@/styles/user-next/base.css'
+import '@/styles/user-next/components.css'
+import '@/styles/user-next/shell.css'
+import '@/styles/user-next/today.css'
+import '@/styles/user-next/records.css'
+import '@/styles/user-next/me.css'
+import '@/styles/user-next/account.css'
+import '@/styles/user-next/time.css'
+import '@/styles/user-next/password.css'
+import '@/styles/user-next/view-transition.css'
 
 setUnauthorizedHandler((path) => {
   if (!isSessionExpiry(path)) return

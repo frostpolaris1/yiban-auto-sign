@@ -5,6 +5,10 @@
  * **归属**
  * `features/me` 域容器：取数、月份网格与日详情在此。
  *
+ * **保留**
+ * 已不挂路由：/app/history 由 user-next 的 RecordsPage 渲染。
+ * 仅作回滚参照；日态必须走 calendarDayTone，不再新增独立判定。
+ *
  * **口径**
  * 月范围一次请求 ≤31 天；未来日不可点，日详情为空。
  * 日格不只靠颜色：aria-label 同时写日期与结果。
@@ -20,7 +24,7 @@ import { formatClock, parseDay } from '@/lib/format'
 import type { SignCalendarAccount, SignCalendarDay } from '@/lib/api/me'
 import { displayName } from '@/lib/account-display'
 import { useMyAccounts, useSignCalendar, useSignCalendarDay } from './queries'
-import { todayKey } from './display'
+import { calendarDayTone, todayKey } from './display'
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'] as const
 
@@ -81,18 +85,29 @@ function dayLabel(day: string): string {
 }
 
 function cellTone(info: SignCalendarDay | undefined, future: boolean): string {
-  if (future) return 'uapp-cal-dot uapp-cal-dot--empty'
-  if (!info || info.total === 0) return 'uapp-cal-dot uapp-cal-dot--empty'
-  if (info.failed > 0) return 'uapp-cal-dot uapp-cal-dot--missed'
-  if (info.success > 0) return 'uapp-cal-dot'
-  return 'uapp-cal-dot uapp-cal-dot--warning'
+  switch (calendarDayTone(info, future)) {
+    case 'danger':
+      return 'uapp-cal-dot uapp-cal-dot--missed'
+    case 'success':
+      return 'uapp-cal-dot'
+    case 'pending':
+      return 'uapp-cal-dot uapp-cal-dot--pending'
+    case 'warning':
+      return 'uapp-cal-dot uapp-cal-dot--warning'
+    default:
+      return 'uapp-cal-dot uapp-cal-dot--empty'
+  }
 }
 
 function cellAria(day: string, info: SignCalendarDay | undefined, future: boolean): string {
   if (future) return `${dayLabel(day)}，未来`
   if (!info || info.total === 0) return `${dayLabel(day)}，无记录`
-  if (info.failed > 0) return `${dayLabel(day)}，${info.failed} 个失败`
-  return `${dayLabel(day)}，${info.success} 个成功`
+  const parts: string[] = []
+  if (info.failed > 0) parts.push(info.failed + ' 个失败')
+  if (info.success > 0) parts.push(info.success + ' 个成功')
+  if (info.skipped > 0) parts.push(info.skipped + ' 个未执行')
+  if (info.unknown > 0) parts.push(info.unknown + ' 个待确认')
+  return `${dayLabel(day)}，${parts.join('，')}`
 }
 
 function accountName(
@@ -272,6 +287,8 @@ export function HistoryView({
           <div className="uapp-cal-legend">
             <span><span className="uapp-cal-dot" />成功</span>
             <span><span className="uapp-cal-dot uapp-cal-dot--missed" />失败</span>
+            <span><span className="uapp-cal-dot uapp-cal-dot--pending" />待确认</span>
+            <span><span className="uapp-cal-dot uapp-cal-dot--warning" />未执行</span>
             <span><span className="uapp-cal-dot uapp-cal-dot--empty" />无记录</span>
           </div>
         </section>
