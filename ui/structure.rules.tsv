@@ -22,3 +22,9 @@ lib	app	deny	lib is the bottom layer
 components	app	deny	components stay below app
 features	app	deny	features stay below app
 pages	app	deny	app renders pages; pages must not import app
+components	user-next	deny	components stay below the user-next page layer
+features	user-next	deny	features stay below the user-next page layer
+lib	user-next	deny	lib is the bottom layer
+pages	user-next	deny	pages must not import the user-next layer
+user-next	app	deny	user-next stays below app
+user-next	pages	deny	user-next owns its own pages

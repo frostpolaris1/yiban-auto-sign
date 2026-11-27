@@ -8,6 +8,7 @@ import type {
 } from '../../src/lib/api/me'
 import type { TimePref } from '../../src/lib/api/schedule'
 import { mockAccountsApi, type FakeApi, type MockOptions } from './fake-accounts-api'
+import { createPhotoFixture } from './fake-photos'
 
 /**
  * 用户端首页的假 API。
@@ -91,25 +92,28 @@ function addDays(day: string, amount: number): string {
   return date.toISOString().slice(0, 10)
 }
 
-/** 7 天全成功；今天标记 future=false，其余天数同样有记录。 */
+/** 视觉与行为共用固定今天：此前每天全成功，此后 future=true 且无记录。 */
+const MOCK_TODAY = '2026-11-11'
+
 export function userCalendar(from: string, to: string): SignCalendar {
   const days: SignCalendarDay[] = []
   let cursor = from
   while (cursor <= to) {
+    const future = cursor > MOCK_TODAY
     days.push({
       day: cursor,
-      total: 1,
-      success: 1,
+      total: future ? 0 : 1,
+      success: future ? 0 : 1,
       failed: 0,
       skipped: 0,
       unknown: 0,
-      future: false,
+      future,
     })
     cursor = addDays(cursor, 1)
   }
   return {
     timezone: 'Asia/Shanghai',
-    today: to,
+    today: MOCK_TODAY,
     updated_at: '2026-11-11T07:02:00+08:00',
     days,
   }
@@ -130,12 +134,20 @@ export async function mockUserAppApi(
   page: Page,
   options: UserAppOptions = { role: 'user' },
 ): Promise<UserAppApi> {
+  // 本文件的账号 ID 是 acc-user，照片夹具默认只登记 acc-1/acc-3。
+  // 不补映射会让「现场照片」落到 404 错误态；没有显式传入照片时用空库，
+  // 避免 1×1 合成占位被拉成头像与照片墙。
+  const photos = options.photos ?? createPhotoFixture()
+  photos.accountOwner[USER_ACCOUNT.id] = 'user-1'
+  if (!options.photos) photos.byOwner = {}
+
   const api = await mockAccountsApi(page, {
     ...options,
     // null 是「未登录」，不能被 ?? 吃掉。
     role: options.role === undefined ? 'user' : options.role,
     accounts: options.accounts ?? [USER_ACCOUNT],
     deletedAccounts: options.accounts ? [] : options.deletedAccounts,
+    photos,
   })
 
   const status = options.signStatus ?? USER_SIGN_STATUS

@@ -40,6 +40,7 @@ const UI_ROOT = resolve(HERE, '..')
 const SRC_ROOT = join(UI_ROOT, 'src')
 const INDEX_FILE = join(UI_ROOT, 'index.html')
 const TOKENS_FILE = join(SRC_ROOT, 'styles', 'tokens.css')
+const USER_NEXT_TOKENS_FILE = join(SRC_ROOT, 'styles', 'user-next', 'tokens.css')
 const VENDOR_COPY = join(SRC_ROOT, 'styles', 'adminator.css')
 const VENDOR_SOURCE = join(UI_ROOT, 'vendor', 'adminator', 'adminator.css')
 const THEMES = ['light', 'dark']
@@ -53,6 +54,10 @@ const EXEMPT = new Map([
   [
     'src/styles/adminator.css',
     'verbatim copy of the audited vendor stylesheet, checked by the byte rule below',
+  ],
+  [
+    'src/styles/user-next/tokens.css',
+    'isolated user-next tokens, checked by the scoped theme rule below',
   ],
 ])
 
@@ -241,6 +246,83 @@ function checkTokenParity(tokensPath = TOKENS_FILE, vendorPath = VENDOR_SOURCE) 
   return problems
 }
 
+
+function extractScopedTokenBlocks(css) {
+  const blocks = {}
+  const pattern = /:root\[data-theme=["']?(light|dark)["']?\]\s+\.un-root\s*\{([^}]*)\}/g
+  let match
+  while ((match = pattern.exec(css)) !== null) {
+    const theme = match[1]
+    if (blocks[theme]) {
+      throw new ConfigError(`duplicate :root[data-theme=${theme}] .un-root block`)
+    }
+    const body = match[2].replace(/\/\*[\s\S]*?\*\//g, '')
+    const map = new Map()
+    for (const raw of body.split(';')) {
+      const declaration = raw.trim()
+      if (!declaration) continue
+      const colon = declaration.indexOf(':')
+      if (colon === -1) {
+        throw new ConfigError(`malformed user-next token declaration: ${declaration}`)
+      }
+      const name = declaration.slice(0, colon).trim()
+      const value = declaration
+        .slice(colon + 1)
+        .trim()
+        .replace(/\s+/g, ' ')
+      if (!name.startsWith('--')) {
+        throw new ConfigError(`user-next declaration is not a custom property: ${declaration}`)
+      }
+      if (!value) {
+        throw new ConfigError(`user-next token has no value: ${name}`)
+      }
+      if (map.has(name)) {
+        throw new ConfigError(`duplicate user-next token ${name} in ${theme}`)
+      }
+      map.set(name, value)
+    }
+    blocks[theme] = map
+  }
+  return blocks
+}
+
+function checkUserNextTokens(tokensPath = USER_NEXT_TOKENS_FILE) {
+  let css
+  try {
+    css = readFileSync(tokensPath, 'utf8')
+  } catch {
+    throw new ConfigError(`user-next token file is missing: ${tokensPath}`)
+  }
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const blocks = extractScopedTokenBlocks(clean)
+  const problems = []
+  const rootSelectors = (clean.match(/:root\[data-theme=["']?(?:light|dark)["']?\]/g) ?? []).length
+  const scopedSelectors = Object.keys(blocks).length
+  if (rootSelectors !== scopedSelectors) {
+    problems.push(`user-next tokens must be scoped to .un-root (found ${rootSelectors} theme selectors, ${scopedSelectors} scoped)`)
+  }
+  for (const theme of THEMES) {
+    if (!blocks[theme]) problems.push(`user-next tokens have no :root[data-theme="${theme}"] .un-root block`)
+  }
+  for (const [theme, map] of Object.entries(blocks)) {
+    for (const name of map.keys()) {
+      if (!name.startsWith('--un-')) problems.push(`${theme}: ${name} is not an --un- token`)
+    }
+  }
+  if (blocks.light && blocks.dark) {
+    const lightNames = [...blocks.light.keys()].sort()
+    const darkNames = [...blocks.dark.keys()].sort()
+    if (lightNames.length < 10) problems.push(`user-next tokens have only ${lightNames.length} light tokens; at least 10 are required`)
+    if (lightNames.join('\n') !== darkNames.join('\n')) {
+      const missingDark = lightNames.filter((name) => !blocks.dark.has(name))
+      const missingLight = darkNames.filter((name) => !blocks.light.has(name))
+      if (missingDark.length > 0) problems.push(`dark: missing ${missingDark.join(', ')}`)
+      if (missingLight.length > 0) problems.push(`light: missing ${missingLight.join(', ')}`)
+    }
+  }
+  return problems
+}
+
 function selfTest() {
   const positives = [
     'color: #fff;',
@@ -330,6 +412,49 @@ function selfTest() {
     if (!checkTokenParity(tokensFile, vendorFile).some((problem) => problem.includes('--a is 9px'))) {
       failures.push('token parity rule missed a wrong value')
     }
+
+    const userNextFile = join(temp, 'user-next-tokens.css')
+    const lightTokens = Array.from({ length: 10 }, (_, index) => `--un-t${index}: ${index}px;`).join(' ')
+    const darkTokens = Array.from({ length: 10 }, (_, index) => `--un-t${index}: ${index + 10}px;`).join(' ')
+    const scopedBlock = (theme, body) => `:root[data-theme="${theme}"] .un-root { ${body} }\n`
+    writeFileSync(userNextFile, scopedBlock('light', lightTokens) + scopedBlock('dark', darkTokens))
+    if (checkUserNextTokens(userNextFile).length !== 0) {
+      failures.push('user-next token rule flagged a valid scoped pair')
+    }
+    writeFileSync(userNextFile, scopedBlock('light', lightTokens))
+    if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('no :root[data-theme="dark"]'))) {
+      failures.push('user-next token rule missed a missing dark theme')
+    }
+    writeFileSync(
+      userNextFile,
+      scopedBlock('light', lightTokens.replace('--un-t0:', '--t0:')) +
+        scopedBlock('dark', darkTokens.replace('--un-t0:', '--t0:')),
+    )
+    if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('not an --un- token'))) {
+      failures.push('user-next token rule missed an unprefixed token')
+    }
+    writeFileSync(
+      userNextFile,
+      scopedBlock('light', `${lightTokens} --un-t0: 99px;`) + scopedBlock('dark', darkTokens),
+    )
+    expectConfigError('duplicate user-next token', () => checkUserNextTokens(userNextFile))
+    writeFileSync(
+      userNextFile,
+      scopedBlock('light', lightTokens) +
+        scopedBlock('dark', darkTokens) +
+        ':root[data-theme="light"] { --un-bare: 1px; }\n',
+    )
+    if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('must be scoped'))) {
+      failures.push('user-next token rule missed an unscoped theme block')
+    }
+    writeFileSync(
+      userNextFile,
+      scopedBlock('light', lightTokens) +
+        scopedBlock('dark', darkTokens.replace(' --un-t9: 19px;', '')),
+    )
+    if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('dark: missing --un-t9'))) {
+      failures.push('user-next token rule missed a theme name mismatch')
+    }
   } finally {
     rmSync(temp, { recursive: true, force: true })
   }
@@ -340,7 +465,7 @@ function selfTest() {
   }
   console.log(
     `token-gate self-test: ${positives.length} positive, ${negatives.length} negative, ` +
-      '2 config guards + vendor byte + token parity mutations, exemption registry OK',
+      '2 config guards + vendor byte + token parity + user-next scope mutations, exemption registry OK',
   )
   return 0
 }
@@ -355,7 +480,8 @@ function main() {
   const violations = checkColors(files)
   const copyProblems = checkVendorCopy()
   const parityProblems = checkTokenParity()
-  const all = [...violations, ...copyProblems, ...parityProblems]
+  const userNextProblems = checkUserNextTokens()
+  const all = [...violations, ...copyProblems, ...parityProblems, ...userNextProblems]
 
   if (all.length > 0) {
     for (const problem of all) console.error(`token-gate: ${problem}`)
@@ -372,6 +498,7 @@ function main() {
       `rules ${RULES.map((rule) => rule.label).join(', ')}, 0 violations`,
   )
   console.log('token-gate: vendor copy byte-identical; 36 light + 36 dark tokens match vendor values')
+  console.log('token-gate: user-next tokens scoped to .un-root; --un- prefix; identical light/dark names')
   return 0
 }
 

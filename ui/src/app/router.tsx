@@ -23,7 +23,14 @@ import {
 import { AppShell } from '@/components/shell/AppShell'
 import { NotifyInbox } from '@/features/notify/InboxDrawer'
 import { GlobalSearch } from '@/features/search/GlobalSearch'
-import { UserAppShell } from '@/components/shell/UserAppShell'
+import { UserNextShell } from '@/user-next/UserNextShell'
+import { AccountNewPage } from '@/user-next/pages/AccountNewPage'
+import { AccountPage } from '@/user-next/pages/AccountPage'
+import { MePage } from '@/user-next/pages/MePage'
+import { PasswordPage } from '@/user-next/pages/PasswordPage'
+import { RecordsPage } from '@/user-next/pages/RecordsPage'
+import { TimePrefPage } from '@/user-next/pages/TimePrefPage'
+import { TodayPage } from '@/user-next/pages/TodayPage'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { AuditPage } from '@/pages/AuditPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -38,13 +45,6 @@ import { SchoolsPage } from '@/pages/SchoolsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { SystemPage } from '@/pages/SystemPage'
 import { UsersPage } from '@/pages/UsersPage'
-import { UserAccountNewPage } from '@/pages/user-app/UserAccountNewPage'
-import { UserAccountPage } from '@/pages/user-app/UserAccountPage'
-import { UserHistoryPage } from '@/pages/user-app/UserHistoryPage'
-import { UserHomePage } from '@/pages/user-app/UserHomePage'
-import { UserPasswordPage } from '@/pages/user-app/UserPasswordPage'
-import { UserSettingsPage } from '@/pages/user-app/UserSettingsPage'
-import { UserTimePrefPage } from '@/pages/user-app/UserTimePrefPage'
 import { parseRunSearchRecord, runSearchRecord } from '@/features/logs/urlState'
 import { parseUserSearchRecord, userSearchRecord } from '@/features/user/urlState'
 import { parseDay } from '@/lib/format'
@@ -76,18 +76,18 @@ const shellRoute = createRoute({
 
 /**
  * 用户端独立无路径布局：URL 前缀 `/app`，不复用 Adminator 壳。
- * 三个一级页：主页 / 历史 / 设置；账号详情是二级页。
+ * 三个一级页：今天 / 记录 / 我的；账号与设置收进「我的」。
  */
 const userAppRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: '_userApp',
-  component: UserAppShell,
+  component: UserNextShell,
 })
 
 const userHomeRoute = createRoute({
   getParentRoute: () => userAppRoute,
   path: '/app',
-  component: UserHomePage,
+  component: TodayPage,
 })
 
 const userHistoryRoute = createRoute({
@@ -104,7 +104,7 @@ function UserHistoryRouteComponent() {
   const { day } = userHistoryRoute.useSearch()
   const navigate = useNavigate()
   return (
-    <UserHistoryPage
+    <RecordsPage
       day={day}
       onDayChange={(next) => {
         void navigate({ to: '/app/history', search: { day: next }, replace: true })
@@ -113,34 +113,78 @@ function UserHistoryRouteComponent() {
   )
 }
 
-const userSettingsRoute = createRoute({
+const userMeRoute = createRoute({
   getParentRoute: () => userAppRoute,
-  path: '/app/settings',
-  component: UserSettingsPage,
+  path: '/app/me',
+  component: MePage,
 })
 
 const userAccountRoute = createRoute({
   getParentRoute: () => userAppRoute,
-  path: '/app/account',
-  component: UserAccountPage,
+  path: '/app/me/account',
+  component: AccountPage,
 })
 
 const userAccountNewRoute = createRoute({
   getParentRoute: () => userAppRoute,
-  path: '/app/account/new',
-  component: UserAccountNewPage,
+  path: '/app/me/account/new',
+  component: AccountNewPage,
 })
 
 const userTimePrefRoute = createRoute({
   getParentRoute: () => userAppRoute,
-  path: '/app/settings/time-pref',
-  component: UserTimePrefPage,
+  path: '/app/me/time',
+  component: TimePrefPage,
 })
 
 const userPasswordRoute = createRoute({
   getParentRoute: () => userAppRoute,
+  path: '/app/me/password',
+  component: PasswordPage,
+})
+
+/**
+ * 旧入口保留一个版本周期：302 到「我的」下的新路径。
+ * 新线从未上线，这些别名只为旧书签与旧测试链接兜底。
+ */
+const legacyUserSettingsRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/settings',
+  beforeLoad: () => {
+    throw redirect({ to: '/app/me', replace: true })
+  },
+})
+
+const legacyUserAccountRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/account',
+  beforeLoad: () => {
+    throw redirect({ to: '/app/me/account', replace: true })
+  },
+})
+
+const legacyUserAccountNewRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/account/new',
+  beforeLoad: () => {
+    throw redirect({ to: '/app/me/account/new', replace: true })
+  },
+})
+
+const legacyUserTimePrefRoute = createRoute({
+  getParentRoute: () => userAppRoute,
+  path: '/app/settings/time-pref',
+  beforeLoad: () => {
+    throw redirect({ to: '/app/me/time', replace: true })
+  },
+})
+
+const legacyUserPasswordRoute = createRoute({
+  getParentRoute: () => userAppRoute,
   path: '/app/settings/password',
-  component: UserPasswordPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/app/me/password', replace: true })
+  },
 })
 
 const dashboardRoute = createRoute({
@@ -424,11 +468,16 @@ const routeTree = rootRoute.addChildren([
   userAppRoute.addChildren([
     userHomeRoute,
     userHistoryRoute,
-    userSettingsRoute,
+    userMeRoute,
     userAccountRoute,
     userAccountNewRoute,
     userTimePrefRoute,
     userPasswordRoute,
+    legacyUserSettingsRoute,
+    legacyUserAccountRoute,
+    legacyUserAccountNewRoute,
+    legacyUserTimePrefRoute,
+    legacyUserPasswordRoute,
   ]),
   authModeRoute.addChildren([loginRoute, registerRoute]),
   forgotPasswordRoute,

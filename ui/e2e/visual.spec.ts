@@ -683,28 +683,49 @@ const USER_VIEWPORTS = [
 ] as const
 
 const USER_APP_VIEWS = [
-  { path: '/app', name: 'home' },
-  { path: '/app/history?day=2026-11-10', name: 'history' },
-  { path: '/app/settings', name: 'settings' },
-  { path: '/app/account', name: 'account' },
-  { path: '/app/account/new', name: 'account-new' },
+  { path: '/app', name: 'today' },
+  { path: '/app/history?day=2026-11-10', name: 'records' },
+  { path: '/app/me', name: 'me' },
+  { path: '/app/me/account', name: 'account' },
+  { path: '/app/me/account/new', name: 'account-new' },
+  { path: '/app/me/time', name: 'time' },
+  { path: '/app/me/password', name: 'password' },
 ] as const
 
-test.describe('user app', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.clock.setFixedTime(new Date('2026-11-11T08:00:00+08:00'))
-    await page.emulateMedia({ reducedMotion: 'reduce' })
-    await mockUserAppApi(page, { role: 'user' })
-  })
+/** 用户端新壳的视觉锚点：等真实数据态，不把骨架拍进基线。 */
+async function expectUserAppData(page: Page, name: (typeof USER_APP_VIEWS)[number]['name']) {
+  if (name === 'today') {
+    await expect(page.locator('.un-result__clock')).toHaveText('07:02')
+  } else if (name === 'records') {
+    await expect(page.locator('.un-day-card')).toContainText('东区宿舍')
+  } else if (name === 'me') {
+    await expect(page.locator('.un-stats')).toContainText('30')
+  } else if (name === 'account') {
+    await expect(page.getByRole('heading', { name: '资料' })).toBeVisible()
+  } else if (name === 'account-new') {
+    await expect(page.getByRole('heading', { name: '添加签到账号' })).toBeVisible()
+  } else if (name === 'time') {
+    await expect(page.getByRole('option').first()).toBeVisible()
+  } else if (name === 'password') {
+    await expect(page.locator('#un-pw-current')).toBeVisible()
+  }
+}
 
+test.describe('user app', () => {
   for (const theme of THEMES) {
     for (const view of USER_APP_VIEWS) {
-      const viewports =
-        view.name === 'home'
-          ? USER_VIEWPORTS
-          : USER_VIEWPORTS.filter((item) => item.name === '390' || item.name === '1440')
-      for (const viewport of viewports) {
+      for (const viewport of USER_VIEWPORTS.filter(
+        (item) => item.name === '390' || item.name === '1440',
+      )) {
         test(`user app ${view.name} ${viewport.name} ${theme}`, async ({ page }) => {
+          await page.clock.setFixedTime(new Date('2026-11-11T08:00:00+08:00'))
+          await page.emulateMedia({ reducedMotion: 'reduce' })
+          await mockUserAppApi(
+            page,
+            view.name === 'account-new'
+              ? { role: 'user', accounts: [] }
+              : { role: 'user' },
+          )
           await page.setViewportSize({ width: viewport.width, height: viewport.height })
           await page.addInitScript((value) => {
             try {
@@ -716,11 +737,17 @@ test.describe('user app', () => {
           await page.goto(view.path)
           await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
           await page.evaluate(() => document.fonts.ready)
-          const landed =
-            view.name === 'account-new'
-              ? page.getByRole('dialog').getByRole('heading')
-              : page.getByRole('heading', { level: 1 })
-          await expect(landed).toBeVisible()
+          await expect(page.getByRole('heading', { level: 1 }).first()).toBeVisible()
+          await expectUserAppData(page, view.name)
+          const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth)
+          expect(scrollWidth).toBeLessThanOrEqual(viewport.width)
+          if (viewport.name === '390') {
+            // fullPage 截图会把 fixed 底栏缝在首屏边界；仅截图时改为随文档沉底。
+            await page.addStyleTag({
+              content:
+                '.un-root{position:relative}.un-bottom{position:absolute}.un-bottom-spacer{display:block}',
+            })
+          }
           await waitForAnimations(page)
           await expect(page).toHaveScreenshot(
             `user-app-${view.name}-${viewport.name}-${theme}.png`,
@@ -739,7 +766,7 @@ test('user app has no horizontal overflow at four widths', async ({ page }) => {
     await mockUserAppApi(page, { role: 'user' })
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
     await page.goto('/app')
-    await expect(page.locator('.uapp-hero-title')).toBeVisible()
+    await expect(page.locator('.un-result__clock')).toHaveText('07:02')
     const overflow = await page.evaluate(() => ({
       scroll: document.documentElement.scrollWidth,
       inner: window.innerWidth,

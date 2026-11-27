@@ -1,0 +1,66 @@
+/*
+ * user-next/view-transition.css — one shared-element transition system.
+ * The data attribute is set by lib/viewTransition.ts for the duration of a
+ * native transition; each route opts in by carrying the matching class.
+ */
+
+html[data-un-vt="result"] .un-shared-result {
+  view-transition-name: un-result;
+}
+
+html[data-un-vt="identity"] .un-shared-identity {
+  view-transition-name: un-identity;
+}
+
+html[data-un-vt="account"] .un-shared-account {
+  view-transition-name: un-account;
+}
+
+html[data-un-vt="day"] .un-shared-day {
+  view-transition-name: un-day;
+}
+
+::view-transition-group(*) {
+  animation-duration: var(--un-transition);
+  animation-timing-function: var(--un-ease);
+}
+
+::view-transition-old(root) {
+  animation: un-vt-out 120ms var(--un-ease) both;
+}
+
+::view-transition-new(root) {
+  animation: un-vt-in 180ms var(--un-ease) both;
+}
+
+::view-transition-old(un-result),
+::view-transition-new(un-result),
+::view-transition-old(un-identity),
+::view-transition-new(un-identity),
+::view-transition-old(un-account),
+::view-transition-new(un-account),
+::view-transition-old(un-day),
+::view-transition-new(un-day) {
+  animation-duration: var(--un-transition);
+  animation-timing-function: var(--un-ease);
+}
+
+@keyframes un-vt-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes un-vt-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}

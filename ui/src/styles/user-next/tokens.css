@@ -1,0 +1,216 @@
+/*
+ * user-next/tokens.css — isolated design tokens for the user-facing app.
+ *
+ * Scope: every declaration lives under :root[data-theme] .un-root.
+ * The admin token file (src/styles/tokens.css) stays untouched.
+ * token-gate exempts this file only for the color literal scan; its own
+ * checker verifies both themes, the --un- prefix, and identical token names.
+ */
+
+:root[data-theme="light"] .un-root {
+  /* Paper surfaces */
+  --un-canvas: #f5f7f7;
+  --un-canvas-deep: #e9edec;
+  --un-surface: #fbfcfb;
+  --un-surface-raised: #ffffff;
+  --un-surface-sunken: #eef1f0;
+
+  /* Ink */
+  --un-ink: #192125;
+  --un-ink-soft: #505b61;
+  --un-ink-muted: #626e74;
+  --un-ink-faint: #7a858a;
+  --un-on-accent: #ffffff;
+
+  /* Hairlines */
+  --un-line: #d5dcda;
+  --un-line-soft: #e3e8e6;
+  --un-line-strong: #b7c2bf;
+
+  /* Mist blue accent */
+  --un-blue: #466575;
+  --un-blue-deep: #344f5d;
+  --un-blue-soft: #e3ecf0;
+  --un-blue-faint: #eef3f4;
+
+  /* Status */
+  --un-success: #3d6b58;
+  --un-success-soft: #e6efe9;
+  --un-warning: #87602b;
+  --un-warning-soft: #f4ecdc;
+  --un-danger: #9e433b;
+  --un-danger-soft: #f4e5e2;
+  --un-pending: #5f6670;
+  --un-pending-soft: #eceef0;
+
+  /* Pearl (decorative only, never a page background) */
+  --un-pearl-a: #d9e5e8;
+  --un-pearl-b: #f1efe7;
+  --un-pearl-c: #ccd7d5;
+  --un-pearl-edge: #c2d0d2;
+  --un-pearl-ink: #51666f;
+
+  /* Elevation: one sheet of paper on a desk */
+  --un-shadow-sm: 0 1px 2px rgba(25, 33, 37, 0.04);
+  --un-shadow: 0 8px 20px rgba(25, 33, 37, 0.05);
+  --un-shadow-lift: 0 18px 42px rgba(25, 33, 37, 0.08);
+  --un-overlay: rgba(25, 33, 37, 0.32);
+  --un-focus: #466575;
+  --un-selection: rgba(70, 101, 117, 0.18);
+  --un-grain-opacity: 0.022;
+  --un-pearl-opacity: 0.55;
+  --un-mask-solid: #000;
+
+  /* Type */
+  --un-font-sans: "HarmonyOS Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --un-font-serif: "Fraunces", "Source Han Serif SC", "Songti SC", Georgia, serif;
+  --un-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --un-text-hero: clamp(3.25rem, 6.2vw, 4.5rem);
+  --un-text-display: clamp(2.6rem, 4.8vw, 3.75rem);
+  --un-text-h1: clamp(1.75rem, 2.5vw, 2rem);
+  --un-text-h2: 1.375rem;
+  --un-text-h3: 1rem;
+  --un-text-body: 0.9375rem;
+  --un-text-sm: 0.8125rem;
+  --un-text-micro: 0.6875rem;
+  --un-leading-hero: 0.96;
+  --un-leading-display: 1.02;
+  --un-leading-h1: 1.12;
+  --un-leading-body: 1.65;
+  --un-leading-sm: 1.5;
+  --un-leading-micro: 1.2;
+
+  /* Space and layout */
+  --un-space-1: 4px;
+  --un-space-2: 8px;
+  --un-space-3: 12px;
+  --un-space-4: 16px;
+  --un-space-5: 24px;
+  --un-space-6: 32px;
+  --un-space-7: 48px;
+  --un-space-8: 64px;
+  --un-space-9: 96px;
+  --un-container: 1080px;
+  --un-gutter: 24px;
+  --un-page-pad: 32px;
+  --un-radius-lg: 16px;
+  --un-radius-md: 10px;
+  --un-radius-sm: 8px;
+  --un-radius-pill: 999px;
+  --un-bar-h: 56px;
+  --un-bottom-h: 64px;
+  --un-touch: 44px;
+
+  /* Motion */
+  --un-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --un-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --un-press: 90ms;
+  --un-switch: 150ms;
+  --un-expand: 200ms;
+  --un-transition: 220ms;
+  --un-draw: 360ms;
+}
+
+:root[data-theme="dark"] .un-root {
+  /* Night mineral surfaces */
+  --un-canvas: #13181a;
+  --un-canvas-deep: #0e1214;
+  --un-surface: #1a2124;
+  --un-surface-raised: #222b2f;
+  --un-surface-sunken: #111719;
+
+  /* Ink */
+  --un-ink: #e9e7e0;
+  --un-ink-soft: #a3adb0;
+  --un-ink-muted: #89959a;
+  --un-ink-faint: #6f7b80;
+  --un-on-accent: #101719;
+
+  /* Hairlines */
+  --un-line: #2c3639;
+  --un-line-soft: #232c2f;
+  --un-line-strong: #3c474a;
+
+  /* Mist blue accent */
+  --un-blue: #8bb0bf;
+  --un-blue-deep: #a9c6d2;
+  --un-blue-soft: #1e2b31;
+  --un-blue-faint: #182327;
+
+  /* Status */
+  --un-success: #7bb09a;
+  --un-success-soft: #1b2b25;
+  --un-warning: #cfa66e;
+  --un-warning-soft: #2d2418;
+  --un-danger: #d9857d;
+  --un-danger-soft: #2f1d1b;
+  --un-pending: #a3adb0;
+  --un-pending-soft: #242c2f;
+
+  /* Pearl: cool silver edge, no colored refraction at night */
+  --un-pearl-a: #3a4a50;
+  --un-pearl-b: #4d4740;
+  --un-pearl-c: #445054;
+  --un-pearl-edge: #4d5d64;
+  --un-pearl-ink: #b7c6c9;
+
+  /* Elevation */
+  --un-shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.04);
+  --un-shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 0 8px 20px rgba(0, 0, 0, 0.24);
+  --un-shadow-lift: 0 1px 0 rgba(255, 255, 255, 0.05), 0 18px 42px rgba(0, 0, 0, 0.36);
+  --un-overlay: rgba(6, 9, 10, 0.58);
+  --un-focus: #8bb0bf;
+  --un-selection: rgba(139, 176, 191, 0.22);
+  --un-grain-opacity: 0.018;
+  --un-pearl-opacity: 0.3;
+  --un-mask-solid: #000;
+
+  /* Type (same in both themes) */
+  --un-font-sans: "HarmonyOS Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --un-font-serif: "Fraunces", "Source Han Serif SC", "Songti SC", Georgia, serif;
+  --un-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --un-text-hero: clamp(3.25rem, 6.2vw, 4.5rem);
+  --un-text-display: clamp(2.6rem, 4.8vw, 3.75rem);
+  --un-text-h1: clamp(1.75rem, 2.5vw, 2rem);
+  --un-text-h2: 1.375rem;
+  --un-text-h3: 1rem;
+  --un-text-body: 0.9375rem;
+  --un-text-sm: 0.8125rem;
+  --un-text-micro: 0.6875rem;
+  --un-leading-hero: 0.96;
+  --un-leading-display: 1.02;
+  --un-leading-h1: 1.12;
+  --un-leading-body: 1.65;
+  --un-leading-sm: 1.5;
+  --un-leading-micro: 1.2;
+
+  /* Space and layout (same in both themes) */
+  --un-space-1: 4px;
+  --un-space-2: 8px;
+  --un-space-3: 12px;
+  --un-space-4: 16px;
+  --un-space-5: 24px;
+  --un-space-6: 32px;
+  --un-space-7: 48px;
+  --un-space-8: 64px;
+  --un-space-9: 96px;
+  --un-container: 1080px;
+  --un-gutter: 24px;
+  --un-page-pad: 32px;
+  --un-radius-lg: 16px;
+  --un-radius-md: 10px;
+  --un-radius-sm: 8px;
+  --un-radius-pill: 999px;
+  --un-bar-h: 56px;
+  --un-bottom-h: 64px;
+  --un-touch: 44px;
+
+  /* Motion (same in both themes) */
+  --un-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --un-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --un-press: 90ms;
+  --un-switch: 150ms;
+  --un-expand: 200ms;
+  --un-transition: 220ms;
+  --un-draw: 360ms;
+}
