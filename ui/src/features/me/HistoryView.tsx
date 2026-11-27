@@ -282,6 +282,8 @@ export function HistoryView({
           <div className="uapp-cal-legend">
             <span><span className="uapp-cal-dot" />成功</span>
             <span><span className="uapp-cal-dot uapp-cal-dot--missed" />失败</span>
+            <span><span className="uapp-cal-dot uapp-cal-dot--pending" />待确认</span>
+            <span><span className="uapp-cal-dot uapp-cal-dot--warning" />未执行</span>
             <span><span className="uapp-cal-dot uapp-cal-dot--empty" />无记录</span>
           </div>
         </section>

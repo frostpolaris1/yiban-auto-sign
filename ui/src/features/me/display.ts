@@ -26,8 +26,8 @@ export type CalendarDayTone = 'success' | 'danger' | 'warning' | 'pending' | 'no
 /**
  * 一天的主态：失败 > 成功 > 待确认 > 未执行 > 无结果。
  *
- * 日历、日明细与「我的」30 天热力条共用这一条优先级，
- * 避免同一天在不同页面显示成不同状态。
+ * 记录页日历与「我的」30 天热力条共用这一条优先级，
+ * 避免同一天在不同页面显示成不同状态；日明细按账号分别展示。
  */
 export function calendarDayTone(
   info: SignCalendarDay | undefined,

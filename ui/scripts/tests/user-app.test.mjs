@@ -161,7 +161,7 @@ test('next run says today while the window is still ahead', () => {
   assert.equal(nextRunText(undefined, beforeStart), '明天早上')
 })
 
-test('calendar day tone has one precedence shared by calendar, day list and 30-day strip', () => {
+test('calendar day tone keeps failure above success, pending and skipped', () => {
   const day = (counts, future = false) => {
     const merged = { success: 0, failed: 0, skipped: 0, unknown: 0, ...counts }
     return {
@@ -173,7 +173,10 @@ test('calendar day tone has one precedence shared by calendar, day list and 30-d
   }
 
   assert.equal(calendarDayTone(undefined), 'none')
+  assert.equal(calendarDayTone(day({})), 'none')
   assert.equal(calendarDayTone(day({}), true), 'none')
+  assert.equal(calendarDayTone(day({ success: 1 }), true), 'none')
+  assert.equal(calendarDayTone(day({ failed: 1 })), 'danger')
   assert.equal(calendarDayTone(day({ success: 1 })), 'success')
   assert.equal(calendarDayTone(day({ success: 1, failed: 1 })), 'danger')
   assert.equal(calendarDayTone(day({ success: 1, unknown: 1 })), 'success')

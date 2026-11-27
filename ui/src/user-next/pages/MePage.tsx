@@ -65,7 +65,7 @@ const WEEK_MARK: Record<CalendarDayTone, WeekMark> = {
   danger: { tone: 'danger', label: '有失败' },
   pending: { tone: 'pending', label: '待确认' },
   warning: { tone: 'warning', label: '未执行' },
-  none: { tone: 'empty', label: '未执行' },
+  none: { tone: 'empty', label: '没有任务' },
 }
 
 function weekMark(day: SignCalendarDay): WeekMark {
@@ -355,13 +355,15 @@ export function MePage() {
                   <span>今天 {today.slice(5)}</span>
                 </div>
               ) : null}
-              <div className="un-me__week-legend" aria-hidden="true">
-                <span><i className="un-me__week-key is-success" />成功</span>
-                <span><i className="un-me__week-key is-danger" />有失败</span>
-                <span><i className="un-me__week-key is-pending" />待确认</span>
-                <span><i className="un-me__week-key is-warning" />未执行</span>
-                <span><i className="un-me__week-key is-empty" />没有任务</span>
-              </div>
+              {days.length > 0 && !calendarQuery.isError ? (
+                <div className="un-me__week-legend" aria-hidden="true">
+                  <span><i className="un-me__week-key is-success" />成功</span>
+                  <span><i className="un-me__week-key is-danger" />有失败</span>
+                  <span><i className="un-me__week-key is-pending" />待确认</span>
+                  <span><i className="un-me__week-key is-warning" />未执行</span>
+                  <span><i className="un-me__week-key is-empty" />没有任务</span>
+                </div>
+              ) : null}
             </div>
           </section>
 

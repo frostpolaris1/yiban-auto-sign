@@ -285,39 +285,23 @@
   background: var(--un-line-soft);
 }
 
+.un-me__week-mark.is-success,
 .un-me__week-key.is-success {
   background: var(--un-blue);
 }
 
+.un-me__week-mark.is-danger,
 .un-me__week-key.is-danger {
   background: var(--un-danger);
 }
 
+.un-me__week-mark.is-pending,
 .un-me__week-key.is-pending {
   background: var(--un-pending);
 }
 
+.un-me__week-mark.is-warning,
 .un-me__week-key.is-warning {
-  background: var(--un-warning);
-}
-
-.un-me__week-key.is-empty {
-  background: var(--un-line-soft);
-}
-
-.un-me__week-mark.is-success {
-  background: var(--un-blue);
-}
-
-.un-me__week-mark.is-danger {
-  background: var(--un-danger);
-}
-
-.un-me__week-mark.is-pending {
-  background: var(--un-pending);
-}
-
-.un-me__week-mark.is-warning {
   background: var(--un-warning);
 }
 

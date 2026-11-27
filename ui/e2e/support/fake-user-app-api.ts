@@ -3,6 +3,7 @@ import type { Account, AccountDetectResult } from '../../src/lib/api/account'
 import type {
   DiagnosticsItem,
   SignCalendar,
+  SignCalendarAccount,
   SignCalendarDay,
   SignStatusItem,
 } from '../../src/lib/api/me'
@@ -124,6 +125,24 @@ function dayFromCounts(
     ...merged,
     future,
   }
+}
+
+const DAY_STATES = ['failed', 'success', 'unknown', 'skipped'] as const
+
+/**
+ * 日明细：每一种非零计数落一条账号记录，顺序与日主态一致。
+ * 混合日不再只返回一条，避免与日历 total 矛盾。
+ */
+function accountsFor(day: string, counts: CalendarDayCounts | undefined): SignCalendarAccount[] {
+  const source: CalendarDayCounts = counts ?? { success: 1 }
+  return DAY_STATES.filter((state) => (source[state] ?? 0) > 0).map((state) => ({
+    account_id: USER_ACCOUNT.id,
+    state,
+    ...(state === 'success' || state === 'failed'
+      ? { run_at: `${day}T07:02:00+08:00` }
+      : {}),
+    attempts: 1,
+  }))
 }
 
 export function userCalendar(
@@ -323,17 +342,18 @@ export async function mockUserAppApi(
     const url = new URL(route.request().url())
     const day = url.pathname.split('/').pop() ?? ''
     const counts = options.calendarDays?.[day]
-    const state =
-      counts?.failed
-        ? 'failed'
-        : counts?.success
-          ? 'success'
-          : counts?.unknown
-            ? 'unknown'
-            : counts?.skipped
-              ? 'skipped'
-              : 'success'
-    const hasRunAt = state === 'success' || state === 'failed'
+    if (day > MOCK_TODAY) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          day,
+          timezone: 'Asia/Shanghai',
+          future: true,
+          accounts: [],
+        }),
+      })
+    }
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -341,14 +361,7 @@ export async function mockUserAppApi(
         day,
         timezone: 'Asia/Shanghai',
         future: false,
-        accounts: [
-          {
-            account_id: USER_ACCOUNT.id,
-            state,
-            ...(hasRunAt ? { run_at: `${day}T07:02:00+08:00` } : {}),
-            attempts: 1,
-          },
-        ],
+        accounts: accountsFor(day, counts),
       }),
     })
   })
