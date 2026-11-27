@@ -41,7 +41,13 @@ import {
   userStatusLabel,
   userStatusTone,
 } from '@/lib/account-display'
-import { nextRunText, photoUploadErrorText, todayKey, weekdayLabel } from '@/features/me/display'
+import {
+  calendarDayTone,
+  nextRunText,
+  photoUploadErrorText,
+  todayKey,
+  weekdayLabel,
+} from '@/features/me/display'
 import {
   ME_KEYS,
   useLatestPhoto,
@@ -219,6 +225,8 @@ export function AccountPage() {
     setEditKind(null)
     setEditLocalError(null)
     setActionError(null)
+    setEditPassword('')
+    setEditCurrent('')
   }
 
   const openEdit = (kind: EditKind) => {
@@ -666,14 +674,15 @@ export function AccountPage() {
             {calendarDays.length > 0 ? (
               <div className="un-miniweek" aria-label="近 7 天签到">
                 {calendarDays.map((day) => {
+                  const tone = calendarDayTone(day)
                   const state =
-                    day.total === 0
-                      ? 'empty'
-                      : day.success > 0
-                        ? 'success'
-                        : day.failed > 0
-                          ? 'failed'
-                          : 'skipped'
+                    tone === 'danger'
+                      ? 'failed'
+                      : tone === 'warning'
+                        ? 'skipped'
+                        : tone === 'none'
+                          ? 'empty'
+                          : tone
                   return (
                     <span
                       key={day.day}

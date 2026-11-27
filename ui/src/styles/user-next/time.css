@@ -228,8 +228,9 @@
 }
 
 .un-time__step:hover:not(:disabled) {
-  border-color: var(--un-line-strong);
-  color: var(--un-ink);
+  border-color: var(--un-blue);
+  background: var(--un-blue-faint);
+  color: var(--un-blue-deep);
 }
 
 .un-time__step:disabled {
@@ -495,4 +496,8 @@
     display: grid;
     grid-template-columns: 1fr;
   }
+}
+
+.un-time > .un-alert {
+  margin: 0 0 var(--un-space-5);
 }

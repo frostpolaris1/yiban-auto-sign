@@ -298,10 +298,14 @@ export function MePage() {
 
             <div className="un-profile__actions">
               <Link
-                to={account ? '/app/me/account' : '/app/me/account/new'}
+                to={items.length > 0 ? '/app/me/account' : '/app/me/account/new'}
                 className="un-btn un-btn--primary"
               >
-                {account ? '管理账号' : '新建账号'}
+                {items.length > 0
+                  ? account
+                    ? '管理账号'
+                    : '恢复账号'
+                  : '新建账号'}
               </Link>
             </div>
           </section>

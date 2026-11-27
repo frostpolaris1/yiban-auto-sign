@@ -24,10 +24,12 @@ import {
   userStatusTone,
 } from '@/lib/account-display'
 import {
+  calendarDayTone,
   nextRunText,
   schoolLabel,
   todayKey,
   weekdayLabel,
+  type CalendarDayTone,
 } from '@/features/me/display'
 import { formatClock } from '@/lib/format'
 import {
@@ -50,6 +52,14 @@ import {
 } from '../lib/today'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+
+const WEEK_OUTCOME: Record<CalendarDayTone, string> = {
+  success: '成功',
+  danger: '有失败',
+  pending: '待确认',
+  warning: '未执行',
+  none: '无记录',
+}
 
 function clearFastTimer(timer: { current: number | null }): void {
   if (timer.current !== null) {
@@ -113,7 +123,10 @@ export function TodayPage() {
   const todayState = parseTodayState(statusItem?.state)
   const timePref = timePrefQuery.data
   const geometry =
-    current && current.deleted_at === null && todayState !== null
+    current &&
+    current.deleted_at === null &&
+    current.status === 'active' &&
+    todayState !== null
       ? rulerGeometry(timePref, statusItem?.run_at ?? null)
       : null
   const chosenText = geometry?.chosenText ?? ''
@@ -500,22 +513,8 @@ export function TodayPage() {
                 <ol className="un-week__days">
                   {weekDays.map((day) => {
                     const isToday = day.day === today
-                    const tone =
-                      day.failed > 0
-                        ? 'danger'
-                        : day.success > 0
-                          ? 'success'
-                          : day.skipped > 0
-                            ? 'warning'
-                            : 'none'
-                    const outcome =
-                      tone === 'success'
-                        ? '成功'
-                        : tone === 'danger'
-                          ? '有失败'
-                          : tone === 'warning'
-                            ? '未执行'
-                            : '无记录'
+                    const tone = calendarDayTone(day)
+                    const outcome = WEEK_OUTCOME[tone]
                     return (
                       <li
                         key={day.day}

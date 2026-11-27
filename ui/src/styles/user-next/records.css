@@ -575,3 +575,9 @@
     font-size: 3rem;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .un-cal__cell:active:not([aria-disabled="true"]) {
+    transform: none;
+  }
+}

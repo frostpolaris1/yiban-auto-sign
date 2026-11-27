@@ -579,3 +579,7 @@
     min-width: 92px;
   }
 }
+
+.un-me > .un-alert {
+  margin: var(--un-space-5) 0;
+}

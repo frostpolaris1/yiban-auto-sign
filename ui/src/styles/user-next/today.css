@@ -85,6 +85,18 @@
   line-height: 1.2;
 }
 
+.un-result--danger .un-result__status {
+  color: var(--un-danger);
+}
+
+.un-result--warning .un-result__status {
+  color: var(--un-warning);
+}
+
+.un-result--empty .un-result__status {
+  color: var(--un-ink-muted);
+}
+
 .un-result__dot,
 .un-result__dot.uapp-status {
   display: block;
@@ -292,6 +304,7 @@
 .un-ruler__tick.uapp-ruler-tick {
   position: absolute;
   top: 0;
+  cursor: default;
   width: 0;
   min-width: 0;
   height: 0;
@@ -571,6 +584,10 @@
 
 .un-week__dot.is-danger {
   background: var(--un-danger);
+}
+
+.un-week__dot.is-pending {
+  background: var(--un-pending);
 }
 
 .un-week__dot.is-warning {

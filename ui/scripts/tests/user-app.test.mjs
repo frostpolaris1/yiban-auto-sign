@@ -12,6 +12,7 @@ import {
   homeState,
   windowGeometry,
   nextRunText,
+  schoolLabel,
 } from '../../src/features/me/display.ts'
 import { ApiError } from '../../src/lib/api/client.ts'
 
@@ -184,6 +185,15 @@ test('calendar day tone keeps failure above success, pending and skipped', () =>
   assert.equal(calendarDayTone(day({ success: 1, unknown: 1 })), 'success')
   assert.equal(calendarDayTone(day({ unknown: 1, skipped: 1 })), 'pending')
   assert.equal(calendarDayTone(day({ skipped: 1 })), 'warning')
+})
+
+test('school label separates unbound, loading, unreadable and unregistered', () => {
+  const school = [{ id: 's1', name: '东区宿舍' }]
+  assert.equal(schoolLabel(undefined, false, undefined), '尚未绑定学校')
+  assert.equal(schoolLabel(undefined, false, 's1'), '学校信息加载中')
+  assert.equal(schoolLabel(undefined, true, 's1'), '学校信息暂时读不到')
+  assert.equal(schoolLabel(school, false, 's1'), '东区宿舍')
+  assert.equal(schoolLabel([], false, 's1'), '学校未登记')
 })
 
 test('detect error text names an unregistered school and falls back for unknown status', () => {

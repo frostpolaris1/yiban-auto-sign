@@ -384,7 +384,7 @@ export function detectErrorText(error: unknown): string {
   return '网络异常，请稍后重试。'
 }
 
-/** 学校名兜底：优先匹配；查询失败、未登记、加载中给三种不同提示。 */
+/** 学校名兜底：优先匹配；未绑定、查询失败、未登记、加载中给四种不同提示。 */
 export function schoolLabel(
   schools: School[] | undefined,
   isError: boolean,
@@ -392,6 +392,7 @@ export function schoolLabel(
 ): string {
   const matched = schools?.find((school) => school.id === schoolId)?.name
   if (matched) return matched
+  if (!schoolId) return '尚未绑定学校'
   if (isError) return '学校信息暂时读不到'
   if (schools) return '学校未登记'
   return '学校信息加载中'

@@ -182,6 +182,10 @@ export function RecordsPage({
   const dayAccounts = dayQuery.data?.accounts ?? []
   const dayFailed = dayAccounts.some((item) => item.state === 'failed')
   const gridRef = useRef<HTMLDivElement>(null)
+  const tabStop =
+    cells.includes(selected) && selected <= today
+      ? selected
+      : cells.find((cell) => cell <= today) ?? cells[0]
 
   const moveFocus = (event: KeyboardEvent<HTMLDivElement>, offset: number) => {
     const current = (event.target as HTMLElement).dataset.day
@@ -292,7 +296,7 @@ export function RecordsPage({
                     aria-current={isToday ? 'date' : undefined}
                     aria-disabled={future || undefined}
                     data-day={cell}
-                    tabIndex={isSelected ? 0 : -1}
+                    tabIndex={!future && cell === tabStop ? 0 : -1}
                     onClick={() => pick(cell)}
                   >
                     <span className="un-cal__day">

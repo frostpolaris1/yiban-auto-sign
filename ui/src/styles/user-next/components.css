@@ -242,6 +242,14 @@
   background: currentColor;
 }
 
+.un-chip__dot {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 .un-dot--live {
   box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
 }
@@ -463,6 +471,11 @@
 .un-switch[aria-checked="true"] {
   border-color: var(--un-blue);
   background: var(--un-blue);
+}
+
+.un-switch:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 .un-switch[aria-checked="true"]::after {

@@ -22,7 +22,13 @@
   display: flex;
   align-items: center;
   gap: var(--un-space-6);
-  height: 64px;
+  height: var(--un-bar-h);
+}
+
+.un-bar :focus-visible,
+.un-bottom :focus-visible {
+  border-radius: var(--un-radius-pill);
+  box-shadow: none;
 }
 
 .un-bar__brand-group {
@@ -229,9 +235,12 @@
 }
 
 @media (max-width: 767px) {
+  .un-root {
+    --un-bar-h: 56px;
+  }
+
   .un-bar__inner {
     gap: var(--un-space-3);
-    height: 56px;
   }
 
   .un-bar__brand-group {
@@ -276,7 +285,8 @@
     padding-bottom: calc(var(--un-bottom-h) + env(safe-area-inset-bottom) + 24px);
   }
 
-  .un-bottom {
+  .un-bottom,
+  .un-bottom.uapp-bottom {
     position: fixed;
     right: 0;
     bottom: 0;
@@ -312,11 +322,6 @@
     font-weight: 600;
   }
 
-  .un-bottom__item.active {
-    color: var(--un-ink);
-    font-weight: 600;
-  }
-
   .un-bottom__dot {
     width: 4px;
     height: 4px;
@@ -329,10 +334,6 @@
     background: var(--un-blue);
   }
 
-  .un-bottom-spacer {
-    display: block;
-    height: calc(var(--un-bottom-h) + env(safe-area-inset-bottom));
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

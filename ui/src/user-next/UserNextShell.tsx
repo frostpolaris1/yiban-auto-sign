@@ -212,8 +212,6 @@ export function UserNextShell() {
           )
         })}
       </nav>
-
-      <div className="un-bottom-spacer" aria-hidden="true" />
     </div>
   )
 }
