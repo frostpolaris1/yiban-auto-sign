@@ -24,6 +24,7 @@ import {
   userStatusTone,
 } from '@/lib/account-display'
 import { clearSessionExpired, useMe } from '@/lib/session'
+import { schoolLabel } from '@/features/me/display'
 import {
   ME_KEYS,
   useLatestPhoto,
@@ -80,13 +81,11 @@ export function MePage() {
   const photoQuery = useLatestPhoto(account?.id ?? null)
   const photo = photoQuery.data?.items[0] ?? null
   const photoUrl = photo ? photoBytesPath(photo.id) : null
-  const schoolName =
-    schoolsQuery.data?.find((school) => school.id === account?.school_id)?.name ??
-    (schoolsQuery.isError
-      ? '学校信息暂时读不到'
-      : schoolsQuery.data
-        ? '学校未登记'
-        : '学校信息加载中')
+  const schoolName = schoolLabel(
+    schoolsQuery.data,
+    schoolsQuery.isError,
+    account?.school_id,
+  )
   const days = calendarQuery.data?.days ?? []
   const recorded = days.filter((day) => day.total > 0)
   const successDays = recorded.filter((day) => day.success > 0 && day.failed === 0).length
@@ -294,7 +293,7 @@ export function MePage() {
                 {days.map((day) => {
                   const outcome =
                     day.total === 0
-                      ? '未执行'
+                      ? '没有任务'
                       : day.failed > 0
                         ? '有失败'
                         : day.success > 0

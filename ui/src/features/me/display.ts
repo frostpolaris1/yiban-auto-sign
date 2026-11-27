@@ -17,6 +17,7 @@ import type { AccountStatus } from '@/lib/api/account'
 import { ApiError } from '@/lib/api/client'
 import type { DiagnosticsSuggestion } from '@/lib/api/me'
 import type { TimePref } from '@/lib/api/schedule'
+import type { School } from '@/lib/api/school'
 import { formatClock } from '@/lib/format'
 
 const SHANGHAI = 'Asia/Shanghai'
@@ -360,6 +361,19 @@ export function detectErrorText(error: unknown): string {
     return '没有找到账号，请检查手机号与口令。'
   }
   return '网络异常，请稍后重试。'
+}
+
+/** 学校名兜底：优先匹配；查询失败、未登记、加载中给三种不同提示。 */
+export function schoolLabel(
+  schools: School[] | undefined,
+  isError: boolean,
+  schoolId: string | null | undefined,
+): string {
+  const matched = schools?.find((school) => school.id === schoolId)?.name
+  if (matched) return matched
+  if (isError) return '学校信息暂时读不到'
+  if (schools) return '学校未登记'
+  return '学校信息加载中'
 }
 
 export function photoUploadErrorText(error: unknown): string {

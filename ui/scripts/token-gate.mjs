@@ -301,6 +301,9 @@ function checkUserNextTokens(tokensPath = USER_NEXT_TOKENS_FILE) {
   if (/--un-/.test(outside)) {
     problems.push('user-next tokens must live inside :root[data-theme] blocks')
   }
+  if (outside.trim() !== '') {
+    problems.push('user-next token file may only contain bare :root[data-theme] blocks')
+  }
   const rootSelectors = (clean.match(/:root\[data-theme=["']?(?:light|dark)["']?\]/g) ?? []).length
   const scopedSelectors = Object.keys(blocks).length
   if (rootSelectors !== scopedSelectors) {
@@ -458,6 +461,13 @@ function selfTest() {
     )
     if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('must live inside'))) {
       failures.push('user-next token rule missed a token outside a theme block')
+    }
+    writeFileSync(
+      userNextFile,
+      scopedBlock('light', lightTokens) + scopedBlock('dark', darkTokens) + '.un-root { color: red; }\n',
+    )
+    if (!checkUserNextTokens(userNextFile).some((problem) => problem.includes('may only contain'))) {
+      failures.push('user-next token rule missed a bare declaration outside a theme block')
     }
     writeFileSync(
       userNextFile,

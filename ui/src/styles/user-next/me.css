@@ -286,7 +286,7 @@
   border-top: 1px solid var(--un-line-soft);
 }
 
-.un-pref:first-of-type {
+.un-me__section-head + .un-pref {
   border-top: 0;
 }
 
@@ -492,8 +492,8 @@
 
   .un-profile__head .un-chip {
     position: absolute;
-    top: 0;
-    right: 0;
+    top: var(--un-space-4);
+    right: var(--un-space-4);
   }
 
   .un-profile__facts {

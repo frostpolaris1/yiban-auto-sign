@@ -85,7 +85,8 @@ function toneOf(info: SignCalendarDay | undefined, future: boolean): string {
   if (future || !info || info.total === 0) return 'none'
   if (info.failed > 0) return 'danger'
   if (info.success > 0) return 'success'
-  return 'warning'
+  if (info.skipped > 0) return 'warning'
+  return 'none'
 }
 
 function cellAria(
@@ -95,14 +96,12 @@ function cellAria(
 ): string {
   if (future) return dayLabel(day) + '，未来'
   if (!info || info.total === 0) return dayLabel(day) + '，无记录'
-  if (info.failed > 0) {
-    const parts = [info.failed + ' 个失败']
-    if (info.success > 0) parts.push(info.success + ' 个成功')
-    if (info.skipped > 0) parts.push(info.skipped + ' 个未执行')
-    return dayLabel(day) + '，' + parts.join('，')
-  }
-  if (info.success > 0) return dayLabel(day) + '，' + info.success + ' 个成功'
-  return dayLabel(day) + '，' + info.total + ' 个未执行'
+  const parts: string[] = []
+  if (info.failed > 0) parts.push(info.failed + ' 个失败')
+  if (info.success > 0) parts.push(info.success + ' 个成功')
+  if (info.skipped > 0) parts.push(info.skipped + ' 个未执行')
+  if (info.unknown > 0) parts.push(info.unknown + ' 个待确认')
+  return dayLabel(day) + '，' + parts.join('，')
 }
 
 function accountName(
@@ -199,7 +198,10 @@ export function RecordsPage({
     const target = gridRef.current?.querySelector<HTMLButtonElement>(
       `[data-day="${next}"]`,
     )
-    if (!target || target.getAttribute('aria-disabled') === 'true') return
+    if (!target || target.getAttribute('aria-disabled') === 'true') {
+      event.preventDefault()
+      return
+    }
     event.preventDefault()
     target.focus()
   }

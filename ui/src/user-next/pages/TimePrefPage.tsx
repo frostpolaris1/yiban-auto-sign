@@ -56,6 +56,12 @@ export function TimePrefPage() {
   const selected = draft ?? stored
   const selectedSlot = slots.find((slot) => slot.offset_min === selected) ?? null
   const firstEnabled = slots.findIndex((slot) => !slot.disabled)
+  const tabStopOffset =
+    selectedSlot !== null && !selectedSlot.disabled
+      ? selectedSlot.offset_min
+      : firstEnabled >= 0
+        ? slots[firstEnabled].offset_min
+        : null
   const windowStart = pref?.window?.start ?? null
   const windowEnd = pref?.window?.end ?? null
   const endShown = slots.some((slot) => slot.label === windowEnd)
@@ -228,7 +234,7 @@ export function TimePrefPage() {
                   >
                     {slots.map((slot, index) => {
                       const isSelected = slot.offset_min === selected
-                      const isTabbable = isSelected || (selectedSlot === null && index === firstEnabled)
+                      const isTabbable = slot.offset_min === tabStopOffset
                       const note = slotNote(slot)
                       const tone =
                         slot.disabled || !allowed

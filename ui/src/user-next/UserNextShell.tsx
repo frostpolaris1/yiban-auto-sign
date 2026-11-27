@@ -201,7 +201,7 @@ export function UserNextShell() {
               activeOptions={{ exact: item.to !== '/app/me' }}
               aria-current={active ? 'page' : undefined}
               onClick={(event) => {
-                if (active) return
+                if (active || !plainLeftClick(event)) return
                 event.preventDefault()
                 withViewTransition('page', () => navigate({ to: item.to }))
               }}

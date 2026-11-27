@@ -23,22 +23,10 @@ import {
 import { ApiError } from '@/lib/api/client'
 import { photoBytesPath, uploadPhoto } from '@/lib/api/photo'
 import type { Photo } from '@/lib/api/photo'
-import { photoUploadErrorText } from '@/features/me/display'
+import { detectErrorText, photoUploadErrorText } from '@/features/me/display'
 import { ME_KEYS, useMyAccounts, useSchools } from '@/features/me/queries'
 
 type Step = 1 | 2 | 3 | 'pending'
-
-function detectErrorText(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.status === 400) return '手机号或口令不正确，请检查后重试。'
-    if (error.status === 403) return '当前状态不能识别账号。'
-    if (error.status === 429) return '尝试过多，请稍后再试。'
-    if (error.status === 502) return '平台暂时不可用；可以手动选择学校后继续。'
-    if (error.status === 503) return '系统维护中；可以稍后重试或手动选择学校。'
-    return '没有识别到账号，请检查手机号与口令。'
-  }
-  return '网络异常，请稍后重试。'
-}
 
 function createErrorText(error: unknown): string {
   if (error instanceof ApiError) {
@@ -94,6 +82,9 @@ export function AccountNewPage() {
       school.code.toLowerCase().includes(term)
     )
   })
+  const schoolTabStop = filteredSchools.some((school) => school.id === schoolId)
+    ? schoolId
+    : (filteredSchools[0]?.id ?? '')
   const live =
     accountsQuery.data?.items.find((item) => item.deleted_at === null) ?? null
 
@@ -468,13 +459,13 @@ export function AccountNewPage() {
                         setSchoolId(filteredSchools[next].id)
                       }}
                     >
-                      {filteredSchools.map((school, index) => (
+                      {filteredSchools.map((school) => (
                         <button
                           key={school.id}
                           type="button"
                           role="radio"
                           aria-checked={schoolId === school.id}
-                          tabIndex={schoolId === school.id || (schoolId === '' && index === 0) ? 0 : -1}
+                          tabIndex={schoolTabStop === school.id ? 0 : -1}
                           className={
                             schoolId === school.id
                               ? 'un-school-option is-selected'

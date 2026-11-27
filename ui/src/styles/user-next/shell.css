@@ -270,7 +270,8 @@
     font-size: 0.75rem;
   }
 
-  .un-main {
+  .un-main,
+  .un-main.uapp-main {
     padding-top: 24px;
     padding-bottom: calc(var(--un-bottom-h) + env(safe-area-inset-bottom) + 24px);
   }

@@ -71,6 +71,7 @@
 .un-account-hero {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--un-space-5);
   overflow: hidden;
@@ -156,6 +157,7 @@
 }
 
 .un-account-hero__reject {
+  flex: 1 0 100%;
   max-width: 32ch;
   margin: 0;
   color: var(--un-danger);

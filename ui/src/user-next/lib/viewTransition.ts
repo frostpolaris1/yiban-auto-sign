@@ -50,7 +50,7 @@ function nextPaint(): Promise<void> {
  * Run `update` inside a native view transition and tag the shared elements
  * named by the CSS contract:
  *
- *   html[data-un-vt="result"] .un-shared-result { view-transition-name: ... }
+ *   html[data-un-vt="identity"] .un-shared-identity { view-transition-name: ... }
  *
  * The data attribute is removed after `finished`, including on failure. If a
  * transition is already running, the new update is applied without a second

@@ -626,7 +626,7 @@
   border-bottom: 1px solid var(--un-line-soft);
 }
 
-.un-avatar {
+.un-identity .un-avatar {
   display: inline-flex;
   width: 40px;
   height: 40px;

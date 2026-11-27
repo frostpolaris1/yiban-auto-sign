@@ -25,6 +25,7 @@ import {
 } from '@/lib/account-display'
 import {
   nextRunText,
+  schoolLabel,
   todayKey,
   weekdayLabel,
 } from '@/features/me/display'
@@ -49,6 +50,13 @@ import {
 } from '../lib/today'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+
+function clearFastTimer(timer: { current: number | null }): void {
+  if (timer.current !== null) {
+    window.clearTimeout(timer.current)
+    timer.current = null
+  }
+}
 
 function shiftDay(key: string, delta: number): string {
   const date = new Date(key + 'T12:00:00+08:00')
@@ -138,13 +146,11 @@ export function TodayPage() {
   const photoQuery = useLatestPhoto(account?.id ?? null)
   const photo = photoQuery.data?.items[0] ?? null
   const photoUrl = photo ? photoBytesPath(photo.id) : null
-  const schoolName =
-    schoolsQuery.data?.find((school) => school.id === current?.school_id)?.name ??
-    (schoolsQuery.isError
-      ? '学校信息暂时读不到'
-      : schoolsQuery.data
-        ? '学校未登记'
-        : '学校信息加载中')
+  const schoolName = schoolLabel(
+    schoolsQuery.data,
+    schoolsQuery.isError,
+    current?.school_id,
+  )
   const announcement = announcementQuery.data
   const showAnnouncement =
     !announcementDismissed &&
@@ -165,16 +171,11 @@ export function TodayPage() {
   const weekSuccessDays = weekRecorded.filter((day) => day.success > 0 && day.failed === 0).length
 
   useEffect(() => {
-    return () => {
-      if (fastTimer.current !== null) window.clearTimeout(fastTimer.current)
-    }
+    return () => clearFastTimer(fastTimer)
   }, [])
 
   useEffect(() => {
-    if (fastTimer.current !== null) {
-      window.clearTimeout(fastTimer.current)
-      fastTimer.current = null
-    }
+    clearFastTimer(fastTimer)
     if (running) {
       setFast(true)
       return
@@ -185,17 +186,12 @@ export function TodayPage() {
       fastTimer.current = null
       setFast(false)
     }, 60_000)
-    return () => {
-      if (fastTimer.current !== null) {
-        window.clearTimeout(fastTimer.current)
-        fastTimer.current = null
-      }
-    }
+    return () => clearFastTimer(fastTimer)
   }, [running])
 
   const armFast = () => {
     setFast(true)
-    if (fastTimer.current !== null) window.clearTimeout(fastTimer.current)
+    clearFastTimer(fastTimer)
     fastTimer.current = window.setTimeout(() => setFast(false), 60_000)
   }
 
@@ -398,7 +394,7 @@ export function TodayPage() {
         <div className="un-today__grid">
           <div className="un-today__primary">
             <section
-              className={cx('un-result', 'uapp-hero', 'un-shared-result')}
+              className={cx('un-result', 'uapp-hero')}
               aria-labelledby="un-result-title"
               data-tone={story?.tone ?? 'info'}
             >
@@ -494,7 +490,7 @@ export function TodayPage() {
                   </h2>
                   <p className="un-week__summary">
                     <span className="un-week__count">{weekSuccessDays}</span>
-                    <span className="un-week__of">/{weekDays.length || 7}</span>
+                    <span className="un-week__of">/{weekDays.length}</span>
                     <span className="un-week__cap">天全部成功</span>
                     {streak > 0 ? (
                       <span className="un-week__streak">· 连续 {streak} 天</span>
