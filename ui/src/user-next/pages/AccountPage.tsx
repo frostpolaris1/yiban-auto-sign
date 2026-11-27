@@ -59,7 +59,9 @@ import {
   useTimePref,
 } from '@/features/me/queries'
 
-const MINI_WEEK_STATE: Record<CalendarDayTone, string> = {
+type MiniWeekState = 'success' | 'failed' | 'pending' | 'skipped' | 'empty'
+
+const MINI_WEEK_STATE: Record<CalendarDayTone, MiniWeekState> = {
   success: 'success',
   danger: 'failed',
   pending: 'pending',

@@ -184,10 +184,12 @@ export function RecordsPage({
   const dayAccounts = dayQuery.data?.accounts ?? []
   const dayFailed = dayAccounts.some((item) => item.state === 'failed')
   const gridRef = useRef<HTMLDivElement>(null)
-  const pastCells = cells.filter((cell) => cell <= today)
+  const pastCells = cells.filter(
+    (cell) => monthOf(cell) === month && cell <= today,
+  )
   const tabStop = pastCells.includes(selected)
     ? selected
-    : pastCells[pastCells.length - 1] ?? selected
+    : pastCells[pastCells.length - 1] ?? cells[0]
 
   const moveFocus = (event: KeyboardEvent<HTMLDivElement>, offset: number) => {
     const current = (event.target as HTMLElement).dataset.day

@@ -209,6 +209,9 @@ test('signing account page shows identity, device and controls', async ({ page }
   const staticRow = page.locator('.un-row--static', { hasText: '签到地点' })
   await staticRow.hover()
   await expect(staticRow).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  const dangerRow = page.locator('.un-row--danger', { hasText: '删除签到账号' })
+  await dangerRow.hover()
+  await expect(dangerRow).toHaveCSS('background-color', 'rgb(244, 229, 226)')
   await expect(page.locator('.uapp-top-link.active')).toContainText('我的')
 })
 
@@ -258,6 +261,14 @@ test('records future deep link falls back to today and keeps one tab stop', asyn
   const selected = page.locator('.un-cal__cell[aria-pressed="true"]')
   await expect(selected).toHaveAttribute('data-day', '2026-11-11')
   await expect(page.locator('.un-cal__cell[tabindex="0"]')).toHaveCount(1)
+
+  // 回看旧月份时，roving tab stop 必须留在当前月，而不是落到相邻月的灰格。
+  await page.getByRole('button', { name: '上个月' }).click()
+  await expect(page.locator('.un-cal__month')).toContainText('2026年10月')
+  await expect(page.locator('.un-cal__cell[tabindex="0"]')).toHaveAttribute(
+    'data-day',
+    '2026-10-31',
+  )
 })
 
 test('records and me agree on pending, skipped and mixed days', async ({ page }) => {

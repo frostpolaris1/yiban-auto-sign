@@ -307,10 +307,6 @@
   cursor: default;
 }
 
-.un-row--static:hover {
-  background: transparent;
-}
-
 .un-row__label {
   grid-column: 1;
   grid-row: 1;
@@ -363,7 +359,7 @@
   color: var(--un-danger);
 }
 
-.un-row--danger:not(:disabled):hover {
+.un-row.un-row--danger:not(:disabled):hover {
   background: var(--un-danger-soft);
 }
 
