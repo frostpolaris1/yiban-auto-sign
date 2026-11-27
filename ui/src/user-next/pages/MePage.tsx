@@ -69,7 +69,6 @@ const WEEK_MARK: Record<CalendarDayTone, WeekMark> = {
 }
 
 function weekMark(day: SignCalendarDay): WeekMark {
-  if (day.total === 0) return WEEK_MARK.none
   return WEEK_MARK[calendarDayTone(day)]
 }
 
