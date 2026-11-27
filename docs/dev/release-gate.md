@@ -12,7 +12,8 @@
 | `main` | 对外默认可见的已验证分支 | 只接受 `develop` 候选提交的晋升 PR，且 §5 证据齐全 |
 
 `main` 是展示与追溯分支，不是生产部署源。生产部署以签名发布件为准；
-晋升 `main` 不改变生产正在运行的版本。旧部署分支已随旧栈退役，不再作为晋升路径。
+晋升 `main` 不改变生产正在运行的版本。旧部署分支已随旧栈退役，不再作为晋升路径；
+`server-web` 已冻结、禁止推送，远端引用在退役收尾时删除。
 
 ## 2. Required checks（8 项）
 
@@ -79,38 +80,44 @@ bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>
    `pending` / `running`；
 3. 该日没有 `round summary failed`，没有服务重启、人工干预或回滚；
 4. 生产实例的 `yiban-server --version` 的 `version` 与发布清单的 `version` 相同，
-   `commit` 等于发布 tag 指向提交的短哈希（`git rev-parse --short v<version>`）；
-   清单本身只签 `version` 与文件哈希，不含 `commit`。
+   `commit` 等于发布 tag 指向提交的短哈希（`git rev-parse --short 'v<version>^{commit}'`；
+   `^{commit}` 必须保留，直接解析 annotated tag 得到的是 tag 对象而非提交）；
+   清单本身只签 `version` 与文件哈希，不含 `commit`。构建注入的 `commit` 是
+   `git rev-parse --short HEAD`，因此版本判定要用同一检出或完整哈希前缀复核缩写。
 
-空转日、补签日不算；同一业务日不重复计数。晋升要求 **≥3 个连续业务日**
+空转日不算；同一业务日不重复计数。晋升要求 **≥3 个连续业务日**
 （业务日按 `YIBAN_TZ`，默认上海）。
 
 ### 5.2 采集命令
 
 ```bash
-# 版本身份：version 与清单一致，commit 对应发布 tag（裸机 /usr/local/bin，容器按镜像入口）
+# 版本身份：version 与清单一致，commit 对应发布 tag
+# 裸机
 sudo -u yiban /usr/local/bin/yiban-server --version
+# 容器
+# docker compose exec app /usr/local/bin/yiban-server --version
 
 # 服务状态：ActiveState=active，NRestarts 在观察窗口内不增长；
 # NRestarts 只统计自动重启，人工 restart 要看 ExecMainStartTimestamp 变化。
 systemctl show yiban -p ActiveState -p NRestarts -p ExecMainStartTimestamp
 
 # 轮末汇总：D 的汇总行在 D+1 才写；按 day 字段取，不要按日志日期
-journalctl -u yiban --since '<D> 00:00' --until '<D+2> 00:00' \
+sudo journalctl -u yiban --since '<D> 00:00' --until '<D+2> 00:00' \
   | grep '"day":"<D>"'
 ```
 
 窗口按宿主机时区，业务日按 `YIBAN_TZ`；两者不同时把窗口放宽到前后各一天，
-仍以日志里的 `day` 字段为准。
+仍以日志里的 `day` 字段为准。非 root 用户读 journal 需要 `sudo` 或加入
+`systemd-journal` 组。
 
 容器形态把 `systemctl` 换成 `docker inspect "$(docker compose ps -q app)"`
 （看 `State.StartedAt`、`RestartCount`），`journalctl` 换成 `docker compose logs app`；
 判据不变。
 
 ```bash
-# 裸机
-sudo -u postgres psql -d yiban
-# 容器
+# 裸机（库名取 YIBAN_DATABASE_URL 的 dbname，下例占位为 <dbname>）
+sudo -u postgres psql -d '<dbname>'
+# 容器（compose 的 POSTGRES_DB=yiban）
 # docker compose exec db psql -U yiban -d yiban
 ```
 
@@ -133,8 +140,9 @@ ORDER BY state;
 ### 5.3 晋升排程与首次对账
 
 晋升不设自动定时器。候选提交取 `develop` tip；生产部署完成
-（`ExecMainStartTimestamp` / `StartedAt` 更新）后人工排期，建议在第 4 个业务日：
-前 3 个业务日的汇总已落库，且当天没有新故障。
+（`ExecMainStartTimestamp` / `StartedAt` 更新）后人工排期，建议在第 4 个业务日
+（从部署完成后的首个完整业务日起算，当天半天不计）：前 3 个业务日的汇总已落库，
+且当天没有新故障。
 
 `main` 与 `develop` 的历史已分叉，首次晋升必须做一次显式对账：
 
@@ -142,7 +150,8 @@ ORDER BY state;
 2. 用下面的命令显式把树设成候选提交，而不是依赖普通 merge 的三方合并：
 
 ```bash
-git switch -c chore/promote-main-<version> main
+git fetch origin main
+git switch -c chore/promote-main-<version> origin/main
 git merge --no-ff --no-commit <candidate> || true
 git rev-parse -q --verify MERGE_HEAD >/dev/null || { echo "no merge in progress"; exit 1; }
 git read-tree -u --reset <candidate> || { echo "cannot set candidate tree"; exit 1; }
@@ -153,8 +162,8 @@ test "$(git rev-list --parents -n1 HEAD | wc -w)" -eq 3 || { echo "not a merge c
 echo TREE-MATCH
 ```
 
-3. 若 `git diff --name-only <candidate> HEAD` 仍有输出，说明残留未删，停止并修；
-4. 开 PR 到 `main`，跑完 §2 的 8 项检查后合并，保留两个父提交。首次 PR 的
+3. 开 PR 到 `main`，跑完 §2 的 8 项检查后合并，合并方式必须选
+   **Create a merge commit**，禁止 Squash and merge / Rebase and merge，保留两个父提交。首次 PR 的
    `contract-gate` 会因 `main` 尚无 spec 打印
    `contract-gate SKIP (oasdiff: ... first introduction)`；spectral 仍执行，不判红。
 

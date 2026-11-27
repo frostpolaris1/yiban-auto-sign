@@ -496,19 +496,10 @@ class EntryScriptBehaviorTest(unittest.TestCase):
         self.assertIn("contract-gate SKIP (oasdiff:", out)
 
     def test_base_without_spec_skips_visibly_and_passes(self):
-        ident = dict(
-            GIT_AUTHOR_NAME="contract-gate-test",
-            GIT_AUTHOR_EMAIL="contract-gate-test@example.invalid",
-            GIT_COMMITTER_NAME="contract-gate-test",
-            GIT_COMMITTER_EMAIL="contract-gate-test@example.invalid",
-        )
-        env = dict(os.environ, **ident)
-        tree = subprocess.check_output(
-            ["git", "hash-object", "-t", "tree", "/dev/null"],
-            cwd=BASE, env=env, text=True).strip()
+        # 用仓库根提交当底本：它早于契约文件，天然满足“base 里没有 spec”。
         base = subprocess.check_output(
-            ["git", "commit-tree", tree, "-m", "empty base"],
-            cwd=BASE, env=env, text=True).strip()
+            ["git", "rev-list", "--max-parents=0", "HEAD"],
+            cwd=BASE, text=True).strip().splitlines()[0]
         rc, out = self._run("--base", base)
         self.assertEqual(rc, 0, out)
         self.assertIn("first introduction", out)
