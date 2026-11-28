@@ -176,7 +176,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// p2m/p2b：status.literal allow 增列 engine_snapshot_e2e_test.go、
 	// notify_release_claim_e2e_test.go、delivery_claim_test.go
 	// （既有任务态/账本态字面量断言，不是新词表）。
-	const want = "4b922724a1f42c4477d71ffb54de4e93ebd32f214e4f8c90a8218d38f0769b91"
+	// b1lock：env.get allow 增列 internal/assembly/startup_lock_e2e_test.go
+	// （启动单实例会话锁真库 e2e 沿用 loop/p12/engine_pause 的 os.Getenv 读测试 DSN 口径）。
+	const want = "63b4b461033157373e572678272ea567802839504a57d1e77db9e47a7e01b421"
 
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
