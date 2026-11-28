@@ -25,4 +25,11 @@ const (
 	// 不在上面的「容量在前，审计在后」事务锁序内。
 	// 与事务锁共用单键命名空间，取值不重复，故不互撞。
 	StartupLockKey int64 = 71010005
+
+	// TestSerialLockKey 是跨包真库测试的串行键。
+	// 启动锁按数据库生效，schema 隔离不了：pg、assembly、cmd/server
+	// 三个包中会真持启动锁的用例，在持锁期间同时持本键互斥，
+	// 否则 go test 并行跑包时会互抢同一把启动锁。
+	// **仅供跨包测试串行化，生产代码不得使用**。
+	TestSerialLockKey int64 = 71019999
 )

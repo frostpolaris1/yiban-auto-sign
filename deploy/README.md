@@ -635,6 +635,8 @@ sudo systemctl restart yiban.service
 | 注册页没有验证控件 | 是否两把密钥成对配置；`GET /api/auth/registration` 的 `turnstile_site_key` 是否为空（空＝按设计整块不渲染） |
 | 注册回 `human verification failed` | 令牌是否 300 秒内、未重复使用；secret 与站点是否配对；`log` 档可先在日志看 outcome/codes |
 | 进程起不来 | `YIBAN_UI_DIR` 指向的目录缺 `index.html` 时服务端**拒绝启动**。这是有意行为 |
+| 启动即退出，日志 `assembly.startup_lock_held` | 同库已有实例持启动锁。先确认是否真有一份在跑（`systemctl status yiban` 或 `docker ps`）；确认无实例后查持锁会话：`psql "$YIBAN_DATABASE_URL" -c "SELECT pid, application_name, state FROM pg_locks JOIN pg_stat_activity USING (pid) WHERE locktype = 'advisory' AND classid = 0 AND objid = 71010005 AND objsubid = 1"`；不要 terminate 正在服务的实例 |
+| 日志 `assembly.startup_lock_lost` 后进程退出 | 持锁连接断了（数据库重启、网络分区、被 terminate）。fail-stop 是防双实例的设计：直接重启服务；未结算任务在租约到期后由下次启动回收 |
 | 上传/读取照片失败（裸机） | `server.env` 的 `YIBAN_PHOTO_DIR` 是否等于单元里 `ReadWritePaths` 的路径；改目录后重跑 `install.sh` 再 `systemctl restart` |
 
 ### 7.1 00032/00033 索引失败处理

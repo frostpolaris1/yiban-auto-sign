@@ -230,6 +230,10 @@ func TestAssemblyRunsRetentionLoop(t *testing.T) {
 		InsecureCookies: true,
 	}
 	var logs bytes.Buffer
+	// Build 持启动锁到 stack.Close：期间必须持跨包串行键，避免与
+	// pg/assembly 的启动锁用例并行时互抢同一把锁。
+	releaseSerial := lockStartupSerial(t, w2cRequireDSN(t))
+	defer releaseSerial()
 	stack, err := assembly.Build(cfg, slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatalf("assembly.Build: %v", err)
