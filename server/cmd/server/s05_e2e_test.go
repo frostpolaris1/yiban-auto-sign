@@ -409,6 +409,10 @@ func TestS05RegisterRateLimitedAndCrossSite(t *testing.T) {
 	}
 
 	// 跨站提交：即使注册开放、限流未命中，也必须 403。
+	// 启动锁是数据库级的：同库第二个装配在第一个持锁期间会被拒绝。
+	// 限流断言已做完，先收尾 e 再开 fresh；cleanup 里的重复关闭是幂等的。
+	e.httpSrv.Close()
+	e.stack.Close()
 	fresh := newAuthEnv(t)
 	if _, err := fresh.db.Exec(fresh.ctx, "UPDATE settings SET value = 'true' WHERE key = 'registration.enabled'"); err != nil {
 		t.Fatalf("open registration: %v", err)

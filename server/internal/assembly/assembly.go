@@ -451,7 +451,25 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		if err != nil {
 			return nil, fmt.Errorf("assembly: open database: %w", err)
 		}
-		closeFn = db.Close
+		// 单实例硬门：连接池就绪后立即取会话级启动锁。
+		// 取不到说明同库已有进程在服务：本次启动必须失败，
+		// 不能并存两个执行循环。锁由专用长连持有到 Stack.Close。
+		startupLock, err := db.AcquireStartupLock(openCtx)
+		if err != nil {
+			db.Close()
+			if errors.Is(err, pg.ErrStartupLockHeld) {
+				logger.Error("another server instance is already running; refusing to start",
+					logfield.KeyEvent, "assembly.startup_lock_held",
+					logfield.KeyError, err.Error())
+			}
+			return nil, fmt.Errorf("assembly: startup lock: %w", err)
+		}
+		// 先解锁再关池：关池会等借出的连接归还，
+		// 顺序反了会卡在启动锁那条长连上。
+		closeFn = func() {
+			startupLock.Close()
+			db.Close()
+		}
 
 		auditKey, err := coreaudit.DeriveKey(cfg.HashPepper)
 		if err != nil {
