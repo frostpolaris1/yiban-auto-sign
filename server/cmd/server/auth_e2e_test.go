@@ -27,8 +27,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
@@ -88,6 +91,38 @@ func newAuthEnv(t *testing.T) *authEnv {
 	return newAuthEnvWith(t, nil, nil)
 }
 
+// lockStartupSerial 在专用连接上等跨包串行键，返回释放函数。
+// 启动锁按数据库生效，schema 隔离不了；cmd/server 的每个真装配
+// 在 env 生命周期内持这把锁，与 pg/assembly 的启动锁用例互斥。
+// 用 try 轮询而非阻塞等锁：卡住的等待也要能被 ctx 中止。
+func lockStartupSerial(t *testing.T, dsn string) func() {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect serial connection: %v", err)
+	}
+	for {
+		var acquired bool
+		if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", pg.TestSerialLockKey).Scan(&acquired); err != nil {
+			_ = conn.Close(context.Background())
+			t.Fatalf("try serial advisory lock: %v", err)
+		}
+		if acquired {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			_ = conn.Close(context.Background())
+			t.Fatalf("serial advisory lock not granted within 2m: %v", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	var once sync.Once
+	return func() { once.Do(func() { _ = conn.Close(context.Background()) }) }
+}
+
 // newAuthEnvWith 在默认装配上应用配置改写与日志注入。
 // mutate 为 nil 时不改配置；logger 为 nil 时丢弃日志。
 func newAuthEnvWith(t *testing.T, mutate func(*config.Config), logger *slog.Logger) *authEnv {
@@ -96,6 +131,10 @@ func newAuthEnvWith(t *testing.T, mutate func(*config.Config), logger *slog.Logg
 	if base == "" {
 		t.Skip("SKIP: " + authDSNEnv + " is not set. Auth e2e DID NOT RUN.")
 	}
+	// 串行键先于 Build 取得，随 env 关闭释放；否则 go test 并行跑包时
+	// 会与 pg/assembly 的启动锁用例互抢同一把锁。
+	releaseSerial := lockStartupSerial(t, base)
+	t.Cleanup(releaseSerial)
 	ctx := t.Context()
 	schema := "authtest_" + randomHex(8)
 
@@ -124,10 +163,19 @@ func newAuthEnvWith(t *testing.T, mutate func(*config.Config), logger *slog.Logg
 	}
 	stack, err := assembly.Build(cfg, logger)
 	if err != nil {
+		releaseSerial()
 		_, _ = admin.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		admin.Close()
 		t.Fatalf("build stack: %v", err)
 	}
+	// 串行键随 Stack.Close 释放：测试中途手动收尾（如 s05 再建 fresh env）
+	// 时，下一个 env 才能取得它；重复关闭是幂等的。
+	closeStack := stack.Close
+	stack.Close = func() {
+		closeStack()
+		releaseSerial()
+	}
+	t.Cleanup(stack.Close)
 	// 配额批 r4r：生产缺省是 1/1（master 自用紧档）。既有 e2e 的多用户/
 	// 多账号场景在夹具里先把两键抬到 10000/10000（store 注入，与写面同源：
 	// settings 覆盖行）；验证缺省 1/1 的用例自行删行，见 quota_e2e_test.go。

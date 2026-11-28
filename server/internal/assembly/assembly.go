@@ -5,7 +5,10 @@
 // Stack 交给调用方；Run 服务到 SIGINT 或 SIGTERM。
 // cmd/server 与 cmd/cli 的 server 子命令都经由本包启动进程，
 // 两条入口共享同一份装配代码，不复制。
-// 本包**不**解析命令行参数、**不**打印用法、**不**退出进程。
+// 本包**不**解析命令行参数、**不**打印用法。
+// 唯一的进程退出是启动锁连接失效时的 fail-stop：
+// 探活失败无法证明单实例，继续服务会与第二实例并存；
+// 代价是放弃本次优雅结算，在飞任务由下次启动的 Recover 回收。
 //
 // # 归属取舍
 // 候选一：internal/app/bootstrap——被否：canonical.tsv 的 boundary.app
@@ -33,6 +36,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -232,6 +236,37 @@ type Stack struct {
 // Run 与 NewServer 都经由它；装配次数由测试计数（见 assembly_test.go）。
 var buildStack = Build
 
+// startupLockHandle 是 Build 依赖的启动锁面：关机释放与失效通知。
+// 接缝让测试注入失效事件，不必真断一条数据库连接。
+type startupLockHandle interface {
+	Close()
+	Lost() <-chan error
+}
+
+// acquireStartupLock 是启动锁获取接缝。生产接真 pg 实现。
+var acquireStartupLock = func(ctx context.Context, dsn string) (startupLockHandle, error) {
+	return pg.AcquireStartupLock(ctx, pg.StartupLockOptions{DSN: dsn})
+}
+
+// startupLockFailStop 是锁连接失效后的进程退出。
+// 测试替换它观察调用；生产必须真退出，不能带着失效的锁继续服务。
+var startupLockFailStop = func() { os.Exit(1) }
+
+// watchStartupLock 在持锁连接失效时记 ERROR 并 fail-stop。
+// 探活失败无法证明锁仍属本会话，继续运行会与第二实例并存。
+func watchStartupLock(lock startupLockHandle, logger *slog.Logger) {
+	go func() {
+		err, ok := <-lock.Lost()
+		if !ok {
+			return
+		}
+		logger.Error("startup lock connection lost; exiting without graceful shutdown",
+			logfield.KeyEvent, "assembly.startup_lock_lost",
+			logfield.KeyError, err.Error())
+		startupLockFailStop()
+	}()
+}
+
 // loopHandle 是执行循环的启停面。Run 只依赖这三个方法；
 // 测试注入假循环，断言启动块被真的执行。
 type loopHandle interface {
@@ -278,7 +313,7 @@ const (
 // 启动自愈只兜小步迁移；失败信息指向 deploy/README.md §7.1。
 const startupMigrateBudget = 10 * time.Minute
 
-// startupOpenBudget 只覆盖迁移之后的建池与 Ping，不与迁移共享预算。
+// startupOpenBudget 只覆盖启动锁建连、迁移之后的建池与 Ping，不与迁移共享预算。
 // 迁移合法地接近 10 分钟时，若复用同一 ctx，Ping 会以 deadline exceeded
 // 失败，表现为“迁移成功但服务起不来”；开池是短动作，单独 30s 即可。
 const startupOpenBudget = 30 * time.Second
@@ -434,11 +469,29 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		logger.Warn("auth endpoints are disabled: YIBAN_DATABASE_URL is empty")
 		logger.Warn("user, school, admin and account endpoints return 501: YIBAN_DATABASE_URL is empty")
 	} else {
+		// 单实例硬门先于一切 schema 写入：被拒实例不得先跑迁移。
+		// 锁用裸 DSN 的独立长连持有，不占连接池；连接失效即 fail-stop。
+		lockCtx, cancelLock := context.WithTimeout(context.Background(), startupOpenBudget)
+		startupLock, err := acquireStartupLock(lockCtx, cfg.DatabaseURL)
+		cancelLock()
+		if err != nil {
+			if errors.Is(err, pg.ErrStartupLockHeld) {
+				logger.Error("another server instance is already running; refusing to start",
+					logfield.KeyEvent, "assembly.startup_lock_held",
+					logfield.KeyError, err.Error())
+			}
+			return nil, fmt.Errorf("assembly: startup lock: %w", err)
+		}
+		// 锁独立于连接池：迁移或建池失败时也必须释放，closeFn 先只挂锁。
+		closeFn = func() { startupLock.Close() }
+		watchStartupLock(startupLock, logger)
+
 		migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), startupMigrateBudget)
 		defer cancelMigrate()
 
 		if _, err := pg.Migrate(migrateCtx, cfg.DatabaseURL); err != nil {
 			// 被取消的 CONCURRENTLY 可能留下 INVALID 索引，恢复步骤在 §7.1。
+			closeFn()
 			return nil, fmt.Errorf("assembly: migrate: %w "+
 				"(a cancelled CONCURRENTLY build may leave INVALID indexes; "+
 				"see deploy/README.md §7.1)", err)
@@ -446,12 +499,15 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		cancelMigrate() // 迁移预算到此为止，建池与回收不复用它。
 		openCtx, cancelOpen := context.WithTimeout(context.Background(), startupOpenBudget)
 		defer cancelOpen()
-		var err error
 		db, err = pg.Open(openCtx, pg.Options{DSN: cfg.DatabaseURL})
 		if err != nil {
+			closeFn()
 			return nil, fmt.Errorf("assembly: open database: %w", err)
 		}
-		closeFn = db.Close
+		closeFn = func() {
+			startupLock.Close()
+			db.Close()
+		}
 
 		auditKey, err := coreaudit.DeriveKey(cfg.HashPepper)
 		if err != nil {
